@@ -143,6 +143,9 @@ async def upload_document(
     """
     allowed_extensions = {".pdf", ".docx", ".pptx", ".html", ".htm", ".png", ".jpg", ".jpeg"}
     
+    MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
+    total_size = 0
+    
     processed_files = []
     combined_markdown = ""
     combined_html = ""
@@ -160,6 +163,10 @@ async def upload_document(
         
         # Read and save file
         content = await file.read()
+        total_size += len(content)
+        if total_size > MAX_SIZE_BYTES:
+            raise HTTPException(status_code=400, detail="Total file size exceeds 100MB limit.")
+            
         file_path = ingestion.save_uploaded_file(content, file.filename)
         
         # Process with Docling
@@ -244,8 +251,13 @@ async def upload_and_analyze_document(
             detail=f"File type not supported. Allowed: {', '.join(allowed_extensions)}"
         )
     
+    MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
+    
     # Read and save file
     content = await file.read()
+    if len(content) > MAX_SIZE_BYTES:
+        raise HTTPException(status_code=400, detail="File size exceeds 100MB limit.")
+        
     file_path = ingestion.save_uploaded_file(content, file.filename)
     
     # Process with Docling

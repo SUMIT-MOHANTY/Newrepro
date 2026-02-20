@@ -199,13 +199,14 @@ const Dashboard = () => {
 
     const activeState = getProjectState(selectedProjectKey);
     const {
-        files, textInput, activeTab, processing, result, error,
+        files = [], linkedFiles = [], textInput, activeTab, processing, result, error,
         userFeedback, aiQuestions, userAnswers, revisionUnlocked,
         revisionReason, progress, progressMessage
     } = activeState;
 
     // Helpers to update active project state from UI components natively 
-    const setFiles = (v) => setProjectState(selectedProjectKey, { files: typeof v === 'function' ? v(activeState.files) : v });
+    const setFiles = (v) => setProjectState(selectedProjectKey, { files: typeof v === 'function' ? v(activeState.files || []) : v });
+    const setLinkedFiles = (v) => setProjectState(selectedProjectKey, { linkedFiles: typeof v === 'function' ? v(activeState.linkedFiles || []) : v });
     const setTextInput = (v) => setProjectState(selectedProjectKey, { textInput: typeof v === 'function' ? v(activeState.textInput) : v });
     const setActiveTab = (v) => setProjectState(selectedProjectKey, { activeTab: typeof v === 'function' ? v(activeState.activeTab) : v });
     const setError = (v) => setProjectState(selectedProjectKey, { error: typeof v === 'function' ? v(activeState.error) : v });
@@ -734,11 +735,21 @@ const Dashboard = () => {
 
     const handleFileChange = (e) => {
         const selectedFiles = Array.from(e.target.files || []);
-        if (selectedFiles.length > 5) {
-            setError('You can select a maximum of 5 files.');
+
+        const totalSize = selectedFiles.reduce((acc, file) => acc + file.size, 0);
+        const MAX_SIZE_MB = 100;
+
+        if (totalSize > MAX_SIZE_MB * 1024 * 1024) {
+            setError(`Total file size cannot exceed ${MAX_SIZE_MB}MB.`);
             return;
         }
-        setFiles(selectedFiles);
+
+        setError(''); // Clear error if validation passes
+        if (activeTab === 'linked-doc') {
+            setLinkedFiles(selectedFiles);
+        } else {
+            setFiles(selectedFiles);
+        }
     };
 
     const handleTextChange = (e) => {
@@ -746,7 +757,8 @@ const Dashboard = () => {
     };
 
     const handleUpload = async (e) => {
-        const taskKey = selectedProjectKey; const taskFiles = files;
+        const taskKey = selectedProjectKey;
+        const taskFiles = activeTab === 'linked-doc' ? linkedFiles : files;
         e.preventDefault();
 
         if (!selectedProject) {
@@ -768,6 +780,10 @@ const Dashboard = () => {
 
         if (activeTab === 'upload' && files.length === 0) {
             setError('Please select at least one file');
+            return;
+        }
+        if (activeTab === 'linked-doc' && linkedFiles.length === 0) {
+            setError('Please select at least one linked document');
             return;
         }
         if (activeTab === 'text' && !textInput.trim()) {
@@ -792,14 +808,7 @@ const Dashboard = () => {
             setProjectState(taskKey, { progress: 10, progressMessage: `Uploading ${taskFiles.length > 0 ? taskFiles.length : ''} documents for ${selectedProject.name}...` });
 
 
-            if (activeTab === 'upload') {
-                // Attach all selected files to the same FormData key 'files' (or 'file')
-                // IMPORTANT: The backend 'files: List[UploadFile] = File(...)' expects multiple parts sharing the same key if desired,
-                // or we can append individually. Usually with FastAPI List[UploadFile], we append multiple times with same key 'files'.
-                // Ideally, we should update backend to accept 'files', but if we kept 'file', we might need to change backend param name.
-                // Let's assume we align the key. The previous tool `replace_file_content` updated backend to `files: List[UploadFile]`.
-                // So we should use `formData.append('files', file)`.
-
+            if (activeTab === 'upload' || activeTab === 'linked-doc') {
                 for (let i = 0; i < taskFiles.length; i++) {
                     formData.append('files', taskFiles[i]);
                 }
@@ -1773,7 +1782,7 @@ const Dashboard = () => {
                                             </div>
                                         </div>
 
-                                        {activeTab === 'upload' || activeTab === 'linked-doc' ? (
+                                        {activeTab === 'upload' ? (
                                             <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
                                                 <input
                                                     type="file"
@@ -1790,13 +1799,41 @@ const Dashboard = () => {
                                                 <span className="mt-2 block text-sm font-medium text-gray-900">
                                                     {files.length > 0
                                                         ? `${files.length} file(s) selected`
-                                                        : activeTab === 'linked-doc'
-                                                            ? "Click to select linked documents (max 5)"
-                                                            : "Click to select up to 5 files"}
+                                                        : "Click to select documents (max 100MB total)"}
                                                 </span>
                                                 {files.length > 0 && (
                                                     <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
                                                         {files.map((f, i) => (
+                                                            <span key={i} className="truncate max-w-[200px]">{f.name}</span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                <span className="mt-1 block text-xs text-gray-400">
+                                                    PDF, DOCX, PPTX, HTML, Images
+                                                </span>
+                                            </div>
+                                        ) : activeTab === 'linked-doc' ? (
+                                            <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
+                                                <input
+                                                    type="file"
+                                                    id={`file-upload-linked`}
+                                                    multiple
+                                                    onChange={handleFileChange}
+                                                    accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
+                                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                    disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                />
+                                                <div className="mx-auto w-12 h-12 text-gray-400 mb-3 group-hover:text-blue-500 transition-colors">
+                                                    <FileText className="w-12 h-12" />
+                                                </div>
+                                                <span className="mt-2 block text-sm font-medium text-gray-900">
+                                                    {linkedFiles.length > 0
+                                                        ? `${linkedFiles.length} linked document(s) selected`
+                                                        : "Click to select linked documents (max 100MB total)"}
+                                                </span>
+                                                {linkedFiles.length > 0 && (
+                                                    <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
+                                                        {linkedFiles.map((f, i) => (
                                                             <span key={i} className="truncate max-w-[200px]">{f.name}</span>
                                                         ))}
                                                     </div>
