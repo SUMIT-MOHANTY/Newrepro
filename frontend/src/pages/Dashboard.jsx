@@ -9,7 +9,9 @@ import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Ac
 import { jsPDF } from 'jspdf';
 import AIConfig from '../components/AIConfig';
 import RoadmapHeader from '../components/RoadmapHeader';
-import bourntecLogo from '../assets/bourntec_logo.png';
+// import bourntecLogo from '../assets/bourntec_logo.png';
+import StatusDashboard from '../components/StatusDashboard';
+import Sidebar from '../components/Sidebar';
 
 const parseAIResponse = (text) => {
     const source = String(text || '');
@@ -209,7 +211,8 @@ const Dashboard = () => {
     const setUserFeedback = (v) => setProjectState(selectedProjectKey, { userFeedback: typeof v === 'function' ? v(activeState.userFeedback) : v });
     const setUserAnswers = (v) => setProjectState(selectedProjectKey, { userAnswers: typeof v === 'function' ? v(activeState.userAnswers) : v });
 
-    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    const [currentView, setCurrentView] = useState('statusDashboard');
     const [governanceContext, setGovernanceContext] = useState(null);
     const [roadmapData, setRoadmapData] = useState({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
@@ -1417,6 +1420,7 @@ const Dashboard = () => {
     };
 
     const handleNewProject = () => {
+        setCurrentView('main');
         setIsSidebarOpen(false);
         localStorage.removeItem('governancePassed');
         localStorage.removeItem('governanceResult');
@@ -1428,7 +1432,7 @@ const Dashboard = () => {
 
     const handleSelectProject = (project) => {
         if (!project) return;
-        navigate(`/a/${project.key}`);
+        setSelectedProjectKey(project.key);
         setIsSidebarOpen(false);
     };
 
@@ -1491,556 +1495,494 @@ const Dashboard = () => {
 
     return (
         <div className="flex h-screen bg-gray-50 overflow-hidden font-sans">
-            {isSidebarOpen && (
-                <button
-                    type="button"
-                    aria-label="Close sidebar"
-                    onClick={() => setIsSidebarOpen(false)}
-                    className="fixed inset-0 z-30 bg-black/40 md:hidden"
-                />
-            )}
-
-            {/* Sidebar */}
-            <div
-                className={`fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] bg-gray-900 border-r border-gray-800 flex flex-col text-gray-300 shadow-xl transform transition-transform duration-300 md:static md:z-20 md:w-64 md:max-w-none md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
-            >
-                <div className="h-16 flex items-center px-2 border-b border-gray-800 bg-gray-900">
-                    <div className="flex items-center justify-between w-full">
-                        <div className="flex items-center min-w-0">
-                            <img src={bourntecLogo} alt="App Logo" className="h-5 w-auto object-contain shrink-0" />
-                            <div className="h-5 w-0.5 bg-white mx-3 shrink-0 rounded-full"></div>
-                            <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">BRD Analyzer</span>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={() => setIsSidebarOpen(false)}
-                            className="md:hidden p-2 rounded-md text-gray-300 hover:text-white hover:bg-gray-800 transition-colors"
-                            aria-label="Close menu"
-                        >
-                            <X className="w-4 h-4" />
-                        </button>
-                    </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar">
-                    <button
-                        onClick={handleNewProject}
-                        className="flex items-center w-full px-4 py-3 mb-6 text-sm font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-lg shadow-blue-900/20 transition-all active:scale-95"
-                    >
-                        <Plus className="w-5 h-5 mr-2" />
-                        New Project
-                    </button>
-
-                    <div className="mb-6">
-                        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-2">Projects</h3>
-                        <div className="space-y-1">
-                            {projects.length === 0 ? (
-                                <p className="text-xs text-gray-600 px-2 italic">No projects yet.</p>
-                            ) : (
-                                projects.map((project) => (
-                                    <button
-                                        key={project.key}
-                                        onClick={() => handleSelectProject(project)}
-                                        className={`w-full flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key
-                                            ? 'bg-blue-900/40 text-blue-100 border-blue-800'
-                                            : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-white'
-                                            }`}
-                                        title={project.name}
-                                    >
-                                        <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-blue-400' : 'text-gray-600 group-hover:text-blue-400'}`} />
-                                        <div className="min-w-0">
-                                            <p className="truncate">{project.name}</p>
-                                            <p className="text-[11px] text-gray-500 truncate">
-                                                {project.status === 'analysis_complete'
-                                                    ? `Locked • ${getProjectSidebarSubtitle(project)}`
-                                                    : getProjectSidebarSubtitle(project)}
-                                            </p>
-                                        </div>
-                                    </button>
-                                ))
-                            )}
-                        </div>
-                    </div>
-                </div>
-
-                <div className="p-4 border-t border-gray-800 bg-gray-900">
-                    <button
-                        onClick={() => {
-                            setShowSettings(true);
-                            setIsSidebarOpen(false);
-                        }}
-                        className="flex items-center w-full px-4 py-2 text-sm font-medium text-gray-300 rounded-md hover:bg-gray-800 hover:text-white transition-colors mb-2"
-                    >
-                        <Settings className="w-4 h-4 mr-3" />
-                        Settings
-                    </button>
-                    {user && (
-                        <div className="flex items-center w-full px-4 py-2 text-sm font-medium text-gray-300 rounded-md hover:bg-gray-800 transition-colors justify-between bg-gray-800/50">
-                            <div className="flex items-center overflow-hidden">
-                                <User className="w-4 h-4 mr-3 flex-shrink-0" />
-                                <span className="truncate w-24 text-xs" title={user.email}>{user.email}</span>
-                            </div>
-                            <button onClick={handleLogout} className="text-red-400 hover:text-red-300 p-1" title="Logout">
-                                <LogOut className="w-4 h-4" />
-                            </button>
-                        </div>
-                    )}
-                </div>
-            </div>
+            {/* Sidebar Component */}
+            <Sidebar
+                isSidebarOpen={isSidebarOpen}
+                setIsSidebarOpen={setIsSidebarOpen}
+                handleNewProject={handleNewProject}
+                projects={projects}
+                selectedProjectKey={selectedProjectKey}
+                handleSelectProject={handleSelectProject}
+                getProjectSidebarSubtitle={getProjectSidebarSubtitle}
+                currentView={currentView}
+                setCurrentView={setCurrentView}
+                setShowSettings={setShowSettings}
+                user={user}
+                handleLogout={handleLogout}
+            />
 
             {/* Main Content */}
-            <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full">
-                <main className="flex-1 overflow-y-auto bg-gray-50 p-3 sm:p-4 md:p-8 w-full">
-                    <div className="max-w-5xl mx-auto space-y-6">
-                        <div className="md:hidden flex items-center justify-between bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-sm">
-                            <button
-                                type="button"
-                                onClick={() => setIsSidebarOpen(true)}
-                                className="inline-flex items-center justify-center p-2 text-gray-600 rounded-md hover:bg-gray-100"
-                                aria-label="Open menu"
-                            >
-                                <Menu className="w-5 h-5" />
-                            </button>
-                            <span className="text-sm font-semibold text-gray-900">BRD Analyzer</span>
-                            <button
-                                type="button"
-                                onClick={() => setShowSettings(true)}
-                                className="inline-flex items-center justify-center p-2 text-gray-600 rounded-md hover:bg-gray-100"
-                                aria-label="Open settings"
-                            >
-                                <Settings className="w-4 h-4" />
-                            </button>
-                        </div>
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-gray-50 h-full transition-all duration-300 ease-in-out">
+                {/* Floating button to open sidebar if closed */}
+                {!isSidebarOpen && currentView !== 'statusDashboard' && (
+                    <button
+                        type="button"
+                        onClick={() => setIsSidebarOpen(true)}
+                        className="absolute top-4 left-4 z-20 p-2 bg-white rounded-md shadow-md text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors border border-gray-200"
+                        aria-label="Open menu"
+                    >
+                        <Menu className="w-5 h-5" />
+                    </button>
+                )}
+                {currentView === 'statusDashboard' ? (
+                    <div className="h-full overflow-auto">
+                        <StatusDashboard isSidebarOpen={isSidebarOpen} onOpenSidebar={() => setIsSidebarOpen(true)} />
+                    </div>
+                ) : (
+                    <main className="flex-1 h-full overflow-y-auto bg-gray-50 p-3 sm:p-4 md:p-8 w-full">
+                        <div className="max-w-5xl mx-auto space-y-6 pt-12 md:pt-0">
+                            <div className="md:hidden flex items-center justify-between bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-sm">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsSidebarOpen(true)}
+                                    className="inline-flex items-center justify-center p-2 text-gray-600 rounded-md hover:bg-gray-100"
+                                    aria-label="Open menu"
+                                >
+                                    <Menu className="w-5 h-5" />
+                                </button>
+                                <span className="text-sm font-semibold text-gray-900">BRD Analyzer</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowSettings(true)}
+                                    className="inline-flex items-center justify-center p-2 text-gray-600 rounded-md hover:bg-gray-100"
+                                    aria-label="Open settings"
+                                >
+                                    <Settings className="w-4 h-4" />
+                                </button>
+                            </div>
 
-                        {error && (
-                            <div className="rounded-lg bg-red-50 p-4 border border-red-200 flex items-start animate-fade-in-down">
-                                <div className="ml-3">
-                                    <h3 className="text-sm font-medium text-red-800">Error</h3>
-                                    <div className="mt-1 text-sm text-red-700">{error}</div>
+                            {error && (
+                                <div className="rounded-lg bg-red-50 p-4 border border-red-200 flex items-start animate-fade-in-down">
+                                    <div className="ml-3">
+                                        <h3 className="text-sm font-medium text-red-800">Error</h3>
+                                        <div className="mt-1 text-sm text-red-700">{error}</div>
+                                    </div>
+                                    <button onClick={() => setError('')} className="ml-auto text-red-500 hover:text-red-700">✕</button>
                                 </div>
-                                <button onClick={() => setError('')} className="ml-auto text-red-500 hover:text-red-700">✕</button>
-                            </div>
-                        )}
+                            )}
 
-                        {/* ── Roadmap Header (from API) ── */}
-                        <RoadmapHeader
-                            steps={roadmapData.steps || ['Governance', 'Upload BRD', 'AI Analysis', 'Complete']}
-                            currentStep={roadmapData.current_step ?? 0}
-                        />
+                            {/* ── Roadmap Header ── */}
+                            <RoadmapHeader
+                                steps={roadmapData.steps || ['Governance', 'Upload BRD', 'AI Analysis', 'Complete']}
+                                currentStep={roadmapData.current_step ?? 0}
+                            />
 
-                        {/* Landing / Upload State */}
-                        {!result && (
-                            <div className="text-center mb-10 animate-fade-in-down">
-                                <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight sm:text-4xl mb-3">
-                                    AI-Powered BRD Analysis
-                                </h1>
-                                <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-                                    Upload your Business Requirements Document to get instant feasibility analysis, targeted technical questions, and a go/no-go recommendation.
-                                </p>
-                            </div>
-                        )}
+                            {/* Landing / Upload State */}
+                            {!result && (
+                                <div className="text-center mb-10 animate-fade-in-down">
+                                    <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight sm:text-4xl mb-3">
+                                        AI-Powered BRD Analysis
+                                    </h1>
+                                    <p className="text-lg text-gray-600 max-w-2xl mx-auto">
+                                        Upload your Business Requirements Document to get instant feasibility analysis, targeted technical questions, and a go/no-go recommendation.
+                                    </p>
+                                </div>
+                            )}
 
 
-                        {!result && (
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md max-w-3xl mx-auto">
-                                <h2 className="text-xl font-bold text-gray-900 mb-6 flex items-center">
-                                    <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-600 mr-3 text-sm font-bold">1</span>
-                                    Project BRD Upload
-                                </h2>
+                            {!result && (
+                                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md max-w-3xl mx-auto">
+                                    <h2 className="text-xl font-bold text-gray-900 mb-6 flex items-center">
+                                        <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-600 mr-3 text-sm font-bold">1</span>
+                                        Project BRD Upload
+                                    </h2>
 
-                                <form onSubmit={handleUpload} className="space-y-6">
-                                    {selectedProject ? (
-                                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                                                <div>
-                                                    <p className="text-sm font-semibold text-emerald-900">Selected Project</p>
-                                                    <p className="text-xs text-emerald-800 mt-1">
-                                                        {selectedProject.name} • {selectedProject.classification || 'N/A'} • Score {selectedProject.weightedScore ?? 'N/A'}/10
-                                                    </p>
-                                                    <p className="text-xs text-emerald-800 mt-1">
-                                                        Status: {selectedProject.status === 'analysis_complete' ? 'Analysis Complete (Locked)' : 'Ready for Initial Upload'}
-                                                    </p>
-                                                    {selectedProject.classification === 'ENTERPRISE' && (
-                                                        <p className="text-xs text-red-700 mt-1">
-                                                            Upload blocked: this project currently requires Enterprise Build governance.
-                                                        </p>
-                                                    )}
-                                                    {selectedProject.latestDocument && (
+                                    <form onSubmit={handleUpload} className="space-y-6">
+                                        {selectedProject ? (
+                                            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                                    <div>
+                                                        <p className="text-sm font-semibold text-emerald-900">Selected Project</p>
                                                         <p className="text-xs text-emerald-800 mt-1">
-                                                            Latest document: {selectedProject.latestDocument.filename} ({new Date(selectedProject.latestDocument.upload_date).toLocaleString()})
+                                                            {selectedProject.name} • {selectedProject.classification || 'N/A'} • Score {selectedProject.weightedScore ?? 'N/A'}/10
                                                         </p>
-                                                    )}
-                                                </div>
-                                                <div className="flex flex-col items-start sm:items-end gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={goToGovernanceAssessment}
-                                                        className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
-                                                    >
-                                                        Change Governance
-                                                    </button>
-                                                    {selectedProject.latestDocument && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={handleViewLatestProjectAnalysis}
-                                                            className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
-                                                        >
-                                                            View Latest Analysis
-                                                        </button>
-                                                    )}
-                                                    {selectedProject.documents.length > 0 && !revisionUnlocked && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={handleCreateRevision}
-                                                            disabled={selectedProject.classification === 'ENTERPRISE'}
-                                                            className="text-xs font-semibold text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
-                                                        >
-                                                            Create New Revision
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            {revisionUnlocked && (
-                                                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
-                                                    <p className="text-xs font-semibold text-blue-900">Revision unlocked for this upload</p>
-                                                    <p className="text-xs text-blue-800 mt-1">Reason: {revisionReason}</p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-                                            <p className="text-sm font-semibold text-amber-900">Select a project from the left panel to continue.</p>
-                                        </div>
-                                    )}
-
-                                    {/* Tabs */}
-                                    <div className="flex border-b border-gray-200 mb-6 overflow-x-auto">
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('upload')}
-                                            className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Upload File
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('text')}
-                                            className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Write Text
-                                        </button>
-                                    </div>
-
-                                    {activeTab === 'upload' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
-                                            <input
-                                                type="file"
-                                                id="file-upload"
-                                                multiple
-                                                onChange={handleFileChange}
-                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
-                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
-                                            />
-                                            <div className="mx-auto w-12 h-12 text-gray-400 mb-3 group-hover:text-blue-500 transition-colors">
-                                                <FileText className="w-12 h-12" />
-                                            </div>
-                                            <span className="mt-2 block text-sm font-medium text-gray-900">
-                                                {files.length > 0 ? `${files.length} file(s) selected` : "Click to select up to 5 files"}
-                                            </span>
-                                            {files.length > 0 && (
-                                                <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
-                                                    {files.map((f, i) => (
-                                                        <span key={i} className="truncate max-w-[200px]">{f.name}</span>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            <span className="mt-1 block text-xs text-gray-400">
-                                                PDF, DOCX, PPTX, HTML, Images
-                                            </span>
-                                        </div>
-                                    ) : (
-                                        <div className="relative">
-                                            <textarea
-                                                value={textInput}
-                                                onChange={handleTextChange}
-                                                placeholder="Write your requirements here..."
-                                                className="w-full h-64 p-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50/50 resize-none font-mono"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
-                                            />
-                                        </div>
-                                    )}
-
-
-
-                                    {processing && (
-                                        <div className="space-y-3 animate-pulse mt-6">
-                                            <div className="flex justify-between items-center text-xs uppercase tracking-wider text-gray-500 font-semibold">
-                                                <span>{progressMessage}</span>
-                                                <span>{progress}%</span>
-                                            </div>
-                                            <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                                                <div
-                                                    className="bg-blue-600 h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
-                                                    style={{ width: `${progress}%` }}
-                                                ></div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    <div className="flex justify-end gap-3 pt-6">
-                                        <button
-                                            type="button"
-                                            onClick={goToGovernanceAssessment}
-                                            className="inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-gray-700 bg-gray-100 hover:bg-gray-200 transition-all transform active:scale-95 shadow-md"
-                                        >
-                                            <Zap className="w-4 h-4 mr-2" />
-                                            Change Governance
-                                        </button>
-                                        <button
-                                            type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
-                                                ? 'bg-gray-300 cursor-not-allowed shadow-none'
-                                                : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5 hover:shadow-lg'
-                                                }`}
-                                        >
-                                            <Zap className={`w-4 h-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
-                                            {processing ? 'Analyzing...' : selectedProject?.documents.length > 0 ? 'Start Revision Analysis' : 'Start Analysis'}
-                                        </button>
-                                    </div>
-                                </form>
-                            </div>
-                        )}
-
-                        {result && (
-                            <div className="space-y-6 animate-fade-in-up">
-                                {/* Result Header */}
-                                <div className="flex flex-col md:flex-row md:items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-                                    <div className="flex items-center mb-4 md:mb-0">
-                                        <div className="p-2 bg-green-50 rounded-lg mr-3">
-                                            <FileText className="w-5 h-5 text-green-600" />
-                                        </div>
-                                        <div>
-                                            <h2 className="text-lg font-bold text-gray-900 break-all sm:break-normal">{result.filename}</h2>
-                                            <p className="text-xs text-gray-500">
-                                                {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
-                                        <button
-                                            onClick={handleDownloadPDF}
-                                            className="text-sm text-gray-600 hover:text-gray-900 font-medium hover:underline flex items-center transition-colors"
-                                            title="Download PDF Report"
-                                        >
-                                            <Download className="w-4 h-4 mr-1" /> Download PDF
-                                        </button>
-                                        <div className="hidden sm:block h-4 w-px bg-gray-300"></div>
-                                        <button
-                                            onClick={handleNewAnalysis}
-                                            className="text-sm text-blue-600 hover:text-blue-800 font-medium hover:underline flex items-center"
-                                        >
-                                            <Plus className="w-4 h-4 mr-1" /> Analyze Another
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div id="analysis-content" className="bg-transparent space-y-6">
-
-                                    {/* Key Metrics Row */}
-                                    {result.analysis && (
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                                            {(() => {
-                                                const metrics = result.analysis.metrics || {};
-                                                const metricItems = [
-                                                    { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-blue-600', bg: 'bg-blue-50' },
-                                                    { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
-                                                    { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
-                                                    { label: 'Timeline', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-green-600', bg: 'bg-green-50' }
-                                                ];
-
-                                                return metricItems.map((metric, idx) => (
-                                                    <div key={idx} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
-                                                        <div className="flex items-center justify-between mb-2">
-                                                            <div className={`p-2 ${metric.bg} rounded-lg`}>
-                                                                <metric.icon className={`w-4 h-4 ${metric.color}`} />
-                                                            </div>
-                                                            {/* Optional status indicator dot could go here */}
-                                                        </div>
-                                                        <div>
-                                                            <p className="text-[10px] uppercase tracking-wider font-semibold text-gray-400">{metric.label}</p>
-                                                            <p className="text-sm font-bold text-gray-900 line-clamp-2 leading-tight" title={metric.value}>
-                                                                {metric.value}
+                                                        <p className="text-xs text-emerald-800 mt-1">
+                                                            Status: {selectedProject.status === 'analysis_complete' ? 'Analysis Complete (Locked)' : 'Ready for Initial Upload'}
+                                                        </p>
+                                                        {selectedProject.classification === 'ENTERPRISE' && (
+                                                            <p className="text-xs text-red-700 mt-1">
+                                                                Upload blocked: this project currently requires Enterprise Build governance.
                                                             </p>
-                                                        </div>
-                                                    </div>
-                                                ));
-                                            })()}
-                                        </div>
-                                    )}
-
-                                    {/* Main Content Grid */}
-                                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                                        {/* Left Column: Report (8 cols) */}
-                                        <div className="lg:col-span-8 space-y-6">
-                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6">
-                                                <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-gray-100">
-                                                    Executive Summary & Analysis
-                                                </h3>
-                                                <div className="prose prose-sm prose-slate max-w-none text-gray-700 leading-relaxed">
-                                                    {(() => {
-                                                        const analysisContent = result.analysis?.analysis || '';
-                                                        const explicitHtml = result.analysis?.html;
-                                                        const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
-
-                                                        if (htmlToRender) {
-                                                            return (
-                                                                <div
-                                                                    className="bg-white rounded-lg border border-gray-200 p-4"
-                                                                    dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
-                                                                />
-                                                            );
-                                                        }
-
-                                                        if (processing && !analysisContent.trim()) {
-                                                            return (
-                                                                <div className="text-sm text-gray-500 italic">
-                                                                    Generating analysis...
-                                                                </div>
-                                                            );
-                                                        }
-
-                                                        return (
-                                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                                {analysisContent}
-                                                            </ReactMarkdown>
-                                                        );
-                                                    })()}
-                                                </div>
-                                            </div>
-
-                                            {/* Raw Source (Collapsed) */}
-                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                                                <details className="group">
-                                                    <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-gray-400 uppercase tracking-widest hover:text-gray-600 transition-colors">
-                                                        <span>View Processed Content</span>
-                                                        <span className="transition-transform group-open:rotate-180">
-                                                            <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
-                                                        </span>
-                                                    </summary>
-                                                    <div className="mt-4 pt-4 border-t border-gray-50">
-                                                        {result.extraction?.html ? (
-                                                            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-                                                                <iframe
-                                                                    srcDoc={result.extraction.html}
-                                                                    className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
-                                                                    title="Processed Content"
-                                                                    sandbox="allow-same-origin allow-scripts"
-                                                                />
-                                                            </div>
-                                                        ) : (
-                                                            <div className="bg-gray-50 rounded-lg p-4 text-xs font-mono text-gray-600 max-h-96 overflow-y-auto whitespace-pre-wrap border border-gray-100">
-                                                                {result.extraction?.markdown || '(No content extracted)'}
-                                                            </div>
+                                                        )}
+                                                        {selectedProject.latestDocument && (
+                                                            <p className="text-xs text-emerald-800 mt-1">
+                                                                Latest document: {selectedProject.latestDocument.filename} ({new Date(selectedProject.latestDocument.upload_date).toLocaleString()})
+                                                            </p>
                                                         )}
                                                     </div>
-                                                </details>
-                                            </div>
-                                        </div>
-
-                                        {/* Right Column: Key Actions / Q&A (4 cols) */}
-                                        <div className="lg:col-span-4 space-y-6">
-                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5 lg:sticky lg:top-6">
-                                                <div className="flex items-center mb-4">
-                                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-2"></div>
-                                                    <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
-                                                        Clarification Needed
-                                                    </h3>
-                                                </div>
-
-                                                <p className="text-xs text-gray-500 mb-6 leading-relaxed">
-                                                    The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
-                                                </p>
-
-                                                {aiQuestions?.length > 0 ? (
-                                                    <div className="space-y-4 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
-                                                        {aiQuestions.map((q, i) => (
-                                                            <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-                                                                <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
-                                                                <input
-                                                                    type="text"
-                                                                    value={(userAnswers || {})[i] || ''}
-                                                                    onChange={e => setUserAnswers(prev => ({ ...(prev || {}), [i]: e.target.value }))}
-                                                                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                                                                    placeholder="Your answer..."
-                                                                />
-                                                            </div>
-                                                        ))}
+                                                    <div className="flex flex-col items-start sm:items-end gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={goToGovernanceAssessment}
+                                                            className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
+                                                        >
+                                                            Change Governance
+                                                        </button>
+                                                        {selectedProject.latestDocument && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={handleViewLatestProjectAnalysis}
+                                                                className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
+                                                            >
+                                                                View Latest Analysis
+                                                            </button>
+                                                        )}
+                                                        {selectedProject.documents.length > 0 && !revisionUnlocked && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={handleCreateRevision}
+                                                                disabled={selectedProject.classification === 'ENTERPRISE'}
+                                                                className="text-xs font-semibold text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                                            >
+                                                                Create New Revision
+                                                            </button>
+                                                        )}
                                                     </div>
-                                                ) : (
-                                                    <div className="text-center py-8 bg-gray-50 rounded-lg border border-dashed border-gray-200">
-                                                        <p className="text-xs text-gray-400">No specific questions generated.</p>
+                                                </div>
+                                                {revisionUnlocked && (
+                                                    <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                                                        <p className="text-xs font-semibold text-blue-900">Revision unlocked for this upload</p>
+                                                        <p className="text-xs text-blue-800 mt-1">Reason: {revisionReason}</p>
                                                     </div>
                                                 )}
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                                <p className="text-sm font-semibold text-amber-900">Select a project from the left panel to continue.</p>
+                                            </div>
+                                        )}
 
-                                                <div className="mt-6 pt-4 border-t border-gray-100">
-                                                    <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
-                                                    <textarea
-                                                        value={userFeedback}
-                                                        onChange={(e) => setUserFeedback(e.target.value)}
-                                                        placeholder="Any other details..."
-                                                        className="w-full p-3 border border-gray-200 rounded-lg focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-gray-50 resize-none"
-                                                    />
-                                                    <button
-                                                        onClick={handleRefineAnalysis}
-                                                        disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                                        className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
-                                                            ? 'bg-gray-400 cursor-not-allowed'
-                                                            : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
-                                                            }`}
-                                                    >
-                                                        {processing ? 'Refining...' : 'Update Analysis'}
-                                                    </button>
+                                        {/* Tabs */}
+                                        <div className="flex border-b border-gray-200 mb-6 overflow-x-auto">
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveTab('upload')}
+                                                className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                                disabled={!selectedProject}
+                                            >
+                                                Upload File
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveTab('text')}
+                                                className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                                disabled={!selectedProject}
+                                            >
+                                                Write Text
+                                            </button>
+                                        </div>
+
+                                        {activeTab === 'upload' ? (
+                                            <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
+                                                <input
+                                                    type="file"
+                                                    id="file-upload"
+                                                    multiple
+                                                    onChange={handleFileChange}
+                                                    accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
+                                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                    disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                />
+                                                <div className="mx-auto w-12 h-12 text-gray-400 mb-3 group-hover:text-blue-500 transition-colors">
+                                                    <FileText className="w-12 h-12" />
+                                                </div>
+                                                <span className="mt-2 block text-sm font-medium text-gray-900">
+                                                    {files.length > 0 ? `${files.length} file(s) selected` : "Click to select up to 5 files"}
+                                                </span>
+                                                {files.length > 0 && (
+                                                    <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
+                                                        {files.map((f, i) => (
+                                                            <span key={i} className="truncate max-w-[200px]">{f.name}</span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                <span className="mt-1 block text-xs text-gray-400">
+                                                    PDF, DOCX, PPTX, HTML, Images
+                                                </span>
+                                            </div>
+                                        ) : (
+                                            <div className="relative">
+                                                <textarea
+                                                    value={textInput}
+                                                    onChange={handleTextChange}
+                                                    placeholder="Write your requirements here..."
+                                                    className="w-full h-64 p-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50/50 resize-none font-mono"
+                                                    disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                />
+                                            </div>
+                                        )}
+
+
+
+                                        {processing && (
+                                            <div className="space-y-3 animate-pulse mt-6">
+                                                <div className="flex justify-between items-center text-xs uppercase tracking-wider text-gray-500 font-semibold">
+                                                    <span>{progressMessage}</span>
+                                                    <span>{progress}%</span>
+                                                </div>
+                                                <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                                    <div
+                                                        className="bg-blue-600 h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                        style={{ width: `${progress}%` }}
+                                                    ></div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="flex justify-end gap-3 pt-6">
+                                            <button
+                                                type="button"
+                                                onClick={goToGovernanceAssessment}
+                                                className="inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-gray-700 bg-gray-100 hover:bg-gray-200 transition-all transform active:scale-95 shadow-md"
+                                            >
+                                                <Zap className="w-4 h-4 mr-2" />
+                                                Change Governance
+                                            </button>
+                                            <button
+                                                type="submit"
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
+                                                className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
+                                                    ? 'bg-gray-300 cursor-not-allowed shadow-none'
+                                                    : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5 hover:shadow-lg'
+                                                    }`}
+                                            >
+                                                <Zap className={`w-4 h-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
+                                                {processing ? 'Analyzing...' : selectedProject?.documents.length > 0 ? 'Start Revision Analysis' : 'Start Analysis'}
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            )}
+
+                            {result && (
+                                <div className="space-y-6 animate-fade-in-up">
+                                    {/* Result Header */}
+                                    <div className="flex flex-col md:flex-row md:items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                                        <div className="flex items-center mb-4 md:mb-0">
+                                            <div className="p-2 bg-green-50 rounded-lg mr-3">
+                                                <FileText className="w-5 h-5 text-green-600" />
+                                            </div>
+                                            <div>
+                                                <h2 className="text-lg font-bold text-gray-900 break-all sm:break-normal">{result.filename}</h2>
+                                                <p className="text-xs text-gray-500">
+                                                    {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
+                                            <button
+                                                onClick={handleDownloadPDF}
+                                                className="text-sm text-gray-600 hover:text-gray-900 font-medium hover:underline flex items-center transition-colors"
+                                                title="Download PDF Report"
+                                            >
+                                                <Download className="w-4 h-4 mr-1" /> Download PDF
+                                            </button>
+                                            <div className="hidden sm:block h-4 w-px bg-gray-300"></div>
+                                            <button
+                                                onClick={handleNewAnalysis}
+                                                className="text-sm text-blue-600 hover:text-blue-800 font-medium hover:underline flex items-center"
+                                            >
+                                                <Plus className="w-4 h-4 mr-1" /> Analyze Another
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div id="analysis-content" className="bg-transparent space-y-6">
+
+                                        {/* Key Metrics Row */}
+                                        {result.analysis && (
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                                {(() => {
+                                                    const metrics = result.analysis.metrics || {};
+                                                    const metricItems = [
+                                                        { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-blue-600', bg: 'bg-blue-50' },
+                                                        { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
+                                                        { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
+                                                        { label: 'Timeline', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-green-600', bg: 'bg-green-50' }
+                                                    ];
+
+                                                    return metricItems.map((metric, idx) => (
+                                                        <div key={idx} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
+                                                            <div className="flex items-center justify-between mb-2">
+                                                                <div className={`p-2 ${metric.bg} rounded-lg`}>
+                                                                    <metric.icon className={`w-4 h-4 ${metric.color}`} />
+                                                                </div>
+                                                                {/* Optional status indicator dot could go here */}
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-[10px] uppercase tracking-wider font-semibold text-gray-400">{metric.label}</p>
+                                                                <p className="text-sm font-bold text-gray-900 line-clamp-2 leading-tight" title={metric.value}>
+                                                                    {metric.value}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                    ));
+                                                })()}
+                                            </div>
+                                        )}
+
+                                        {/* Main Content Grid */}
+                                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                            {/* Left Column: Report (8 cols) */}
+                                            <div className="lg:col-span-8 space-y-6">
+                                                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6">
+                                                    <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-gray-100">
+                                                        Executive Summary & Analysis
+                                                    </h3>
+                                                    <div className="prose prose-sm prose-slate max-w-none text-gray-700 leading-relaxed">
+                                                        {(() => {
+                                                            const analysisContent = result.analysis?.analysis || '';
+                                                            const explicitHtml = result.analysis?.html;
+                                                            const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+
+                                                            if (htmlToRender) {
+                                                                return (
+                                                                    <div
+                                                                        className="bg-white rounded-lg border border-gray-200 p-4"
+                                                                        dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
+                                                                    />
+                                                                );
+                                                            }
+
+                                                            if (processing && !analysisContent.trim()) {
+                                                                return (
+                                                                    <div className="text-sm text-gray-500 italic">
+                                                                        Generating analysis...
+                                                                    </div>
+                                                                );
+                                                            }
+
+                                                            return (
+                                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                                    {analysisContent}
+                                                                </ReactMarkdown>
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                </div>
+
+                                                {/* Raw Source (Collapsed) */}
+                                                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                                                    <details className="group">
+                                                        <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-gray-400 uppercase tracking-widest hover:text-gray-600 transition-colors">
+                                                            <span>View Processed Content</span>
+                                                            <span className="transition-transform group-open:rotate-180">
+                                                                <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
+                                                            </span>
+                                                        </summary>
+                                                        <div className="mt-4 pt-4 border-t border-gray-50">
+                                                            {result.extraction?.html ? (
+                                                                <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                                                                    <iframe
+                                                                        srcDoc={result.extraction.html}
+                                                                        className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
+                                                                        title="Processed Content"
+                                                                        sandbox="allow-same-origin allow-scripts"
+                                                                    />
+                                                                </div>
+                                                            ) : (
+                                                                <div className="bg-gray-50 rounded-lg p-4 text-xs font-mono text-gray-600 max-h-96 overflow-y-auto whitespace-pre-wrap border border-gray-100">
+                                                                    {result.extraction?.markdown || '(No content extracted)'}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </details>
+                                                </div>
+                                            </div>
+
+                                            {/* Right Column: Key Actions / Q&A (4 cols) */}
+                                            <div className="lg:col-span-4 space-y-6">
+                                                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5 lg:sticky lg:top-6">
+                                                    <div className="flex items-center mb-4">
+                                                        <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-2"></div>
+                                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                                                            Clarification Needed
+                                                        </h3>
+                                                    </div>
+
+                                                    <p className="text-xs text-gray-500 mb-6 leading-relaxed">
+                                                        The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
+                                                    </p>
+
+                                                    {aiQuestions?.length > 0 ? (
+                                                        <div className="space-y-4 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
+                                                            {aiQuestions.map((q, i) => (
+                                                                <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                                    <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={(userAnswers || {})[i] || ''}
+                                                                        onChange={e => setUserAnswers(prev => ({ ...(prev || {}), [i]: e.target.value }))}
+                                                                        className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                                                        placeholder="Your answer..."
+                                                                    />
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    ) : (
+                                                        <div className="text-center py-8 bg-gray-50 rounded-lg border border-dashed border-gray-200">
+                                                            <p className="text-xs text-gray-400">No specific questions generated.</p>
+                                                        </div>
+                                                    )}
+
+                                                    <div className="mt-6 pt-4 border-t border-gray-100">
+                                                        <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
+                                                        <textarea
+                                                            value={userFeedback}
+                                                            onChange={(e) => setUserFeedback(e.target.value)}
+                                                            placeholder="Any other details..."
+                                                            className="w-full p-3 border border-gray-200 rounded-lg focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-gray-50 resize-none"
+                                                        />
+                                                        <button
+                                                            onClick={handleRefineAnalysis}
+                                                            disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
+                                                            className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
+                                                                ? 'bg-gray-400 cursor-not-allowed'
+                                                                : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
+                                                                }`}
+                                                        >
+                                                            {processing ? 'Refining...' : 'Update Analysis'}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                        )}
-                    </div>
-                </main>
+                            )}
+                        </div>
+                    </main>
+                )}
             </div>
 
             {/* AI Config Modal */}
-            {showSettings && (
-                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
-                        <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-                            <h2 className="font-bold text-lg text-gray-900 flex items-center">
-                                <Settings className="w-5 h-5 mr-2 text-blue-600" />
-                                AI Configuration
-                            </h2>
-                            <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕</button>
-                        </div>
-                        <div className="p-6">
-                            <AIConfig aiConfig={aiConfig} setAiConfig={setAiConfig} />
-                        </div>
-                        <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="px-5 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 font-medium text-sm transition-colors"
-                            >
-                                Done
-                            </button>
+            {
+                showSettings && (
+                    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
+                        <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
+                            <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                                <h2 className="font-bold text-lg text-gray-900 flex items-center">
+                                    <Settings className="w-5 h-5 mr-2 text-blue-600" />
+                                    AI Configuration
+                                </h2>
+                                <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕</button>
+                            </div>
+                            <div className="p-6">
+                                <AIConfig aiConfig={aiConfig} setAiConfig={setAiConfig} />
+                            </div>
+                            <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+                                <button
+                                    onClick={() => setShowSettings(false)}
+                                    className="px-5 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 font-medium text-sm transition-colors"
+                                >
+                                    Done
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
-        </div>
+                )
+            }
+        </div >
     );
 };
 
