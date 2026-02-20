@@ -1144,6 +1144,14 @@ const Dashboard = () => {
                 .replace(/&gt;/gi, '>')
                 .replace(/&quot;/gi, '"')
                 .replace(/&#39;/gi, "'")
+                .replace(/&#39;/gi, "'")
+                .replace(/[\u2018\u2019]/g, "'")
+                .replace(/[\u201C\u201D]/g, '"')
+                .replace(/[\u2013\u2014]/g, '-')
+                .replace(/\u2026/g, '...')
+                .replace(/\u2264/g, '<=')
+                .replace(/\u2265/g, '>=')
+                .replace(/[^\x00-\x7F]/g, ' ')
                 .replace(/\r/g, '')
                 .replace(/\n{3,}/g, '\n\n')
                 .trim();
@@ -1177,10 +1185,18 @@ const Dashboard = () => {
                     ? { fill: '#FEE2E2', border: '#FCA5A5', text: '#B91C1C' }
                     : { fill: '#FEF3C7', border: '#FCD34D', text: '#B45309' };
 
-            const recommendationSection = analysisText.match(/(?:^|\n)#+\s*6\.\s*Go\s*\/\s*No-Go Recommendation[\s\S]*$/i);
-            const recommendationPreview = recommendationSection
-                ? recommendationSection[0].replace(/(?:^|\n)#+\s*6\.\s*Go\s*\/\s*No-Go Recommendation/i, '').trim()
-                : analysisText.split(/\n{2,}/).slice(0, 2).join('\n\n');
+            // Extract the first two paragraphs which usually correspond to the Executive Summary section
+            const pdfParagraphs = analysisText.split(/\n{2,}/);
+            let execSummaryText = pdfParagraphs.slice(0, 2).join('\n\n');
+            let remainingAnalysisText = pdfParagraphs.slice(2).join('\n\n');
+
+            // Strip the list number from the Executive Summary heading
+            execSummaryText = execSummaryText.replace(/^1\.\s*Executive Summary/i, 'Executive Summary');
+
+            // Renumber the remaining sections down by 1 (e.g., "2. Key Requirements" -> "1. Key Requirements")
+            remainingAnalysisText = remainingAnalysisText.replace(/^(#*\s*)(\d+)\.\s/gm, (match, prefix, num) => {
+                return `${prefix}${parseInt(num) - 1}. `;
+            });
 
             const pdf = new jsPDF('p', 'mm', 'a4');
             const pageWidth = pdf.internal.pageSize.getWidth();
@@ -1276,6 +1292,11 @@ const Dashboard = () => {
                     const lines = pdf.splitTextToSize(block, contentWidth);
                     lines.forEach((line) => {
                         ensureSpace(lineHeight);
+                        // Re-apply properties after ensureSpace in case it created a new page and reset the font
+                        pdf.setFont('helvetica', bold ? 'bold' : 'normal');
+                        pdf.setFontSize(fontSize);
+                        setTextHex(color);
+
                         pdf.text(line, marginX, cursorY);
                         cursorY += lineHeight;
                     });
@@ -1331,7 +1352,7 @@ const Dashboard = () => {
             ensureSpace(25);
             setFillHex('#F8FAFC');
             setDrawHex(palette.border);
-            pdf.roundedRect(marginX, cursorY, contentWidth, 23, 2, 2, 'FD');
+            pdf.roundedRect(marginX, cursorY, contentWidth, 19, 2, 2, 'FD');
 
             setTextHex(palette.text);
             pdf.setFont('helvetica', 'bold');
@@ -1342,10 +1363,9 @@ const Dashboard = () => {
             pdf.setFontSize(9);
             setTextHex(palette.muted);
             pdf.text(`Document: ${result.filename || 'Untitled'}`, marginX + 3, cursorY + 12);
-            pdf.text(`Model: ${result.analysis?.model || 'Not provided'}`, marginX + 3, cursorY + 17);
-            pdf.text(`Generated: ${generatedAt}`, marginX + 3, cursorY + 22);
+            pdf.text(`Generated: ${generatedAt}`, marginX + 3, cursorY + 17);
 
-            cursorY += 28;
+            cursorY += 24;
 
             addSectionTitle('Go / No-Go Recommendation');
             ensureSpace(14);
@@ -1357,38 +1377,42 @@ const Dashboard = () => {
             pdf.setFontSize(11.5);
             pdf.text(verdict, marginX + 3, cursorY + 7.4);
             cursorY += 15;
+            cursorY += 4; // Add extra space before Executive Summary
 
-            addParagraphs(recommendationPreview || 'Recommendation details are not available.', {
-                fontSize: 9.5,
-                lineHeight: 4.5,
-                color: palette.muted
+            addParagraphs(execSummaryText || 'Executive summary not available.', {
+                fontSize: 10,
+                lineHeight: 4.8,
+                color: palette.text
             });
 
             cursorY += 2;
             addMetricsGrid();
 
-            addSectionTitle('Executive Summary & Analysis');
-            addParagraphs(analysisText || 'No analysis text available.', {
-                fontSize: 9.6,
-                lineHeight: 4.6
+            addSectionTitle('Analysis');
+            cursorY += 3; // Add extra space below the Analysis heading
+
+            addParagraphs(remainingAnalysisText || analysisText || 'No analysis text available.', {
+                fontSize: 10,
+                lineHeight: 4.8
             });
 
             if (questions?.length) {
                 cursorY += 2;
                 addSectionTitle('Targeted Questions & Clarifications');
+                cursorY += 3; // Add extra space below the Clarifications heading
 
                 questions.forEach((question, index) => {
                     const questionText = normalizeForPdf(question);
                     const answerText = normalizeForPdf(answers?.[index] || '');
 
                     addParagraphs(`${index + 1}. ${questionText}`, {
-                        fontSize: 9.4,
-                        lineHeight: 4.3,
+                        fontSize: 10,
+                        lineHeight: 4.8,
                         bold: true
                     });
                     addParagraphs(`Answer: ${answerText || 'Pending clarification'}`, {
-                        fontSize: 9,
-                        lineHeight: 4.2,
+                        fontSize: 10,
+                        lineHeight: 4.8,
                         color: answerText ? palette.muted : '#94A3B8'
                     });
                     cursorY += 1;
@@ -1399,8 +1423,8 @@ const Dashboard = () => {
                 cursorY += 2;
                 addSectionTitle('Additional Context');
                 addParagraphs(additionalNotes, {
-                    fontSize: 9.2,
-                    lineHeight: 4.4,
+                    fontSize: 10,
+                    lineHeight: 4.8,
                     color: palette.muted
                 });
             }
@@ -1409,8 +1433,8 @@ const Dashboard = () => {
                 cursorY += 2;
                 addSectionTitle('Model Reasoning Notes');
                 addParagraphs(reasoningText, {
-                    fontSize: 9,
-                    lineHeight: 4.2,
+                    fontSize: 10,
+                    lineHeight: 4.8,
                     color: palette.muted
                 });
             }
