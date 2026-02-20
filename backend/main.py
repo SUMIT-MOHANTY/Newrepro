@@ -770,8 +770,6 @@ async def github_repo_context(
     Fetch repository source code and return a structured text context
     suitable for feeding into the AI model alongside the BRD.
     """
-    if not current_user.github_token:
-        raise HTTPException(status_code=400, detail="GitHub not connected")
     try:
         context = await github_service.build_repo_context(
             current_user.github_token,

@@ -5,7 +5,7 @@ import { clearAuthData } from '../utils/auth';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X } from 'lucide-react';
+import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X, CheckCircle2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import AIConfig from '../components/AIConfig';
 import RoadmapHeader from '../components/RoadmapHeader';
@@ -216,6 +216,10 @@ const Dashboard = () => {
 
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [currentView, _setCurrentView] = useState(location.pathname === '/status' ? 'statusDashboard' : 'main');
+
+    const [githubLinkUrl, setGithubLinkUrl] = useState('');
+    const [githubLinkParsing, setGithubLinkParsing] = useState(false);
+    const [githubLinkError, setGithubLinkError] = useState('');
 
     useEffect(() => {
         if (location.pathname === '/status-dashboard') {
@@ -1423,6 +1427,52 @@ const Dashboard = () => {
         }
     };
 
+    const handleLoadGithubUrl = async () => {
+        setGithubLinkError('');
+        if (!githubLinkUrl.includes('github.com/')) {
+            setGithubLinkError('Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)');
+            return;
+        }
+
+        try {
+            const urlObj = new URL(githubLinkUrl);
+            const parts = urlObj.pathname.split('/').filter(Boolean);
+            if (parts.length < 2) throw new Error('Invalid repo URL structure');
+
+            const owner = parts[0];
+            const repo = parts[1];
+            let branch = 'main';
+            if (parts[2] === 'tree' && parts[3]) {
+                branch = parts[3];
+            }
+
+            setGithubLinkParsing(true);
+            const token = localStorage.getItem('token');
+            const resp = await fetch(API_ENDPOINTS.GITHUB_REPO_CONTEXT, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ owner, repo, branch })
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || 'Failed to fetch public repo');
+
+            setRepoContext({
+                repo: `${owner}/${repo}`,
+                branch,
+                context: data.context,
+                fromLink: true
+            });
+            setGithubLinkError('');
+        } catch (e) {
+            setGithubLinkError(e.message || 'Failed to parse or load URL');
+        } finally {
+            setGithubLinkParsing(false);
+        }
+    };
+
     const handleNewAnalysis = () => {
         setProjectState(selectedProjectKey, {
             files: [],
@@ -1680,24 +1730,40 @@ const Dashboard = () => {
                                         )}
 
                                         {/* Tabs */}
-                                        <div className="flex items-center border-b border-gray-200 mb-6 overflow-visible">
+                                        <div className="flex items-center border-b border-gray-200 mb-6 overflow-x-auto whitespace-nowrap scrollbar-hide py-1">
                                             <button
                                                 type="button"
                                                 onClick={() => setActiveTab('upload')}
-                                                className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                                className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                                                 disabled={!selectedProject}
                                             >
                                                 Upload File
                                             </button>
                                             <button
                                                 type="button"
+                                                onClick={() => setActiveTab('linked-doc')}
+                                                className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'linked-doc' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                                disabled={!selectedProject}
+                                            >
+                                                Linked Project Document
+                                            </button>
+                                            <button
+                                                type="button"
                                                 onClick={() => setActiveTab('text')}
-                                                className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                                className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                                                 disabled={!selectedProject}
                                             >
                                                 Write Text
                                             </button>
-                                            <div className="ml-auto pb-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveTab('github-link')}
+                                                className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                                disabled={!selectedProject}
+                                            >
+                                                GitHub URL
+                                            </button>
+                                            <div className="ml-auto pb-2 pl-4">
                                                 <GitHubIntegration
                                                     inline
                                                     repoContext={repoContext}
@@ -1707,11 +1773,11 @@ const Dashboard = () => {
                                             </div>
                                         </div>
 
-                                        {activeTab === 'upload' ? (
+                                        {activeTab === 'upload' || activeTab === 'linked-doc' ? (
                                             <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
                                                 <input
                                                     type="file"
-                                                    id="file-upload"
+                                                    id={`file-upload-${activeTab}`}
                                                     multiple
                                                     onChange={handleFileChange}
                                                     accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
@@ -1722,7 +1788,11 @@ const Dashboard = () => {
                                                     <FileText className="w-12 h-12" />
                                                 </div>
                                                 <span className="mt-2 block text-sm font-medium text-gray-900">
-                                                    {files.length > 0 ? `${files.length} file(s) selected` : "Click to select up to 5 files"}
+                                                    {files.length > 0
+                                                        ? `${files.length} file(s) selected`
+                                                        : activeTab === 'linked-doc'
+                                                            ? "Click to select linked documents (max 5)"
+                                                            : "Click to select up to 5 files"}
                                                 </span>
                                                 {files.length > 0 && (
                                                     <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
@@ -1735,7 +1805,7 @@ const Dashboard = () => {
                                                     PDF, DOCX, PPTX, HTML, Images
                                                 </span>
                                             </div>
-                                        ) : (
+                                        ) : activeTab === 'text' ? (
                                             <div className="relative">
                                                 <textarea
                                                     value={textInput}
@@ -1744,6 +1814,41 @@ const Dashboard = () => {
                                                     className="w-full h-64 p-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50/50 resize-none font-mono"
                                                     disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
                                                 />
+                                            </div>
+                                        ) : (
+                                            <div className="border border-gray-200 rounded-xl p-6 text-left bg-white shadow-sm">
+                                                <label className="block text-sm font-medium text-gray-900 mb-2">Paste Public GitHub Repository URL</label>
+                                                <div className="flex gap-2 mb-4">
+                                                    <input
+                                                        type="text"
+                                                        value={githubLinkUrl}
+                                                        onChange={e => setGithubLinkUrl(e.target.value)}
+                                                        placeholder="https://github.com/owner/repo"
+                                                        className="flex-1 px-4 py-2 border border-gray-200 rounded-md text-sm focus:ring-1 focus:ring-blue-500 outline-none"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleLoadGithubUrl}
+                                                        disabled={!githubLinkUrl || githubLinkParsing}
+                                                        className="px-4 py-2 bg-gray-900 text-white text-sm font-semibold rounded-md hover:bg-gray-800 disabled:opacity-50 transition-colors inline-flex items-center min-w-[120px] justify-center"
+                                                    >
+                                                        {githubLinkParsing ? (
+                                                            <><span className="animate-spin w-3 h-3 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
+                                                        ) : 'Load Context'}
+                                                    </button>
+                                                </div>
+                                                {githubLinkError && <p className="text-red-500 text-xs mb-2">{githubLinkError}</p>}
+                                                {repoContext && repoContext.fromLink && (
+                                                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md">
+                                                        <p className="text-emerald-700 text-xs font-semibold flex items-center">
+                                                            <CheckCircle2 className="w-4 h-4 mr-1.5" />
+                                                            Codebase loaded successfully: {repoContext.repo} ({repoContext.branch})
+                                                        </p>
+                                                    </div>
+                                                )}
+                                                <p className="text-xs text-gray-500 mt-3">
+                                                    We'll fetch up to 40 key source files from the public repository to include in the AI analysis. Private repositories require OAuth connection using the button on the right.
+                                                </p>
                                             </div>
                                         )}
 

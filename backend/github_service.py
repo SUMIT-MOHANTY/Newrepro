@@ -119,17 +119,18 @@ async def list_repos(token: str, per_page: int = 30, page: int = 1) -> List[Dict
 
 
 async def get_repo_tree(
-    token: str, owner: str, repo: str, branch: str = "main"
+    token: Optional[str], owner: str, repo: str, branch: str = "main"
 ) -> List[Dict[str, Any]]:
     """Get the full file tree of a repository (recursive)."""
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{GITHUB_API_BASE}/repos/{owner}/{repo}/git/trees/{branch}",
             params={"recursive": "1"},
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-            },
+            headers=headers,
         )
         resp.raise_for_status()
         tree = resp.json().get("tree", [])
@@ -140,17 +141,18 @@ async def get_repo_tree(
 
 
 async def get_file_content(
-    token: str, owner: str, repo: str, path: str, branch: str = "main"
+    token: Optional[str], owner: str, repo: str, path: str, branch: str = "main"
 ) -> Optional[str]:
     """Fetch raw content of a single file from GitHub."""
+    headers = {"Accept": "application/vnd.github.raw+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{GITHUB_API_BASE}/repos/{owner}/{repo}/contents/{path}",
             params={"ref": branch},
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github.raw+json",
-            },
+            headers=headers,
         )
         if resp.status_code != 200:
             return None
@@ -178,7 +180,7 @@ def _should_include_file(path: str, size: int) -> bool:
 
 
 async def build_repo_context(
-    token: str, owner: str, repo: str, branch: str = "main"
+    token: Optional[str], owner: str, repo: str, branch: str = "main"
 ) -> str:
     """
     Build a text summary of the repository to feed into the AI model.
