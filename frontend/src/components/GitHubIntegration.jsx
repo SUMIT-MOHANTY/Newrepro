@@ -2,10 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { API_ENDPOINTS } from '../config';
 
 /**
- * GitHubIntegration – A card that lets users:
+ * GitHubIntegration – A card/inline widget that lets users:
  *  1. Connect / disconnect their GitHub account (OAuth)
  *  2. Browse & select a repository
  *  3. Fetch repo context and surface it for AI analysis
+ *
+ *  Props:
+ *    inline  – if true, renders as a compact button suitable for a tab bar
  */
 const GitHubIcon = ({ className = "w-5 h-5" }) => (
     <svg viewBox="0 0 98 96" xmlns="http://www.w3.org/2000/svg" className={className}>
@@ -15,7 +18,7 @@ const GitHubIcon = ({ className = "w-5 h-5" }) => (
     </svg>
 );
 
-const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo }) => {
+const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, inline = false }) => {
     const [connected, setConnected] = useState(false);
     const [githubUsername, setGithubUsername] = useState('');
     const [repos, setRepos] = useState([]);
@@ -55,7 +58,6 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo }) => 
             });
             if (!resp.ok) throw new Error('Failed to get auth URL');
             const data = await resp.json();
-            // Redirect to GitHub OAuth page
             window.location.href = data.url;
         } catch (e) {
             console.error('GitHub connect error:', e);
@@ -139,6 +141,122 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo }) => 
         r.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
         (r.description || '').toLowerCase().includes(searchFilter.toLowerCase())
     );
+
+    /* ═══════════════════════════════════════════════════════
+       INLINE MODE — compact button for tab bar
+       ═══════════════════════════════════════════════════════ */
+    if (inline) {
+        // Not connected — show compact "Connect GitHub" button
+        if (!connected) {
+            return (
+                <button
+                    type="button"
+                    onClick={handleConnect}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-all active:scale-95 border border-gray-200"
+                >
+                    <GitHubIcon className="w-3.5 h-3.5" />
+                    Connect GitHub
+                </button>
+            );
+        }
+
+        // Connected — show username + repo picker
+        return (
+            <div className="relative">
+                <div className="flex items-center gap-1.5">
+                    {/* Repo badge or picker trigger */}
+                    {selectedRepo ? (
+                        <button
+                            type="button"
+                            onClick={() => { setSelectedRepo(null); if (onClearRepo) onClearRepo(); setShowRepoList(false); }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 rounded-lg border border-emerald-200 hover:bg-emerald-100 transition-all max-w-[200px]"
+                            title={`${selectedRepo.full_name} — click to change`}
+                        >
+                            {fetchingContext ? (
+                                <span className="animate-spin inline-block w-3 h-3 border-2 border-emerald-600 border-t-transparent rounded-full"></span>
+                            ) : (
+                                <GitHubIcon className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                            )}
+                            <span className="truncate">{selectedRepo.name}</span>
+                            {repoContext && <span className="text-emerald-500 flex-shrink-0">✓</span>}
+                        </button>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={showRepoList ? () => setShowRepoList(false) : loadRepos}
+                            disabled={loadingRepos}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-gray-700 bg-gray-100 rounded-lg border border-gray-200 hover:bg-gray-200 transition-all disabled:opacity-50"
+                        >
+                            {loadingRepos ? (
+                                <span className="animate-spin inline-block w-3 h-3 border-2 border-gray-500 border-t-transparent rounded-full"></span>
+                            ) : (
+                                <GitHubIcon className="w-3.5 h-3.5 flex-shrink-0" />
+                            )}
+                            <span className="hidden sm:inline">@{githubUsername}</span>
+                            <span className="sm:hidden">Repo</span>
+                        </button>
+                    )}
+                    {/* Disconnect */}
+                    <button
+                        type="button"
+                        onClick={handleDisconnect}
+                        className="p-1 text-gray-400 hover:text-red-500 rounded hover:bg-red-50 transition-colors"
+                        title="Disconnect GitHub"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                </div>
+
+                {/* Floating repo dropdown */}
+                {showRepoList && (
+                    <div className="absolute right-0 top-full mt-2 w-80 border border-gray-200 rounded-xl overflow-hidden bg-white shadow-xl z-50">
+                        <div className="p-2 border-b border-gray-100">
+                            <input
+                                type="text"
+                                value={searchFilter}
+                                onChange={(e) => setSearchFilter(e.target.value)}
+                                placeholder="Search repositories..."
+                                className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                autoFocus
+                            />
+                        </div>
+                        <div className="max-h-56 overflow-y-auto">
+                            {filteredRepos.length === 0 ? (
+                                <p className="text-xs text-gray-400 p-4 text-center">No repositories found.</p>
+                            ) : (
+                                filteredRepos.map((repo) => (
+                                    <button
+                                        key={repo.id}
+                                        type="button"
+                                        onClick={() => handleSelectRepo(repo)}
+                                        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-blue-50 border-b border-gray-50 last:border-b-0 transition-colors"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="text-xs font-semibold text-gray-900 truncate">{repo.name}</p>
+                                            <p className="text-[11px] text-gray-500 truncate">
+                                                {repo.description || 'No description'}
+                                                {repo.language && ` • ${repo.language}`}
+                                                {repo.private && ' • 🔒'}
+                                            </p>
+                                        </div>
+                                        <span className="text-[10px] text-gray-400 flex-shrink-0">⭐ {repo.stargazers_count}</span>
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                        <div className="p-2 border-t border-gray-100 text-center">
+                            <button type="button" onClick={() => setShowRepoList(false)} className="text-xs text-gray-500 hover:text-gray-700 font-medium">Cancel</button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    /* ═══════════════════════════════════════════════════════
+       CARD MODE — full-width card (original layout)
+       ═══════════════════════════════════════════════════════ */
 
     // ─── Not Connected ───
     if (!connected) {

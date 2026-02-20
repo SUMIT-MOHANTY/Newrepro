@@ -1611,12 +1611,6 @@ const Dashboard = () => {
                                     </h2>
 
                                     <form onSubmit={handleUpload} className="space-y-6">
-                                        {/* GitHub Repo Integration */}
-                                        <GitHubIntegration
-                                            repoContext={repoContext}
-                                            onRepoContextReady={(ctx) => setRepoContext(ctx)}
-                                            onClearRepo={() => setRepoContext(null)}
-                                        />
 
                                         {selectedProject ? (
                                             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
@@ -1683,7 +1677,7 @@ const Dashboard = () => {
                                         )}
 
                                         {/* Tabs */}
-                                        <div className="flex border-b border-gray-200 mb-6 overflow-x-auto">
+                                        <div className="flex items-center border-b border-gray-200 mb-6 overflow-visible">
                                             <button
                                                 type="button"
                                                 onClick={() => setActiveTab('upload')}
@@ -1700,6 +1694,14 @@ const Dashboard = () => {
                                             >
                                                 Write Text
                                             </button>
+                                            <div className="ml-auto pb-2">
+                                                <GitHubIntegration
+                                                    inline
+                                                    repoContext={repoContext}
+                                                    onRepoContextReady={(ctx) => setRepoContext(ctx)}
+                                                    onClearRepo={() => setRepoContext(null)}
+                                                />
+                                            </div>
                                         </div>
 
                                         {activeTab === 'upload' ? (
