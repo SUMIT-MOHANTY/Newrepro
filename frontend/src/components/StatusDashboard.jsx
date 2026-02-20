@@ -13,12 +13,12 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
     };
 
     return (
-        <div className="w-full h-full bg-gray-50 flex flex-col font-sans overflow-y-auto relative">
+        <div className="w-full min-h-full bg-gray-50 flex flex-col font-sans overflow-y-auto relative">
             {/* Top Graphic Header Area */}
             <div className="bg-white shadow">
 
                 {/* Dashboard Title Bar */}
-                <div className="bg-[#1c355e] text-white px-4 md:px-8 py-3 flex justify-between items-center rounded-r-full mr-4 md:mr-[60px] my-2 mb-4 shadow-md">
+                <div className="bg-[#1c355e] text-white px-4 md:px-8 py-3 flex justify-between items-center mb-4 shadow-md">
                     <div className="flex items-center gap-4 z-10">
                         {!isSidebarOpen && onOpenSidebar && (
                             <button
