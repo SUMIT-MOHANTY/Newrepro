@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
 import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import ProjectDropdown from './ProjectDropdown';
 
 export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects = [] }) {
     const navigate = useNavigate();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
+    const [selectedProjectKey, setSelectedProjectKey] = useState(projects[0]?.key || null);
+
+    const selectedProject = projects.find(p => p.key === selectedProjectKey) || projects[0] || null;
 
     const handleCreateProject = () => {
         if (!newProjectName.trim()) return;
@@ -13,12 +17,12 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
     };
 
     return (
-        <div className="w-full h-full bg-gray-50 flex flex-col font-sans overflow-y-auto relative">
+        <div className="w-full min-h-full bg-gray-50 flex flex-col font-sans overflow-y-auto relative">
             {/* Top Graphic Header Area */}
             <div className="bg-white shadow">
 
                 {/* Dashboard Title Bar */}
-                <div className="bg-[#1c355e] text-white px-4 md:px-8 py-3 flex justify-between items-center rounded-r-full mr-4 md:mr-[60px] my-2 mb-4 shadow-md">
+                <div className="bg-[#1c355e] text-white px-4 md:px-8 py-3 flex justify-between items-center mb-4 shadow-md">
                     <div className="flex items-center gap-4 z-10">
                         {!isSidebarOpen && onOpenSidebar && (
                             <button
@@ -45,11 +49,19 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
                     </div>
                 </div>
 
-                <div className="flex justify-end px-8 py-1 mb-4 space-x-4">
-                    <div className="text-sm font-bold text-[#f27a24]">As of : February 06, 2026</div>
-                    <div className="text-sm font-bold text-gray-800 flex items-center">
-                        <div className="w-4 h-4 bg-emerald-500 mr-2 rounded-sm shadow-sm inline-block"></div>
-                        Overall: On Track
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-4 md:px-8 py-2 mb-2 gap-3">
+                    <ProjectDropdown
+                        projects={projects}
+                        selectedKey={selectedProjectKey}
+                        onSelect={(proj) => setSelectedProjectKey(proj.key)}
+                        className="w-full sm:w-72"
+                    />
+                    <div className="flex items-center space-x-4 flex-shrink-0">
+                        <div className="text-sm font-bold text-[#f27a24]">As of : {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })}</div>
+                        <div className="text-sm font-bold text-gray-800 flex items-center">
+                            <div className="w-4 h-4 bg-emerald-500 mr-2 rounded-sm shadow-sm inline-block"></div>
+                            Overall: On Track
+                        </div>
                     </div>
                 </div>
             </div>
