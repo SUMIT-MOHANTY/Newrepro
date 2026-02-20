@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     ai_api_key: Optional[str] = None
     ai_model: str = "moonshotai/kimi-k2.5"
 
+    # GitHub OAuth
+    github_client_id: Optional[str] = None
+    github_client_secret: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -12,6 +12,7 @@ import RoadmapHeader from '../components/RoadmapHeader';
 // import bourntecLogo from '../assets/bourntec_logo.png';
 import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
+import GitHubIntegration from '../components/GitHubIntegration';
 
 const parseAIResponse = (text) => {
     const source = String(text || '');
@@ -215,6 +216,7 @@ const Dashboard = () => {
     const [currentView, setCurrentView] = useState('statusDashboard');
     const [governanceContext, setGovernanceContext] = useState(null);
     const [roadmapData, setRoadmapData] = useState({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
+    const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
 
     const handleLogout = useCallback(() => {
@@ -832,7 +834,9 @@ const Dashboard = () => {
             // Step 2: Analyze with AI
             if (analyzeWithAi) {
                 const aiPayload = {
-                    document_content: extractedMarkdown,
+                    document_content: repoContext
+                        ? `${extractedMarkdown}\n\n${repoContext.context}`
+                        : extractedMarkdown,
                     api_url: aiConfig?.apiUrl || undefined,
                     api_key: aiConfig?.apiKey || undefined,
                     model: aiConfig?.model || undefined,
@@ -1051,7 +1055,9 @@ const Dashboard = () => {
 
         const token = localStorage.getItem('token');
         const aiPayload = {
-            document_content: result.extraction.markdown,
+            document_content: repoContext
+                ? `${result.extraction.markdown}\n\n${repoContext.context}`
+                : result.extraction.markdown,
             api_url: aiConfig?.apiUrl || undefined,
             api_key: aiConfig?.apiKey || undefined,
             model: aiConfig?.model || undefined,
@@ -1432,6 +1438,7 @@ const Dashboard = () => {
 
     const handleSelectProject = (project) => {
         if (!project) return;
+        setCurrentView('main');
         setSelectedProjectKey(project.key);
         setIsSidebarOpen(false);
     };
@@ -1588,6 +1595,13 @@ const Dashboard = () => {
                                     </h2>
 
                                     <form onSubmit={handleUpload} className="space-y-6">
+                                        {/* GitHub Repo Integration */}
+                                        <GitHubIntegration
+                                            repoContext={repoContext}
+                                            onRepoContextReady={(ctx) => setRepoContext(ctx)}
+                                            onClearRepo={() => setRepoContext(null)}
+                                        />
+
                                         {selectedProject ? (
                                             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                                                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

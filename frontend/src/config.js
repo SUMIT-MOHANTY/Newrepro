@@ -26,6 +26,14 @@ export const API_ENDPOINTS = {
     GOVERNANCE_RESULT: (id) => `${API_BASE_URL}/governance/result/${id}`,
     GOVERNANCE_REVISION_REASON: (id) => `${API_BASE_URL}/governance/${id}/revision-reason`,
     GOVERNANCE_ROADMAP_STEP: (id) => `${API_BASE_URL}/governance/${id}/roadmap-step`,
+
+    // GitHub
+    GITHUB_AUTH_URL: `${API_BASE_URL}/github/auth-url`,
+    GITHUB_CALLBACK: `${API_BASE_URL}/github/callback`,
+    GITHUB_STATUS: `${API_BASE_URL}/github/status`,
+    GITHUB_DISCONNECT: `${API_BASE_URL}/github/disconnect`,
+    GITHUB_REPOS: `${API_BASE_URL}/github/repos`,
+    GITHUB_REPO_CONTEXT: `${API_BASE_URL}/github/repo-context`,
 };
 
 export default {

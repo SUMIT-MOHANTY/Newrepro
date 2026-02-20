@@ -1,0 +1,288 @@
+import { useState, useEffect, useCallback } from 'react';
+import { API_ENDPOINTS } from '../config';
+
+/**
+ * GitHubIntegration – A card that lets users:
+ *  1. Connect / disconnect their GitHub account (OAuth)
+ *  2. Browse & select a repository
+ *  3. Fetch repo context and surface it for AI analysis
+ */
+const GitHubIcon = ({ className = "w-5 h-5" }) => (
+    <svg viewBox="0 0 98 96" xmlns="http://www.w3.org/2000/svg" className={className}>
+        <path fillRule="evenodd" clipRule="evenodd"
+            d="M48.854 0C21.839 0 0 22 0 49.217c0 21.756 13.993 40.172 33.405 46.69 2.427.49 3.316-1.059 3.316-2.362 0-1.141-.08-5.052-.08-9.127-13.59 2.934-16.42-5.867-16.42-5.867-2.184-5.704-5.42-7.17-5.42-7.17-4.448-3.015.324-3.015.324-3.015 4.934.326 7.523 5.052 7.523 5.052 4.367 7.496 11.404 5.378 14.235 4.074.404-3.178 1.699-5.378 3.074-6.6-10.839-1.141-22.243-5.378-22.243-24.283 0-5.378 1.94-9.778 5.014-13.2-.485-1.222-2.184-6.275.486-13.038 0 0 4.125-1.304 13.426 5.052a46.97 46.97 0 0 1 12.214-1.63c4.125 0 8.33.571 12.213 1.63 9.302-6.356 13.427-5.052 13.427-5.052 2.67 6.763.97 11.816.485 13.038 3.155 3.422 5.015 7.822 5.015 13.2 0 18.905-11.404 23.06-22.324 24.283 1.78 1.548 3.316 4.481 3.316 9.126 0 6.6-.08 11.897-.08 13.526 0 1.304.89 2.853 3.316 2.364 19.412-6.52 33.405-24.935 33.405-46.691C97.707 22 75.788 0 48.854 0z"
+            fill="currentColor" />
+    </svg>
+);
+
+const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo }) => {
+    const [connected, setConnected] = useState(false);
+    const [githubUsername, setGithubUsername] = useState('');
+    const [repos, setRepos] = useState([]);
+    const [loadingRepos, setLoadingRepos] = useState(false);
+    const [selectedRepo, setSelectedRepo] = useState(null);
+    const [fetchingContext, setFetchingContext] = useState(false);
+    const [showRepoList, setShowRepoList] = useState(false);
+    const [searchFilter, setSearchFilter] = useState('');
+
+    const getToken = () => localStorage.getItem('token');
+
+    // Check GitHub connection on mount
+    const checkStatus = useCallback(async () => {
+        try {
+            const resp = await fetch(API_ENDPOINTS.GITHUB_STATUS, {
+                headers: { Authorization: `Bearer ${getToken()}` },
+            });
+            if (resp.ok) {
+                const data = await resp.json();
+                setConnected(data.connected);
+                setGithubUsername(data.github_username || '');
+            }
+        } catch (e) {
+            console.warn('GitHub status check failed:', e);
+        }
+    }, []);
+
+    useEffect(() => {
+        checkStatus();
+    }, [checkStatus]);
+
+    // Connect to GitHub via OAuth
+    const handleConnect = async () => {
+        try {
+            const resp = await fetch(API_ENDPOINTS.GITHUB_AUTH_URL, {
+                headers: { Authorization: `Bearer ${getToken()}` },
+            });
+            if (!resp.ok) throw new Error('Failed to get auth URL');
+            const data = await resp.json();
+            // Redirect to GitHub OAuth page
+            window.location.href = data.url;
+        } catch (e) {
+            console.error('GitHub connect error:', e);
+        }
+    };
+
+    // Disconnect from GitHub
+    const handleDisconnect = async () => {
+        try {
+            await fetch(API_ENDPOINTS.GITHUB_DISCONNECT, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${getToken()}` },
+            });
+            setConnected(false);
+            setGithubUsername('');
+            setRepos([]);
+            setSelectedRepo(null);
+            setShowRepoList(false);
+            if (onClearRepo) onClearRepo();
+        } catch (e) {
+            console.error('Disconnect error:', e);
+        }
+    };
+
+    // Load repos list
+    const loadRepos = async () => {
+        setLoadingRepos(true);
+        try {
+            const resp = await fetch(API_ENDPOINTS.GITHUB_REPOS, {
+                headers: { Authorization: `Bearer ${getToken()}` },
+            });
+            if (!resp.ok) throw new Error('Failed to fetch repos');
+            const data = await resp.json();
+            setRepos(data.repos || []);
+            setShowRepoList(true);
+        } catch (e) {
+            console.error('Load repos error:', e);
+        } finally {
+            setLoadingRepos(false);
+        }
+    };
+
+    // Fetch repo context for AI
+    const handleSelectRepo = async (repo) => {
+        setSelectedRepo(repo);
+        setShowRepoList(false);
+        setFetchingContext(true);
+        try {
+            const [owner, repoName] = repo.full_name.split('/');
+            const resp = await fetch(API_ENDPOINTS.GITHUB_REPO_CONTEXT, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${getToken()}`,
+                },
+                body: JSON.stringify({
+                    owner,
+                    repo: repoName,
+                    branch: repo.default_branch || 'main',
+                }),
+            });
+            if (!resp.ok) throw new Error('Failed to build repo context');
+            const data = await resp.json();
+            if (onRepoContextReady) {
+                onRepoContextReady({
+                    repo: repo.full_name,
+                    branch: repo.default_branch || 'main',
+                    context: data.context,
+                    language: repo.language,
+                    description: repo.description,
+                });
+            }
+        } catch (e) {
+            console.error('Repo context error:', e);
+        } finally {
+            setFetchingContext(false);
+        }
+    };
+
+    const filteredRepos = repos.filter(r =>
+        r.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
+        (r.description || '').toLowerCase().includes(searchFilter.toLowerCase())
+    );
+
+    // ─── Not Connected ───
+    if (!connected) {
+        return (
+            <div className="rounded-xl border border-gray-200 bg-white p-4 hover:shadow-md transition-shadow">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 bg-gray-900 rounded-lg">
+                            <GitHubIcon className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                            <p className="text-sm font-semibold text-gray-900">GitHub Repository</p>
+                            <p className="text-xs text-gray-500">Connect to enhance AI analysis with your codebase</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={handleConnect}
+                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gray-900 rounded-lg hover:bg-gray-800 transition-all active:scale-95 shadow-sm"
+                    >
+                        <GitHubIcon className="w-4 h-4" />
+                        Connect GitHub
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    // ─── Connected ───
+    return (
+        <div className="rounded-xl border border-gray-200 bg-white p-4 hover:shadow-md transition-shadow">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                    <div className="p-2 bg-gray-900 rounded-lg relative">
+                        <GitHubIcon className="w-5 h-5 text-white" />
+                        <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white"></div>
+                    </div>
+                    <div>
+                        <p className="text-sm font-semibold text-gray-900">GitHub Connected</p>
+                        <p className="text-xs text-gray-500">@{githubUsername}</p>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    {!showRepoList && !selectedRepo && (
+                        <button
+                            onClick={loadRepos}
+                            disabled={loadingRepos}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 rounded-lg hover:bg-blue-100 transition-all disabled:opacity-50"
+                        >
+                            {loadingRepos ? (
+                                <span className="animate-spin inline-block w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full"></span>
+                            ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                            )}
+                            Select Repo
+                        </button>
+                    )}
+                    <button
+                        onClick={handleDisconnect}
+                        className="p-1.5 text-gray-400 hover:text-red-500 rounded-md hover:bg-red-50 transition-colors"
+                        title="Disconnect GitHub"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                    </button>
+                </div>
+            </div>
+
+            {/* Selected Repo Badge */}
+            {selectedRepo && !showRepoList && (
+                <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-lg p-3 mt-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></div>
+                        <div className="min-w-0">
+                            <p className="text-xs font-semibold text-emerald-900 truncate">{selectedRepo.full_name}</p>
+                            <p className="text-[11px] text-emerald-700">
+                                {selectedRepo.language && `${selectedRepo.language} • `}
+                                {selectedRepo.default_branch}
+                                {repoContext ? ' • Context loaded ✓' : ''}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {fetchingContext && (
+                            <span className="animate-spin inline-block w-4 h-4 border-2 border-emerald-600 border-t-transparent rounded-full"></span>
+                        )}
+                        <button
+                            onClick={() => { setSelectedRepo(null); if (onClearRepo) onClearRepo(); setShowRepoList(false); }}
+                            className="text-xs text-emerald-700 hover:text-emerald-900 font-medium"
+                        >
+                            Change
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Repo List Dropdown */}
+            {showRepoList && (
+                <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                    <div className="p-2 border-b border-gray-200">
+                        <input
+                            type="text"
+                            value={searchFilter}
+                            onChange={(e) => setSearchFilter(e.target.value)}
+                            placeholder="Search repositories..."
+                            className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                            autoFocus
+                        />
+                    </div>
+                    <div className="max-h-56 overflow-y-auto">
+                        {filteredRepos.length === 0 ? (
+                            <p className="text-xs text-gray-400 p-4 text-center">No repositories found.</p>
+                        ) : (
+                            filteredRepos.map((repo) => (
+                                <button
+                                    key={repo.id}
+                                    onClick={() => handleSelectRepo(repo)}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-blue-50 border-b border-gray-100 last:border-b-0 transition-colors"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-xs font-semibold text-gray-900 truncate">{repo.name}</p>
+                                        <p className="text-[11px] text-gray-500 truncate">
+                                            {repo.description || 'No description'}
+                                            {repo.language && ` • ${repo.language}`}
+                                            {repo.private && ' • 🔒 Private'}
+                                        </p>
+                                    </div>
+                                    <span className="text-[10px] text-gray-400 flex-shrink-0">⭐ {repo.stargazers_count}</span>
+                                </button>
+                            ))
+                        )}
+                    </div>
+                    <div className="p-2 border-t border-gray-200 text-center">
+                        <button
+                            onClick={() => setShowRepoList(false)}
+                            className="text-xs text-gray-500 hover:text-gray-700 font-medium"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default GitHubIntegration;

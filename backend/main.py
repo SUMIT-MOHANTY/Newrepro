@@ -14,6 +14,7 @@ import schemas
 import ingestion
 import ai_service
 import governance_scoring
+import github_service
 from database import engine, get_db
 from config import settings
 
@@ -658,3 +659,126 @@ def _generate_recommendation(scoring_result: dict, answers: dict) -> str:
         recommendation += f"- {dimension}: {score}/10\n"
     
     return recommendation
+
+
+# ─────────────────────────────── GitHub Integration ──────────────────────────
+
+@app.get("/github/auth-url")
+async def github_auth_url(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Return the GitHub OAuth authorization URL."""
+    try:
+        url = github_service.get_oauth_url(state=str(current_user.id))
+        return {"url": url}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class GitHubCallbackPayload(BaseModel):
+    code: str
+
+
+@app.post("/github/callback")
+async def github_callback(
+    payload: GitHubCallbackPayload,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Exchange an OAuth code for a GitHub access token and persist it
+    on the current user.
+    """
+    try:
+        token_data = await github_service.exchange_code_for_token(payload.code)
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=400, detail="Failed to obtain GitHub token")
+
+        # Fetch GitHub username
+        gh_user = await github_service.get_github_user(access_token)
+        github_username = gh_user.get("login", "")
+
+        # Store on user record
+        current_user.github_token = access_token
+        current_user.github_username = github_username
+        db.commit()
+
+        return {
+            "status": "connected",
+            "github_username": github_username,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GitHub OAuth error: {e}")
+
+
+@app.get("/github/status")
+async def github_status(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Check whether the user has connected their GitHub account."""
+    return {
+        "connected": bool(current_user.github_token),
+        "github_username": current_user.github_username or None,
+    }
+
+
+@app.post("/github/disconnect")
+async def github_disconnect(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove the stored GitHub token."""
+    current_user.github_token = None
+    current_user.github_username = None
+    db.commit()
+    return {"status": "disconnected"}
+
+
+@app.get("/github/repos")
+async def github_repos(
+    current_user: models.User = Depends(auth.get_current_user),
+    page: int = 1,
+    per_page: int = 30,
+):
+    """List the authenticated user's GitHub repositories."""
+    if not current_user.github_token:
+        raise HTTPException(status_code=400, detail="GitHub not connected")
+    try:
+        repos = await github_service.list_repos(
+            current_user.github_token, per_page=per_page, page=page
+        )
+        return {"repos": repos}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch repos: {e}")
+
+
+class RepoContextRequest(BaseModel):
+    owner: str
+    repo: str
+    branch: str = "main"
+
+
+@app.post("/github/repo-context")
+async def github_repo_context(
+    payload: RepoContextRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch repository source code and return a structured text context
+    suitable for feeding into the AI model alongside the BRD.
+    """
+    if not current_user.github_token:
+        raise HTTPException(status_code=400, detail="GitHub not connected")
+    try:
+        context = await github_service.build_repo_context(
+            current_user.github_token,
+            payload.owner,
+            payload.repo,
+            payload.branch,
+        )
+        return {"context": context, "repo": f"{payload.owner}/{payload.repo}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
