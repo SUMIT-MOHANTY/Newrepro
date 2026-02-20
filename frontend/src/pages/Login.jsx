@@ -37,7 +37,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
             const data = await response.json();
             localStorage.setItem('token', data.access_token);
-            finishNavigate('/governance');
+            finishNavigate('/dashboard');
         } catch {
             setError('Invalid email or password. Please try again.');
         } finally {
