@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic[email]
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+docling[vlm]
+httpx
+numpy<2.0.0
+argon2-cffi
+Pillow==10.4.0

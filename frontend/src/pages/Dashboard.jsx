@@ -1,0 +1,2003 @@
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { API_ENDPOINTS } from '../config';
+import { clearAuthData } from '../utils/auth';
+import DOMPurify from 'dompurify';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X } from 'lucide-react';
+import { jsPDF } from 'jspdf';
+import AIConfig from '../components/AIConfig';
+import bourntecLogo from '../assets/bourntec_logo.png';
+
+const parseAIResponse = (text) => {
+    const source = String(text || '');
+
+    const hasExpectedShape = (obj) => obj && typeof obj === 'object' && !Array.isArray(obj)
+        && ('questions' in obj || 'metrics' in obj || 'title' in obj);
+
+    const tryParseObject = (value) => {
+        try {
+            const parsed = JSON.parse(value);
+            return hasExpectedShape(parsed) ? parsed : null;
+        } catch {
+            return null;
+        }
+    };
+
+    // 1) Try fenced blocks first: ```json ... ``` or ``` ... ```
+    const fencedRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+    let fencedMatch;
+    let lastValidFenced = null;
+    let lastJsonLikeFence = null;
+    while ((fencedMatch = fencedRegex.exec(source)) !== null) {
+        const inner = fencedMatch[1].trim();
+        if (inner.startsWith('{') && inner.endsWith('}')) {
+            lastJsonLikeFence = { fullMatch: fencedMatch[0], index: fencedMatch.index };
+        }
+        const parsed = tryParseObject(inner);
+        if (parsed) {
+            lastValidFenced = { parsed, fullMatch: fencedMatch[0], index: fencedMatch.index };
+        }
+    }
+
+    if (lastValidFenced) {
+        const before = source.slice(0, lastValidFenced.index);
+        const after = source.slice(lastValidFenced.index + lastValidFenced.fullMatch.length);
+        const report = `${before}${after}`.trim();
+        return {
+            report,
+            questions: lastValidFenced.parsed.questions || [],
+            metrics: lastValidFenced.parsed.metrics || null,
+            title: lastValidFenced.parsed.title || null
+        };
+    }
+
+    // If we got a fenced JSON-like block but parsing failed, still strip it from the report text.
+    if (lastJsonLikeFence) {
+        const before = source.slice(0, lastJsonLikeFence.index);
+        const after = source.slice(lastJsonLikeFence.index + lastJsonLikeFence.fullMatch.length);
+        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null };
+    }
+
+    // 2) Fallback: parse trailing raw JSON object without fences
+    const trimmed = source.trim().replace(/```+\s*$/g, '').trim();
+    for (let i = trimmed.lastIndexOf('{'); i >= 0; i = trimmed.lastIndexOf('{', i - 1)) {
+        const candidate = trimmed.slice(i).trim();
+        const parsed = tryParseObject(candidate);
+        if (parsed) {
+            const report = trimmed.slice(0, i).trim();
+            return {
+                report,
+                questions: parsed.questions || [],
+                metrics: parsed.metrics || null,
+                title: parsed.title || null
+            };
+        }
+    }
+
+    return { report: source, questions: [], metrics: null, title: null };
+};
+
+const isLikelyHtml = (content = '') => {
+    const htmlTagPattern = /<\/?(?:!doctype|html|head|body|p|div|h[1-6]|ul|ol|li|table|thead|tbody|tr|td|th|strong|em|span|br|hr|blockquote|img|a|section|article|pre|code)\b/i;
+    return htmlTagPattern.test(content);
+};
+
+const sanitizeHtml = (content = '') => DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
+
+const normalizeProjectName = (name = '') => String(name || '').trim().toLowerCase();
+
+const normalizeDimensionScores = (dimensionScores = {}) => ({
+    "Business Value & Urgency": dimensionScores["Business Value & Urgency"] ?? dimensionScores.business_value ?? 0,
+    "Data Sensitivity": dimensionScores["Data Sensitivity"] ?? dimensionScores.data_sensitivity ?? 0,
+    "Integration & Architecture Complexity": dimensionScores["Integration & Architecture Complexity"] ?? dimensionScores.integration_complexity ?? 0,
+    "Operational Impact": dimensionScores["Operational Impact"] ?? dimensionScores.operational_impact ?? 0,
+    "AI Risk": dimensionScores["AI Risk"] ?? dimensionScores.ai_risk ?? 0,
+    "Ownership & Support": dimensionScores["Ownership & Support"] ?? dimensionScores.ownership ?? 0,
+});
+
+const fallbackClassificationDescription = (classification) => {
+    if (classification === 'SANDBOX') return 'Sandbox Approved - Low governance required';
+    if (classification === 'CONTROLLED_SANDBOX') return 'Controlled Sandbox (Fusion) - Standard template required';
+    if (classification === 'ENTERPRISE') return 'Enterprise Build - Full IT oversight required';
+    return 'Governance classification unavailable';
+};
+
+const buildGovernanceContextFromResult = (resultData) => {
+    const normalizedDimensionScores = normalizeDimensionScores(resultData?.dimension_scores || {});
+    const formattedAnswers = Array.isArray(resultData?.answers)
+        ? resultData.answers.map((answer) => ({
+            question_id: answer.question_id,
+            score: answer.score,
+            selected_option: answer.selected_option || '',
+        }))
+        : [];
+
+    return {
+        project_name: resultData?.project_name || '',
+        result_id: resultData?.id || null,
+        submission_date: resultData?.submission_date,
+        classification: resultData?.classification,
+        classification_description: resultData?.classification_description || fallbackClassificationDescription(resultData?.classification),
+        weighted_score: resultData?.weighted_score,
+        recommendation: resultData?.recommendation,
+        hard_stops: resultData?.hard_stops || [],
+        answers: formattedAnswers,
+        dimension_scores: normalizedDimensionScores,
+    };
+};
+
+const getProjectSidebarSubtitle = (project) => {
+    const latestDoc = project?.latestDocument;
+    if (!latestDoc) return 'No file uploaded yet';
+
+    const filename = String(latestDoc.filename || '').trim();
+    if (filename) {
+        return filename;
+    }
+
+    return `Revision ${project?.latestRevision || 1}`;
+};
+
+
+
+const Dashboard = () => {
+    const [user, setUser] = useState(null);
+    const [aiConfig, setAiConfig] = useState({
+        apiUrl: '',
+        apiKey: '',
+        model: ''
+    });
+    const [analyzeWithAi] = useState(true);
+    const navigate = useNavigate();
+
+    const [streamResponse] = useState(true);
+
+    const [history, setHistory] = useState([]);
+    const [governanceHistory, setGovernanceHistory] = useState([]);
+    const [projects, setProjects] = useState([]);
+    const [selectedProjectKey, setSelectedProjectKey] = useState('');
+    const [showSettings, setShowSettings] = useState(false);
+
+    // -- Per-Project State Management --
+    const [projectStates, setProjectStates] = useState({});
+
+    const getProjectState = (key) => {
+        const state = projectStates[key] || {
+            files: [], textInput: '', activeTab: 'upload', processing: false,
+            result: null, error: '', userFeedback: '', aiQuestions: [],
+            userAnswers: {}, revisionUnlocked: false, revisionReason: '',
+            progress: 0, progressMessage: ''
+        };
+
+        const proj = projects.find(p => p.key === key);
+        if (proj?.pendingRevisionReason) {
+            return {
+                ...state,
+                revisionUnlocked: true,
+                revisionReason: proj.pendingRevisionReason
+            };
+        }
+
+        return state;
+    };
+
+    const setProjectState = (key, updater) => {
+        setProjectStates(prev => {
+            const current = prev[key] || getProjectState(key);
+            const next = typeof updater === 'function' ? updater(current) : { ...current, ...updater };
+
+            return { ...prev, [key]: next };
+        });
+    };
+
+    const activeState = getProjectState(selectedProjectKey);
+    const {
+        files, textInput, activeTab, processing, result, error,
+        userFeedback, aiQuestions, userAnswers, revisionUnlocked,
+        revisionReason, progress, progressMessage
+    } = activeState;
+
+    // Helpers to update active project state from UI components natively 
+    const setFiles = (v) => setProjectState(selectedProjectKey, { files: typeof v === 'function' ? v(activeState.files) : v });
+    const setTextInput = (v) => setProjectState(selectedProjectKey, { textInput: typeof v === 'function' ? v(activeState.textInput) : v });
+    const setActiveTab = (v) => setProjectState(selectedProjectKey, { activeTab: typeof v === 'function' ? v(activeState.activeTab) : v });
+    const setError = (v) => setProjectState(selectedProjectKey, { error: typeof v === 'function' ? v(activeState.error) : v });
+    const setUserFeedback = (v) => setProjectState(selectedProjectKey, { userFeedback: typeof v === 'function' ? v(activeState.userFeedback) : v });
+    const setUserAnswers = (v) => setProjectState(selectedProjectKey, { userAnswers: typeof v === 'function' ? v(activeState.userAnswers) : v });
+
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const [governanceContext, setGovernanceContext] = useState(null);
+    const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
+
+    const handleLogout = useCallback(() => {
+        setIsSidebarOpen(false);
+        clearAuthData();
+        navigate('/login');
+    }, [navigate]);
+    const location = useLocation();
+
+    // Fetch history
+    const fetchHistory = useCallback(async () => {
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(API_ENDPOINTS.HISTORY, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            if (res.status === 401) {
+                handleLogout();
+                return;
+            }
+            if (res.ok) setHistory(await res.json());
+        } catch (e) {
+            console.error('History fetch failed', e);
+        }
+    }, [handleLogout]);
+
+    const fetchGovernanceHistory = useCallback(async () => {
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(API_ENDPOINTS.GOVERNANCE_HISTORY, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            if (res.status === 401) {
+                handleLogout();
+                return;
+            }
+            if (res.ok) {
+                const payload = await res.json();
+                setGovernanceHistory(Array.isArray(payload?.submissions) ? payload.submissions : []);
+            }
+        } catch (e) {
+            console.error('Governance history fetch failed', e);
+        }
+    }, [handleLogout]);
+
+    const persistGovernanceContext = useCallback((context) => {
+        if (!context) return;
+        const serializedContext = JSON.stringify(context);
+        const serializedResult = JSON.stringify({
+            id: context.result_id,
+            project_name: context.project_name,
+            submission_date: context.submission_date,
+            classification: context.classification,
+            classification_description: context.classification_description,
+            weighted_score: context.weighted_score,
+            recommendation: context.recommendation,
+            hard_stops: context.hard_stops || [],
+            dimension_scores: context.dimension_scores || {},
+        });
+        sessionStorage.setItem('governanceContext', serializedContext);
+        sessionStorage.setItem('governanceResult', serializedResult);
+        localStorage.setItem('governanceContext', serializedContext);
+        localStorage.setItem('governanceResult', serializedResult);
+    }, []);
+
+    const extractProjectMetaFromDocument = useCallback((doc) => {
+        let parsedAnalysis = null;
+        try {
+            parsedAnalysis = doc?.analysis_result ? JSON.parse(doc.analysis_result) : null;
+        } catch {
+            parsedAnalysis = null;
+        }
+
+        const governanceMeta = parsedAnalysis?.governanceContext || {};
+        const projectMeta = parsedAnalysis?.projectMeta || {};
+        const projectName = projectMeta.project_name || governanceMeta.project_name || 'Unassigned Project';
+        const governanceResultId = projectMeta.governance_result_id || governanceMeta.result_id || null;
+        const revisionReason = projectMeta.revision_reason || null;
+        const revisionNumber = projectMeta.revision_number || null;
+
+        return {
+            parsedAnalysis,
+            projectName,
+            governanceResultId,
+            revisionReason,
+            revisionNumber,
+        };
+    }, []);
+
+    // Save history
+    const saveToHistory = async (newResult, taskKey = selectedProjectKey) => {
+        if (!newResult?.filename) return;
+
+        try {
+            const token = localStorage.getItem('token');
+            const nextRevisionNumber = ((projects.find(p => p.key === taskKey)?.documents?.length) || 0) + 1;
+            const storedAnalysis = {
+                ...(newResult.analysis || {}),
+                governanceContext: governanceContext || null,
+                projectMeta: {
+                    project_name: (projects.find(p => p.key === taskKey)?.name) || governanceContext?.project_name || 'Project',
+                    governance_result_id: governanceContext?.result_id || (projects.find(p => p.key === taskKey)?.governanceResultId) || null,
+                    revision_number: nextRevisionNumber,
+                    revision_reason: revisionReason || null,
+                }
+            };
+
+            const res = await fetch(API_ENDPOINTS.HISTORY, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    filename: newResult.filename,
+                    content_preview: newResult.extraction?.markdown?.substring(0, 200) + '...',
+                    full_content: newResult.extraction?.markdown,
+                    analysis_result: JSON.stringify(storedAnalysis)
+                })
+            });
+
+            if (res.status === 401) {
+                handleLogout();
+                return;
+            }
+
+            if (res.ok) {
+                const savedDoc = await res.json();
+                setProjectState(taskKey, prev => ({ result: { ...prev.result, id: savedDoc.id }, revisionUnlocked: false, revisionReason: '' }));
+                fetchHistory(); // refresh sidebar
+
+
+            }
+        } catch (e) {
+            console.error('History save failed', e);
+        }
+    };
+
+    useEffect(() => {
+        const token = localStorage.getItem('token');
+        if (!token) {
+            navigate('/login');
+            return;
+        }
+
+        // Check if governance is completed and passed
+        // First check sessionStorage (from current session), then localStorage (from previous sessions)
+        let governanceResult = sessionStorage.getItem('governanceResult');
+        let governanceContext = sessionStorage.getItem('governanceContext');
+
+        // If not in sessionStorage, check localStorage
+        if (!governanceResult || !governanceContext) {
+            governanceResult = localStorage.getItem('governanceResult');
+            governanceContext = localStorage.getItem('governanceContext');
+        }
+
+        if (governanceResult && governanceContext) {
+            try {
+                const parsedResult = JSON.parse(governanceResult);
+                const parsedContext = JSON.parse(governanceContext);
+
+                if (parsedResult.classification === 'ENTERPRISE') {
+                    localStorage.removeItem('governancePassed');
+                } else {
+                    localStorage.setItem('governancePassed', 'true');
+                }
+
+                // Ensure latest governance context is stored in both sessionStorage and localStorage
+                localStorage.setItem('governanceResult', governanceResult);
+                localStorage.setItem('governanceContext', governanceContext);
+                sessionStorage.setItem('governanceResult', governanceResult);
+                sessionStorage.setItem('governanceContext', governanceContext);
+
+                // Set governance context state
+                setGovernanceContext(parsedContext);
+            } catch (err) {
+                console.error('Error parsing governance data:', err);
+                localStorage.removeItem('governancePassed');
+                localStorage.removeItem('governanceResult');
+                localStorage.removeItem('governanceContext');
+                sessionStorage.removeItem('governanceResult');
+                sessionStorage.removeItem('governanceContext');
+                setGovernanceContext(null);
+            }
+        } else {
+            setGovernanceContext(null);
+        }
+
+        // Fetch current user
+        fetch(API_ENDPOINTS.USERS_ME, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        })
+            .then(res => {
+                if (!res.ok) throw new Error('Unauthorized');
+                return res.json();
+            })
+            .then(data => setUser(data))
+            .catch(() => {
+                handleLogout();
+            });
+
+        // Fetch server default AI config
+        fetch(API_ENDPOINTS.AI_CONFIG, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        })
+            .then(res => {
+                if (res.status === 401) {
+                    handleLogout();
+                    throw new Error('Unauthorized');
+                }
+                return res.ok ? res.json() : null;
+            })
+            .then(data => {
+                if (data) {
+                    setAiConfig({
+                        apiUrl: data.api_url || '',
+                        apiKey: '',
+                        model: data.model || ''
+                    });
+                }
+            })
+            .catch(err => {
+                if (err.message !== 'Unauthorized') {
+                    console.error("Failed to load AI config", err);
+                }
+            });
+        fetchHistory();
+        fetchGovernanceHistory();
+    }, [navigate, fetchHistory, fetchGovernanceHistory, handleLogout]);
+
+    const loadGovernanceContextForProject = useCallback(async (resultId) => {
+        if (!resultId) return;
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch(API_ENDPOINTS.GOVERNANCE_RESULT(resultId), {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            if (!response.ok) {
+                if (response.status === 401) {
+                    handleLogout();
+                }
+                return;
+            }
+            const governanceResult = await response.json();
+            const context = buildGovernanceContextFromResult(governanceResult);
+            setGovernanceContext(context);
+            persistGovernanceContext(context);
+        } catch (e) {
+            console.error('Failed to load governance context for project', e);
+        }
+    }, [handleLogout, persistGovernanceContext]);
+
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const requestedTab = params.get('tab');
+        if (requestedTab === 'upload' || requestedTab === 'text') {
+            setActiveTab(requestedTab);
+        }
+
+        const governanceId = params.get('governance');
+        if (governanceId) {
+            setSelectedProjectKey(String(governanceId));
+        }
+        const storedGovernance = sessionStorage.getItem('governanceContext');
+        if (!storedGovernance) {
+            setGovernanceContext(null);
+            return;
+        }
+
+        try {
+            const parsedGovernance = JSON.parse(storedGovernance);
+            if (!governanceId || String(parsedGovernance?.result_id || '') === governanceId) {
+                setGovernanceContext(parsedGovernance);
+            } else {
+                setGovernanceContext(null);
+            }
+        } catch (e) {
+            console.warn('Failed to parse governance context from sessionStorage', e);
+            sessionStorage.removeItem('governanceContext');
+            setGovernanceContext(null);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [location.search]);
+
+    useEffect(() => {
+        const projectMap = new Map();
+        const sortedGovernance = [...governanceHistory].sort(
+            (a, b) => new Date(b.submission_date || 0).getTime() - new Date(a.submission_date || 0).getTime()
+        );
+
+        sortedGovernance.forEach((submission) => {
+            const key = String(submission.id);
+            projectMap.set(key, {
+                key,
+                governanceResultId: submission.id,
+                name: submission.project_name || `Project #${submission.id}`,
+                classification: submission.classification || 'N/A',
+                weightedScore: submission.weighted_score ?? null,
+                submissionDate: submission.submission_date || null,
+                documents: [],
+                latestDocument: null,
+                latestRevision: 0,
+                status: 'ready_for_upload',
+                pendingRevisionReason: submission.pending_revision_reason || null,
+            });
+        });
+
+        const sortedDocuments = [...history].sort(
+            (a, b) => new Date(b.upload_date || 0).getTime() - new Date(a.upload_date || 0).getTime()
+        );
+
+        sortedDocuments.forEach((doc) => {
+            const meta = extractProjectMetaFromDocument(doc);
+            let targetKey = meta.governanceResultId ? String(meta.governanceResultId) : null;
+
+            if (!targetKey || !projectMap.has(targetKey)) {
+                const matchedByName = Array.from(projectMap.values()).find(
+                    (project) => normalizeProjectName(project.name) === normalizeProjectName(meta.projectName)
+                );
+                if (matchedByName) {
+                    targetKey = matchedByName.key;
+                }
+            }
+
+            if (!targetKey || !projectMap.has(targetKey)) {
+                targetKey = meta.governanceResultId ? String(meta.governanceResultId) : `doc-${doc.id}`;
+                if (!projectMap.has(targetKey)) {
+                    projectMap.set(targetKey, {
+                        key: targetKey,
+                        governanceResultId: meta.governanceResultId || null,
+                        name: meta.projectName,
+                        classification: 'N/A',
+                        weightedScore: null,
+                        submissionDate: null,
+                        documents: [],
+                        latestDocument: null,
+                        latestRevision: 0,
+                        status: 'ready_for_upload',
+                    });
+                }
+            }
+
+            const project = projectMap.get(targetKey);
+            project.documents.push(doc);
+            if (!project.latestDocument) {
+                project.latestDocument = doc;
+            }
+        });
+
+        const builtProjects = Array.from(projectMap.values())
+            .map((project) => {
+                const docs = [...project.documents].sort(
+                    (a, b) => new Date(b.upload_date || 0).getTime() - new Date(a.upload_date || 0).getTime()
+                );
+                return {
+                    ...project,
+                    documents: docs,
+                    latestDocument: docs[0] || null,
+                    latestRevision: docs.length,
+                    status: docs.length > 0 ? 'analysis_complete' : 'ready_for_upload',
+                };
+            })
+            .sort((a, b) => {
+                const aDate = new Date(a.submissionDate || a.latestDocument?.upload_date || 0).getTime();
+                const bDate = new Date(b.submissionDate || b.latestDocument?.upload_date || 0).getTime();
+                return bDate - aDate;
+            });
+
+        setProjects(builtProjects);
+    }, [governanceHistory, history, extractProjectMetaFromDocument]);
+
+    useEffect(() => {
+        if (projects.length === 0) {
+            setSelectedProjectKey('');
+            return;
+        }
+        if (selectedProjectKey && projects.some((project) => project.key === selectedProjectKey)) {
+            return;
+        }
+
+        const preferredById = governanceContext?.result_id
+            ? projects.find((project) => project.key === String(governanceContext.result_id))
+            : null;
+
+        const preferredByName = governanceContext?.project_name
+            ? projects.find((project) => normalizeProjectName(project.name) === normalizeProjectName(governanceContext.project_name))
+            : null;
+
+        setSelectedProjectKey(preferredById?.key || preferredByName?.key || projects[0].key);
+    }, [projects, selectedProjectKey, governanceContext]);
+
+    useEffect(() => {
+        if (!selectedProject?.governanceResultId) return;
+        if (String(governanceContext?.result_id || '') === String(selectedProject.governanceResultId)) {
+            return;
+        }
+        loadGovernanceContextForProject(selectedProject.governanceResultId);
+    }, [selectedProject, governanceContext, loadGovernanceContextForProject]);
+
+    useEffect(() => {
+
+
+    }, [selectedProjectKey]);
+
+    const loadHistoryItem = (doc, taskKey = selectedProjectKey) => {
+        try {
+            const { parsedAnalysis, governanceResultId } = extractProjectMetaFromDocument(doc);
+            if (!parsedAnalysis) return;
+            const normalized = parseAIResponse(parsedAnalysis.analysis || '');
+            // Load questions/answers from saved state
+            const questions = (parsedAnalysis.questions?.length ? parsedAnalysis.questions : normalized.questions) || [];
+            const metrics = parsedAnalysis.metrics || normalized.metrics;
+            const normalizedReport = normalized.report || parsedAnalysis.analysis || '';
+
+            // Handle loading old format vs new format
+            const loadedQuestions = questions || parsedAnalysis.questions || [];
+
+            const savedAnswers = parsedAnalysis.userAnswers || {};
+            const savedFeedback = parsedAnalysis.userFeedback || '';
+            const savedGovernance = parsedAnalysis.governanceContext || null;
+
+            setProjectState(taskKey, { aiQuestions: loadedQuestions, userAnswers: savedAnswers, userFeedback: savedFeedback, error: '' });
+
+
+            if (savedGovernance) {
+                setGovernanceContext(savedGovernance);
+                persistGovernanceContext(savedGovernance);
+                if (savedGovernance.result_id) {
+                    setSelectedProjectKey(String(savedGovernance.result_id));
+                }
+            } else if (governanceResultId) {
+                setSelectedProjectKey(String(governanceResultId));
+            }
+
+            setIsSidebarOpen(false);
+
+            // Reconstruct result object
+            setProjectState(taskKey, {
+                result: {
+                    id: doc.id,
+                    filename: doc.filename,
+                    extraction: {
+                        markdown: doc.full_content || doc.content_preview || '(Content not available)',
+                        num_pages: null
+                    },
+                    analysis: {
+                        ...parsedAnalysis,
+                        analysis: normalizedReport,
+                        metrics: metrics || parsedAnalysis.metrics
+                    }
+                }
+            });
+        } catch (e) {
+            console.error("Failed to load history item", e);
+            setError("Failed to load history item. Data might be formatted incorrectly.");
+        }
+    };
+
+    const handleFileChange = (e) => {
+        const selectedFiles = Array.from(e.target.files || []);
+        if (selectedFiles.length > 5) {
+            setError('You can select a maximum of 5 files.');
+            return;
+        }
+        setFiles(selectedFiles);
+    };
+
+    const handleTextChange = (e) => {
+        setTextInput(e.target.value);
+    };
+
+    const handleUpload = async (e) => {
+        const taskKey = selectedProjectKey; const taskFiles = files;
+        e.preventDefault();
+
+        if (!selectedProject) {
+            setError('Select a project from the sidebar before uploading a BRD.');
+            return;
+        }
+        if (!governanceContext) {
+            setError('Governance context is missing for the selected project. Please open Governance Assessment.');
+            return;
+        }
+        if (String(governanceContext.classification || '') === 'ENTERPRISE') {
+            setError('Selected project is classified as ENTERPRISE. Upload is disabled until governance is updated.');
+            return;
+        }
+        if (selectedProject.documents.length > 0 && !revisionUnlocked) {
+            setError('This project is locked after its initial analysis. Create a new revision to upload again.');
+            return;
+        }
+
+        if (activeTab === 'upload' && files.length === 0) {
+            setError('Please select at least one file');
+            return;
+        }
+        if (activeTab === 'text' && !textInput.trim()) {
+            setError('Please enter some text');
+            return;
+        }
+
+        setProjectState(taskKey, { processing: true, error: '', result: null, aiQuestions: [], userAnswers: {}, userFeedback: '' });
+
+
+
+
+
+
+        try {
+            const formData = new FormData();
+            const token = localStorage.getItem('token');
+            let extractedMarkdown = '';
+            let extractedHtml = '';
+            let filename = '';
+
+            setProjectState(taskKey, { progress: 10, progressMessage: `Uploading ${taskFiles.length > 0 ? taskFiles.length : ''} documents for ${selectedProject.name}...` });
+
+
+            if (activeTab === 'upload') {
+                // Attach all selected files to the same FormData key 'files' (or 'file')
+                // IMPORTANT: The backend 'files: List[UploadFile] = File(...)' expects multiple parts sharing the same key if desired,
+                // or we can append individually. Usually with FastAPI List[UploadFile], we append multiple times with same key 'files'.
+                // Ideally, we should update backend to accept 'files', but if we kept 'file', we might need to change backend param name.
+                // Let's assume we align the key. The previous tool `replace_file_content` updated backend to `files: List[UploadFile]`.
+                // So we should use `formData.append('files', file)`.
+
+                for (let i = 0; i < taskFiles.length; i++) {
+                    formData.append('files', taskFiles[i]);
+                }
+
+                // Step 1: Upload and Extract Text (Single Request)
+                const uploadResponse = await fetch(API_ENDPOINTS.DOCUMENTS_UPLOAD, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                });
+
+                if (uploadResponse.status === 401) {
+                    handleLogout();
+                    return;
+                }
+
+                if (!uploadResponse.ok) {
+                    const errData = await uploadResponse.json();
+                    throw new Error(errData.detail || 'Upload failed');
+                }
+
+                setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+
+                const uploadData = await uploadResponse.json();
+
+                // Backend now returns combined markdown/html
+                extractedMarkdown = uploadData.markdown;
+                extractedHtml = uploadData.html;
+                filename = uploadData.filename; // e.g., "doc1.pdf, doc2.pdf"
+
+            } else {
+                // Text Input Mode
+                extractedMarkdown = textInput;
+                filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
+                setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+            }
+
+            // Set initial result
+            const initialResult = {
+                filename: filename,
+                extraction: {
+                    markdown: extractedMarkdown,
+                    html: extractedHtml,
+                    num_pages: activeTab === 'upload' ? null : 1
+                },
+                analysis: analyzeWithAi ? { analysis: '', reasoning: '' } : null
+            };
+            setProjectState(taskKey, { result: initialResult });
+
+            // Step 2: Analyze with AI
+            if (analyzeWithAi) {
+                const aiPayload = {
+                    document_content: extractedMarkdown,
+                    api_url: aiConfig?.apiUrl || undefined,
+                    api_key: aiConfig?.apiKey || undefined,
+                    model: aiConfig?.model || undefined,
+                    stream: streamResponse,
+                    governance_context: governanceContext || undefined
+                };
+
+                if (streamResponse) {
+                    setProjectState(taskKey, { progress: 70, progressMessage: 'Initializing AI task...' });
+
+                    await streamAnalysis(aiPayload, token, initialResult, taskKey);
+                } else {
+                    setProjectState(taskKey, { progress: 70, progressMessage: 'Initializing AI task...' });
+
+                    await fetchAnalysis(aiPayload, token, initialResult, taskKey);
+                }
+            } else {
+                // If not analyzing, just show the uploaded data
+                setProjectState(taskKey, prev => ({ result: { ...prev.result, analysis: null } }));
+            }
+
+        } catch (err) {
+            setProjectState(taskKey, { error: err.message });
+        } finally {
+            setProjectState(taskKey, { processing: false });
+        }
+    };
+
+    // NOTE: Keep fetchAnalysis and other functions unchanged, but they are used inside the loop.
+    const fetchAnalysis = async (payload, token, initialContext = null, taskKey = selectedProjectKey) => {
+        try {
+            const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.status === 401) {
+                handleLogout();
+                return;
+            }
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.detail || 'Analysis failed');
+            }
+
+            const data = await response.json();
+            const { report, questions, metrics, title } = parseAIResponse(data.analysis || '');
+            if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
+
+            const finalFilename = title || (initialContext || result).filename;
+
+            const finalResult = {
+                ...(initialContext || result),
+                filename: finalFilename,
+                analysis: {
+                    ...data,
+                    analysis: report,
+                    questions: questions,
+                    metrics: metrics,
+                    userAnswers: userAnswers,
+                    userFeedback: userFeedback,
+                    governanceContext: governanceContext
+                }
+            };
+            setProjectState(taskKey, { result: finalResult, progress: 100, progressMessage: 'Analysis complete!' });
+            saveToHistory(finalResult, taskKey);
+        } catch (err) {
+            setProjectState(taskKey, { error: `Start Error: ${err.message}` });
+        }
+    };
+
+    const streamAnalysis = async (payload, token, initialContext = null, taskKey = selectedProjectKey) => {
+        try {
+            const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.status === 401) {
+                handleLogout();
+                return;
+            }
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.detail || 'Analysis stream failed');
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let aiText = '';
+            let aiReasoning = '';
+            let buffer = '';
+
+            setProjectState(taskKey, { progress: 85, progressMessage: 'Generating professional analysis report...' });
+
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+
+                // Keep the last partial line in the buffer
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    const trimmedLine = line.trim();
+                    if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
+
+                    const dataStr = trimmedLine.slice(6);
+                    if (dataStr === '[DONE]') continue;
+
+                    try {
+                        const data = JSON.parse(dataStr);
+                        // Handle OpenAI-compatible streaming format
+                        if (data.choices && data.choices.length > 0) {
+                            const delta = data.choices[0].delta || {};
+
+                            // It seems reasoning content comes as "reasoning_content"
+                            if (delta.reasoning_content) {
+                                aiReasoning += delta.reasoning_content;
+                            }
+
+                            if (delta.content) {
+                                aiText += delta.content;
+                            }
+
+                            // Parse questions dynamically during stream
+                            const { report, questions, metrics } = parseAIResponse(aiText);
+                            if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
+
+                            // Update UI gracefully
+                            setProjectState(taskKey, prev => ({
+                                result: {
+                                    ...prev.result,
+                                    analysis: {
+                                        ...(prev.result?.analysis || {}),
+                                        analysis: report,
+                                        reasoning: aiReasoning,
+                                        model: payload.model || 'Streaming...',
+                                        metrics: metrics
+                                    }
+                                }
+                            }));
+                        }
+                    } catch (e) {
+                        console.warn('Error parsing stream chunk', e);
+                    }
+                }
+
+            }
+
+            // Save history after stream completes
+            const { report, questions, metrics, title } = parseAIResponse(aiText);
+
+            const finalFilename = title || (initialContext || result).filename;
+
+            const finalResult = {
+                ...(initialContext || result), // Use scope content
+                filename: finalFilename,
+                analysis: {
+                    analysis: report,
+                    questions: questions,
+                    metrics: metrics,
+                    userAnswers: userAnswers,
+                    userFeedback: userFeedback,
+                    governanceContext: governanceContext,
+                    reasoning: aiReasoning,
+                    model: payload.model || 'Streaming...'
+                }
+            };
+            setProjectState(taskKey, {
+                result: finalResult,
+                progress: 100,
+                progressMessage: 'Analysis complete!',
+                aiQuestions: questions?.length ? questions : []
+            });
+            saveToHistory(finalResult, taskKey);
+        } catch (err) {
+            setProjectState(taskKey, { error: `Stream Error: ${err.message}` });
+        }
+    };
+
+    const handleRefineAnalysis = async () => {
+        const taskKey = selectedProjectKey; const taskResult = result;
+        let feedbackToSend = userFeedback;
+
+        if (aiQuestions.length > 0) {
+            feedbackToSend = aiQuestions.map((q, i) => {
+                const ans = userAnswers[i] || 'No answer provided';
+                return `Q: ${q}\nA: ${ans}`;
+            }).join('\n\n');
+
+            if (userFeedback.trim()) {
+                feedbackToSend += `\n\nAdditional Comments:\n${userFeedback}`;
+            }
+        }
+
+        if (!result?.extraction?.markdown || !feedbackToSend.trim()) return;
+
+        setProjectState(taskKey, { processing: true, error: '', result: null, aiQuestions: [], userAnswers: {}, userFeedback: '' });
+
+        setProjectState(taskKey, { progress: 20, progressMessage: 'Submitting feedback and refinements...' });
+
+
+        const token = localStorage.getItem('token');
+        const aiPayload = {
+            document_content: result.extraction.markdown,
+            api_url: aiConfig?.apiUrl || undefined,
+            api_key: aiConfig?.apiKey || undefined,
+            model: aiConfig?.model || undefined,
+            stream: streamResponse,
+            user_feedback: feedbackToSend,
+            governance_context: governanceContext || undefined
+        };
+
+        try {
+            if (streamResponse) {
+                await streamAnalysis(aiPayload, token, taskResult, taskKey);
+            } else {
+                await fetchAnalysis(aiPayload, token, taskResult, taskKey);
+            }
+        } catch (err) {
+            setProjectState(taskKey, { error: err.message });
+        } finally {
+            setProjectState(taskKey, { processing: false });
+        }
+    };
+
+    const handleDownloadPDF = () => {
+        if (!result) return;
+
+        try {
+            const parseHex = (hex) => {
+                const normalized = String(hex || '').replace('#', '').trim();
+                const full = normalized.length === 3
+                    ? normalized.split('').map((char) => char + char).join('')
+                    : normalized;
+                const intValue = Number.parseInt(full || '000000', 16);
+                return [
+                    (intValue >> 16) & 255,
+                    (intValue >> 8) & 255,
+                    intValue & 255
+                ];
+            };
+
+            const normalizeForPdf = (value = '') => String(value)
+                .replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, '').trim())
+                .replace(/<\s*br\s*\/?>/gi, '\n')
+                .replace(/<\/\s*(p|div|h[1-6]|section|article|tr)\s*>/gi, '\n')
+                .replace(/<\s*li\s*>/gi, '- ')
+                .replace(/<\/\s*(li|ul|ol|table|thead|tbody)\s*>/gi, '\n')
+                .replace(/<[^>]+>/g, '')
+                .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+                .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+                .replace(/^#{1,6}\s*/gm, '')
+                .replace(/\*\*(.*?)\*\*/g, '$1')
+                .replace(/\*(.*?)\*/g, '$1')
+                .replace(/`([^`]+)`/g, '$1')
+                .replace(/&nbsp;/gi, ' ')
+                .replace(/&amp;/gi, '&')
+                .replace(/&lt;/gi, '<')
+                .replace(/&gt;/gi, '>')
+                .replace(/&quot;/gi, '"')
+                .replace(/&#39;/gi, "'")
+                .replace(/\r/g, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+
+            const palette = {
+                primary: '#1E3A8A',
+                primarySoft: '#E8EEFF',
+                border: '#D6E0F5',
+                text: '#1F2937',
+                muted: '#64748B'
+            };
+
+            const analysisText = normalizeForPdf(result.analysis?.analysis || '');
+            const questions = result.analysis?.questions?.length ? result.analysis.questions : aiQuestions;
+            const answers = result.analysis?.userAnswers || userAnswers;
+            const additionalNotes = normalizeForPdf(result.analysis?.userFeedback || userFeedback || '');
+            const reasoningText = normalizeForPdf(result.analysis?.reasoning || '');
+            const metricSource = result.analysis?.metrics || {};
+            const metricItems = [
+                { label: 'Deployment', value: metricSource?.deployment || 'TBD' },
+                { label: 'Resources', value: metricSource?.resources || 'TBD' },
+                { label: 'Complexity', value: metricSource?.complexity || 'TBD' },
+                { label: 'Timeline', value: metricSource?.timeline || 'TBD' }
+            ];
+
+            const verdictMatch = analysisText.match(/Verdict:\s*\[?\s*(GO|NO-GO|PROCEED WITH CAUTION)\s*\]?/i);
+            const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : 'NOT SPECIFIED';
+            const verdictStyle = verdict === 'GO'
+                ? { fill: '#DCFCE7', border: '#86EFAC', text: '#166534' }
+                : verdict === 'NO-GO'
+                    ? { fill: '#FEE2E2', border: '#FCA5A5', text: '#B91C1C' }
+                    : { fill: '#FEF3C7', border: '#FCD34D', text: '#B45309' };
+
+            const recommendationSection = analysisText.match(/(?:^|\n)#+\s*6\.\s*Go\s*\/\s*No-Go Recommendation[\s\S]*$/i);
+            const recommendationPreview = recommendationSection
+                ? recommendationSection[0].replace(/(?:^|\n)#+\s*6\.\s*Go\s*\/\s*No-Go Recommendation/i, '').trim()
+                : analysisText.split(/\n{2,}/).slice(0, 2).join('\n\n');
+
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            const marginX = 14;
+            const bottomMargin = 14;
+            const topBandHeight = 22;
+            const contentWidth = pageWidth - marginX * 2;
+            const generatedAt = new Date().toLocaleString();
+            let cursorY = 0;
+
+            const setTextHex = (hex) => {
+                const [r, g, b] = parseHex(hex);
+                pdf.setTextColor(r, g, b);
+            };
+
+            const setFillHex = (hex) => {
+                const [r, g, b] = parseHex(hex);
+                pdf.setFillColor(r, g, b);
+            };
+
+            const setDrawHex = (hex) => {
+                const [r, g, b] = parseHex(hex);
+                pdf.setDrawColor(r, g, b);
+            };
+
+            const drawHeader = () => {
+                setFillHex(palette.primary);
+                pdf.rect(0, 0, pageWidth, topBandHeight, 'F');
+
+                pdf.setFont('helvetica', 'bold');
+                pdf.setFontSize(13);
+                pdf.setTextColor(255, 255, 255);
+                pdf.text('BRD Analysis Report', marginX, 9);
+
+                pdf.setFont('helvetica', 'normal');
+                pdf.setFontSize(8);
+                const docLabel = (result.filename || 'Untitled document').slice(0, 72);
+                pdf.text(docLabel, marginX, 15);
+
+                const dateLabel = `Generated ${generatedAt}`;
+                const dateWidth = pdf.getTextWidth(dateLabel);
+                pdf.text(dateLabel, pageWidth - marginX - dateWidth, 15);
+
+                cursorY = topBandHeight + 8;
+                setTextHex(palette.text);
+            };
+
+            const ensureSpace = (requiredHeight = 8) => {
+                if (cursorY + requiredHeight > pageHeight - bottomMargin) {
+                    pdf.addPage();
+                    drawHeader();
+                }
+            };
+
+            const addSectionTitle = (title) => {
+                ensureSpace(11);
+                setFillHex(palette.primarySoft);
+                setDrawHex(palette.border);
+                pdf.roundedRect(marginX, cursorY, contentWidth, 8, 1.5, 1.5, 'FD');
+
+                setTextHex(palette.primary);
+                pdf.setFont('helvetica', 'bold');
+                pdf.setFontSize(10.5);
+                pdf.text(title, marginX + 3, cursorY + 5.4);
+
+                cursorY += 11;
+                pdf.setFont('helvetica', 'normal');
+                pdf.setFontSize(10);
+                setTextHex(palette.text);
+            };
+
+            const addParagraphs = (text, options = {}) => {
+                const {
+                    fontSize = 10,
+                    lineHeight = 4.8,
+                    color = palette.text,
+                    bold = false
+                } = options;
+
+                const blocks = String(text || '')
+                    .split(/\n{2,}/)
+                    .map((block) => block.trim())
+                    .filter(Boolean);
+
+                if (!blocks.length) return;
+
+                pdf.setFont('helvetica', bold ? 'bold' : 'normal');
+                pdf.setFontSize(fontSize);
+                setTextHex(color);
+
+                blocks.forEach((block, blockIndex) => {
+                    const lines = pdf.splitTextToSize(block, contentWidth);
+                    lines.forEach((line) => {
+                        ensureSpace(lineHeight);
+                        pdf.text(line, marginX, cursorY);
+                        cursorY += lineHeight;
+                    });
+
+                    if (blockIndex < blocks.length - 1) {
+                        cursorY += 1.5;
+                    }
+                });
+
+                pdf.setFont('helvetica', 'normal');
+                setTextHex(palette.text);
+            };
+
+            const addMetricsGrid = () => {
+                addSectionTitle('Key Metrics');
+
+                const cardGap = 4;
+                const cardWidth = (contentWidth - cardGap) / 2;
+                const cardHeight = 17;
+                const rows = Math.ceil(metricItems.length / 2);
+                const totalHeight = rows * cardHeight + (rows - 1) * cardGap;
+                const cardFills = ['#F8FAFC', '#F0F9FF', '#F9FAFB', '#ECFEFF'];
+
+                ensureSpace(totalHeight + 2);
+
+                metricItems.forEach((item, index) => {
+                    const row = Math.floor(index / 2);
+                    const col = index % 2;
+                    const x = marginX + col * (cardWidth + cardGap);
+                    const y = cursorY + row * (cardHeight + cardGap);
+
+                    setFillHex(cardFills[index % cardFills.length]);
+                    setDrawHex(palette.border);
+                    pdf.roundedRect(x, y, cardWidth, cardHeight, 1.5, 1.5, 'FD');
+
+                    setTextHex(palette.muted);
+                    pdf.setFont('helvetica', 'bold');
+                    pdf.setFontSize(8);
+                    pdf.text(item.label, x + 3, y + 5);
+
+                    setTextHex(palette.text);
+                    pdf.setFont('helvetica', 'normal');
+                    pdf.setFontSize(9.5);
+                    const valueLines = pdf.splitTextToSize(String(item.value || 'TBD'), cardWidth - 6).slice(0, 2);
+                    pdf.text(valueLines, x + 3, y + 10);
+                });
+
+                cursorY += totalHeight + 2;
+            };
+
+            drawHeader();
+
+            ensureSpace(25);
+            setFillHex('#F8FAFC');
+            setDrawHex(palette.border);
+            pdf.roundedRect(marginX, cursorY, contentWidth, 23, 2, 2, 'FD');
+
+            setTextHex(palette.text);
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(11);
+            pdf.text('Project Overview', marginX + 3, cursorY + 6);
+
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(9);
+            setTextHex(palette.muted);
+            pdf.text(`Document: ${result.filename || 'Untitled'}`, marginX + 3, cursorY + 12);
+            pdf.text(`Model: ${result.analysis?.model || 'Not provided'}`, marginX + 3, cursorY + 17);
+            pdf.text(`Generated: ${generatedAt}`, marginX + 3, cursorY + 22);
+
+            cursorY += 28;
+
+            addSectionTitle('Go / No-Go Recommendation');
+            ensureSpace(14);
+            setFillHex(verdictStyle.fill);
+            setDrawHex(verdictStyle.border);
+            pdf.roundedRect(marginX, cursorY, contentWidth, 12, 2, 2, 'FD');
+            setTextHex(verdictStyle.text);
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(11.5);
+            pdf.text(verdict, marginX + 3, cursorY + 7.4);
+            cursorY += 15;
+
+            addParagraphs(recommendationPreview || 'Recommendation details are not available.', {
+                fontSize: 9.5,
+                lineHeight: 4.5,
+                color: palette.muted
+            });
+
+            cursorY += 2;
+            addMetricsGrid();
+
+            addSectionTitle('Executive Summary & Analysis');
+            addParagraphs(analysisText || 'No analysis text available.', {
+                fontSize: 9.6,
+                lineHeight: 4.6
+            });
+
+            if (questions?.length) {
+                cursorY += 2;
+                addSectionTitle('Targeted Questions & Clarifications');
+
+                questions.forEach((question, index) => {
+                    const questionText = normalizeForPdf(question);
+                    const answerText = normalizeForPdf(answers?.[index] || '');
+
+                    addParagraphs(`${index + 1}. ${questionText}`, {
+                        fontSize: 9.4,
+                        lineHeight: 4.3,
+                        bold: true
+                    });
+                    addParagraphs(`Answer: ${answerText || 'Pending clarification'}`, {
+                        fontSize: 9,
+                        lineHeight: 4.2,
+                        color: answerText ? palette.muted : '#94A3B8'
+                    });
+                    cursorY += 1;
+                });
+            }
+
+            if (additionalNotes) {
+                cursorY += 2;
+                addSectionTitle('Additional Context');
+                addParagraphs(additionalNotes, {
+                    fontSize: 9.2,
+                    lineHeight: 4.4,
+                    color: palette.muted
+                });
+            }
+
+            if (reasoningText) {
+                cursorY += 2;
+                addSectionTitle('Model Reasoning Notes');
+                addParagraphs(reasoningText, {
+                    fontSize: 9,
+                    lineHeight: 4.2,
+                    color: palette.muted
+                });
+            }
+
+            const totalPages = pdf.getNumberOfPages();
+            for (let page = 1; page <= totalPages; page += 1) {
+                pdf.setPage(page);
+                pdf.setFont('helvetica', 'normal');
+                pdf.setFontSize(8);
+                setTextHex('#94A3B8');
+                const footerLabel = `Page ${page} of ${totalPages}`;
+                const footerWidth = pdf.getTextWidth(footerLabel);
+                pdf.text(footerLabel, pageWidth - marginX - footerWidth, pageHeight - 6);
+            }
+
+            const safeFilename = String(result.filename || 'Report')
+                .replace(/[^a-zA-Z0-9._-]/g, '_')
+                .slice(0, 80);
+            pdf.save(`BRD_Analysis_${safeFilename}.pdf`);
+        } catch (err) {
+            console.error('PDF generation failed', err);
+            setError(`PDF Error: ${err.message || 'Unknown error'}`);
+        }
+    };
+
+    const handleNewAnalysis = () => {
+        setIsSidebarOpen(false);
+        setProjectState(selectedProjectKey, {
+            files: [],
+            textInput: '',
+            processing: false,
+            result: null,
+            error: '',
+            userFeedback: '',
+            aiQuestions: [],
+            userAnswers: {},
+            revisionUnlocked: false,
+            revisionReason: '',
+            progress: 0,
+            progressMessage: ''
+        });
+    };
+
+    const handleNewProject = () => {
+        setIsSidebarOpen(false);
+        localStorage.removeItem('governancePassed');
+        localStorage.removeItem('governanceResult');
+        localStorage.removeItem('governanceContext');
+        sessionStorage.removeItem('governanceResult');
+        sessionStorage.removeItem('governanceContext');
+        navigate('/governance');
+    };
+
+    const handleSelectProject = (project) => {
+        if (!project) return;
+        setSelectedProjectKey(project.key);
+        setIsSidebarOpen(false);
+    };
+
+    const handleCreateRevision = async () => {
+        if (!selectedProject) return;
+        const reason = window.prompt(
+            `Provide a reason for creating a new revision for "${selectedProject.name}".`
+        );
+        if (!reason || !reason.trim()) {
+            return;
+        }
+
+        const trimmedReason = reason.trim();
+        const govId = selectedProject.governanceResultId;
+
+        // Save immediately to backend so it persists across logouts
+        if (govId) {
+            try {
+                const token = localStorage.getItem('token');
+                if (token) {
+                    await fetch(API_ENDPOINTS.GOVERNANCE_REVISION_REASON(govId), {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ reason: trimmedReason })
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to save revision reason to backend", e);
+            }
+        }
+
+        setProjectState(selectedProjectKey, {
+            revisionReason: trimmedReason,
+            revisionUnlocked: true,
+            files: [],
+            textInput: '',
+            result: null
+        });
+    };
+
+    const handleViewLatestProjectAnalysis = () => {
+        if (!selectedProject?.latestDocument) return;
+        loadHistoryItem(selectedProject.latestDocument);
+    };
+
+    const goToGovernanceAssessment = () => {
+        navigate('/governance');
+    };
+
+    if (!user) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                <div className="text-gray-600">Loading...</div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex h-screen bg-gray-50 overflow-hidden font-sans">
+            {isSidebarOpen && (
+                <button
+                    type="button"
+                    aria-label="Close sidebar"
+                    onClick={() => setIsSidebarOpen(false)}
+                    className="fixed inset-0 z-30 bg-black/40 md:hidden"
+                />
+            )}
+
+            {/* Sidebar */}
+            <div
+                className={`fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] bg-gray-900 border-r border-gray-800 flex flex-col text-gray-300 shadow-xl transform transition-transform duration-300 md:static md:z-20 md:w-64 md:max-w-none md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+            >
+                <div className="h-16 flex items-center px-2 border-b border-gray-800 bg-gray-900">
+                    <div className="flex items-center justify-between w-full">
+                        <div className="flex items-center min-w-0">
+                            <img src={bourntecLogo} alt="App Logo" className="h-5 w-auto object-contain shrink-0" />
+                            <div className="h-5 w-0.5 bg-white mx-3 shrink-0 rounded-full"></div>
+                            <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">BRD Analyzer</span>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setIsSidebarOpen(false)}
+                            className="md:hidden p-2 rounded-md text-gray-300 hover:text-white hover:bg-gray-800 transition-colors"
+                            aria-label="Close menu"
+                        >
+                            <X className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar">
+                    <button
+                        onClick={handleNewProject}
+                        className="flex items-center w-full px-4 py-3 mb-6 text-sm font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-lg shadow-blue-900/20 transition-all active:scale-95"
+                    >
+                        <Plus className="w-5 h-5 mr-2" />
+                        New Project
+                    </button>
+
+                    <div className="mb-6">
+                        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-2">Projects</h3>
+                        <div className="space-y-1">
+                            {projects.length === 0 ? (
+                                <p className="text-xs text-gray-600 px-2 italic">No projects yet.</p>
+                            ) : (
+                                projects.map((project) => (
+                                    <button
+                                        key={project.key}
+                                        onClick={() => handleSelectProject(project)}
+                                        className={`w-full flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key
+                                            ? 'bg-blue-900/40 text-blue-100 border-blue-800'
+                                            : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-white'
+                                            }`}
+                                        title={project.name}
+                                    >
+                                        <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-blue-400' : 'text-gray-600 group-hover:text-blue-400'}`} />
+                                        <div className="min-w-0">
+                                            <p className="truncate">{project.name}</p>
+                                            <p className="text-[11px] text-gray-500 truncate">
+                                                {project.status === 'analysis_complete'
+                                                    ? `Locked • ${getProjectSidebarSubtitle(project)}`
+                                                    : getProjectSidebarSubtitle(project)}
+                                            </p>
+                                        </div>
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-4 border-t border-gray-800 bg-gray-900">
+                    <button
+                        onClick={() => {
+                            setShowSettings(true);
+                            setIsSidebarOpen(false);
+                        }}
+                        className="flex items-center w-full px-4 py-2 text-sm font-medium text-gray-300 rounded-md hover:bg-gray-800 hover:text-white transition-colors mb-2"
+                    >
+                        <Settings className="w-4 h-4 mr-3" />
+                        Settings
+                    </button>
+                    {user && (
+                        <div className="flex items-center w-full px-4 py-2 text-sm font-medium text-gray-300 rounded-md hover:bg-gray-800 transition-colors justify-between bg-gray-800/50">
+                            <div className="flex items-center overflow-hidden">
+                                <User className="w-4 h-4 mr-3 flex-shrink-0" />
+                                <span className="truncate w-24 text-xs" title={user.email}>{user.email}</span>
+                            </div>
+                            <button onClick={handleLogout} className="text-red-400 hover:text-red-300 p-1" title="Logout">
+                                <LogOut className="w-4 h-4" />
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Main Content */}
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full">
+                <main className="flex-1 overflow-y-auto bg-gray-50 p-3 sm:p-4 md:p-8 w-full">
+                    <div className="max-w-5xl mx-auto space-y-6">
+                        <div className="md:hidden flex items-center justify-between bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-sm">
+                            <button
+                                type="button"
+                                onClick={() => setIsSidebarOpen(true)}
+                                className="inline-flex items-center justify-center p-2 text-gray-600 rounded-md hover:bg-gray-100"
+                                aria-label="Open menu"
+                            >
+                                <Menu className="w-5 h-5" />
+                            </button>
+                            <span className="text-sm font-semibold text-gray-900">BRD Analyzer</span>
+                            <button
+                                type="button"
+                                onClick={() => setShowSettings(true)}
+                                className="inline-flex items-center justify-center p-2 text-gray-600 rounded-md hover:bg-gray-100"
+                                aria-label="Open settings"
+                            >
+                                <Settings className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        {error && (
+                            <div className="rounded-lg bg-red-50 p-4 border border-red-200 flex items-start animate-fade-in-down">
+                                <div className="ml-3">
+                                    <h3 className="text-sm font-medium text-red-800">Error</h3>
+                                    <div className="mt-1 text-sm text-red-700">{error}</div>
+                                </div>
+                                <button onClick={() => setError('')} className="ml-auto text-red-500 hover:text-red-700">✕</button>
+                            </div>
+                        )}
+
+                        {/* Landing / Upload State */}
+                        {!result && (
+                            <div className="text-center mb-10 mt-10 animate-fade-in-down">
+                                <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight sm:text-4xl mb-3">
+                                    AI-Powered BRD Analysis
+                                </h1>
+                                <p className="text-lg text-gray-600 max-w-2xl mx-auto">
+                                    Upload your Business Requirements Document to get instant feasibility analysis, targeted technical questions, and a go/no-go recommendation.
+                                </p>
+                            </div>
+                        )}
+
+
+                        {!result && (
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md max-w-3xl mx-auto">
+                                <h2 className="text-xl font-bold text-gray-900 mb-6 flex items-center">
+                                    <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-600 mr-3 text-sm font-bold">1</span>
+                                    Project BRD Upload
+                                </h2>
+
+                                <form onSubmit={handleUpload} className="space-y-6">
+                                    {selectedProject ? (
+                                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                                <div>
+                                                    <p className="text-sm font-semibold text-emerald-900">Selected Project</p>
+                                                    <p className="text-xs text-emerald-800 mt-1">
+                                                        {selectedProject.name} • {selectedProject.classification || 'N/A'} • Score {selectedProject.weightedScore ?? 'N/A'}/10
+                                                    </p>
+                                                    <p className="text-xs text-emerald-800 mt-1">
+                                                        Status: {selectedProject.status === 'analysis_complete' ? 'Analysis Complete (Locked)' : 'Ready for Initial Upload'}
+                                                    </p>
+                                                    {selectedProject.classification === 'ENTERPRISE' && (
+                                                        <p className="text-xs text-red-700 mt-1">
+                                                            Upload blocked: this project currently requires Enterprise Build governance.
+                                                        </p>
+                                                    )}
+                                                    {selectedProject.latestDocument && (
+                                                        <p className="text-xs text-emerald-800 mt-1">
+                                                            Latest document: {selectedProject.latestDocument.filename} ({new Date(selectedProject.latestDocument.upload_date).toLocaleString()})
+                                                        </p>
+                                                    )}
+                                                </div>
+                                                <div className="flex flex-col items-start sm:items-end gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={goToGovernanceAssessment}
+                                                        className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
+                                                    >
+                                                        Change Governance
+                                                    </button>
+                                                    {selectedProject.latestDocument && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleViewLatestProjectAnalysis}
+                                                            className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
+                                                        >
+                                                            View Latest Analysis
+                                                        </button>
+                                                    )}
+                                                    {selectedProject.documents.length > 0 && !revisionUnlocked && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleCreateRevision}
+                                                            disabled={selectedProject.classification === 'ENTERPRISE'}
+                                                            className="text-xs font-semibold text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                                        >
+                                                            Create New Revision
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            {revisionUnlocked && (
+                                                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                                                    <p className="text-xs font-semibold text-blue-900">Revision unlocked for this upload</p>
+                                                    <p className="text-xs text-blue-800 mt-1">Reason: {revisionReason}</p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                            <p className="text-sm font-semibold text-amber-900">Select a project from the left panel to continue.</p>
+                                        </div>
+                                    )}
+
+                                    {/* Tabs */}
+                                    <div className="flex border-b border-gray-200 mb-6 overflow-x-auto">
+                                        <button
+                                            type="button"
+                                            onClick={() => setActiveTab('upload')}
+                                            className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                            disabled={!selectedProject}
+                                        >
+                                            Upload File
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setActiveTab('text')}
+                                            className={`pb-3 px-4 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                            disabled={!selectedProject}
+                                        >
+                                            Write Text
+                                        </button>
+                                    </div>
+
+                                    {activeTab === 'upload' ? (
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
+                                            <input
+                                                type="file"
+                                                id="file-upload"
+                                                multiple
+                                                onChange={handleFileChange}
+                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
+                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                            />
+                                            <div className="mx-auto w-12 h-12 text-gray-400 mb-3 group-hover:text-blue-500 transition-colors">
+                                                <FileText className="w-12 h-12" />
+                                            </div>
+                                            <span className="mt-2 block text-sm font-medium text-gray-900">
+                                                {files.length > 0 ? `${files.length} file(s) selected` : "Click to select up to 5 files"}
+                                            </span>
+                                            {files.length > 0 && (
+                                                <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
+                                                    {files.map((f, i) => (
+                                                        <span key={i} className="truncate max-w-[200px]">{f.name}</span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <span className="mt-1 block text-xs text-gray-400">
+                                                PDF, DOCX, PPTX, HTML, Images
+                                            </span>
+                                        </div>
+                                    ) : (
+                                        <div className="relative">
+                                            <textarea
+                                                value={textInput}
+                                                onChange={handleTextChange}
+                                                placeholder="Write your requirements here..."
+                                                className="w-full h-64 p-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50/50 resize-none font-mono"
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                            />
+                                        </div>
+                                    )}
+
+
+
+                                    {processing && (
+                                        <div className="space-y-3 animate-pulse mt-6">
+                                            <div className="flex justify-between items-center text-xs uppercase tracking-wider text-gray-500 font-semibold">
+                                                <span>{progressMessage}</span>
+                                                <span>{progress}%</span>
+                                            </div>
+                                            <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                                <div
+                                                    className="bg-blue-600 h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                    style={{ width: `${progress}%` }}
+                                                ></div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="flex justify-end gap-3 pt-6">
+                                        <button
+                                            type="button"
+                                            onClick={goToGovernanceAssessment}
+                                            className="inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-gray-700 bg-gray-100 hover:bg-gray-200 transition-all transform active:scale-95 shadow-md"
+                                        >
+                                            <Zap className="w-4 h-4 mr-2" />
+                                            Change Governance
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
+                                                ? 'bg-gray-300 cursor-not-allowed shadow-none'
+                                                : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5 hover:shadow-lg'
+                                                }`}
+                                        >
+                                            <Zap className={`w-4 h-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
+                                            {processing ? 'Analyzing...' : selectedProject?.documents.length > 0 ? 'Start Revision Analysis' : 'Start Analysis'}
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        )}
+
+                        {result && (
+                            <div className="space-y-6 animate-fade-in-up">
+                                {/* Result Header */}
+                                <div className="flex flex-col md:flex-row md:items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                                    <div className="flex items-center mb-4 md:mb-0">
+                                        <div className="p-2 bg-green-50 rounded-lg mr-3">
+                                            <FileText className="w-5 h-5 text-green-600" />
+                                        </div>
+                                        <div>
+                                            <h2 className="text-lg font-bold text-gray-900 break-all sm:break-normal">{result.filename}</h2>
+                                            <p className="text-xs text-gray-500">
+                                                {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
+                                        <button
+                                            onClick={handleDownloadPDF}
+                                            className="text-sm text-gray-600 hover:text-gray-900 font-medium hover:underline flex items-center transition-colors"
+                                            title="Download PDF Report"
+                                        >
+                                            <Download className="w-4 h-4 mr-1" /> Download PDF
+                                        </button>
+                                        <div className="hidden sm:block h-4 w-px bg-gray-300"></div>
+                                        <button
+                                            onClick={handleNewAnalysis}
+                                            className="text-sm text-blue-600 hover:text-blue-800 font-medium hover:underline flex items-center"
+                                        >
+                                            <Plus className="w-4 h-4 mr-1" /> Analyze Another
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div id="analysis-content" className="bg-transparent space-y-6">
+
+                                    {/* Key Metrics Row */}
+                                    {result.analysis && (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                            {(() => {
+                                                const metrics = result.analysis.metrics || {};
+                                                const metricItems = [
+                                                    { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-blue-600', bg: 'bg-blue-50' },
+                                                    { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
+                                                    { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
+                                                    { label: 'Timeline', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-green-600', bg: 'bg-green-50' }
+                                                ];
+
+                                                return metricItems.map((metric, idx) => (
+                                                    <div key={idx} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
+                                                        <div className="flex items-center justify-between mb-2">
+                                                            <div className={`p-2 ${metric.bg} rounded-lg`}>
+                                                                <metric.icon className={`w-4 h-4 ${metric.color}`} />
+                                                            </div>
+                                                            {/* Optional status indicator dot could go here */}
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[10px] uppercase tracking-wider font-semibold text-gray-400">{metric.label}</p>
+                                                            <p className="text-sm font-bold text-gray-900 line-clamp-2 leading-tight" title={metric.value}>
+                                                                {metric.value}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                ));
+                                            })()}
+                                        </div>
+                                    )}
+
+                                    {/* Main Content Grid */}
+                                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                        {/* Left Column: Report (8 cols) */}
+                                        <div className="lg:col-span-8 space-y-6">
+                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6">
+                                                <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-gray-100">
+                                                    Executive Summary & Analysis
+                                                </h3>
+                                                <div className="prose prose-sm prose-slate max-w-none text-gray-700 leading-relaxed">
+                                                    {(() => {
+                                                        const analysisContent = result.analysis?.analysis || '';
+                                                        const explicitHtml = result.analysis?.html;
+                                                        const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+
+                                                        if (htmlToRender) {
+                                                            return (
+                                                                <div
+                                                                    className="bg-white rounded-lg border border-gray-200 p-4"
+                                                                    dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
+                                                                />
+                                                            );
+                                                        }
+
+                                                        if (processing && !analysisContent.trim()) {
+                                                            return (
+                                                                <div className="text-sm text-gray-500 italic">
+                                                                    Generating analysis...
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        return (
+                                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                                {analysisContent}
+                                                            </ReactMarkdown>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            </div>
+
+                                            {/* Raw Source (Collapsed) */}
+                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                                                <details className="group">
+                                                    <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-gray-400 uppercase tracking-widest hover:text-gray-600 transition-colors">
+                                                        <span>View Processed Content</span>
+                                                        <span className="transition-transform group-open:rotate-180">
+                                                            <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
+                                                        </span>
+                                                    </summary>
+                                                    <div className="mt-4 pt-4 border-t border-gray-50">
+                                                        {result.extraction?.html ? (
+                                                            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                                                                <iframe
+                                                                    srcDoc={result.extraction.html}
+                                                                    className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
+                                                                    title="Processed Content"
+                                                                    sandbox="allow-same-origin allow-scripts"
+                                                                />
+                                                            </div>
+                                                        ) : (
+                                                            <div className="bg-gray-50 rounded-lg p-4 text-xs font-mono text-gray-600 max-h-96 overflow-y-auto whitespace-pre-wrap border border-gray-100">
+                                                                {result.extraction?.markdown || '(No content extracted)'}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </details>
+                                            </div>
+                                        </div>
+
+                                        {/* Right Column: Key Actions / Q&A (4 cols) */}
+                                        <div className="lg:col-span-4 space-y-6">
+                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5 lg:sticky lg:top-6">
+                                                <div className="flex items-center mb-4">
+                                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-2"></div>
+                                                    <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                                                        Clarification Needed
+                                                    </h3>
+                                                </div>
+
+                                                <p className="text-xs text-gray-500 mb-6 leading-relaxed">
+                                                    The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
+                                                </p>
+
+                                                {aiQuestions?.length > 0 ? (
+                                                    <div className="space-y-4 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
+                                                        {aiQuestions.map((q, i) => (
+                                                            <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                                <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
+                                                                <input
+                                                                    type="text"
+                                                                    value={(userAnswers || {})[i] || ''}
+                                                                    onChange={e => setUserAnswers(prev => ({ ...(prev || {}), [i]: e.target.value }))}
+                                                                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                                                    placeholder="Your answer..."
+                                                                />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-center py-8 bg-gray-50 rounded-lg border border-dashed border-gray-200">
+                                                        <p className="text-xs text-gray-400">No specific questions generated.</p>
+                                                    </div>
+                                                )}
+
+                                                <div className="mt-6 pt-4 border-t border-gray-100">
+                                                    <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
+                                                    <textarea
+                                                        value={userFeedback}
+                                                        onChange={(e) => setUserFeedback(e.target.value)}
+                                                        placeholder="Any other details..."
+                                                        className="w-full p-3 border border-gray-200 rounded-lg focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-gray-50 resize-none"
+                                                    />
+                                                    <button
+                                                        onClick={handleRefineAnalysis}
+                                                        disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
+                                                        className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
+                                                            ? 'bg-gray-400 cursor-not-allowed'
+                                                            : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
+                                                            }`}
+                                                    >
+                                                        {processing ? 'Refining...' : 'Update Analysis'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </main>
+            </div>
+
+            {/* AI Config Modal */}
+            {showSettings && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
+                        <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                            <h2 className="font-bold text-lg text-gray-900 flex items-center">
+                                <Settings className="w-5 h-5 mr-2 text-blue-600" />
+                                AI Configuration
+                            </h2>
+                            <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕</button>
+                        </div>
+                        <div className="p-6">
+                            <AIConfig aiConfig={aiConfig} setAiConfig={setAiConfig} />
+                        </div>
+                        <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+                            <button
+                                onClick={() => setShowSettings(false)}
+                                className="px-5 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 font-medium text-sm transition-colors"
+                            >
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default Dashboard;
