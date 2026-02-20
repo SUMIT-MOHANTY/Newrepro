@@ -1,24 +1,43 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
 import GovernanceForm from './pages/GovernanceForm';
 import GitHubCallback from './pages/GitHubCallback';
-
 import LandingPage from './pages/LandingPage';
+import AppLayout from './components/AppLayout';
 
 function App() {
   return (
     <Router>
       <Routes>
+        {/* Public routes — no sidebar/navbar */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/status-dashboard" element={<Dashboard />} />
-        <Route path="/a/:projectToken" element={<Dashboard />} />
-        <Route path="/governance" element={<GovernanceForm />} />
-        <Route path="/github/callback" element={<GitHubCallback />} />
         <Route path="/" element={<LandingPage />} />
+        <Route path="/github/callback" element={<GitHubCallback />} />
+
+        {/* Authenticated routes — wrapped with AppLayout for uniform sidebar/navbar */}
+        <Route path="/dashboard" element={
+          <AppLayout>
+            {(layoutProps) => <Dashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/status-dashboard" element={
+          <AppLayout>
+            {(layoutProps) => <Dashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/a/:projectToken" element={
+          <AppLayout>
+            {(layoutProps) => <Dashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/governance" element={
+          <AppLayout>
+            {(layoutProps) => <GovernanceForm {...layoutProps} />}
+          </AppLayout>
+        } />
       </Routes>
     </Router>
   );

@@ -82,7 +82,16 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
 /* ─────────────────────────────────────────────────────────
    MAIN FORM COMPONENT
 ───────────────────────────────────────────────────────── */
-const GovernanceForm = () => {
+const GovernanceForm = ({
+    user, isSidebarOpen, setIsSidebarOpen, projects,
+    selectedProjectKey, setSelectedProjectKey,
+    showSettings, setShowSettings,
+    currentView, setCurrentView,
+    handleLogout, fetchHistory,
+    handleNewProject, handleSelectProject,
+    getProjectSidebarSubtitle,
+    ...rest
+}) => {
     const navigate = useNavigate();
     const location = useLocation();
     const [questions, setQuestions] = useState([]);
@@ -296,7 +305,7 @@ const GovernanceForm = () => {
 
     /* ── render ── */
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+        <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
 
             {/* ── MAIN AREA ── */}
             <div className="px-3 sm:px-4 lg:px-6 py-4 lg:py-6 max-w-[1440px] mx-auto">

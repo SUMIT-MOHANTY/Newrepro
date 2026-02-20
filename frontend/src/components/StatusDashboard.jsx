@@ -19,41 +19,9 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
             {/* Top Graphic Header Area */}
             <div className="bg-white shadow">
 
-                {/* Dashboard Title Bar */}
-                <div className="bg-[#1c355e] text-white px-4 md:px-8 py-3 flex justify-between items-center mb-4 shadow-md">
-                    <div className="flex items-center gap-4 z-10">
-                        {!isSidebarOpen && onOpenSidebar && (
-                            <button
-                                type="button"
-                                onClick={onOpenSidebar}
-                                className="p-1.5 md:p-2 bg-white rounded-md shadow-sm text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors border border-gray-200 cursor-pointer flex-shrink-0"
-                                aria-label="Open menu"
-                            >
-                                <Menu className="w-4 h-4 md:w-5 md:h-5" />
-                            </button>
-                        )}
-                        <div>
-                            <h1 className="text-xl md:text-3xl font-bold tracking-wide">Assessment Status Dashboard</h1>
-                            <h2 className="text-[10px] md:text-sm italic text-gray-200 mt-0.5 md:mt-1">Epic Hub Assessment Report</h2>
-                        </div>
-                    </div>
-                    {/* Status Pipeline graphic top right */}
-                    <div className="text-[9px] md:text-xs font-bold text-gray-700 flex items-center space-x-1.5 bg-white px-2 md:px-3 py-1.5 rounded-full shadow-md border border-gray-100 z-20 whitespace-nowrap ml-4 mr-2 md:mr-6 shrink-0 hidden sm:flex">
-                        <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-gray-400 rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
-                        <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-orange-200 rounded-full mr-1"></span><span className="hidden md:inline">PREPARE</span></div>
-                        <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-yellow-400 rounded-full mr-1"></span><span className="hidden md:inline">INTERVIEW</span></div>
-                        <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-blue-500 rounded-full mr-1"></span><span className="hidden md:inline">APPRAISED</span></div>
-                        <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-green-500 rounded-full"></span></div>
-                    </div>
-                </div>
-
+                {/* Top spacer since title is now in global navbar */}
+                <div className="pt-4"></div>
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-4 md:px-8 py-2 mb-2 gap-3">
-                    <ProjectDropdown
-                        projects={projects}
-                        selectedKey={selectedProjectKey}
-                        onSelect={(proj) => setSelectedProjectKey(proj.key)}
-                        className="w-full sm:w-72"
-                    />
                     <div className="flex items-center space-x-4 flex-shrink-0">
                         <div className="text-sm font-bold text-[#f27a24]">As of : {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })}</div>
                         <div className="text-sm font-bold text-gray-800 flex items-center">
@@ -61,6 +29,12 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
                             Overall: On Track
                         </div>
                     </div>
+                    <ProjectDropdown
+                        projects={projects}
+                        selectedKey={selectedProjectKey}
+                        onSelect={(proj) => setSelectedProjectKey(proj.key)}
+                        className="w-full sm:w-72"
+                    />
                 </div>
             </div>
 
@@ -92,18 +66,18 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
                     <div className="w-full flex flex-col gap-3 md:gap-4">
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                             <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-gray-600 mb-1">Assessment Areas</p>
+                                <p className="text-xs font-bold text-gray-600 mb-1">Active Projects</p>
                                 <h3 className="text-3xl font-bold text-gray-800 mb-0">5</h3>
-                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">Covered</p>
+                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">Tracked</p>
                             </div>
                             <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-gray-600 mb-1">Total Duration</p>
+                                <p className="text-xs font-bold text-gray-600 mb-1">Project Lifecycle</p>
                                 <h3 className="text-3xl font-bold text-gray-800 mb-0">120</h3>
                                 <p className="text-[10px] text-gray-500 uppercase tracking-widest">Days</p>
                             </div>
                             <div className="bg-white col-span-2 md:col-span-2 p-4 rounded-xl shadow border border-gray-100 flex flex-row items-center justify-around relative">
                                 <div className="flex flex-col items-center">
-                                    <p className="text-xs font-bold text-gray-600 mb-1">Documents Received</p>
+                                    <p className="text-xs font-bold text-gray-600 mb-1">Documents Uploaded</p>
                                     <div className="flex items-center relative">
                                         <h3 className="text-3xl font-bold text-gray-800 mb-0">300+</h3>
                                         <div className="absolute top-0 -right-4 w-3 h-3 select-none text-red-500">✦</div>
@@ -111,7 +85,7 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
                                 </div>
                                 <div className="w-px h-12 bg-gray-200"></div>
                                 <div className="flex flex-col items-center w-40">
-                                    <p className="text-xs font-bold text-gray-600 mb-1">Documents Reviewed</p>
+                                    <p className="text-xs font-bold text-gray-600 mb-1">Documents Analyzed</p>
                                     <div className="flex items-center relative mb-2 w-full justify-center">
                                         <h3 className="text-3xl font-bold text-gray-800 mb-0">200+</h3>
                                         <div className="absolute top-0 -right-2 w-3 h-3 select-none text-red-500">✦</div>
@@ -125,29 +99,29 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
 
                         <div className="grid grid-cols-5 gap-3 mt-4">
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Key Findings</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Governance Findings</p>
                                 <h3 className="text-2xl font-bold text-gray-800">28</h3>
                                 <p className="text-[9px] text-gray-500 uppercase tracking-wide">Identified</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1 text-center leading-tight">High-Risk Areas</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1 text-center leading-tight">High-Priority Issues</p>
                                 <h3 className="text-2xl font-bold text-gray-800">3</h3>
                                 <p className="text-[9px] text-gray-500 uppercase tracking-wide">Critical</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Open Risks</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Pending Reviews</p>
                                 <h3 className="text-2xl font-bold text-gray-800">4</h3>
                                 <p className="text-[9px] text-gray-500 uppercase tracking-wide">Active</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Mitigated Risks</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Revisions Completed</p>
                                 <h3 className="text-2xl font-bold text-gray-800">0</h3>
                                 <p className="text-[9px] text-gray-500 uppercase tracking-wide">Resolved</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Tasks Identified</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Action Items</p>
                                 <h3 className="text-2xl font-bold text-gray-800">143</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Covered</p>
+                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Tracked</p>
                             </div>
                         </div>
                     </div>
