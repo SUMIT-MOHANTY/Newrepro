@@ -9,8 +9,6 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
     const [newProjectName, setNewProjectName] = useState('');
     const [selectedProjectKey, setSelectedProjectKey] = useState(projects[0]?.key || null);
 
-    const selectedProject = projects.find(p => p.key === selectedProjectKey) || projects[0] || null;
-
     const handleCreateProject = () => {
         if (!newProjectName.trim()) return;
         navigate(`/governance?projectName=${encodeURIComponent(newProjectName.trim())}`);
@@ -40,7 +38,7 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
                         </div>
                     </div>
                     {/* Status Pipeline graphic top right */}
-                    <div className="text-[9px] md:text-xs font-bold text-gray-700 flex items-center space-x-1.5 bg-white px-2 md:px-3 py-1.5 rounded-full shadow-md border border-gray-100 z-20 whitespace-nowrap ml-4 shrink-0 hidden sm:flex translate-x-3 sm:translate-x-5 lg:translate-x-8">
+                    <div className="text-[9px] md:text-xs font-bold text-gray-700 flex items-center space-x-1.5 bg-white px-2 md:px-3 py-1.5 rounded-full shadow-md border border-gray-100 z-20 whitespace-nowrap ml-4 mr-2 md:mr-6 shrink-0 hidden sm:flex">
                         <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-gray-400 rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
                         <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-orange-200 rounded-full mr-1"></span><span className="hidden md:inline">PREPARE</span></div>
                         <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-yellow-400 rounded-full mr-1"></span><span className="hidden md:inline">INTERVIEW</span></div>
