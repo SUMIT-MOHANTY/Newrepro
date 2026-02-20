@@ -1151,6 +1151,7 @@ const Dashboard = () => {
                 .replace(/\u2026/g, '...')
                 .replace(/\u2264/g, '<=')
                 .replace(/\u2265/g, '>=')
+                // eslint-disable-next-line no-control-regex
                 .replace(/[^\x00-\x7F]/g, ' ')
                 .replace(/\r/g, '')
                 .replace(/\n{3,}/g, '\n\n')
