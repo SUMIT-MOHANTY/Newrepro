@@ -1454,8 +1454,11 @@ const Dashboard = () => {
         if (!project) return;
         setCurrentView('main');
         setSelectedProjectKey(project.key);
-        if (location.pathname === '/status-dashboard') {
-            navigate('/dashboard');
+
+        // Ensure we navigate to the tokenized path instead of generic /dashboard
+        const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
+        if (location.pathname !== targetPath) {
+            navigate(targetPath);
         }
     };
 
