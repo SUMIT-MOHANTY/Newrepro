@@ -191,7 +191,7 @@ const Dashboard = () => {
     const setProjectState = (key, updater) => {
         setProjectStates(prev => {
             const current = prev[key] || getProjectState(key);
-            const next = typeof updater === 'function' ? updater(current) : { ...current, ...updater };
+            const next = typeof updater === 'function' ? { ...current, ...updater(current) } : { ...current, ...updater };
 
             return { ...prev, [key]: next };
         });
