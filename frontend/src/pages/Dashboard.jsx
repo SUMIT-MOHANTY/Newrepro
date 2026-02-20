@@ -212,8 +212,27 @@ const Dashboard = () => {
     const setUserFeedback = (v) => setProjectState(selectedProjectKey, { userFeedback: typeof v === 'function' ? v(activeState.userFeedback) : v });
     const setUserAnswers = (v) => setProjectState(selectedProjectKey, { userAnswers: typeof v === 'function' ? v(activeState.userAnswers) : v });
 
+    const location = useLocation();
+
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-    const [currentView, setCurrentView] = useState('statusDashboard');
+    const [currentView, _setCurrentView] = useState(location.pathname === '/status' ? 'statusDashboard' : 'main');
+
+    useEffect(() => {
+        if (location.pathname === '/status-dashboard') {
+            _setCurrentView('statusDashboard');
+        } else {
+            _setCurrentView('main');
+        }
+    }, [location.pathname]);
+
+    const setCurrentView = (view) => {
+        if (view === 'statusDashboard') {
+            navigate('/status-dashboard');
+        } else {
+            navigate('/dashboard');
+        }
+    };
+
     const [governanceContext, setGovernanceContext] = useState(null);
     const [roadmapData, setRoadmapData] = useState({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
     const [repoContext, setRepoContext] = useState(null);
@@ -224,7 +243,6 @@ const Dashboard = () => {
         clearAuthData();
         navigate('/login');
     }, [navigate]);
-    const location = useLocation();
 
     // Fetch history
     const fetchHistory = useCallback(async () => {
@@ -687,8 +705,6 @@ const Dashboard = () => {
             } else if (governanceResultId) {
                 setSelectedProjectKey(String(governanceResultId));
             }
-
-            setIsSidebarOpen(false);
 
             // Reconstruct result object
             setProjectState(taskKey, {
@@ -1408,7 +1424,6 @@ const Dashboard = () => {
     };
 
     const handleNewAnalysis = () => {
-        setIsSidebarOpen(false);
         setProjectState(selectedProjectKey, {
             files: [],
             textInput: '',
@@ -1427,7 +1442,6 @@ const Dashboard = () => {
 
     const handleNewProject = () => {
         setCurrentView('main');
-        setIsSidebarOpen(false);
         localStorage.removeItem('governancePassed');
         localStorage.removeItem('governanceResult');
         localStorage.removeItem('governanceContext');
@@ -1440,7 +1454,9 @@ const Dashboard = () => {
         if (!project) return;
         setCurrentView('main');
         setSelectedProjectKey(project.key);
-        setIsSidebarOpen(false);
+        if (location.pathname === '/status-dashboard') {
+            navigate('/dashboard');
+        }
     };
 
     const handleCreateRevision = async () => {
@@ -1533,7 +1549,7 @@ const Dashboard = () => {
                 )}
                 {currentView === 'statusDashboard' ? (
                     <div className="h-full overflow-auto">
-                        <StatusDashboard isSidebarOpen={isSidebarOpen} onOpenSidebar={() => setIsSidebarOpen(true)} />
+                        <StatusDashboard isSidebarOpen={isSidebarOpen} onOpenSidebar={() => setIsSidebarOpen(true)} projects={projects} />
                     </div>
                 ) : (
                     <main className="flex-1 h-full overflow-y-auto bg-gray-50 p-3 sm:p-4 md:p-8 w-full">

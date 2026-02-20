@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import {
     Send, AlertCircle, CheckCircle2, AlertTriangle,
@@ -84,6 +84,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
 ───────────────────────────────────────────────────────── */
 const GovernanceForm = () => {
     const navigate = useNavigate();
+    const location = useLocation();
     const [questions, setQuestions] = useState([]);
     const [answers, setAnswers] = useState({});
     const [projectName, setProjectName] = useState('');
@@ -122,8 +123,20 @@ const GovernanceForm = () => {
     useEffect(() => {
         fetchQuestions();
 
+        const params = new URLSearchParams(location.search);
+        const nameFromUrl = params.get('projectName');
+
+        if (nameFromUrl) {
+            setProjectName(decodeURIComponent(nameFromUrl));
+            setCurrentStep(1); // Skip Project Name step
+            // Also store it so it persists on reload
+            sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
+            // Clean up the URL
+            navigate(location.pathname, { replace: true });
+        }
+
         const savedContext = getStoredJson('governanceContext');
-        if (savedContext) {
+        if (savedContext && !nameFromUrl) {
             if (savedContext.project_name) setProjectName(savedContext.project_name);
             if (Array.isArray(savedContext.answers)) {
                 const r = {};
@@ -137,7 +150,7 @@ const GovernanceForm = () => {
 
         const savedResult = getStoredJson('governanceResult');
         if (savedResult) setResult(savedResult);
-    }, []);
+    }, [location.search, location.pathname, navigate]);
 
     /* ── API: questions ── */
     const fetchQuestions = async () => {

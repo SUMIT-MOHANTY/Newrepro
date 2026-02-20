@@ -76,8 +76,8 @@ export default function Sidebar({
                                         key={project.key}
                                         onClick={() => handleSelectProject(project)}
                                         className={`w-full flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && currentView === 'main'
-                                                ? 'bg-blue-900/40 text-blue-100 border-blue-800'
-                                                : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-white'
+                                            ? 'bg-blue-900/40 text-blue-100 border-blue-800'
+                                            : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-white'
                                             }`}
                                         title={project.name}
                                     >
@@ -102,7 +102,6 @@ export default function Sidebar({
                     <button
                         onClick={() => {
                             setCurrentView('statusDashboard');
-                            setIsSidebarOpen(false);
                         }}
                         className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-gray-300 hover:bg-gray-800 hover:text-white'
                             }`}
@@ -113,7 +112,6 @@ export default function Sidebar({
                     <button
                         onClick={() => {
                             setShowSettings(true);
-                            setIsSidebarOpen(false);
                         }}
                         className="flex items-center w-full px-4 py-2 text-sm font-medium text-gray-300 rounded-md hover:bg-gray-800 hover:text-white transition-colors mb-2"
                     >
