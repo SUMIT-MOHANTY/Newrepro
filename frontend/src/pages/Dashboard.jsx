@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
 import DOMPurify from 'dompurify';
@@ -144,6 +144,7 @@ const getProjectSidebarSubtitle = (project) => {
 
 
 const Dashboard = () => {
+    const { projectToken } = useParams();
     const [user, setUser] = useState(null);
     const [aiConfig, setAiConfig] = useState({
         apiUrl: '',
@@ -210,6 +211,7 @@ const Dashboard = () => {
 
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [governanceContext, setGovernanceContext] = useState(null);
+    const [roadmapData, setRoadmapData] = useState({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
 
     const handleLogout = useCallback(() => {
@@ -471,10 +473,11 @@ const Dashboard = () => {
             setActiveTab(requestedTab);
         }
 
-        const governanceId = params.get('governance');
+        const governanceId = projectToken || params.get('governance');
         if (governanceId) {
             setSelectedProjectKey(String(governanceId));
         }
+
         const storedGovernance = sessionStorage.getItem('governanceContext');
         if (!storedGovernance) {
             setGovernanceContext(null);
@@ -483,7 +486,8 @@ const Dashboard = () => {
 
         try {
             const parsedGovernance = JSON.parse(storedGovernance);
-            if (!governanceId || String(parsedGovernance?.result_id || '') === governanceId) {
+            const storedId = String(parsedGovernance?.project_token || parsedGovernance?.result_id || '');
+            if (!governanceId || storedId === String(governanceId)) {
                 setGovernanceContext(parsedGovernance);
             } else {
                 setGovernanceContext(null);
@@ -494,7 +498,7 @@ const Dashboard = () => {
             setGovernanceContext(null);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [location.search]);
+    }, [location.search, projectToken]);
 
     useEffect(() => {
         const projectMap = new Map();
@@ -503,10 +507,11 @@ const Dashboard = () => {
         );
 
         sortedGovernance.forEach((submission) => {
-            const key = String(submission.id);
+            const key = submission.project_token || String(submission.id);
             projectMap.set(key, {
                 key,
                 governanceResultId: submission.id,
+                projectToken: submission.project_token,
                 name: submission.project_name || `Project #${submission.id}`,
                 classification: submission.classification || 'N/A',
                 weightedScore: submission.weighted_score ?? null,
@@ -525,7 +530,17 @@ const Dashboard = () => {
 
         sortedDocuments.forEach((doc) => {
             const meta = extractProjectMetaFromDocument(doc);
-            let targetKey = meta.governanceResultId ? String(meta.governanceResultId) : null;
+            // Try matching by project_token first, then by numeric id
+            let targetKey = meta.projectToken || null;
+            if (!targetKey || !projectMap.has(targetKey)) {
+                // Try to find project by numeric governanceResultId
+                const matchedById = meta.governanceResultId
+                    ? Array.from(projectMap.values()).find(p => p.governanceResultId === meta.governanceResultId)
+                    : null;
+                if (matchedById) {
+                    targetKey = matchedById.key;
+                }
+            }
 
             if (!targetKey || !projectMap.has(targetKey)) {
                 const matchedByName = Array.from(projectMap.values()).find(
@@ -537,11 +552,12 @@ const Dashboard = () => {
             }
 
             if (!targetKey || !projectMap.has(targetKey)) {
-                targetKey = meta.governanceResultId ? String(meta.governanceResultId) : `doc-${doc.id}`;
+                targetKey = meta.projectToken || (meta.governanceResultId ? String(meta.governanceResultId) : `doc-${doc.id}`);
                 if (!projectMap.has(targetKey)) {
                     projectMap.set(targetKey, {
                         key: targetKey,
                         governanceResultId: meta.governanceResultId || null,
+                        projectToken: meta.projectToken || null,
                         name: meta.projectName,
                         classification: 'N/A',
                         weightedScore: null,
@@ -592,15 +608,19 @@ const Dashboard = () => {
             return;
         }
 
+        const preferredByToken = projectToken
+            ? projects.find((project) => project.key === projectToken || project.projectToken === projectToken)
+            : null;
+
         const preferredById = governanceContext?.result_id
-            ? projects.find((project) => project.key === String(governanceContext.result_id))
+            ? projects.find((project) => project.governanceResultId === governanceContext.result_id || project.key === String(governanceContext.result_id))
             : null;
 
         const preferredByName = governanceContext?.project_name
             ? projects.find((project) => normalizeProjectName(project.name) === normalizeProjectName(governanceContext.project_name))
             : null;
 
-        setSelectedProjectKey(preferredById?.key || preferredByName?.key || projects[0].key);
+        setSelectedProjectKey(preferredByToken?.key || preferredById?.key || preferredByName?.key || projects[0].key);
     }, [projects, selectedProjectKey, governanceContext]);
 
     useEffect(() => {
@@ -612,9 +632,26 @@ const Dashboard = () => {
     }, [selectedProject, governanceContext, loadGovernanceContextForProject]);
 
     useEffect(() => {
-
-
-    }, [selectedProjectKey]);
+        if (!selectedProjectKey) {
+            setRoadmapData({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
+            return;
+        }
+        const fetchRoadmapStep = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch(API_ENDPOINTS.GOVERNANCE_ROADMAP_STEP(selectedProjectKey), {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setRoadmapData(data);
+                }
+            } catch (e) {
+                console.error('Failed to fetch roadmap step', e);
+            }
+        };
+        fetchRoadmapStep();
+    }, [selectedProjectKey, result]);
 
     const loadHistoryItem = (doc, taskKey = selectedProjectKey) => {
         try {
@@ -1391,7 +1428,7 @@ const Dashboard = () => {
 
     const handleSelectProject = (project) => {
         if (!project) return;
-        setSelectedProjectKey(project.key);
+        navigate(`/a/${project.key}`);
         setIsSidebarOpen(false);
     };
 
@@ -1585,15 +1622,11 @@ const Dashboard = () => {
                             </div>
                         )}
 
-                        {/* ── Roadmap Header ── */}
-                        {(() => {
-                            const roadmapSteps = ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'];
-                            let roadmapStep = 0;
-                            if (governanceContext) roadmapStep = 1;
-                            if (selectedProject?.status === 'analysis_complete' && !result) roadmapStep = 2;
-                            if (result) roadmapStep = 3;
-                            return <RoadmapHeader steps={roadmapSteps} currentStep={roadmapStep} />;
-                        })()}
+                        {/* ── Roadmap Header (from API) ── */}
+                        <RoadmapHeader
+                            steps={roadmapData.steps || ['Governance', 'Upload BRD', 'AI Analysis', 'Complete']}
+                            currentStep={roadmapData.current_step ?? 0}
+                        />
 
                         {/* Landing / Upload State */}
                         {!result && (

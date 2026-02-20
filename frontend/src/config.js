@@ -25,6 +25,7 @@ export const API_ENDPOINTS = {
     GOVERNANCE_HISTORY: `${API_BASE_URL}/governance/history`,
     GOVERNANCE_RESULT: (id) => `${API_BASE_URL}/governance/result/${id}`,
     GOVERNANCE_REVISION_REASON: (id) => `${API_BASE_URL}/governance/${id}/revision-reason`,
+    GOVERNANCE_ROADMAP_STEP: (id) => `${API_BASE_URL}/governance/${id}/roadmap-step`,
 };
 
 export default {

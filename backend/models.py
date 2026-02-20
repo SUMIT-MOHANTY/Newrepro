@@ -31,6 +31,7 @@ class GovernanceResponse(Base):
     __tablename__ = "governance_responses"
 
     id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, unique=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
     project_name = Column(String, index=True)
     submission_date = Column(DateTime, default=datetime.utcnow)

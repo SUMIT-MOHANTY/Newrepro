@@ -68,6 +68,7 @@ class GovernanceDimensionScores(BaseModel):
 class GovernanceResult(BaseModel):
     """Final governance scoring result"""
     id: int
+    project_token: str
     project_name: str
     submission_date: datetime
     

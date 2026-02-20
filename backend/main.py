@@ -1,3 +1,4 @@
+import uuid
 from datetime import timedelta
 from typing import Annotated, Optional, List, Dict, Any
 
@@ -319,6 +320,7 @@ async def submit_governance_response(
     # Save response to database
     db_response = models.GovernanceResponse(
         owner_id=current_user.id,
+        project_token=str(uuid.uuid4()),
         project_name=request.project_name,
         answers=detailed_answers,
         business_value_score=scoring_result["dimension_scores"].get("Business Value & Urgency"),
@@ -339,6 +341,7 @@ async def submit_governance_response(
     # Format response
     return schemas.GovernanceResult(
         id=db_response.id,
+        project_token=db_response.project_token,
         project_name=db_response.project_name,
         submission_date=db_response.submission_date,
         dimension_scores=schemas.GovernanceDimensionScores(
@@ -374,6 +377,7 @@ async def get_governance_history(
         "submissions": [
             {
                 "id": r.id,
+                "project_token": r.project_token,
                 "project_name": r.project_name,
                 "submission_date": r.submission_date,
                 "weighted_score": r.weighted_score,
@@ -385,20 +389,24 @@ async def get_governance_history(
     }
 
 
-@app.get("/governance/result/{result_id}")
+@app.get("/governance/result/{identifier}")
 async def get_governance_result(
-    result_id: int,
+    identifier: str,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Get a specific governance scoring result.
+    Get a specific governance scoring result (by token or numeric id).
     Includes the original question answers for editing purposes.
     """
-    response = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.id == result_id,
-        models.GovernanceResponse.owner_id == current_user.id,
-    ).first()
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    
+    if identifier.isdigit():
+        response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        response = query.filter(models.GovernanceResponse.project_token == identifier).first()
     
     if not response:
         raise HTTPException(status_code=404, detail="Result not found")
@@ -426,6 +434,7 @@ async def get_governance_result(
 
     return schemas.GovernanceResult(
         id=response.id,
+        project_token=response.project_token or str(response.id),
         project_name=response.project_name,
         submission_date=response.submission_date,
         dimension_scores=schemas.GovernanceDimensionScores(
@@ -446,9 +455,9 @@ async def get_governance_result(
     )
 
 
-@app.post("/governance/{result_id}/revision-reason")
+@app.post("/governance/{identifier}/revision-reason")
 async def update_revision_reason(
-    result_id: int,
+    identifier: str,
     payload: schemas.GovernanceRevisionReason,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
@@ -456,10 +465,13 @@ async def update_revision_reason(
     """
     Update the pending revision reason attached to a project.
     """
-    response = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.id == result_id,
-        models.GovernanceResponse.owner_id == current_user.id,
-    ).first()
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    if identifier.isdigit():
+        response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        response = query.filter(models.GovernanceResponse.project_token == identifier).first()
     
     if not response:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -467,6 +479,111 @@ async def update_revision_reason(
     response.pending_revision_reason = payload.reason
     db.commit()
     return {"status": "success", "pending_revision_reason": payload.reason}
+
+
+@app.get("/governance/{identifier}/roadmap-step")
+async def get_project_roadmap_step(
+    identifier: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the current roadmap step for a project.
+
+    Steps:
+        0 - Governance  (assessment submitted)
+        1 - Upload BRD  (document uploaded for this project)
+        2 - AI Analysis (analysis completed on the document)
+        3 - Complete     (workflow finished)
+
+    The step is determined by inspecting:
+        - GovernanceResponse existence → at least step 0 complete
+        - Document rows linked to this governance result → step 1 complete
+        - analysis_result present on those documents → step 2 complete
+        - All of the above → step 3 (complete)
+    """
+    STEP_LABELS = ["Governance", "Upload BRD", "AI Analysis", "Complete"]
+
+    # 1. Check governance response exists for this user
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Step 0 is complete: governance submitted
+    current_step = 1  # user is now at "Upload BRD"
+
+    # 2. Find documents linked to this governance result
+    #    Documents store a JSON `analysis_result` field that contains
+    #    `projectMeta.governance_result_id` matching this result_id.
+    #    We also match by project name as a fallback.
+    project_name = governance.project_name or ""
+    user_documents = db.query(models.Document).filter(
+        models.Document.owner_id == current_user.id,
+    ).all()
+
+    linked_docs = []
+    for doc in user_documents:
+        if not doc.analysis_result:
+            continue
+        try:
+            import json
+            analysis = json.loads(doc.analysis_result)
+            gov_ctx = analysis.get("governanceContext") or {}
+            proj_meta = analysis.get("projectMeta") or {}
+            doc_result_id = proj_meta.get("governance_result_id") or gov_ctx.get("result_id")
+            doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
+            doc_project_name = proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
+
+            # Check matches: numeric ID, project_token or project_name
+            if (doc_result_id is not None and str(doc_result_id) == str(governance.id)) or \
+               (doc_token_id and str(doc_token_id) == str(governance.project_token)) or \
+               (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
+                linked_docs.append(doc)
+        except (json.JSONDecodeError, AttributeError):
+            continue
+
+    if linked_docs:
+        # Step 1 complete: at least one document uploaded
+        current_step = 2  # user is now at "AI Analysis"
+
+        # 3. Check if any document has a completed AI analysis
+        has_analysis = any(
+            _doc_has_completed_analysis(doc) for doc in linked_docs
+        )
+        if has_analysis:
+            current_step = 3  # Workflow complete
+
+    return {
+        "result_id": governance.id,
+        "project_token": governance.project_token or str(governance.id),
+        "project_name": governance.project_name,
+        "current_step": current_step,
+        "current_step_label": STEP_LABELS[current_step],
+        "total_steps": len(STEP_LABELS),
+        "steps": STEP_LABELS,
+        "classification": governance.classification,
+    }
+
+
+def _doc_has_completed_analysis(doc: models.Document) -> bool:
+    """Check whether a Document record has a completed AI analysis."""
+    if not doc.analysis_result:
+        return False
+    try:
+        import json
+        analysis = json.loads(doc.analysis_result)
+        # The analysis is stored under the "analysis" key inside the JSON
+        ai_analysis = analysis.get("analysis") or ""
+        return len(str(ai_analysis).strip()) > 0
+    except (json.JSONDecodeError, AttributeError):
+        return False
 
 def _lookup_selected_option(question_id: int, score: int) -> str:
     question = next(

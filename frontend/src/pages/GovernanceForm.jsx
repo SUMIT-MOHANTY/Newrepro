@@ -848,7 +848,7 @@ const GovernanceResult = ({ result, onBack }) => {
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
-                                window.location.href = '/dashboard?tab=upload&governance=' + result.id;
+                                window.location.href = `/a/${result.project_token}`;
                             }}
                             className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 transition-all active:scale-[0.97] shadow-md"
                         >
