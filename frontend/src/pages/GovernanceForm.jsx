@@ -18,35 +18,40 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
     // ── VERTICAL LAYOUT (Desktop Sidebar) ──
     if (vertical) {
         return (
-            <div className="flex flex-col w-full">
-                <div className="space-y-1">
+            <div className="flex flex-col w-full relative">
+                {/* Vertical connecting line */}
+                <div className="absolute left-[15px] top-4 bottom-4 w-[2px] bg-gradient-to-b from-blue-200 via-gray-200 to-gray-100 rounded-full" />
+                <div className="space-y-0.5">
                     {steps.map((step, idx) => {
                         const done = idx < currentStep;
                         const active = idx === currentStep;
                         return (
-                            <div key={step} className="flex items-center gap-3 py-2 group">
+                            <div key={step} className={`flex items-center gap-3.5 py-2.5 px-2 rounded-xl cursor-default transition-all duration-300 group
+                                ${active ? 'bg-gradient-to-r from-blue-50 to-indigo-50/60' : 'hover:bg-gray-50/60'}`}
+                            >
                                 {/* Indicator Circle */}
-                                <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold border-2 transition-all duration-300
-                                    ${done ? 'bg-blue-600 border-blue-600 text-white'
-                                        : active ? 'bg-white border-blue-600 text-blue-600 ring-4 ring-blue-50'
-                                            : 'bg-white border-gray-200 text-gray-400 group-hover:border-gray-300'}`}
+                                <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-300 flex-shrink-0
+                                    ${done ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
+                                        : active ? 'bg-white border-2 border-blue-500 text-blue-600 shadow-lg shadow-blue-100 ring-4 ring-blue-50'
+                                            : 'bg-gray-100 border border-gray-200 text-gray-400 group-hover:border-gray-300 group-hover:text-gray-500'}`}
                                 >
-                                    {done ? <Check className="w-4 h-4" /> : idx + 1}
+                                    {done ? <Check className="w-3.5 h-3.5" /> : idx + 1}
+                                    {active && <span className="absolute inset-0 rounded-full animate-ping bg-blue-400/20" />}
                                 </div>
                                 {/* Label */}
-                                <div className="flex flex-col">
-                                    <span className={`text-xs font-bold uppercase tracking-wider transition-colors duration-200
-                                        ${active ? 'text-blue-700' : done ? 'text-gray-700' : 'text-gray-400'}`}
+                                <div className="flex flex-col min-w-0">
+                                    <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors duration-200
+                                        ${active ? 'text-blue-600' : done ? 'text-blue-500/70' : 'text-gray-400'}`}
                                     >
                                         Step {idx + 1}
                                     </span>
-                                    <span className={`text-sm font-medium transition-colors duration-200
-                                        ${active ? 'text-gray-900' : 'text-gray-500'}`}
+                                    <span className={`text-[13px] font-semibold transition-colors duration-200 truncate
+                                        ${active ? 'text-gray-900' : done ? 'text-gray-600' : 'text-gray-400'}`}
                                     >
                                         {step}
                                     </span>
                                 </div>
-                                {/* Vertical Line Connection (visual only, handled by parent spacing, but could be added here if needed) */}
+                                {done && <Check className="w-3.5 h-3.5 text-blue-500/60 ml-auto flex-shrink-0" />}
                             </div>
                         );
                     })}
@@ -58,15 +63,17 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
     // ── HORIZONTAL LAYOUT (Mobile / Tablet) ──
     return (
         <div className="w-full mb-6">
-            <div className="flex items-center justify-between text-xs mb-2">
-                <span className="font-bold text-blue-600">Step {currentStep + 1} of {steps.length}</span>
-                <span className="text-gray-500 font-medium truncate ml-2">{steps[currentStep]}</span>
+            <div className="flex items-center justify-between text-xs mb-2.5">
+                <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Step {currentStep + 1} of {steps.length}</span>
+                <span className="text-gray-600 font-semibold truncate ml-2">{steps[currentStep]}</span>
             </div>
-            <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+            <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden shadow-inner">
                 <div
-                    className="bg-blue-600 h-full rounded-full transition-all duration-500 ease-out"
+                    className="bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-600 h-full rounded-full transition-all duration-500 ease-out relative overflow-hidden"
                     style={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
-                />
+                >
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-pulse" />
+                </div>
             </div>
         </div>
     );
@@ -218,10 +225,13 @@ const GovernanceForm = () => {
     /* ── loading / result screens ── */
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-gray-50">
-                <div className="flex flex-col items-center gap-4">
-                    <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
-                    <p className="text-gray-500 font-medium">Loading governance questionnaire…</p>
+            <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+                <div className="flex flex-col items-center gap-5">
+                    <div className="relative">
+                        <div className="w-14 h-14 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin" />
+                        <div className="absolute inset-0 w-14 h-14 border-4 border-transparent border-b-indigo-400 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
+                    </div>
+                    <p className="text-gray-500 font-semibold text-sm tracking-wide">Loading governance questionnaire…</p>
                 </div>
             </div>
         );
@@ -273,23 +283,27 @@ const GovernanceForm = () => {
 
     /* ── render ── */
     return (
-        <div className="min-h-screen bg-gray-50">
-
+        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
 
             {/* ── MAIN AREA ── */}
             <div className="px-3 sm:px-4 lg:px-6 py-4 lg:py-6 max-w-[1440px] mx-auto">
 
-                {/* Page header — compact */}
+                {/* Page header — premium */}
                 <div className="flex items-start justify-between gap-3 mb-5">
                     <div>
-                        <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-gray-900 tracking-tight">
-                            Governance Questionnaire
-                        </h1>
-                        <p className="text-gray-400 text-sm mt-0.5">
-                            {questions.length} questions · {dimensions.length} dimensions
+                        <div className="flex items-center gap-3 mb-1">
+                            <div className="w-1 h-8 rounded-full bg-gradient-to-b from-blue-500 to-indigo-600" />
+                            <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-gray-900 via-gray-800 to-gray-700 tracking-tight">
+                                Governance Questionnaire
+                            </h1>
+                        </div>
+                        <p className="text-gray-400 text-sm mt-0.5 ml-4">
+                            <span className="inline-flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                                {questions.length} questions · {dimensions.length} dimensions
+                            </span>
                         </p>
                     </div>
-
                 </div>
 
                 {/* ── Roadmap / Timeline Header ── */}
@@ -299,8 +313,13 @@ const GovernanceForm = () => {
 
                     {/* ── DESKTOP SIDEBAR (≥1024px) ── */}
                     <aside className="hidden lg:block w-64 xl:w-72 flex-shrink-0 sticky top-6 self-start">
-                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-                            <h2 className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-6">Progress</h2>
+                        <div className="bg-white/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
+                            {/* Decorative gradient accent */}
+                            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl" />
+                            <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-gray-400 mb-5 mt-1 flex items-center gap-2">
+                                <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
+                                Progress
+                            </h2>
                             <StepIndicator steps={stepLabels} currentStep={currentStep} vertical={true} />
                         </div>
                     </aside>
@@ -309,9 +328,11 @@ const GovernanceForm = () => {
                     <div className="flex-1 min-w-0 max-w-4xl">
                         {/* Error banner */}
                         {error && (
-                            <div className="rounded-lg bg-red-50 p-4 border border-red-200 text-red-700 mb-5 flex items-start gap-3">
-                                <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                                <div>{error}</div>
+                            <div className="rounded-xl bg-red-50/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
+                                <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center flex-shrink-0">
+                                    <AlertCircle className="w-4 h-4 text-red-500" />
+                                </div>
+                                <div className="text-sm font-medium pt-1">{error}</div>
                             </div>
                         )}
 
@@ -323,75 +344,88 @@ const GovernanceForm = () => {
                         {/* Wrapper: fixed min-height so nav buttons stay at a consistent position */}
                         <div className="flex flex-col min-h-[calc(100vh-14rem)]">
                             {/* Step card */}
-                            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/40 border border-white/60 overflow-hidden relative">
+                                {/* Top gradient accent line */}
+                                <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500" />
 
                                 {/* ── STEP 0: Project Name ── */}
                                 {currentStep === 0 && (
-                                    <div className="p-5 sm:p-6">
-                                        <div className="mb-5">
-                                            <h2 className="text-xl font-bold text-gray-900 mb-1">Project Details</h2>
-                                            <p className="text-gray-400 text-sm">Give your project a descriptive name.</p>
+                                    <div className="p-6 sm:p-8">
+                                        <div className="mb-6">
+                                            <h2 className="text-xl font-bold text-gray-900 mb-1.5 tracking-tight">Project Details</h2>
+                                            <p className="text-gray-400 text-sm leading-relaxed">Give your project a descriptive name to get started.</p>
                                         </div>
-                                        <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                                            Project Name <span className="text-red-500">*</span>
+                                        <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">
+                                            Project Name <span className="text-red-400">*</span>
                                         </label>
-                                        <input
-                                            type="text"
-                                            value={projectName}
-                                            onChange={(e) => setProjectName(e.target.value)}
-                                            onKeyDown={(e) => e.key === 'Enter' && goNext()}
-                                            placeholder="e.g. Customer Analytics Platform"
-                                            className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 text-gray-900 transition"
-                                        />
+                                        <div className="relative group">
+                                            <input
+                                                type="text"
+                                                value={projectName}
+                                                onChange={(e) => setProjectName(e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && goNext()}
+                                                placeholder="e.g. Customer Analytics Platform"
+                                                className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 hover:border-gray-300 font-medium"
+                                            />
+                                            <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none opacity-0 group-focus-within:opacity-100 transition-opacity">
+                                                <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                                            </div>
+                                        </div>
+                                        <p className="text-[11px] text-gray-400 mt-2 ml-1">This name will be used to identify your governance assessment.</p>
                                     </div>
                                 )}
 
                                 {/* ── STEP 1…N: Dimension questions ── */}
                                 {isDimensionStep && (
-                                    <div className="p-5 sm:p-6">
+                                    <div className="p-6 sm:p-8">
                                         {/* Dimension header */}
-                                        <div className="mb-5">
-                                            <div className="flex items-center gap-3 mb-1">
-                                                <h2 className="text-xl font-bold text-gray-900">{activeDimension}</h2>
-                                                <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded font-medium">
+                                        <div className="mb-6">
+                                            <div className="flex items-center gap-3 mb-1.5">
+                                                <h2 className="text-xl font-bold text-gray-900 tracking-tight">{activeDimension}</h2>
+                                                <span className="text-[11px] text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full font-bold border border-blue-100">
                                                     {activeQuestions.filter((q) => answers[q.id] !== undefined).length}/{activeQuestions.length}
                                                 </span>
                                             </div>
                                             {/* mini progress bar */}
-                                            <div className="w-full bg-gray-100 rounded-full h-1 mt-2">
+                                            <div className="w-full bg-gray-100 rounded-full h-1.5 mt-2 overflow-hidden">
                                                 <div
-                                                    className="bg-blue-500 h-1 rounded-full transition-all duration-300"
+                                                    className="bg-gradient-to-r from-blue-500 to-indigo-500 h-1.5 rounded-full transition-all duration-500 ease-out"
                                                     style={{ width: `${(activeQuestions.filter((q) => answers[q.id] !== undefined).length / activeQuestions.length) * 100}%` }}
                                                 />
                                             </div>
                                         </div>
 
                                         {/* Questions */}
-                                        <div className="space-y-5">
+                                        <div className="space-y-4">
                                             {activeQuestions.map((question, qIdx) => {
                                                 const answered = answers[question.id] !== undefined;
                                                 return (
                                                     <div
                                                         key={question.id}
-                                                        className={`rounded-lg border p-4 transition-all duration-200 ${answered ? 'border-blue-200 bg-blue-50/30' : 'border-gray-200 bg-white'}`}
+                                                        className={`rounded-xl border-2 p-5 transition-all duration-300 hover:shadow-md ${answered
+                                                            ? 'border-blue-200/80 bg-gradient-to-br from-blue-50/40 to-indigo-50/30 shadow-sm'
+                                                            : 'border-gray-200/80 bg-white hover:border-gray-300'}`}
                                                     >
-                                                        <div className="flex items-start gap-2.5 mb-3">
-                                                            <span className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold ${answered ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>
+                                                        <div className="flex items-start gap-3 mb-4">
+                                                            <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
+                                                                ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
+                                                                : 'bg-gray-100 text-gray-500 border border-gray-200'}`}
+                                                            >
                                                                 {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
                                                             </span>
-                                                            <h3 className="text-gray-900 font-medium text-sm leading-snug pt-0.5">{question.question}</h3>
+                                                            <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5">{question.question}</h3>
                                                         </div>
 
                                                         {/* Options — 2 cols on wider screens */}
-                                                        <div className="ml-8 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                                        <div className="ml-10 grid grid-cols-1 sm:grid-cols-2 gap-2">
                                                             {question.options.map((option) => {
                                                                 const selected = answers[question.id] === option.score;
                                                                 return (
                                                                     <label
                                                                         key={option.label}
-                                                                        className={`flex items-center gap-2 cursor-pointer rounded-lg px-3 py-2 border text-sm transition-all duration-150 ${selected
-                                                                            ? 'border-blue-500 bg-blue-50 text-blue-900 font-medium'
-                                                                            : 'border-gray-200 bg-white text-gray-600 hover:border-blue-300 hover:bg-blue-50/20'}`}
+                                                                        className={`flex items-center gap-2.5 cursor-pointer rounded-xl px-3.5 py-2.5 border-2 text-sm transition-all duration-200 group ${selected
+                                                                            ? 'border-blue-400 bg-blue-50/70 text-blue-900 font-semibold shadow-sm shadow-blue-100'
+                                                                            : 'border-gray-150 bg-gray-50/50 text-gray-600 hover:border-blue-200 hover:bg-blue-50/30 hover:text-gray-800'}`}
                                                                     >
                                                                         <input
                                                                             type="radio"
@@ -399,8 +433,14 @@ const GovernanceForm = () => {
                                                                             value={option.score}
                                                                             checked={selected}
                                                                             onChange={() => handleAnswer(question.id, option.score)}
-                                                                            className="w-3.5 h-3.5 text-blue-600 border-gray-300 focus:ring-blue-500"
+                                                                            className="sr-only"
                                                                         />
+                                                                        {/* Custom radio indicator */}
+                                                                        <span className={`flex-shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all duration-200 ${selected
+                                                                            ? 'border-blue-500 bg-blue-500' : 'border-gray-300 bg-white group-hover:border-blue-300'}`}
+                                                                        >
+                                                                            {selected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                                                        </span>
                                                                         <span>{option.label}</span>
                                                                     </label>
                                                                 );
@@ -415,17 +455,17 @@ const GovernanceForm = () => {
 
                                 {/* ── REVIEW STEP ── */}
                                 {isReviewStep && (
-                                    <div className="p-5 sm:p-6">
-                                        <div className="mb-5">
-                                            <h2 className="text-xl font-bold text-gray-900 mb-1">Review & Submit</h2>
-                                            <p className="text-gray-400 text-sm">Verify your answers, then submit.</p>
+                                    <div className="p-6 sm:p-8">
+                                        <div className="mb-6">
+                                            <h2 className="text-xl font-bold text-gray-900 mb-1.5 tracking-tight">Review & Submit</h2>
+                                            <p className="text-gray-400 text-sm leading-relaxed">Verify your answers, then submit for scoring.</p>
                                         </div>
 
                                         {/* Summary grid */}
-                                        <div className="space-y-2.5 mb-5">
-                                            <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                                        <div className="space-y-2 mb-6">
+                                            <div className="rounded-xl border-2 border-gray-200/60 bg-gradient-to-r from-gray-50 to-slate-50 px-5 py-3.5">
                                                 <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-0.5">Project</p>
-                                                <p className="text-gray-900 font-semibold text-sm">{projectName}</p>
+                                                <p className="text-gray-900 font-bold text-sm">{projectName}</p>
                                             </div>
 
                                             {dimensions.map((dim, idx) => {
@@ -435,17 +475,24 @@ const GovernanceForm = () => {
                                                 return (
                                                     <div
                                                         key={dim}
-                                                        className={`rounded-lg border px-4 py-3 flex items-center gap-3 ${allDone ? 'border-green-200 bg-green-50/30' : 'border-red-200 bg-red-50/30'}`}
+                                                        className={`rounded-xl border-2 px-5 py-3.5 flex items-center gap-3 transition-all duration-200 ${allDone
+                                                            ? 'border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 to-green-50/30'
+                                                            : 'border-red-200/60 bg-gradient-to-r from-red-50/40 to-rose-50/30'}`}
                                                     >
-                                                        <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${allDone ? 'bg-green-500 text-white' : 'bg-red-400 text-white'}`}>
+                                                        <div className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 ${allDone
+                                                            ? 'bg-gradient-to-br from-emerald-400 to-green-500 text-white shadow-sm shadow-emerald-200'
+                                                            : 'bg-gradient-to-br from-red-400 to-rose-500 text-white shadow-sm shadow-red-200'}`}
+                                                        >
                                                             {allDone ? <Check className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
                                                         </div>
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-semibold text-gray-800 truncate">{dim}</p>
-                                                            <p className="text-[11px] text-gray-500">{answered}/{qs.length} answered</p>
+                                                            <p className="text-[11px] text-gray-500 font-medium">{answered}/{qs.length} answered</p>
                                                         </div>
                                                         {!allDone && (
-                                                            <button type="button" onClick={() => { setError(''); setCurrentStep(idx + 1); }} className="text-[11px] text-blue-600 font-semibold hover:underline flex-shrink-0">Fix →</button>
+                                                            <button type="button" onClick={() => { setError(''); setCurrentStep(idx + 1); }}
+                                                                className="text-[11px] text-blue-600 font-bold hover:text-blue-700 flex-shrink-0 bg-blue-50 px-3 py-1 rounded-lg border border-blue-100 hover:border-blue-200 transition-all"
+                                                            >Fix →</button>
                                                         )}
                                                     </div>
                                                 );
@@ -456,7 +503,7 @@ const GovernanceForm = () => {
                                             type="button"
                                             onClick={handleSubmit}
                                             disabled={submitting || Object.keys(answers).length !== questions.length}
-                                            className="w-full inline-flex items-center justify-center py-3 px-6 text-sm font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-md gap-2"
+                                            className="w-full inline-flex items-center justify-center py-3.5 px-6 text-sm font-bold rounded-xl text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:via-indigo-700 hover:to-blue-800 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-lg shadow-blue-200/50 gap-2"
                                         >
                                             <Send className="w-4 h-4" />
                                             {submitting ? 'Submitting…' : 'Submit & Score'}
@@ -466,15 +513,18 @@ const GovernanceForm = () => {
                             </div>
                             {/* end of step card */}
 
-                            {/* ── NAV BUTTONS (pushed to bottom of min-height wrapper) ── */}
-                            {/* ── NAV BUTTONS (pushed to bottom of min-height wrapper) ── */}
-                            <div className="flex items-center justify-end gap-3 mt-auto pt-4 px-1">
+                            {/* ── NAV BUTTONS ── */}
+                            <div className="flex items-center justify-end gap-3 mt-auto pt-5 px-1">
                                 {currentStep === 0 ? (
-                                    <button type="button" onClick={() => navigate('/dashboard')} className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-gray-500 bg-white border border-gray-200 hover:bg-gray-50 transition shadow-sm">
+                                    <button type="button" onClick={() => navigate('/dashboard')}
+                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-gray-500 bg-white/80 backdrop-blur-sm border border-gray-200/60 hover:bg-white hover:border-gray-300 transition-all shadow-sm"
+                                    >
                                         <ChevronLeft className="w-4 h-4" /> Dashboard
                                     </button>
                                 ) : (
-                                    <button type="button" onClick={goPrev} className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-gray-500 bg-white border border-gray-200 hover:bg-gray-50 transition shadow-sm">
+                                    <button type="button" onClick={goPrev}
+                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-gray-500 bg-white/80 backdrop-blur-sm border border-gray-200/60 hover:bg-white hover:border-gray-300 transition-all shadow-sm"
+                                    >
                                         <ChevronLeft className="w-4 h-4" /> Back
                                     </button>
                                 )}
@@ -484,9 +534,9 @@ const GovernanceForm = () => {
                                         type="button"
                                         onClick={goNext}
                                         disabled={!canProceed()}
-                                        className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-sm ${canProceed()
-                                            ? 'bg-blue-600 hover:bg-blue-700 active:scale-[0.97]'
-                                            : 'bg-gray-300 cursor-not-allowed'
+                                        className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${canProceed()
+                                            ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-[0.97] shadow-blue-200/50'
+                                            : 'bg-gray-300 cursor-not-allowed shadow-none'
                                             }`}
                                     >
                                         {currentStep === dimensions.length ? 'Review' : 'Next'}

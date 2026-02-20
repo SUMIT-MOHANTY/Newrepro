@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import AIConfig from '../components/AIConfig';
+import RoadmapHeader from '../components/RoadmapHeader';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
 const parseAIResponse = (text) => {
@@ -1584,9 +1585,19 @@ const Dashboard = () => {
                             </div>
                         )}
 
+                        {/* ── Roadmap Header ── */}
+                        {(() => {
+                            const roadmapSteps = ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'];
+                            let roadmapStep = 0;
+                            if (governanceContext) roadmapStep = 1;
+                            if (selectedProject?.status === 'analysis_complete' && !result) roadmapStep = 2;
+                            if (result) roadmapStep = 3;
+                            return <RoadmapHeader steps={roadmapSteps} currentStep={roadmapStep} />;
+                        })()}
+
                         {/* Landing / Upload State */}
                         {!result && (
-                            <div className="text-center mb-10 mt-10 animate-fade-in-down">
+                            <div className="text-center mb-10 animate-fade-in-down">
                                 <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight sm:text-4xl mb-3">
                                     AI-Powered BRD Analysis
                                 </h1>
