@@ -6,6 +6,7 @@ import httpx
 from typing import Optional
 from config import settings
 import logging
+import re
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -278,12 +279,19 @@ async def analyze_document(
                 if "choices" in data and len(data["choices"]) > 0:
                     message = data["choices"][0].get("message", {})
                     content = message.get("content", "")
-                    reasoning = message.get("reasoning_content", "")
+                    reasoning_from_api = message.get("reasoning_content", "")
+                    
+                    # Clean up <think> blocks from content if present
+                    if "<think>" in content:
+                        think_match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+                        if think_match and not reasoning_from_api:
+                            reasoning_from_api = think_match.group(1).strip()
+                        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
                     
                     return {
                         "status": "success",
                         "analysis": content,
-                        "reasoning": reasoning if reasoning else None,
+                        "reasoning": reasoning_from_api if reasoning_from_api else None,
                         "model": data.get("model", model_name),
                         "usage": data.get("usage", {})
                     }
@@ -341,7 +349,7 @@ You MUST format your ONLY output as a JSON array of task objects matching this e
     "taskName": "string", // Short descriptive title
     "description": "string", // Detailed description of the work
     "assignees": [int], // Array of `user_id` numbers of the agents who will work on this
-    "wallet": int, // Estimated cost/effort from the budget
+    "wallet": int, // Estimated cost/effort from the budget (MUST be between 1 and 10)
     "deadline": "YYYY-MM-DD", // A realistic deadline within the project timeframe
     "startdate": "YYYY-MM-DD", // Start date within the project timeframe
     "task_type": "string", // Must be one of: "EPIC", "FEATURE", "STORY", "TASK", "BUG"
@@ -349,9 +357,361 @@ You MUST format your ONLY output as a JSON array of task objects matching this e
   }
 ]
 
+COMPLEXITY & BUDGET RULES:
+1. **Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
+2. **Smart Allocation**: Distribute the total project wallet smartly across all phases (EPIC, FEATURE, STORY). Higher-level epics should reflect the cumulative weight of their sub-tasks.
+3. **Budget Adherence**: Ensure the sum of all task wallets does not exceed the provided Total Budget Wallet.
+
+IMPORTANT: Each task's "wallet" value MUST be between 1 and 10 (inclusive). Never assign 0 or any value above 10.
 Do not include any other markdown, text, or explanations. Only output the JSON array.
 """
 
+BATCH_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
+You are generating tasks INCREMENTALLY for a project in batches of up to 5 tasks at a time.
+
+RULES:
+1. Generate the NEXT batch of up to 5 tasks only.
+2. DO NOT repeat any tasks that have already been created (listed below).
+3. The total wallet for this batch MUST NOT exceed the REMAINING WALLET provided.
+4. Each task's wallet MUST be between 1 and 10 (inclusive). Never assign 0 or any value above 10.
+6. Continue logically from where the previous batch left off.
+7. Ensure tasks follow a logical sequence (e.g., setup before features, features before testing).
+8. **Complexity-based Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
+9. **Smart Budgeting**: You MUST complete the entire project development within the total project wallet. Allocate points smartly so that high-priority/complex tasks get sufficient budget while still leaving enough for the remaining development (e.g., don't exhaust the budget on just the first few features).
+10. If all necessary tasks have already been created and the project breakdown is complete, return an EMPTY array: []
+
+Output ONLY a JSON array of task objects (max 5) with this structure:
+[
+  {
+    "taskName": "string",
+    "description": "string",
+    "assignees": [int],
+    "wallet": int,       // MUST be between 1 and 10
+    "deadline": "YYYY-MM-DD",
+    "startdate": "YYYY-MM-DD",
+    "task_type": "string",  // "EPIC", "FEATURE", "STORY", "TASK", or "BUG"
+    "priority": "string"    // "high", "medium", or "low"
+  }
+]
+
+If the project is fully broken down, return: []
+Do not include any other markdown, text, or explanations. Only output the JSON array.
+"""
+
+
+def _normalize_task_wallets(tasks: list, project_wallet: int) -> list:
+    """
+    Normalize task wallets so the total never exceeds the project budget.
+    Uses proportional scaling to fairly distribute the budget across tasks.
+    Each task is guaranteed a minimum wallet of 1.
+    """
+    if not tasks or project_wallet <= 0:
+        return tasks
+
+    total_allocated = sum(task.get("wallet", 0) for task in tasks)
+
+    if total_allocated <= project_wallet:
+        logger.info(f"Task wallets OK: total={total_allocated}, budget={project_wallet}")
+        return tasks
+
+    logger.warning(
+        f"Task wallets exceed budget: total={total_allocated}, budget={project_wallet}. "
+        f"Scaling down proportionally."
+    )
+
+    num_tasks = len(tasks)
+    min_reserved = num_tasks
+    distributable = max(project_wallet - min_reserved, 0)
+
+    for task in tasks:
+        original = task.get("wallet", 0)
+        if total_allocated > 0 and distributable > 0:
+            proportion = original / total_allocated
+            scaled = int(proportion * distributable)
+            task["wallet"] = max(scaled, 0) + 1
+        else:
+            task["wallet"] = 1
+
+    new_total = sum(task.get("wallet", 0) for task in tasks)
+    diff = project_wallet - new_total
+    if diff != 0 and tasks:
+        largest_task = max(tasks, key=lambda t: t.get("wallet", 0))
+        largest_task["wallet"] = max(largest_task["wallet"] + diff, 1)
+
+    final_total = sum(task.get("wallet", 0) for task in tasks)
+    logger.info(f"Wallet normalization complete: {num_tasks} tasks, total={final_total}, budget={project_wallet}")
+
+    return tasks
+
+
+def _parse_llm_task_response(content: str) -> list:
+    """Parse the LLM response content into a list of tasks, handling think tags and markdown fences."""
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    content = content.replace("```json", "").replace("```", "").strip()
+    start_idx = content.find("[")
+    end_idx = content.rfind("]")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        content = content[start_idx:end_idx + 1]
+    tasks = json.loads(content)
+    if not isinstance(tasks, list):
+        raise ValueError("LLM did not return a list")
+    # Clamp each task's wallet to 1-10
+    for task in tasks:
+        w = task.get("wallet", 1)
+        task["wallet"] = max(1, min(10, w))
+    return tasks
+
+
+CHECKLIST_GENERATION_PROMPT = """You are an expert Project Manager creating actionable checklists for development tasks.
+
+Given a list of tasks, generate a checklist (sub-items) for EACH task. The checklist items should be:
+1. Specific, actionable sub-steps required to complete the task.
+2. Contextually relevant to the task description AND to the overall project.
+3. Ordered logically (setup → implementation → testing → review).
+4. Each task should have 3 to 7 checklist items.
+5. All checklist items should start as NOT completed (completed: false).
+
+Output ONLY a JSON object where each key is the task ID (as a string) and the value is an array of checklist items:
+{
+  "1234": [
+    {"text": "Set up development environment", "completed": false},
+    {"text": "Create database schema", "completed": false},
+    {"text": "Write unit tests", "completed": false}
+  ],
+  "5678": [
+    {"text": "Design API endpoints", "completed": false},
+    {"text": "Implement authentication", "completed": false}
+  ]
+}
+
+Do not include any other markdown, text, or explanations. Only output the JSON object.
+"""
+
+
+async def generate_checklists_for_tasks(
+    tasks_with_ids: list,
+    analysis_report: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
+    """
+    Generate checklists for a batch of tasks using the LLM.
+    
+    Args:
+        tasks_with_ids: List of dicts, each with 'id', 'taskName', 'description', 'task_type'
+        analysis_report: The BRD analysis for project context
+    
+    Returns:
+        Dict mapping task_id (str) -> list of checklist items
+    """
+    url = api_url or settings.ai_api_url
+    key = api_key or settings.ai_api_key
+    model_name = model or settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        raise Exception("API key not configured.")
+
+    tasks_summary = json.dumps(
+        [
+            {
+                "id": t.get("id"),
+                "taskName": t.get("taskName"),
+                "description": t.get("description"),
+                "task_type": t.get("task_type"),
+                "priority": t.get("priority"),
+            }
+            for t in tasks_with_ids
+        ],
+        indent=2,
+    )
+
+    text_content = (
+        f"TASKS TO CREATE CHECKLISTS FOR:\n{tasks_summary}\n\n"
+        f"PROJECT CONTEXT (BRD Analysis):\n{analysis_report[:3000]}\n\n"
+        f"Generate detailed, contextually relevant checklists for each task above."
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": CHECKLIST_GENERATION_PROMPT},
+            {"role": "user", "content": text_content},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    logger.info(f"Generating checklists for {len(tasks_with_ids)} tasks")
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+
+            data = response.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0].get("message", {}).get("content", "")
+                # Clean response
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+                content = content.replace("```json", "").replace("```", "").strip()
+                # Extract JSON object
+                start_idx = content.find("{")
+                end_idx = content.rfind("}")
+                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                    content = content[start_idx:end_idx + 1]
+                checklists = json.loads(content)
+                if not isinstance(checklists, dict):
+                    raise ValueError("LLM did not return a dict for checklists")
+                logger.info(f"Generated checklists for {len(checklists)} tasks")
+                return checklists
+            else:
+                raise Exception("No response from AI model for checklist generation")
+
+    except Exception as e:
+        logger.error(f"Checklist generation failed: {str(e)}")
+        return {}
+
+
+async def generate_task_batch(
+    analysis_report: str,
+    agents: list,
+    project_deadline: str,
+    remaining_wallet: int,
+    total_project_wallet: int,
+    already_created_tasks: list,
+    batch_number: int,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> list:
+    """
+    Generate the NEXT batch of up to 5 tasks using the LLM.
+    Provides context of previously created tasks so the LLM continues
+    without repeating or starting over.
+
+    Returns an empty list when the LLM considers the breakdown complete
+    or when the remaining wallet is exhausted.
+    """
+    url = api_url or settings.ai_api_url
+    key = api_key or settings.ai_api_key
+    model_name = model or settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        raise Exception("API key not configured.")
+
+    if remaining_wallet <= 0:
+        logger.info(f"[Batch {batch_number}] No remaining wallet. Stopping task generation.")
+        return []
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Build context summary of already-created tasks
+    if already_created_tasks:
+        created_summary = json.dumps(
+            [
+                {
+                    "taskName": t.get("taskName"),
+                    "task_type": t.get("task_type"),
+                    "wallet": t.get("wallet"),
+                    "startdate": t.get("startdate"),
+                    "deadline": t.get("deadline"),
+                }
+                for t in already_created_tasks
+            ],
+            indent=2,
+        )
+        wallet_used = sum(t.get("wallet", 0) for t in already_created_tasks)
+        context_block = (
+            f"\n\nALREADY CREATED TASKS ({len(already_created_tasks)} tasks, wallet used: {wallet_used}):\n"
+            f"{created_summary}\n"
+        )
+    else:
+        context_block = "\n\nNo tasks have been created yet. Start from the beginning.\n"
+
+    text_content = (
+        f"PROJECT CONSTRAINTS:\n"
+        f"- Current Date (Today): {current_date}\n"
+        f"- Project Deadline: {project_deadline}\n"
+        f"- TOTAL Project Wallet: {total_project_wallet}\n"
+        f"- REMAINING Wallet Budget: {remaining_wallet}\n"
+        f"- Available Agents: {json.dumps(agents)}\n"
+        f"- Batch Number: {batch_number} (generating tasks in batches of 5)\n"
+        f"{context_block}\n"
+        f"BRD ANALYSIS REPORT:\n"
+        f"{analysis_report}\n\n"
+        f"Generate the NEXT batch of up to 5 tasks. "
+        f"The total wallet for this batch must NOT exceed {remaining_wallet}. "
+        f"If all tasks are already covered, return an empty array []."
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": BATCH_TASK_PROMPT},
+            {"role": "user", "content": text_content},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    logger.info(f"[Batch {batch_number}] Requesting next batch. Remaining wallet: {remaining_wallet}")
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            logger.info(f"[Batch {batch_number}] LLM response status: {response.status_code}")
+            response.raise_for_status()
+
+            data = response.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0].get("message", {}).get("content", "")
+                tasks = _parse_llm_task_response(content)
+
+                if not tasks:
+                    logger.info(f"[Batch {batch_number}] LLM returned empty — task generation complete.")
+                    return []
+
+                # Normalize this batch against the remaining wallet
+                tasks = _normalize_task_wallets(tasks, remaining_wallet)
+
+                logger.info(
+                    f"[Batch {batch_number}] Generated {len(tasks)} tasks, "
+                    f"batch wallet: {sum(t.get('wallet', 0) for t in tasks)}"
+                )
+                return tasks
+            else:
+                raise Exception("No response from AI model")
+
+    except httpx.HTTPStatusError as e:
+        import traceback
+        traceback.format_exc()
+        try:
+            error_body = e.response.json()
+        except Exception:
+            error_body = e.response.text
+        raise Exception(
+            f"[Batch {batch_number}] Task generation failed. HTTP {e.response.status_code}: {error_body}"
+        )
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        raise Exception(
+            f"[Batch {batch_number}] Task generation failed: {str(e)}\n\nTraceback:\n{error_details}"
+        )
+
+
+# Keep the legacy single-shot function for backward compatibility
 async def generate_tasks_for_project(
     analysis_report: str,
     agents: list,
@@ -359,9 +719,9 @@ async def generate_tasks_for_project(
     project_wallet: int,
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
 ) -> list:
-    """Uses the LLM to auto-generate tasks based on an analysis report and available agents."""
+    """Legacy: generates all tasks in a single LLM call. Use generate_task_batch for incremental generation."""
     url = api_url or settings.ai_api_url
     key = api_key or settings.ai_api_key
     model_name = model or settings.ai_model
@@ -385,59 +745,45 @@ async def generate_tasks_for_project(
     payload = {
         "model": model_name,
         "messages": [
-            {
-                "role": "system",
-                "content": TASK_GENERATION_PROMPT
-            },
-            {
-                "role": "user",
-                "content": text_content
-            }
+            {"role": "system", "content": TASK_GENERATION_PROMPT},
+            {"role": "user", "content": text_content},
         ],
         "stream": False,
-        "chat_template_kwargs": {
-            "thinking": False
-        }
+        "chat_template_kwargs": {"thinking": False},
     }
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}"
+        "Authorization": f"Bearer {key}",
     }
 
     logger.info(f"Starting AI Task Generation with model '{model_name}'")
     logger.info(f"Passing {len(agents)} agents to LLM context.")
-    
+
     try:
-        # Increase timeout drastically (e.g. 5 minutes) as mapping a whole project to tasks can take a long time for the LLM
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(url, json=payload, headers=headers)
-            
             logger.info(f"Received LLM response with status {response.status_code}")
-            
             response.raise_for_status()
-            
+
             data = response.json()
             if "choices" in data and len(data["choices"]) > 0:
                 content = data["choices"][0].get("message", {}).get("content", "")
-                content = content.replace("```json", "").replace("```", "").strip()
-                try:
-                     tasks = json.loads(content)
-                     if not isinstance(tasks, list):
-                         raise ValueError("LLM did not return a list")
-                     return tasks
-                except Exception as e:
-                     raise Exception(f"Failed to parse LLM response into tasks array: {e}\nResponse was: {content}")
+                tasks = _parse_llm_task_response(content)
+                tasks = _normalize_task_wallets(tasks, project_wallet)
+                return tasks
             else:
                 raise Exception("No response from AI model")
     except httpx.HTTPStatusError as e:
         import traceback
-        error_details = traceback.format_exc()
+        traceback.format_exc()
         try:
-             error_body = e.response.json()
-        except:
-             error_body = e.response.text
-        raise Exception(f"Failed during task generation. HTTP Status: {e.response.status_code}. Response: {error_body}")
+            error_body = e.response.json()
+        except Exception:
+            error_body = e.response.text
+        raise Exception(
+            f"Task generation failed. HTTP {e.response.status_code}: {error_body}"
+        )
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()

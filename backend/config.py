@@ -22,7 +22,8 @@ class Settings(BaseSettings):
     # AI API Settings (OpenAI-compatible)
     ai_api_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
     ai_api_key: Optional[str] = None
-    ai_model: str = "qwen/qwen3.5-397b-a17b"
+    # ai_model: str = "qwen/qwen3.5-397b-a17b"
+    ai_model: str = "minimaxai/minimax-m2.1"
 
     # GitHub OAuth
     github_client_id: Optional[str] = None

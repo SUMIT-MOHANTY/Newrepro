@@ -90,13 +90,21 @@ class TaskManagementService:
         """Create a new task in external task management API."""
         return await self._make_request("POST", "/api/agent/tasks/", json=task_data)
 
-    async def get_tasks(self) -> dict:
+    async def get_tasks(self, page: int = None) -> dict:
         """Fetch the list of generated tasks from the external task management API."""
-        return await self._make_request("GET", "/api/agent/tasks-list")
+        endpoint = "/api/agent/tasks-list"
+        if page:
+            endpoint += f"?page={page}"
+        return await self._make_request("GET", endpoint)
 
     async def get_project_info(self) -> dict:
         """Fetch project info (deadline, wallet, team) from the external task management API."""
         return await self._make_request("GET", "/api/agent/project-info/")
+
+    async def add_checklist_to_task(self, task_id: int, checklist_items: list) -> dict:
+        """Add checklist items to a task via the external task management API."""
+        payload = {"checklistItems": checklist_items}
+        return await self._make_request("PUT", f"/api/agent/tasks/{task_id}/checklist/", json=payload)
 
 task_service = TaskManagementService()
 

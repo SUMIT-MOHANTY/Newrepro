@@ -18,32 +18,61 @@ export default function StatusDashboard({ projects = [] }) {
     // Task List States
     const [taskList, setTaskList] = useState([]);
     const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [taskListError, setTaskListError] = useState(null);
+    const [nextPageUrl, setNextPageUrl] = useState(null);
+    const [totalTaskCount, setTotalTaskCount] = useState(0);
 
     // Project Info from external API
     const [projectInfo, setProjectInfo] = useState(null);
 
-    // Fetch tasks from the external API
-    const fetchTasks = useCallback(async () => {
-        setIsLoadingTasks(true);
+    // Helper: extract page number from a next URL like "http://...?page=2"
+    const getPageFromUrl = (url) => {
+        if (!url) return null;
+        try {
+            const u = new URL(url);
+            return u.searchParams.get('page');
+        } catch {
+            const match = url.match(/[?&]page=(\d+)/);
+            return match ? match[1] : null;
+        }
+    };
+
+    // Fetch tasks from the external API (supports pagination)
+    const fetchTasks = useCallback(async (append = false, page = null) => {
+        if (append) {
+            setIsLoadingMore(true);
+        } else {
+            setIsLoadingTasks(true);
+        }
         setTaskListError(null);
         try {
             const token = localStorage.getItem('token');
             const { API_ENDPOINTS } = await import('../config.js');
-            const res = await fetch(API_ENDPOINTS.AGENT_TASKS, {
+            let url = API_ENDPOINTS.AGENT_TASKS;
+            if (page) {
+                url += `?page=${page}`;
+            }
+            const res = await fetch(url, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
                 const data = await res.json();
-                // Handle both array response and object with results/count
                 if (Array.isArray(data)) {
-                    setTaskList(data);
+                    // Non-paginated response
+                    setTaskList(append ? prev => [...prev, ...data] : data);
                     setGeneratedTasksCount(data.length);
+                    setTotalTaskCount(data.length);
+                    setNextPageUrl(null);
                 } else if (data && Array.isArray(data.results)) {
-                    setTaskList(data.results);
+                    // Paginated response
+                    setTaskList(append ? prev => [...prev, ...data.results] : data.results);
+                    setTotalTaskCount(data.count || data.results.length);
                     setGeneratedTasksCount(data.count || data.results.length);
+                    setNextPageUrl(data.next || null);
                 } else if (data && typeof data.count === 'number') {
                     setGeneratedTasksCount(data.count);
+                    setTotalTaskCount(data.count);
                 }
             } else {
                 const errData = await res.json().catch(() => ({}));
@@ -54,6 +83,7 @@ export default function StatusDashboard({ projects = [] }) {
             setTaskListError(e.message);
         } finally {
             setIsLoadingTasks(false);
+            setIsLoadingMore(false);
         }
     }, []);
 
@@ -216,6 +246,7 @@ export default function StatusDashboard({ projects = [] }) {
         } finally {
             setIsGeneratingTasks(false);
         }
+    };
 
     // ── Agent Card Config ────────────────────────────────────────────
     const agentConfig = {
@@ -458,8 +489,8 @@ export default function StatusDashboard({ projects = [] }) {
                             onClick={() => handleRunAgent(agent.id)}
                             disabled={!canRun || runningAgent === agent.id}
                             className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${canRun
-                                    ? `bg-gradient-to-r ${config.gradient} hover:shadow-md hover:-translate-y-0.5`
-                                    : 'bg-gray-300 cursor-not-allowed'
+                                ? `bg-gradient-to-r ${config.gradient} hover:shadow-md hover:-translate-y-0.5`
+                                : 'bg-gray-300 cursor-not-allowed'
                                 }`}
                             title={!canRun ? 'No pending tasks available' : `Run ${agent.name}`}
                         >
@@ -1010,7 +1041,7 @@ export default function StatusDashboard({ projects = [] }) {
                                 <div>
                                     <h3 className="text-sm font-bold text-gray-900">Generated Tasks</h3>
                                     <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
-                                        {taskList.length} task{taskList.length !== 1 ? 's' : ''} from AI Auto-Generator
+                                        {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
                                     </p>
                                 </div>
                             </div>
@@ -1172,6 +1203,26 @@ export default function StatusDashboard({ projects = [] }) {
                                     </div>
                                 );
                             })}
+
+                            {/* Load More Button */}
+                            {nextPageUrl && (
+                                <div className="px-6 py-4 flex justify-center border-t border-gray-100">
+                                    <button
+                                        onClick={() => {
+                                            const page = getPageFromUrl(nextPageUrl);
+                                            if (page) fetchTasks(true, page);
+                                        }}
+                                        disabled={isLoadingMore}
+                                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {isLoadingMore ? (
+                                            <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
+                                        ) : (
+                                            <><ChevronRight className="w-4 h-4" /> Load More ({taskList.length} of {totalTaskCount})</>
+                                        )}
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1233,5 +1284,4 @@ export default function StatusDashboard({ projects = [] }) {
             )}
         </div>
     );
-}
 }
