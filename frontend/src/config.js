@@ -35,16 +35,18 @@ export const API_ENDPOINTS = {
     GITHUB_REPOS: `${API_BASE_URL}/github/repos`,
     GITHUB_REPO_CONTEXT: `${API_BASE_URL}/github/repo-context`,
 
-    // Agents
-    AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
-    AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,
-    AGENT_CREATE_TASK: `${API_BASE_URL}/api/agent/tasks/`,
-    AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`,
+    // AI Agents (Backend Docker Execution)
     AGENTS: `${API_BASE_URL}/agents`,
     AGENTS_TASKS: `${API_BASE_URL}/agents/tasks`,
     AGENT_STATUS: (agentId) => `${API_BASE_URL}/agents/${agentId}/status`,
     AGENT_RUN: (agentId) => `${API_BASE_URL}/agents/${agentId}/run`,
     AGENT_RESET: (agentId) => `${API_BASE_URL}/agents/${agentId}/reset`,
+
+    // External Task Management API
+    AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
+    AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,
+    AGENT_CREATE_TASK: `${API_BASE_URL}/api/agent/tasks/`,
+    AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`,
 };
 
 export default {

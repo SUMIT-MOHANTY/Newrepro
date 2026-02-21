@@ -799,284 +799,6 @@ async def github_repo_context(
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
 
 
-# ─────────────────────────────── Task Management Integration ──────────────────────────
-
-from task_service import task_service
-
-@app.get("/api/agents/")
-async def get_agents(
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """
-    Fetch the list of agents from the external task management API.
-    """
-    try:
-        agents = await task_service.get_agents()
-        return agents
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch agents: {e}")
-
-class AgentProjectCreate(BaseModel):
-    name: str
-    deadline: str
-    project_wallet: int
-    team: List[int]
-
-@app.post("/api/agent/projects/")
-async def create_agent_project(
-    project: AgentProjectCreate,
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """
-    Create a new project in the external task management API.
-    """
-    try:
-        result = await task_service.create_project(project.dict())
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create project: {e}")
-
-class AgentTaskCreate(BaseModel):
-    taskName: str
-    description: str
-    assignees: List[int]
-    wallet: int
-    deadline: str
-    startdate: str
-    task_type: str
-    priority: str
-
-@app.post("/api/agent/tasks/")
-async def create_agent_task(
-    task: AgentTaskCreate,
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """
-    Create a new task in the external task management API.
-    """
-    try:
-        result = await task_service.create_task(task.dict())
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
-
-@app.get("/api/agent/tasks-list/")
-async def get_agent_tasks(
-    current_user: models.User = Depends(auth.get_current_user),
-    page: int = None,
-):
-    """
-    Fetch the list of tasks from the external task management API (paginated).
-    """
-    try:
-        tasks = await task_service.get_tasks(page=page)
-        return tasks
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {e}")
-
-@app.get("/api/agent/project-info/")
-async def get_agent_project_info(
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """
-    Fetch project info (deadline, wallet, team) from the external task management API.
-    """
-    try:
-        info = await task_service.get_project_info()
-        return info
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {e}")
-
-class AutoGenerateRequest(BaseModel):
-    project_token: str
-
-@app.post("/api/agent/auto-generate/")
-async def auto_generate_project_tasks(
-    request: AutoGenerateRequest,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Auto-generate tasks incrementally in batches of 5.
-    After every 5 tasks created, re-fetches the project wallet from the external API.
-    Each LLM call gets context of previously generated tasks so it continues
-    without repeating or starting over.
-    """
-    MAX_BATCHES = 20  # Safety cap to prevent infinite loops
-
-    try:
-        # 1. Fetch initial project info from external API
-        project_info = await task_service.get_project_info()
-        project_data = project_info.get("project", {})
-        project_deadline = project_data.get("deadline", "2026-12-31")
-        project_wallet = project_data.get("project_wallet", 100)
-
-        # 2. Fetch the governance response and BRD analysis from DB
-        gov_response = db.query(models.GovernanceResponse).filter(
-            models.GovernanceResponse.project_token == request.project_token,
-            models.GovernanceResponse.owner_id == current_user.id
-        ).first()
-
-        if not gov_response:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        user_documents = db.query(models.Document).filter(
-            models.Document.owner_id == current_user.id
-        ).all()
-
-        analysis_report = ""
-        project_name = gov_response.project_name or ""
-
-        for doc in user_documents:
-            if not doc.analysis_result:
-                continue
-            import json as json_mod
-            try:
-                analysis = json_mod.loads(doc.analysis_result)
-                gov_ctx = analysis.get("governanceContext") or {}
-                proj_meta = analysis.get("projectMeta") or {}
-                doc_result_id = proj_meta.get("governance_result_id") or gov_ctx.get("result_id")
-                doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
-                doc_project_name = proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
-
-                if (doc_result_id is not None and str(doc_result_id) == str(gov_response.id)) or \
-                   (doc_token_id and str(doc_token_id) == str(gov_response.project_token)) or \
-                   (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
-                    analysis_report = analysis.get("analysis", "")
-                    if analysis_report:
-                        break
-            except (ValueError, AttributeError):
-                continue
-
-        if not analysis_report:
-            raise HTTPException(status_code=400, detail="No BRD analysis found for this project.")
-
-        # 3. Fetch Agents from external API
-        team_members = project_info.get("team_members", [])
-        if team_members:
-            agents = team_members
-        else:
-            agents = await task_service.get_agents()
-
-        agent_ids = [m.get("id") or m.get("user_id") for m in agents if m.get("id") or m.get("user_id")]
-        if not agent_ids:
-            raise HTTPException(status_code=400, detail="No active agents found in the external system.")
-
-        # 4. Incremental batch task generation loop
-        all_created_tasks = []       # Tasks successfully created via external API
-        all_generated_tasks = []     # Task data generated by LLM (for context)
-        remaining_wallet = project_wallet
-        batch_number = 0
-        tasks_since_last_wallet_check = 0
-
-        while batch_number < MAX_BATCHES:
-            batch_number += 1
-
-            # Generate the next batch of up to 5 tasks
-            batch_tasks = await ai_service.generate_task_batch(
-                analysis_report=analysis_report,
-                agents=agents,
-                project_deadline=project_deadline,
-                remaining_wallet=remaining_wallet,
-                total_project_wallet=project_wallet,
-                already_created_tasks=all_generated_tasks,
-                batch_number=batch_number,
-            )
-
-            # If LLM returns empty array, project breakdown is complete
-            if not batch_tasks:
-                break
-
-            # Create tasks one by one via external API
-            batch_created_with_ids = []  # Track created tasks with IDs for checklist
-            for task_data in batch_tasks:
-                # Safety: clamp if this task's wallet exceeds remaining
-                task_wallet = task_data.get("wallet", 0)
-                if task_wallet > remaining_wallet:
-                    task_data["wallet"] = max(remaining_wallet, 1)
-
-                if remaining_wallet <= 0:
-                    break
-
-                try:
-                    res = await task_service.create_task(task_data)
-                    all_created_tasks.append(res)
-                    # Merge task_data with the ID from the API response
-                    task_with_id = {**task_data, "id": res.get("id")}
-                    batch_created_with_ids.append(task_with_id)
-                    all_generated_tasks.append(task_data)
-                    remaining_wallet -= task_data.get("wallet", 0)
-                    tasks_since_last_wallet_check += 1
-                except Exception as task_err:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        f"Failed to create task '{task_data.get('taskName')}': {task_err}"
-                    )
-
-            # Generate and add checklists for this batch of created tasks
-            if batch_created_with_ids:
-                try:
-                    checklists = await ai_service.generate_checklists_for_tasks(
-                        tasks_with_ids=batch_created_with_ids,
-                        analysis_report=analysis_report,
-                    )
-                    for task_info in batch_created_with_ids:
-                        task_id = task_info.get("id")
-                        if task_id and str(task_id) in checklists:
-                            checklist_items = checklists[str(task_id)]
-                            try:
-                                await task_service.add_checklist_to_task(task_id, checklist_items)
-                            except Exception as cl_err:
-                                import logging
-                                logging.getLogger(__name__).warning(
-                                    f"Failed to add checklist to task {task_id}: {cl_err}"
-                                )
-                except Exception as checklist_err:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        f"Checklist generation failed for batch {batch_number}: {checklist_err}"
-                    )
-
-            # After every 5 tasks created, re-fetch the project wallet
-            if tasks_since_last_wallet_check >= 5:
-                try:
-                    refreshed_info = await task_service.get_project_info()
-                    refreshed_wallet = refreshed_info.get("project", {}).get("project_wallet", project_wallet)
-                    wallet_used = sum(t.get("wallet", 0) for t in all_generated_tasks)
-                    remaining_wallet = refreshed_wallet - wallet_used
-                    project_wallet = refreshed_wallet
-                    tasks_since_last_wallet_check = 0
-                    import logging
-                    logging.getLogger(__name__).info(
-                        f"Wallet refreshed: total={refreshed_wallet}, used={wallet_used}, remaining={remaining_wallet}"
-                    )
-                except Exception:
-                    tasks_since_last_wallet_check = 0
-
-            # Stop if budget is exhausted
-            if remaining_wallet <= 0:
-                break
-
-        total_wallet_used = sum(t.get("wallet", 0) for t in all_generated_tasks)
-
-        return {
-            "status": "success",
-            "message": f"Successfully created {len(all_created_tasks)} tasks in {batch_number} batch(es).",
-            "tasks_created": len(all_created_tasks),
-            "batches_used": batch_number,
-            "project_deadline": project_deadline,
-            "project_wallet": project_wallet,
-            "total_wallet_allocated": total_wallet_used,
-            "remaining_wallet": max(project_wallet - total_wallet_used, 0),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 # ═══════════════════════════════ AI AGENTS ═══════════════════════════════════
 
 # Seed sample tasks on startup
@@ -1170,3 +892,181 @@ async def reset_agent(
         return {"agent": agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+# ─────────────────────────────── Task Management Integration ──────────────────────────
+
+from task_service import task_service
+
+@app.get("/api/agents/")
+async def get_external_agents(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Fetch the list of agents from the external task management API."""
+    try:
+        agents = await task_service.get_agents()
+        return agents
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch agents: {e}")
+
+class AgentProjectCreate(BaseModel):
+    name: str
+    deadline: str
+    project_wallet: int
+    team: List[int]
+
+@app.post("/api/agent/projects/")
+async def create_agent_project(
+    project: AgentProjectCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Create a new project in the external task management API."""
+    try:
+        result = await task_service.create_project(project.dict())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create project: {e}")
+
+class AgentTaskCreate(BaseModel):
+    taskName: str
+    description: str
+    assignees: List[int]
+    wallet: int
+    deadline: str
+    startdate: str
+    task_type: str
+    priority: str
+
+@app.post("/api/agent/tasks/")
+async def create_external_agent_task(
+    task: AgentTaskCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Create a new task in the external task management API."""
+    try:
+        result = await task_service.create_task(task.dict())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
+
+@app.get("/api/agent/tasks-list/")
+async def get_external_agent_tasks(
+    current_user: models.User = Depends(auth.get_current_user),
+    page: int = None,
+):
+    """
+    Fetch the list of tasks from the external task management API.
+    """
+    try:
+        tasks = await task_service.get_tasks(page=page)
+        return tasks
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {e}")
+
+@app.get("/api/agent/project-info/")
+async def get_agent_project_info(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Fetch project info (deadline, wallet, team) from the external task management API."""
+    try:
+        info = await task_service.get_project_info()
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {e}")
+
+class AutoGenerateRequest(BaseModel):
+    project_token: str
+
+@app.post("/api/agent/auto-generate/")
+async def auto_generate_project_tasks(
+    request: AutoGenerateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Auto-generate tasks based on a BRD analysis, 
+    using real project deadline and wallet from the external API.
+    """
+    try:
+        # 1. Fetch initial project info from external API
+        project_info = await task_service.get_project_info()
+        project_data = project_info.get("project", {})
+        project_deadline = project_data.get("deadline", "2026-12-31")
+        project_wallet = project_data.get("project_wallet", 100)
+
+        # 2. Fetch the governance response and BRD analysis from DB
+        gov_response = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == request.project_token,
+            models.GovernanceResponse.owner_id == current_user.id
+        ).first()
+
+        if not gov_response:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        user_documents = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id
+        ).all()
+
+        analysis_report = ""
+        project_name = gov_response.project_name or ""
+
+        for doc in user_documents:
+            if not doc.analysis_result:
+                continue
+            import json as json_mod
+            try:
+                analysis = json_mod.loads(doc.analysis_result)
+                gov_ctx = analysis.get("governanceContext") or {}
+                proj_meta = analysis.get("projectMeta") or {}
+                doc_result_id = proj_meta.get("governance_result_id") or gov_ctx.get("result_id")
+                doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
+                doc_project_name = proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
+
+                if (doc_result_id is not None and str(doc_result_id) == str(gov_response.id)) or \
+                   (doc_token_id and str(doc_token_id) == str(gov_response.project_token)) or \
+                   (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
+                    analysis_report = analysis.get("analysis", "")
+                    if analysis_report:
+                        break
+            except (ValueError, AttributeError):
+                continue
+
+        if not analysis_report:
+            raise HTTPException(status_code=400, detail="No BRD analysis found for this project.")
+
+        # 3. Fetch Agents from external API
+        team_members = project_info.get("team_members", [])
+        if team_members:
+            agents = team_members
+        else:
+            agents = await task_service.get_agents()
+            agent_ids = [agent.get("user_id") for agent in agents if "user_id" in agent]
+        
+        if not agent_ids:
+            raise HTTPException(status_code=400, detail="No active agents found in the external system.")
+
+        # 4. Use LLM to generate the tasks
+        tasks_to_create = await ai_service.generate_tasks_for_project(
+            analysis_report=analysis_report,
+            agents=agents,
+            project_deadline=project_deadline,
+            project_wallet=project_wallet
+        )
+        
+        created_tasks = []
+        for task_data in tasks_to_create:
+            res = await task_service.create_task(task_data)
+            created_tasks.append(res)
+            
+        return {
+             "status": "success",
+             "message": f"Successfully created {len(created_tasks)} tasks.",
+             "tasks_created": len(created_tasks),
+             "project_deadline": project_deadline,
+             "project_wallet": project_wallet
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
