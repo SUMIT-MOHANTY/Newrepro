@@ -34,6 +34,13 @@ export const API_ENDPOINTS = {
     GITHUB_DISCONNECT: `${API_BASE_URL}/github/disconnect`,
     GITHUB_REPOS: `${API_BASE_URL}/github/repos`,
     GITHUB_REPO_CONTEXT: `${API_BASE_URL}/github/repo-context`,
+
+    // Agents
+    AGENTS: `${API_BASE_URL}/agents`,
+    AGENTS_TASKS: `${API_BASE_URL}/agents/tasks`,
+    AGENT_STATUS: (agentId) => `${API_BASE_URL}/agents/${agentId}/status`,
+    AGENT_RUN: (agentId) => `${API_BASE_URL}/agents/${agentId}/run`,
+    AGENT_RESET: (agentId) => `${API_BASE_URL}/agents/${agentId}/reset`,
 };
 
 export default {

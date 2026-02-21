@@ -15,6 +15,7 @@ import ingestion
 import ai_service
 import governance_scoring
 import github_service
+import agent_service
 from database import engine, get_db
 from config import settings
 
@@ -792,3 +793,98 @@ async def github_repo_context(
         return {"context": context, "repo": f"{payload.owner}/{payload.repo}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
+
+
+# ═══════════════════════════════ AI AGENTS ═══════════════════════════════════
+
+# Seed sample tasks on startup
+@app.on_event("startup")
+async def startup_event():
+    agent_service.seed_sample_tasks()
+
+
+class CreateTaskRequest(BaseModel):
+    title: str
+    description: str
+    priority: str = "medium"
+
+
+@app.get("/agents")
+async def list_agents(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get status of all AI agents."""
+    return {"agents": agent_service.get_all_agents()}
+
+
+@app.get("/agents/tasks")
+async def get_pending_tasks(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get all pending tasks waiting to be picked up by agents."""
+    return {
+        "pending_tasks": agent_service.get_pending_tasks(),
+        "completed_tasks": agent_service.completed_tasks,
+    }
+
+
+@app.post("/agents/tasks")
+async def create_agent_task(
+    request: CreateTaskRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Create a new pending task for agents to pick up."""
+    task = agent_service.create_task(
+        title=request.title,
+        description=request.description,
+        priority=request.priority,
+    )
+    return {"task": task}
+
+
+@app.get("/agents/{agent_id}/status")
+async def get_agent_status(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get the current status and details of a specific agent."""
+    try:
+        agent = agent_service.get_agent_status(agent_id)
+        return {"agent": agent}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/agents/{agent_id}/run")
+async def run_agent(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Trigger an idle agent to pick a pending task and start working on it.
+    The agent will:
+    1. Pick the next pending task from the queue
+    2. Call the AI model to understand the task and generate code
+    3. Run the generated code in a Python subprocess
+    4. Return the results
+    """
+    try:
+        result = await agent_service.run_agent(agent_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
+
+
+@app.post("/agents/{agent_id}/reset")
+async def reset_agent(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Reset an agent back to idle state."""
+    try:
+        agent = agent_service.reset_agent(agent_id)
+        return {"agent": agent}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
