@@ -12,7 +12,6 @@ export default function StatusDashboard({ projects = [] }) {
 
     // ── Agent State (Docker Agents) ──────────────────────────────────
     const [agents, setAgents] = useState([]);
-    const [loadingAgents, setLoadingAgents] = useState(true);
     const [runningAgent, setRunningAgent] = useState(null);
     const [showLogModal, setShowLogModal] = useState(null);
 
@@ -35,6 +34,9 @@ export default function StatusDashboard({ projects = [] }) {
     // ── Project Info State ───────────────────────────────────────────
     const [projectInfo, setProjectInfo] = useState(null);
 
+    // ── Dashboard Data State ─────────────────────────────────────────
+    const [dashboardData, setDashboardData] = useState(null);
+
     const token = localStorage.getItem('token');
 
     // ── Fetch agents (Docker agent backend) ──────────────────────────
@@ -49,8 +51,6 @@ export default function StatusDashboard({ projects = [] }) {
             }
         } catch (e) {
             console.error('Failed to fetch agents', e);
-        } finally {
-            setLoadingAgents(false);
         }
     }, [token]);
 
@@ -112,6 +112,21 @@ export default function StatusDashboard({ projects = [] }) {
         }
     }, [token]);
 
+    // ── Fetch dashboard data ─────────────────────────────────────────
+    const fetchDashboardData = useCallback(async () => {
+        try {
+            const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setDashboardData(data);
+            }
+        } catch (e) {
+            console.error("Failed to load dashboard data:", e);
+        }
+    }, [token]);
+
     const getPageFromUrl = (url) => {
         if (!url) return null;
         const urlObj = new URL(url);
@@ -120,12 +135,10 @@ export default function StatusDashboard({ projects = [] }) {
 
     useEffect(() => {
         const load = async () => {
-            setLoadingAgents(true);
-            await Promise.all([fetchAgents(), fetchTasks(), fetchProjectInfo()]);
-            setLoadingAgents(false);
+            await Promise.all([fetchAgents(), fetchTasks(), fetchProjectInfo(), fetchDashboardData()]);
         };
         load();
-    }, [fetchAgents, fetchTasks, fetchProjectInfo]);
+    }, [fetchAgents, fetchTasks, fetchProjectInfo, fetchDashboardData]);
 
     // Poll while agents are running
     useEffect(() => {
@@ -215,12 +228,6 @@ export default function StatusDashboard({ projects = [] }) {
         },
     };
 
-    const statusColors = {
-        idle: 'gray',
-        running: 'blue',
-        completed: 'emerald',
-        error: 'red'
-    };
 
     // ── Render Agent Card ────────────────────────────────────────────
     const renderAgentCard = (agent) => {
@@ -229,7 +236,6 @@ export default function StatusDashboard({ projects = [] }) {
 
         const cfg = agentConfig[agent.id] || agentConfig.agent_01;
         const Icon = cfg.icon;
-        const statusStyle = statusColors[agent.status] || statusColors.idle;
         const isRunning = agent.status === 'running';
         const isCompleted = agent.status === 'completed';
         const isError = agent.status === 'error';
@@ -471,10 +477,10 @@ export default function StatusDashboard({ projects = [] }) {
                 <div className="pt-4"></div>
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-4 md:px-8 py-2 mb-2 gap-3">
                     <div className="flex items-center space-x-4 flex-shrink-0">
-                        <div className="text-sm font-bold text-[#f27a24]">As of : {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })}</div>
+                        <div className="text-sm font-bold text-[#f27a24]">As of : {dashboardData?.generated_at ? new Date(dashboardData.generated_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' }) : new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })}</div>
                         <div className="text-sm font-bold text-gray-800 flex items-center">
-                            <div className="w-4 h-4 bg-emerald-500 mr-2 rounded-sm shadow-sm inline-block"></div>
-                            Overall: On Track
+                            <div className={`w-4 h-4 mr-2 rounded-sm shadow-sm inline-block ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-emerald-500' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-amber-500' : 'bg-red-500'}`}></div>
+                            Overall: {dashboardData?.project_status?.overall_health ?? '—'}
                         </div>
                     </div>
                     <ProjectDropdown
@@ -514,61 +520,59 @@ export default function StatusDashboard({ projects = [] }) {
                     <div className="w-full flex flex-col gap-3 md:gap-4">
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                             <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-gray-600 mb-1">Active Projects</p>
-                                <h3 className="text-3xl font-bold text-gray-800 mb-0">5</h3>
-                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">Tracked</p>
+                                <p className="text-xs font-bold text-gray-600 mb-1">Project</p>
+                                <h3 className="text-xl font-bold text-gray-800 mb-0 truncate max-w-full px-1">{dashboardData?.project?.name ?? '—'}</h3>
+                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">{dashboardData?.project?.status ?? '—'}</p>
                             </div>
                             <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-gray-600 mb-1">Project Lifecycle</p>
-                                <h3 className="text-3xl font-bold text-gray-800 mb-0">120</h3>
+                                <p className="text-xs font-bold text-gray-600 mb-1">Project Duration</p>
+                                <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.duration_days ?? 0}</h3>
                                 <p className="text-[10px] text-gray-500 uppercase tracking-widest">Days</p>
                             </div>
                             <div className="bg-white col-span-2 md:col-span-2 p-4 rounded-xl shadow border border-gray-100 flex flex-row items-center justify-around relative">
                                 <div className="flex flex-col items-center">
-                                    <p className="text-xs font-bold text-gray-600 mb-1">Documents Uploaded</p>
+                                    <p className="text-xs font-bold text-gray-600 mb-1">Total Sprints</p>
                                     <div className="flex items-center relative">
-                                        <h3 className="text-3xl font-bold text-gray-800 mb-0">300+</h3>
-                                        <div className="absolute top-0 -right-4 w-3 h-3 select-none text-red-500">✦</div>
+                                        <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.summary_statistics?.total_sprints ?? 0}</h3>
                                     </div>
                                 </div>
                                 <div className="w-px h-12 bg-gray-200"></div>
                                 <div className="flex flex-col items-center w-40">
-                                    <p className="text-xs font-bold text-gray-600 mb-1">Documents Analyzed</p>
+                                    <p className="text-xs font-bold text-gray-600 mb-1">Hours Logged</p>
                                     <div className="flex items-center relative mb-2 w-full justify-center">
-                                        <h3 className="text-3xl font-bold text-gray-800 mb-0">200+</h3>
-                                        <div className="absolute top-0 -right-2 w-3 h-3 select-none text-red-500">✦</div>
+                                        <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.total_hours_logged ?? 0}</h3>
                                     </div>
                                     <div className="w-full bg-gray-200 rounded-full h-2.5">
-                                        <div className="bg-gray-800 h-2.5 rounded-full" style={{ width: '66%' }}></div>
+                                        <div className="bg-gray-800 h-2.5 rounded-full" style={{ width: `${dashboardData?.kpi?.work_complete_percentage ?? 0}%` }}></div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-5 gap-3 mt-4">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Governance Findings</p>
-                                <h3 className="text-2xl font-bold text-gray-800">28</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Identified</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Active Sprints</p>
+                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.active_sprints ?? 0}</h3>
+                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Running</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1 text-center leading-tight">High-Priority Issues</p>
-                                <h3 className="text-2xl font-bold text-gray-800">3</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Critical</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1 text-center leading-tight">In Progress</p>
+                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.in_progress_tasks ?? 0}</h3>
+                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Tasks</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Pending Reviews</p>
-                                <h3 className="text-2xl font-bold text-gray-800">4</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Active</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Pending Tasks</p>
+                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.pending_tasks ?? 0}</h3>
+                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Awaiting</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Revisions Completed</p>
-                                <h3 className="text-2xl font-bold text-gray-800">0</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Resolved</p>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Completed</p>
+                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.completed_tasks ?? 0}</h3>
+                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Done</p>
                             </div>
                             <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Action Items</p>
-                                <h3 className="text-2xl font-bold text-gray-800">143</h3>
+                                <p className="text-[11px] font-bold text-gray-600 mb-1">Total Tasks</p>
+                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.total_tasks ?? 0}</h3>
                                 <p className="text-[9px] text-gray-500 uppercase tracking-wide">Tracked</p>
                             </div>
                         </div>
@@ -588,9 +592,10 @@ export default function StatusDashboard({ projects = [] }) {
                                     </div>
                                     <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">KEY MILESTONES & DATES</h3>
                                 </div>
-                                <div className="overflow-hidden rounded-lg">
+                                <div className="overflow-auto rounded-lg border border-gray-100" style={{ minHeight: '120px', maxHeight: '320px' }}>
                                     <table className="min-w-full text-sm">
-                                        <thead className="bg-[#fdf4e6]">
+                                        <colgroup><col style={{ width: '30%' }} /><col style={{ width: '35%' }} /><col style={{ width: '35%' }} /></colgroup>
+                                        <thead className="bg-[#fdf4e6] sticky top-0 z-10">
                                             <tr>
                                                 <th className="px-4 py-3 text-left font-bold text-gray-800">Milestone</th>
                                                 <th className="px-4 py-3 text-left font-bold text-gray-800">Status</th>
@@ -598,31 +603,25 @@ export default function StatusDashboard({ projects = [] }) {
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-100 text-gray-600 font-medium">
-                                            <tr>
-                                                <td className="px-4 py-3">Project Kickoff</td>
-                                                <td className="px-4 py-3">Completed</td>
-                                                <td className="px-4 py-3">Jan 9, 2026</td>
-                                            </tr>
-                                            <tr>
-                                                <td className="px-4 py-3">Tool Deployment & Data Enablement</td>
-                                                <td className="px-4 py-3">Completed</td>
-                                                <td className="px-4 py-3">Dec 27, 2025</td>
-                                            </tr>
-                                            <tr>
-                                                <td className="px-4 py-3 break-words pr-8">Discovery & Domain Working Sessions (Core Infrastructure, Applications, and Cloud, Security etc)</td>
-                                                <td className="px-4 py-3">Completed</td>
-                                                <td className="px-4 py-3 whitespace-nowrap">Feb 9, 2026</td>
-                                            </tr>
-                                            <tr>
-                                                <td className="px-4 py-3">Current Infrastructure Assessment</td>
-                                                <td className="px-4 py-3">In Progress</td>
-                                                <td className="px-4 py-3">Feb 2026</td>
-                                            </tr>
-                                            <tr>
-                                                <td className="px-4 py-3 border-b-0">Assessment Data Consolidation & Validation</td>
-                                                <td className="px-4 py-3 border-b-0">In Progress</td>
-                                                <td className="px-4 py-3 border-b-0">Feb 2026</td>
-                                            </tr>
+                                            {dashboardData?.milestones?.completed?.map(ms => (
+                                                <tr key={ms.id}>
+                                                    <td className="px-4 py-3">{ms.name}</td>
+                                                    <td className="px-4 py-3 text-green-600">Completed</td>
+                                                    <td className="px-4 py-3">{ms.deadline}</td>
+                                                </tr>
+                                            ))}
+                                            {dashboardData?.milestones?.key_milestones_and_dates?.map(ms => (
+                                                <tr key={ms.id}>
+                                                    <td className="px-4 py-3 break-words pr-8">{ms.name}</td>
+                                                    <td className="px-4 py-3 text-orange-500">In Progress</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">{ms.deadline}</td>
+                                                </tr>
+                                            ))}
+                                            {(!dashboardData?.milestones?.completed?.length && !dashboardData?.milestones?.key_milestones_and_dates?.length) && (
+                                                <tr>
+                                                    <td className="px-4 py-3" colSpan="3">No milestones available</td>
+                                                </tr>
+                                            )}
                                         </tbody>
                                     </table>
                                 </div>
@@ -654,13 +653,13 @@ export default function StatusDashboard({ projects = [] }) {
 
                                     {/* The Stacked Bar */}
                                     <div className="w-[30%] min-w-[150px] relative z-10 flex flex-col justify-end">
-                                        {/* Remaining Work (60%) */}
-                                        <div className="bg-[#feebad] w-full h-[120px] relative flex items-center justify-center">
-                                            <span className="text-orange-500 font-bold text-sm">60%</span>
+                                        {/* Remaining Work */}
+                                        <div className="bg-[#feebad] w-full relative flex items-center justify-center" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
+                                            <span className="text-orange-500 font-bold text-sm">{dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}%</span>
                                         </div>
-                                        {/* Work (40%) */}
-                                        <div className="bg-[#424242] w-full h-[80px] relative flex items-center justify-center">
-                                            <span className="text-white font-bold text-sm">40%</span>
+                                        {/* Completed Work */}
+                                        <div className="bg-[#424242] w-full relative flex items-center justify-center" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
+                                            <span className="text-white font-bold text-sm">{dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0}%</span>
                                         </div>
                                     </div>
 
@@ -676,91 +675,37 @@ export default function StatusDashboard({ projects = [] }) {
                                         </div>
                                         <div className="flex items-center">
                                             <div className="w-6 h-4 bg-[#424242] mr-3"></div>
-                                            <span className="text-sm text-gray-700 font-medium">Work</span>
+                                            <span className="text-sm text-gray-700 font-medium">Completed Work</span>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* 5 Key Assessment Areas & progress */}
-                            <div className="bg-white rounded-xl shadow border border-gray-100 p-6">
-                                <div className="flex items-center mb-8">
-                                    <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
-                                        <CheckCircle className="w-5 h-5" />
-                                    </div>
-                                    <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">5 Key Assessment Areas & progress</h3>
-                                </div>
-
-                                <div className="space-y-6">
-                                    {/* Bar 1 */}
-                                    <div className="flex items-center">
-                                        <div className="w-48 text-xs font-bold text-gray-800 flex items-center">
-                                            <div className="mr-2 opacity-60"><Clock className="w-4 h-4" /></div>
-                                            Infrastructure Assessment
-                                        </div>
-                                        <div className="flex-1 right-0 relative flex flex-col justify-center">
-                                            <div className="text-right text-[10px] font-bold text-gray-800 mb-1 absolute -top-4 right-0">60%</div>
-                                            <div className="w-full bg-[#fceacc] rounded-full h-3 flex overflow-hidden">
-                                                <div className="bg-[#ea7032] h-full" style={{ width: '60%' }}></div>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {/* Bar 2 */}
-                                    <div className="flex items-center">
-                                        <div className="w-48 text-xs font-bold text-gray-800 flex items-center">
-                                            <div className="mr-2 opacity-60"><Clock className="w-4 h-4" /></div>
-                                            Application Dependency Map
-                                        </div>
-                                        <div className="flex-1 right-0 relative flex flex-col justify-center">
-                                            <div className="text-right text-[10px] font-bold text-gray-800 mb-1 absolute -top-4 right-0">10%</div>
-                                            <div className="w-full bg-[#fdf4e6] rounded-full h-3 flex overflow-hidden">
-                                                <div className="bg-[#feebad] h-full" style={{ width: '10%' }}></div>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {/* Bar 3 */}
-                                    <div className="flex items-center">
-                                        <div className="w-48 text-xs font-bold text-gray-800 flex items-center">
-                                            <div className="mr-2 opacity-60"><Clock className="w-4 h-4" /></div>
-                                            Security & Compliance
-                                        </div>
-                                        <div className="flex-1 right-0 relative flex flex-col justify-center">
-                                            <div className="text-right text-[10px] font-bold text-gray-800 mb-1 absolute -top-4 right-0">60%</div>
-                                            <div className="w-full bg-[#e0e0e0] rounded-full h-3 flex overflow-hidden">
-                                                <div className="bg-[#6b6b6b] h-full" style={{ width: '60%' }}></div>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {/* Bar 4 */}
-                                    <div className="flex items-center">
-                                        <div className="w-48 text-xs font-bold text-gray-800 flex items-center">
-                                            <div className="mr-2 opacity-60"><Clock className="w-4 h-4" /></div>
-                                            End User Computing
-                                        </div>
-                                        <div className="flex-1 right-0 relative flex flex-col justify-center">
-                                            <div className="text-right text-[10px] font-bold text-gray-800 mb-1 absolute -top-4 right-0">60%</div>
-                                            <div className="w-full bg-[#d0e0fb] rounded-full h-3 flex overflow-hidden">
-                                                <div className="bg-[#0c2e64] h-full" style={{ width: '60%' }}></div>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {/* Bar 5 */}
-                                    <div className="flex items-center">
-                                        <div className="w-48 text-xs font-bold text-gray-800 flex items-center">
-                                            <div className="mr-2 opacity-60"><Clock className="w-4 h-4" /></div>
-                                            Performance & Cost Baseline
-                                        </div>
-                                        <div className="flex-1 right-0 relative flex flex-col justify-center">
-                                            <div className="text-right text-[10px] font-bold text-gray-800 mb-1 absolute -top-4 right-0">10%</div>
-                                            <div className="w-full bg-[#fdf4e6] rounded-full h-3 flex overflow-hidden">
-                                                <div className="bg-[#feebad] h-full" style={{ width: '10%' }}></div>
-                                            </div>
-                                        </div>
-                                    </div>
+                            {/* Assessment Coverage & Progress */}
+                            <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Assessment Coverage & Progress</h3>
+                                <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '120px', maxHeight: '320px' }}>
+                                    <table className="min-w-full text-sm">
+                                        <thead className="sticky top-0 z-10">
+                                            <tr className="bg-[#f27a24] text-white">
+                                                <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                <th className="px-4 py-2.5 text-right font-bold text-xs w-20">Target</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100 bg-white">
+                                            {(dashboardData?.assessment_areas || []).map((area, idx) => (
+                                                <tr key={idx} className="hover:bg-gray-50">
+                                                    <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                    <td className="px-4 py-3 text-gray-800 font-medium">{area.description || area.task_type}</td>
+                                                    <td className="px-4 py-3 text-right text-gray-800 font-bold">{area.target_percentage ?? Math.round((area.completed / Math.max(area.total, 1)) * 100)}%</td>
+                                                </tr>
+                                            ))}
+                                            {(!dashboardData?.assessment_areas || dashboardData.assessment_areas.length === 0) && (
+                                                <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No assessment data available</td></tr>
+                                            )}
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
                         </div>
@@ -776,25 +721,25 @@ export default function StatusDashboard({ projects = [] }) {
                                 </div>
                                 <div className="bg-white border rounded p-4 text-center w-5/6 mx-auto shadow-sm relative z-10">
                                     <p className="text-[10px] font-bold text-gray-800 uppercase mb-2">EXPECTED LAUNCH DATE</p>
-                                    <h3 className="text-2xl font-black text-gray-900 mb-2">50 <span className="text-sm font-medium">Days</span></h3>
+                                    <h3 className="text-2xl font-black text-gray-900 mb-2">{dashboardData?.project_status?.days_until_launch ?? 0} <span className="text-sm font-medium">Days</span></h3>
                                     <div className="flex items-center justify-center w-full mb-2">
                                         <div className="h-px bg-gray-300 w-full relative">
                                             <div className="absolute left-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
                                             <div className="absolute right-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
                                         </div>
                                     </div>
-                                    <p className="text-xs italic text-gray-500">Tuesday, 31 March 2026</p>
+                                    <p className="text-xs italic text-gray-500">{dashboardData?.project_status?.expected_launch_date ? new Date(dashboardData.project_status.expected_launch_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</p>
                                 </div>
                             </div>
 
                             <div className="w-full mb-10 flex flex-col items-center">
                                 <div className="flex justify-center items-center w-full relative mb-1">
-                                    <div className="absolute left-8 text-green-500">
+                                    <div className={`absolute left-8 ${dashboardData?.project_status?.overall_health === 'Good' ? 'text-green-500' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'text-amber-500' : 'text-red-500'}`}>
                                         <Activity className="w-8 h-8" />
                                     </div>
-                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-green-400 to-green-600 shadow-lg shadow-green-500/30"></div>
+                                    <div className={`w-10 h-10 rounded-full shadow-lg ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-gradient-to-br from-green-400 to-green-600 shadow-green-500/30' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-gradient-to-br from-amber-400 to-amber-600 shadow-amber-500/30' : 'bg-gradient-to-br from-red-400 to-red-600 shadow-red-500/30'}`}></div>
                                 </div>
-                                <p className="text-sm font-bold text-gray-800 mt-2">Overall, Health</p>
+                                <p className="text-sm font-bold text-gray-800 mt-2">Overall Health: {dashboardData?.project_status?.overall_health ?? '—'}</p>
                             </div>
 
                             <div className="w-full border-t border-gray-100 mb-8 w-4/5 mx-auto"></div>
@@ -807,13 +752,13 @@ export default function StatusDashboard({ projects = [] }) {
                                 <div className="relative w-24 h-24 mb-4">
                                     <svg className="w-24 h-24 transform -rotate-90">
                                         <circle cx="48" cy="48" r="40" stroke="#fdf4e6" strokeWidth="12" fill="none" />
-                                        <circle cx="48" cy="48" r="40" stroke="#f27a24" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset="125.5" strokeLinecap="round" />
+                                        <circle cx="48" cy="48" r="40" stroke="#f27a24" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * (dashboardData?.kpi?.completion_percentage ?? 0)) / 100} strokeLinecap="round" />
                                     </svg>
                                     <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-xl font-bold text-gray-800">50%</span>
+                                        <span className="text-xl font-bold text-gray-800">{dashboardData?.kpi?.completion_percentage ?? 0}%</span>
                                     </div>
                                 </div>
-                                <p className="text-[13px] font-bold text-gray-600">Decision Readiness</p>
+                                <p className="text-[13px] font-bold text-gray-600">Completion Rate</p>
                             </div>
 
                             <div className="w-full border-t border-gray-100 mb-8 w-4/5 mx-auto"></div>
@@ -826,10 +771,10 @@ export default function StatusDashboard({ projects = [] }) {
                                 <div className="relative w-24 h-24 mb-4">
                                     <svg className="w-24 h-24 transform -rotate-90">
                                         <circle cx="48" cy="48" r="40" stroke="#f3f4f6" strokeWidth="12" fill="none" />
-                                        <circle cx="48" cy="48" r="40" stroke="#9ca3af" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset="150.6" strokeLinecap="round" />
+                                        <circle cx="48" cy="48" r="40" stroke="#9ca3af" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * (dashboardData?.project_status?.project_progress ?? 0)) / 100} strokeLinecap="round" />
                                     </svg>
                                     <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-xl font-bold text-gray-800">40%</span>
+                                        <span className="text-xl font-bold text-gray-800">{dashboardData?.project_status?.project_progress ?? 0}%</span>
                                     </div>
                                 </div>
                                 <p className="text-[13px] font-bold text-gray-600">Project Progress</p>
@@ -845,16 +790,165 @@ export default function StatusDashboard({ projects = [] }) {
                                 <div className="relative w-24 h-24 mb-4">
                                     <svg className="w-24 h-24 transform -rotate-90">
                                         <circle cx="48" cy="48" r="40" stroke="#f3f4f6" strokeWidth="12" fill="none" />
-                                        <circle cx="48" cy="48" r="40" stroke="#1f2937" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset="50.2" strokeLinecap="round" />
+                                        {(() => {
+                                            const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
+                                            let sprintProgress = 0;
+                                            if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
+                                                sprintProgress = Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100);
+                                            }
+                                            return (
+                                                <circle cx="48" cy="48" r="40" stroke="#1f2937" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * sprintProgress) / 100} strokeLinecap="round" />
+                                            );
+                                        })()}
                                     </svg>
                                     <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-xl font-bold text-gray-800">80%</span>
+                                        <span className="text-xl font-bold text-gray-800">
+                                            {(() => {
+                                                const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
+                                                if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
+                                                    return Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100) + '%';
+                                                }
+                                                return '0%';
+                                            })()}
+                                        </span>
                                     </div>
                                 </div>
-                                <p className="text-[13px] font-bold text-gray-600">Phase Progress</p>
+                                <p className="text-[13px] font-bold text-gray-600">Sprint Progress</p>
                             </div>
                         </div>
                     </div>
+
+                    {/* Task Tables Section - matching screenshot layout */}
+                    {dashboardData?.tasks && (
+                        <div className="mt-8 space-y-6">
+                            {/* Row 1: Late Tasks + Upcoming Tasks (Next Period) */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                {/* Late Tasks Table */}
+                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Late Tasks</h3>
+                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <table className="min-w-full text-sm">
+                                            <thead className="sticky top-0 z-10">
+                                                <tr className="bg-[#f27a24] text-white">
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 bg-white">
+                                                {(dashboardData.tasks.late_tasks || []).map((task, idx) => (
+                                                    <tr key={task.id} className="hover:bg-red-50/50">
+                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                        <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                    </tr>
+                                                ))}
+                                                {(!dashboardData.tasks.late_tasks || dashboardData.tasks.late_tasks.length === 0) && (
+                                                    <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No late tasks</td></tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* Upcoming Tasks (Next Period) Table */}
+                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Upcoming Tasks (Next Period)</h3>
+                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <table className="min-w-full text-sm">
+                                            <thead className="sticky top-0 z-10">
+                                                <tr className="bg-[#f27a24] text-white">
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 bg-white">
+                                                {(dashboardData.tasks.upcoming_tasks_next_period || []).map((task, idx) => (
+                                                    <tr key={task.id} className="hover:bg-gray-50">
+                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                        <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.target_date ? new Date(task.target_date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                    </tr>
+                                                ))}
+                                                {(!dashboardData.tasks.upcoming_tasks_next_period || dashboardData.tasks.upcoming_tasks_next_period.length === 0) && (
+                                                    <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No upcoming tasks</td></tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Row 2: Due This Week + In Progress / Recently Completed */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                {/* Due This Week Table */}
+                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Due This Week</h3>
+                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <table className="min-w-full text-sm">
+                                            <thead className="sticky top-0 z-10">
+                                                <tr className="bg-[#f27a24] text-white">
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                    <th className="px-4 py-2.5 text-center font-bold text-xs w-20">Progress</th>
+                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Deadline</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 bg-white">
+                                                {(dashboardData.tasks.due_this_week || []).map((task, idx) => (
+                                                    <tr key={task.id} className="hover:bg-orange-50/50">
+                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                        <td className="px-4 py-3 text-center text-gray-700 font-bold">{task.progress ?? 0}%</td>
+                                                        <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                    </tr>
+                                                ))}
+                                                {(!dashboardData.tasks.due_this_week || dashboardData.tasks.due_this_week.length === 0) && (
+                                                    <tr><td colSpan="4" className="px-4 py-6 text-center text-gray-400 italic">No tasks due this week</td></tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* In Progress + Recently Completed Table */}
+                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">In Progress & Recently Completed</h3>
+                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <table className="min-w-full text-sm">
+                                            <thead className="sticky top-0 z-10">
+                                                <tr className="bg-[#f27a24] text-white">
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-24">Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 bg-white">
+                                                {(dashboardData.tasks.in_progress || []).map((task, idx) => (
+                                                    <tr key={task.id} className="hover:bg-blue-50/50">
+                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                        <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-700 text-xs font-bold rounded">{task.progress ?? 0}%</span></td>
+                                                    </tr>
+                                                ))}
+                                                {(dashboardData.tasks.recently_completed || []).map((task, idx) => (
+                                                    <tr key={task.id} className="hover:bg-green-50/50">
+                                                        <td className="px-4 py-3 text-gray-400 font-semibold">{(dashboardData.tasks.in_progress?.length || 0) + idx + 1}</td>
+                                                        <td className="px-4 py-3 text-gray-400 font-medium line-through">{task.name || task.description || 'Untitled'}</td>
+                                                        <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded">Done</span></td>
+                                                    </tr>
+                                                ))}
+                                                {(!dashboardData.tasks.in_progress?.length && !dashboardData.tasks.recently_completed?.length) && (
+                                                    <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No tasks in progress or recently completed</td></tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* ── AI AGENTS SECTION ── */}
                     <div className="w-full mt-6">
@@ -968,7 +1062,7 @@ export default function StatusDashboard({ projects = [] }) {
                             </button>
                         </div>
 
-                        <div className="divide-y divide-gray-50">
+                        <div>
                             {isLoadingTasks && taskList.length === 0 && (
                                 <div className="p-8 flex flex-col items-center justify-center gap-3">
                                     <RefreshCw className="w-6 h-6 text-indigo-400 animate-spin" />
@@ -990,85 +1084,102 @@ export default function StatusDashboard({ projects = [] }) {
                                     <p className="text-xs text-gray-400 max-w-xs">Select a project and click "Create Tasks" on the Task Auto-Generator agent above to get started.</p>
                                 </div>
                             )}
-                            {!isLoadingTasks && taskList.length > 0 && taskList.map((task, index) => {
+                            {!isLoadingTasks && taskList.length > 0 && (() => {
                                 const priorityStyles = { high: 'bg-red-50 text-red-700 border-red-200', medium: 'bg-amber-50 text-amber-700 border-amber-200', low: 'bg-green-50 text-green-700 border-green-200' };
                                 const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-blue-100 text-blue-700', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-gray-100 text-gray-700', BUG: 'bg-red-100 text-red-700' };
                                 const statusStyles = { 'On Going': 'bg-blue-50 text-blue-700', 'Completed': 'bg-green-50 text-green-700', 'To Do': 'bg-gray-50 text-gray-600', 'In Review': 'bg-amber-50 text-amber-700', 'Blocked': 'bg-red-50 text-red-700' };
-                                const priority = (task.priority || 'medium').toLowerCase();
-                                const taskType = (task.task_type || 'TASK').toUpperCase();
-                                const progress = task.task_progress || 0;
-                                const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
 
                                 return (
-                                    <div key={task.id || index} className="px-6 py-4 hover:bg-gray-50/70 transition-colors group">
-                                        <div className="flex items-center gap-4">
-                                            <div className="flex items-center gap-1.5 flex-shrink-0">
-                                                <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center">
-                                                    <span className="text-[10px] font-bold text-gray-500">{index + 1}</span>
+                                    <div
+                                        className="divide-y divide-gray-50 overflow-y-auto"
+                                        style={{ maxHeight: '480px' }}
+                                        onScroll={(e) => {
+                                            const { scrollTop, scrollHeight, clientHeight } = e.target;
+                                            if (nextPageUrl && !isLoadingMore && scrollHeight - scrollTop - clientHeight < 100) {
+                                                const page = getPageFromUrl(nextPageUrl);
+                                                if (page) fetchTasks(true, page);
+                                            }
+                                        }}
+                                    >
+                                        {taskList.map((task, index) => {
+                                            const priority = (task.priority || 'medium').toLowerCase();
+                                            const taskType = (task.task_type || 'TASK').toUpperCase();
+                                            const progress = task.task_progress || 0;
+                                            const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
+
+                                            return (
+                                                <div key={task.id || index} className="px-4 sm:px-6 py-2 hover:bg-gray-50/70 transition-colors group">
+                                                    <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr 72px 76px 58px 100px 40px 130px', gap: '8px', alignItems: 'center' }}>
+                                                        {/* # */}
+                                                        <div className="flex items-center gap-1">
+                                                            <div className="w-6 h-6 rounded-lg bg-gray-100 flex items-center justify-center">
+                                                                <span className="text-[10px] font-bold text-gray-500">{index + 1}</span>
+                                                            </div>
+                                                        </div>
+                                                        {/* Name + Desc */}
+                                                        <div className="min-w-0 overflow-hidden">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <h4 className="text-xs sm:text-sm font-semibold text-gray-900 truncate">{task.taskName || 'Untitled Task'}</h4>
+                                                                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide flex-shrink-0 ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
+                                                                {task.is_completed && <CheckCircle className="w-3 h-3 text-green-500 flex-shrink-0" />}
+                                                            </div>
+                                                            <p className="text-[11px] text-gray-400 truncate">{task.description || 'No description'}</p>
+                                                        </div>
+                                                        {/* Progress */}
+                                                        <div className="flex items-center gap-1">
+                                                            <div className="flex-1 bg-gray-100 rounded-full h-1 overflow-hidden">
+                                                                <div className={`${progressColor} h-1 rounded-full`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
+                                                            </div>
+                                                            <span className="text-[10px] font-bold text-gray-500 whitespace-nowrap">{progress}%</span>
+                                                        </div>
+                                                        {/* Status */}
+                                                        <div>
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap ${statusStyles[task.taskStatus] || 'bg-gray-50 text-gray-600'}`}>{task.taskStatus || 'Unknown'}</span>
+                                                        </div>
+                                                        {/* Priority */}
+                                                        <div>
+                                                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold border capitalize whitespace-nowrap ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
+                                                        </div>
+                                                        {/* Assignees */}
+                                                        <div className="flex items-center gap-1 overflow-hidden">
+                                                            <Users className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                                                            <div className="flex items-center gap-0.5 overflow-hidden">
+                                                                {(task.assignedTo || []).slice(0, 2).map((name, i) => (
+                                                                    <span key={i} className="inline-flex items-center px-1 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] font-semibold truncate">{name}</span>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                        {/* Wallet */}
+                                                        <div className="flex items-center gap-1">
+                                                            <Wallet className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                                                            <span className="text-[10px] font-semibold text-gray-500">{task.task_wallet || 0}</span>
+                                                        </div>
+                                                        {/* Deadline */}
+                                                        <div className="flex items-center gap-1 text-[10px]">
+                                                            <Calendar className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                                                            <span className="text-gray-400 whitespace-nowrap">{task.deadline || '-'}</span>
+                                                            {task.days_left != null && (
+                                                                <span className={`font-bold px-1 py-0.5 rounded-full whitespace-nowrap ${task.days_left <= 3 ? 'bg-red-50 text-red-600' : task.days_left <= 7 ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}`}>{task.days_left}d left</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                                {task.is_flaged && <Flag className="w-3.5 h-3.5 text-orange-400 fill-orange-400" />}
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-2 mb-0.5">
-                                                    <h4 className="text-sm font-semibold text-gray-900 truncate">{task.taskName || 'Untitled Task'}</h4>
-                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide flex-shrink-0 ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
-                                                    {task.is_completed && <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
-                                                </div>
-                                                <p className="text-xs text-gray-400 truncate max-w-md">{task.description || 'No description'}</p>
-                                            </div>
-                                            <div className="flex-shrink-0 hidden lg:block">
-                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-gray-50 text-gray-600'}`}>{task.taskStatus || 'Unknown'}</span>
-                                            </div>
-                                            <div className="flex-shrink-0">
-                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border capitalize ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
-                                            </div>
-                                            <div className="flex-shrink-0 hidden md:flex items-center gap-1" title={`Assigned to: ${(task.assignedTo || []).join(', ')}`}>
-                                                <Users className="w-3.5 h-3.5 text-gray-400" />
-                                                <div className="flex items-center gap-0.5">
-                                                    {(task.assignedTo || []).map((name, i) => (
-                                                        <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] font-semibold">{name}</span>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                            <div className="flex-shrink-0 flex items-center gap-1" title={`Wallet: ${task.task_wallet || 0}`}>
-                                                <Wallet className="w-3.5 h-3.5 text-gray-400" />
-                                                <span className="text-[10px] font-semibold text-gray-500">{task.task_wallet || 0}</span>
-                                            </div>
-                                            <div className="flex-shrink-0 hidden md:flex items-center gap-1.5 text-[10px]">
-                                                <Calendar className="w-3 h-3 text-gray-400" />
-                                                <span className="text-gray-400">{task.deadline || '-'}</span>
-                                                {task.days_left != null && (
-                                                    <span className={`font-bold px-1.5 py-0.5 rounded-full ${task.days_left <= 3 ? 'bg-red-50 text-red-600' : task.days_left <= 7 ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}`}>{task.days_left}d left</span>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="mt-2 ml-[38px] flex items-center gap-3">
-                                            <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden max-w-[200px]">
-                                                <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
-                                            </div>
-                                            <span className="text-[10px] font-bold text-gray-500">{progress}%</span>
-                                        </div>
+                                            );
+                                        })}
                                     </div>
                                 );
-                            })}
+                            })()}
 
-                            {/* Load More Button */}
-                            {nextPageUrl && (
-                                <div className="px-6 py-4 flex justify-center border-t border-gray-100">
-                                    <button
-                                        onClick={() => {
-                                            const page = getPageFromUrl(nextPageUrl);
-                                            if (page) fetchTasks(true, page);
-                                        }}
-                                        disabled={isLoadingMore}
-                                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {isLoadingMore ? (
-                                            <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
-                                        ) : (
-                                            <><ChevronRight className="w-4 h-4" /> Load More ({taskList.length} of {totalTaskCount})</>
-                                        )}
-                                    </button>
+                            {/* Load status footer */}
+                            {isLoadingMore && (
+                                <div className="px-6 py-3 flex items-center justify-center gap-2 border-t border-gray-100 bg-gray-50/50">
+                                    <RefreshCw className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+                                    <span className="text-xs text-gray-500 font-medium">Loading more tasks...</span>
+                                </div>
+                            )}
+                            {!nextPageUrl && taskList.length > 0 && !isLoadingMore && (
+                                <div className="px-6 py-2.5 text-center border-t border-gray-100 bg-gray-50/30">
+                                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Showing all {taskList.length} tasks</span>
                                 </div>
                             )}
                         </div>

@@ -47,6 +47,7 @@ export const API_ENDPOINTS = {
     AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,
     AGENT_CREATE_TASK: `${API_BASE_URL}/api/agent/tasks/`,
     AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`,
+    AGENT_DASHBOARD: `${API_BASE_URL}/api/agent/dashboard/`,
 };
 
 export default {

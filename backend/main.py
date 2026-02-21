@@ -973,6 +973,17 @@ async def get_agent_project_info(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {e}")
 
+@app.get("/api/agent/dashboard/")
+async def get_agent_dashboard(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Fetch dashboard info from the external task management API."""
+    try:
+        data = await task_service.get_dashboard()
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard info: {e}")
+
 class AutoGenerateRequest(BaseModel):
     project_token: str
 

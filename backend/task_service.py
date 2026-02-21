@@ -1,6 +1,9 @@
 import httpx
 from typing import Optional, Dict, Any
 import logging
+import time
+import base64
+import json
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -17,6 +20,7 @@ class TaskManagementService:
         self.client_secret = settings.task_api_client_secret
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
+        self.token_expires_at: int = 0
 
     async def _get_access_token(self) -> str:
         """Fetch a new access token using client credentials."""
@@ -34,6 +38,19 @@ class TaskManagementService:
                 data = response.json()
                 self.access_token = data.get("access")
                 self.refresh_token = data.get("refresh")
+                
+                # Parse expiration time from JWT
+                if self.access_token:
+                    try:
+                        payload_b64 = self.access_token.split('.')[1]
+                        payload_b64 += '=' * (-len(payload_b64) % 4)
+                        payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+                        payload = json.loads(payload_json)
+                        self.token_expires_at = payload.get('exp', 0)
+                    except Exception as e:
+                        logger.warning(f"Could not parse token expiration: {str(e)}")
+                        self.token_expires_at = 0
+                        
                 return self.access_token
             except httpx.HTTPError as e:
                 logger.error(f"Failed to fetch task management token: {str(e)}")
@@ -41,7 +58,8 @@ class TaskManagementService:
 
     async def _get_headers(self) -> dict:
         """Get headers with authentication token."""
-        if not self.access_token:
+        # Refresh if token doesn't exist or expires in less than 60 seconds
+        if not self.access_token or (self.token_expires_at and time.time() > self.token_expires_at - 60):
             await self._get_access_token()
             
         return {
@@ -60,8 +78,8 @@ class TaskManagementService:
         async with httpx.AsyncClient() as client:
             response = await client.request(method, url, **kwargs)
             
-            # If token is expired (401 Unauthorized), refresh it and try again once
-            if response.status_code == 401:
+            # If token is expired (401 Unauthorized or 403 Forbidden), refresh it and try again once
+            if response.status_code in (401, 403):
                 logger.info("Task Management API token expired, refreshing...")
                 await self._get_access_token()
                 new_headers = await self._get_headers()
@@ -105,6 +123,10 @@ class TaskManagementService:
         """Add checklist items to a task via the external task management API."""
         payload = {"checklistItems": checklist_items}
         return await self._make_request("PUT", f"/api/agent/tasks/{task_id}/checklist/", json=payload)
+
+    async def get_dashboard(self) -> dict:
+        """Fetch dashboard insights from the external task management API."""
+        return await self._make_request("GET", "/api/agent/dashboard/")
 
 task_service = TaskManagementService()
 
