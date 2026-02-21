@@ -3,7 +3,7 @@ import uuid
 from datetime import timedelta
 from typing import Annotated, Optional, List, Dict, Any
 
-from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, Header
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -398,6 +398,8 @@ async def get_governance_history(
                 "weighted_score": r.weighted_score,
                 "classification": r.classification,
                 "pending_revision_reason": r.pending_revision_reason,
+                "client_id": r.client_id,
+                "client_secret": r.client_secret,
             }
             for r in responses
         ]
@@ -467,6 +469,8 @@ async def get_governance_result(
         pending_revision_reason=response.pending_revision_reason,
         hard_stops=[],
         answers=answers_list if answers_list else None,
+        client_id=response.client_id,
+        client_secret=response.client_secret,
     )
 
 
@@ -1090,28 +1094,79 @@ from task_service import task_service
 @app.get("/api/agents/")
 async def get_external_agents(
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
 ):
     """Fetch the list of agents from the external task management API."""
     try:
-        agents = await task_service.get_agents()
+        agents = await task_service.get_agents(task_token=x_task_token)
         return agents
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch agents: {e}")
+
+
+
+@app.get("/api/agent/projects/")
+async def get_agent_projects(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
+):
+    """Fetch the list of projects from the external task management API."""
+    try:
+        projects = await task_service.get_projects(task_token=x_task_token)
+        return projects
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch projects: {e}")
+
+class TaskTokenRequest(BaseModel):
+    client_id: str
+    client_secret: str
+
+@app.post("/api/token/task/")
+async def fetch_task_token(
+    payload: TaskTokenRequest,
+):
+    """Fetch task token dynamically from the task management API"""
+    try:
+        import httpx
+        from config import settings
+        token_url = f"{settings.task_api_base_url.rstrip('/')}/api/token/task/"
+        async with httpx.AsyncClient() as client:
+            response = await client.post(token_url, json=payload.dict(), timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch task token: {str(e)}")
 
 class AgentProjectCreate(BaseModel):
     name: str
     deadline: str
     project_wallet: int
     team: List[int]
+    project_token: Optional[str] = None
 
 @app.post("/api/agent/projects/")
 async def create_agent_project(
     project: AgentProjectCreate,
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
 ):
     """Create a new project in the external task management API."""
     try:
-        result = await task_service.create_project(project.dict())
+        project_dict = project.dict(exclude={"project_token"})
+        result = await task_service.create_project(project_dict, task_token=x_task_token)
+        
+        if project.project_token and result.get("project_application"):
+            app_data = result.get("project_application")
+            gov_res = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.owner_id == current_user.id,
+                models.GovernanceResponse.project_token == project.project_token
+            ).first()
+            if gov_res:
+                gov_res.client_id = app_data.get("client_id")
+                gov_res.client_secret = app_data.get("client_secret")
+                db.commit()
+
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create project: {e}")
@@ -1130,10 +1185,11 @@ class AgentTaskCreate(BaseModel):
 async def create_external_agent_task(
     task: AgentTaskCreate,
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
 ):
     """Create a new task in the external task management API."""
     try:
-        result = await task_service.create_task(task.dict())
+        result = await task_service.create_task(task.dict(), task_token=x_task_token)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
@@ -1142,12 +1198,13 @@ async def create_external_agent_task(
 async def get_external_agent_tasks(
     current_user: models.User = Depends(auth.get_current_user),
     page: int = None,
+    x_task_token: Optional[str] = Header(None)
 ):
     """
     Fetch the list of tasks from the external task management API.
     """
     try:
-        tasks = await task_service.get_tasks(page=page)
+        tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
         return tasks
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {e}")
@@ -1155,10 +1212,11 @@ async def get_external_agent_tasks(
 @app.get("/api/agent/project-info/")
 async def get_agent_project_info(
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
 ):
     """Fetch project info (deadline, wallet, team) from the external task management API."""
     try:
-        info = await task_service.get_project_info()
+        info = await task_service.get_project_info(task_token=x_task_token)
         return info
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {e}")
@@ -1166,10 +1224,11 @@ async def get_agent_project_info(
 @app.get("/api/agent/dashboard/")
 async def get_agent_dashboard(
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
 ):
     """Fetch dashboard info from the external task management API."""
     try:
-        data = await task_service.get_dashboard()
+        data = await task_service.get_dashboard(task_token=x_task_token)
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard info: {e}")
@@ -1181,7 +1240,8 @@ class AutoGenerateRequest(BaseModel):
 async def auto_generate_project_tasks(
     request: AutoGenerateRequest,
     current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None)
 ):
     """
     Auto-generate tasks based on a BRD analysis, 
@@ -1189,7 +1249,7 @@ async def auto_generate_project_tasks(
     """
     try:
         # 1. Fetch initial project info from external API
-        project_info = await task_service.get_project_info()
+        project_info = await task_service.get_project_info(task_token=x_task_token)
         project_data = project_info.get("project", {})
         project_deadline = project_data.get("deadline", "2026-12-31")
         project_wallet = project_data.get("project_wallet", 100)
@@ -1239,7 +1299,7 @@ async def auto_generate_project_tasks(
         if team_members:
             agents = team_members
         else:
-            agents = await task_service.get_agents()
+            agents = await task_service.get_agents(task_token=x_task_token)
         
         # Ensure agent_ids is always defined by extracting from whichever list we got
         agent_ids = [a.get("user_id") or a.get("id") for a in agents if a.get("user_id") or a.get("id")]
@@ -1257,12 +1317,39 @@ async def auto_generate_project_tasks(
         
         created_tasks = []
         for task_data in tasks_to_create:
-            res = await task_service.create_task(task_data)
+            res = await task_service.create_task(task_data, task_token=x_task_token)
+            if isinstance(res, dict) and "id" in res:
+                # Store the taskName and description from input since response might not have it
+                res["taskName"] = task_data.get("taskName", "")
+                res["description"] = task_data.get("description", "")
+                res["task_type"] = task_data.get("task_type", "")
+                res["priority"] = task_data.get("priority", "")
             created_tasks.append(res)
+            
+        # 5. Generate and attach checklists to the newly created tasks
+        if created_tasks:
+            try:
+                checklists_map = await ai_service.generate_checklists_for_tasks(
+                    tasks_with_ids=[t for t in created_tasks if isinstance(t, dict) and "id" in t],
+                    analysis_report=analysis_report
+                )
+                
+                # Add checklists via task management API
+                if checklists_map:
+                    for str_task_id, checklist_items in checklists_map.items():
+                        if checklist_items:
+                            await task_service.add_checklist_to_task(
+                                task_id=int(str_task_id), 
+                                checklist_items=checklist_items, 
+                                task_token=x_task_token
+                            )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Failed to generate/add checklists during auto-generate: {e}")
             
         return {
              "status": "success",
-             "message": f"Successfully created {len(created_tasks)} tasks.",
+             "message": f"Successfully created {len(created_tasks)} tasks with checklists.",
              "tasks_created": len(created_tasks),
              "project_deadline": project_deadline,
              "project_wallet": project_wallet

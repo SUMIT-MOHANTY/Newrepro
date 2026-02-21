@@ -42,6 +42,45 @@ export default function StatusDashboard({ projects = [] }) {
 
     const token = localStorage.getItem('token');
 
+    // ── Dynamic Task Token State ─────────────────────────────────────
+    const [taskToken, setTaskToken] = useState(null);
+
+    useEffect(() => {
+        let isMounted = true;
+        const fetchTaskToken = async () => {
+            if (!selectedProjectKey || projects.length === 0) {
+                if (isMounted) setTaskToken(null);
+                return;
+            }
+            const proj = projects.find(p => p.key === selectedProjectKey);
+            const clientId = proj?.client_id || import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
+            const clientSecret = proj?.client_secret || import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
+
+            try {
+                const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret })
+                });
+                if (res.ok && isMounted) {
+                    const data = await res.json();
+                    setTaskToken(data.access);
+                } else if (isMounted) {
+                    setTaskToken(null);
+                }
+            } catch (e) {
+                console.error("Error fetching task token", e);
+                if (isMounted) setTaskToken(null);
+            }
+        };
+
+        fetchTaskToken();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [selectedProjectKey, projects]);
+
     // ── Fetch agents (Docker agent backend) ──────────────────────────
     const fetchAgents = useCallback(async () => {
         try {
@@ -68,9 +107,10 @@ export default function StatusDashboard({ projects = [] }) {
         setTaskListError(null);
         try {
             const url = page > 1 ? `${API_ENDPOINTS.AGENT_TASKS}?page=${page}` : API_ENDPOINTS.AGENT_TASKS;
-            const res = await fetch(url, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
+            const headers = { 'Authorization': `Bearer ${token}` };
+            if (taskToken) headers['x-task-token'] = taskToken;
+
+            const res = await fetch(url, { headers });
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) {
@@ -101,14 +141,14 @@ export default function StatusDashboard({ projects = [] }) {
             setIsLoadingTasks(false);
             setIsLoadingMore(false);
         }
-    }, [token]);
+    }, [token, taskToken]);
 
     // ── Fetch project info ───────────────────────────────────────────
     const fetchProjectInfo = useCallback(async () => {
         try {
-            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
+            const headers = { 'Authorization': `Bearer ${token}` };
+            if (taskToken) headers['x-task-token'] = taskToken;
+            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
             if (res.ok) {
                 const data = await res.json();
                 setProjectInfo(data);
@@ -116,14 +156,14 @@ export default function StatusDashboard({ projects = [] }) {
         } catch (e) {
             console.error("Failed to load project info:", e);
         }
-    }, [token]);
+    }, [token, taskToken]);
 
     // ── Fetch dashboard data ─────────────────────────────────────────
     const fetchDashboardData = useCallback(async () => {
         try {
-            const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
+            const headers = { 'Authorization': `Bearer ${token}` };
+            if (taskToken) headers['x-task-token'] = taskToken;
+            const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, { headers });
             if (res.ok) {
                 const data = await res.json();
                 setDashboardData(data);
@@ -131,7 +171,7 @@ export default function StatusDashboard({ projects = [] }) {
         } catch (e) {
             console.error("Failed to load dashboard data:", e);
         }
-    }, [token]);
+    }, [token, taskToken]);
 
     const getPageFromUrl = (url) => {
         if (!url) return null;
@@ -140,11 +180,14 @@ export default function StatusDashboard({ projects = [] }) {
     };
 
     useEffect(() => {
+        // Wait until taskToken is resolved if we have a project selected.
+        if (selectedProjectKey && !taskToken) return;
+
         const load = async () => {
             await Promise.all([fetchAgents(), fetchTasks(), fetchProjectInfo(), fetchDashboardData()]);
         };
         load();
-    }, [fetchAgents, fetchTasks, fetchProjectInfo, fetchDashboardData]);
+    }, [fetchAgents, fetchTasks, fetchProjectInfo, fetchDashboardData, selectedProjectKey, taskToken]);
 
     // Poll while agents are running
     useEffect(() => {
@@ -463,12 +506,15 @@ export default function StatusDashboard({ projects = [] }) {
         try {
             const token = localStorage.getItem('token');
             const { API_ENDPOINTS } = await import('../config.js');
+            const headers = {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            };
+            if (taskToken) headers['x-task-token'] = taskToken;
+
             const response = await fetch(API_ENDPOINTS.AGENT_AUTO_GENERATE, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
+                headers,
                 body: JSON.stringify({
                     project_token: selectedProjectKey
                 })
@@ -495,17 +541,17 @@ export default function StatusDashboard({ projects = [] }) {
         <div key="task-generator" className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-400 to-indigo-500"></div>
 
-                <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-200">
-                            <Cpu className="w-5 h-5 text-white" />
-                        </div>
-                        <div>
-                            <h4 className="text-sm font-bold text-gray-900">Task Auto-Generator</h4>
-                        </div>
+            <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-200">
+                        <Cpu className="w-5 h-5 text-white" />
                     </div>
-                    <div className="flex items-center gap-1.5">
-                        <span className="relative flex h-2.5 w-2.5">
+                    <div>
+                        <h4 className="text-sm font-bold text-gray-900">Task Auto-Generator</h4>
+                    </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                    <span className="relative flex h-2.5 w-2.5">
                         <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isGeneratingTasks ? 'bg-blue-400 opacity-75' : 'hidden'}`}></span>
                         <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isGeneratingTasks ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
                     </span>

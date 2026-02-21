@@ -237,6 +237,51 @@ const GovernanceForm = () => {
                 dimension_scores: normalizedDS,
             };
             persistGovernanceData(ctx, normalizedResultData);
+
+            // ==========================================
+            // Generate Project Automatically Using External API
+            // ==========================================
+            try {
+                // 1. Fetch dynamic Token
+                const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        client_id: import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282",
+                        client_secret: import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E"
+                    })
+                });
+
+                if (tokenRes.ok) {
+                    const tokenData = await tokenRes.json();
+                    const taskToken = tokenData.access;
+
+                    // 2. Create the Project
+                    // Provide defaults for team and deadline
+                    const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+                    await fetch(projectCreationUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${token}`,
+                            'x-task-token': taskToken,
+                        },
+                        body: JSON.stringify({
+                            name: projectName,
+                            deadline: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split('T')[0], // 1 year from now
+                            project_wallet: 100, // Default wallet value
+                            team: [24], // Default team per requirement
+                            project_token: resultData.project_token
+                        }),
+                    });
+                } else {
+                    console.error("Failed to fetch task API token for project creation.");
+                }
+            } catch (projErr) {
+                console.error("Project generation error:", projErr);
+                // We choose not to block the UI if project creation fails, just log it.
+            }
+
             setResult(normalizedResultData);
         } catch (err) {
             setError('Submission error: ' + err.message);
@@ -644,7 +689,7 @@ const GovernanceResult = ({ result, onBack }) => {
 
 
     return (
-        <div className="min-h-screen bg-gray-50 p-3 sm:p-4 md:p-8">
+        <div className="h-full overflow-y-auto min-h-screen bg-gray-50 p-3 sm:p-4 md:p-8 pb-24 md:pb-32">
             <div className="max-w-5xl mx-auto">
 
                 {/* ── Back link ── */}
@@ -860,7 +905,7 @@ const GovernanceResult = ({ result, onBack }) => {
                 {/* ══════════════════════════════════════════════
                    ACTION BUTTONS
                 ══════════════════════════════════════════════ */}
-                <div className="flex flex-col sm:flex-row gap-3 pb-8">
+                <div className="flex flex-col sm:flex-row gap-3 pb-12 md:pb-24">
                     <button
                         onClick={onBack}
                         className="inline-flex items-center justify-center gap-2 py-3 px-6 text-sm font-semibold rounded-xl text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 transition-all active:scale-[0.97] shadow-sm"

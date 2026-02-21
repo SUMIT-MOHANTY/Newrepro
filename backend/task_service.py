@@ -68,18 +68,26 @@ class TaskManagementService:
             "Accept": "application/json"
         }
 
-    async def _make_request(self, method: str, endpoint: str, **kwargs) -> Any:
+    async def _make_request(self, method: str, endpoint: str, task_token: Optional[str] = None, **kwargs) -> Any:
         """Make an authenticated request, handling token expiration."""
         url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
         
-        headers = await self._get_headers()
+        if task_token:
+            headers = {
+                "Authorization": f"Bearer {task_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+        else:
+            headers = await self._get_headers()
+
         kwargs["headers"] = {**kwargs.get("headers", {}), **headers}
         
         async with httpx.AsyncClient() as client:
             response = await client.request(method, url, **kwargs)
             
             # If token is expired (401 Unauthorized or 403 Forbidden), refresh it and try again once
-            if response.status_code in (401, 403):
+            if response.status_code in (401, 403) and not task_token:
                 logger.info("Task Management API token expired, refreshing...")
                 await self._get_access_token()
                 new_headers = await self._get_headers()
@@ -88,45 +96,59 @@ class TaskManagementService:
                 # Retry request with new token
                 response = await client.request(method, url, **kwargs)
                 
-            response.raise_for_status()
-            
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                logger.error(f"External API error: {exc.response.text}")
+                try:
+                    error_detail = exc.response.json()
+                except Exception:
+                    error_detail = exc.response.text
+                
+                # Re-raise with detail if we get a status error
+                raise Exception(f"Client error '{exc.response.status_code}' for url '{exc.request.url}': {error_detail}") from exc
+                
             # For 204 No Content, return None instead of trying to parse JSON
             if response.status_code == 204:
                 return None
                 
             return response.json()
 
-    async def get_agents(self) -> list:
+    async def get_agents(self, task_token: Optional[str] = None) -> list:
         """Fetch the list of agents from the external task management API."""
-        return await self._make_request("GET", "/api/agents/")
+        return await self._make_request("GET", "/api/agents/", task_token=task_token)
 
-    async def create_project(self, project_data: dict) -> dict:
+    async def get_projects(self, task_token: Optional[str] = None) -> dict:
+        """Fetch the list of projects from the external task management API."""
+        return await self._make_request("GET", "/api/agent/projects/", task_token=task_token)
+
+    async def create_project(self, project_data: dict, task_token: Optional[str] = None) -> dict:
         """Create a new project using the external task management API."""
-        return await self._make_request("POST", "/api/agent/projects/", json=project_data)
+        return await self._make_request("POST", "/api/agent/projects/", task_token=task_token, json=project_data)
 
-    async def create_task(self, task_data: dict) -> dict:
+    async def create_task(self, task_data: dict, task_token: Optional[str] = None) -> dict:
         """Create a new task in external task management API."""
-        return await self._make_request("POST", "/api/agent/tasks/", json=task_data)
+        return await self._make_request("POST", "/api/agent/tasks/", task_token=task_token, json=task_data)
 
-    async def get_tasks(self, page: int = None) -> dict:
+    async def get_tasks(self, page: int = None, task_token: Optional[str] = None) -> dict:
         """Fetch the list of generated tasks from the external task management API."""
         endpoint = "/api/agent/tasks-list"
         if page:
             endpoint += f"?page={page}"
-        return await self._make_request("GET", endpoint)
+        return await self._make_request("GET", endpoint, task_token=task_token)
 
-    async def get_project_info(self) -> dict:
+    async def get_project_info(self, task_token: Optional[str] = None) -> dict:
         """Fetch project info (deadline, wallet, team) from the external task management API."""
-        return await self._make_request("GET", "/api/agent/project-info/")
+        return await self._make_request("GET", "/api/agent/project-info/", task_token=task_token)
 
-    async def add_checklist_to_task(self, task_id: int, checklist_items: list) -> dict:
+    async def add_checklist_to_task(self, task_id: int, checklist_items: list, task_token: Optional[str] = None) -> dict:
         """Add checklist items to a task via the external task management API."""
         payload = {"checklistItems": checklist_items}
-        return await self._make_request("PUT", f"/api/agent/tasks/{task_id}/checklist/", json=payload)
+        return await self._make_request("PUT", f"/api/agent/tasks/{task_id}/checklist/", task_token=task_token, json=payload)
 
-    async def get_dashboard(self) -> dict:
+    async def get_dashboard(self, task_token: Optional[str] = None) -> dict:
         """Fetch dashboard insights from the external task management API."""
-        return await self._make_request("GET", "/api/agent/dashboard/")
+        return await self._make_request("GET", "/api/agent/dashboard/", task_token=task_token)
 
 task_service = TaskManagementService()
 

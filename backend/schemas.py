@@ -93,6 +93,9 @@ class GovernanceResult(BaseModel):
     
     # Original question answers (optional, included when fetching detailed result)
     answers: Optional[list[GovernanceAnswer]] = None
+
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
     
     class Config:
         from_attributes = True
