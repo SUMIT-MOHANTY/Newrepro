@@ -95,3 +95,4 @@ class TaskManagementService:
         return await self._make_request("GET", "/api/agent/tasks-list")
 
 task_service = TaskManagementService()
+
