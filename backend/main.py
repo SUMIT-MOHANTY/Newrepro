@@ -913,8 +913,7 @@ async def reset_agent(
 
 
 class RunAllRequest(BaseModel):
-    git_repo_url: Optional[str] = None
-    git_token: Optional[str] = None
+    agents_config: Optional[Dict[str, Dict[str, str]]] = None
 
 
 @app.post("/agents/run-all")
@@ -930,13 +929,12 @@ async def run_all_agents(
     if not idle_agents:
         raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
 
-    git_repo_url = request.git_repo_url if request else None
-    git_token = request.git_token if request else None
+    agents_config = request.agents_config if request else None
 
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
     asyncio.create_task(
-        agent_service.run_all_agents(git_repo_url=git_repo_url, git_token=git_token)
+        agent_service.run_all_agents(agents_config=agents_config)
     )
 
     return {
@@ -947,6 +945,8 @@ async def run_all_agents(
 
 class AddAgentRequest(BaseModel):
     name: Optional[str] = None
+    git_repo_url: Optional[str] = None
+    git_token: Optional[str] = None
 
 
 @app.post("/agents/add")
@@ -956,7 +956,9 @@ async def add_agent(
 ):
     """Dynamically add a new agent."""
     name = request.name if request else None
-    agent = agent_service.add_agent(name=name)
+    git_repo_url = request.git_repo_url if request else None
+    git_token = request.git_token if request else None
+    agent = agent_service.add_agent(name=name, git_repo_url=git_repo_url, git_token=git_token)
     return {"agent": agent}
 
 
