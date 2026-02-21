@@ -81,4 +81,8 @@ class GovernanceResponse(Base):
     # Tracks an active request to start a new BRD revision on this project
     pending_revision_reason = Column(String, nullable=True)
 
+    # dynamically generated project API credentials for external task system
+    client_id = Column(String, nullable=True)
+    client_secret = Column(String, nullable=True)
+
     owner = relationship("User", back_populates="governance_responses")

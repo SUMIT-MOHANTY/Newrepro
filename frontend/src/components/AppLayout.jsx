@@ -98,6 +98,8 @@ export default function AppLayout({ children }) {
                     latestRevision: 0,
                     status: 'ready_for_upload',
                     pendingRevisionReason: sub.pending_revision_reason || null,
+                    client_id: sub.client_id || null,
+                    client_secret: sub.client_secret || null,
                 });
             });
 
@@ -110,6 +112,10 @@ export default function AppLayout({ children }) {
                 const projectName = meta.project_name || govMeta.project_name || 'Unassigned Project';
                 const governanceResultId = meta.governance_result_id || govMeta.result_id || null;
                 const projectToken = meta.project_token || govMeta.project_token || null;
+
+                // Grab credentials if they exist (usually from the new GET API)
+                const client_id = doc.project_application?.client_id || null;
+                const client_secret = doc.project_application?.client_secret || null;
 
                 let targetKey = projectToken || null;
                 if (!targetKey || !projectMap.has(targetKey)) {
@@ -132,10 +138,17 @@ export default function AppLayout({ children }) {
                             name: projectName, classification: 'N/A', weightedScore: null,
                             submissionDate: null, documents: [], latestDocument: null,
                             latestRevision: 0, status: 'ready_for_upload',
+                            client_id, client_secret
                         });
                     }
                 }
                 const project = projectMap.get(targetKey);
+                // merge credentials if missing and we just found them
+                if (client_id && !project.client_id) {
+                    project.client_id = client_id;
+                    project.client_secret = client_secret;
+                }
+
                 project.documents.push(doc);
                 if (!project.latestDocument) project.latestDocument = doc;
             });
