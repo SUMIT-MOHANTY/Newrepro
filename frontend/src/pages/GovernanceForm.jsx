@@ -82,16 +82,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
 /* ─────────────────────────────────────────────────────────
    MAIN FORM COMPONENT
 ───────────────────────────────────────────────────────── */
-const GovernanceForm = ({
-    user, isSidebarOpen, setIsSidebarOpen, projects,
-    selectedProjectKey, setSelectedProjectKey,
-    showSettings, setShowSettings,
-    currentView, setCurrentView,
-    handleLogout, fetchHistory,
-    handleNewProject, handleSelectProject,
-    getProjectSidebarSubtitle,
-    ...rest
-}) => {
+const GovernanceForm = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const [questions, setQuestions] = useState([]);
@@ -134,6 +125,16 @@ const GovernanceForm = ({
 
         const params = new URLSearchParams(location.search);
         const nameFromUrl = params.get('projectName');
+        const isNew = params.get('new');
+
+        if (isNew) {
+            setProjectName('');
+            setAnswers({});
+            setCurrentStep(0);
+            setResult(null);
+            navigate(location.pathname, { replace: true });
+            return;
+        }
 
         if (nameFromUrl) {
             setProjectName(decodeURIComponent(nameFromUrl));

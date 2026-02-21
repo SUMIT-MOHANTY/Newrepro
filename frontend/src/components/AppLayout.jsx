@@ -174,7 +174,15 @@ export default function AppLayout({ children }) {
 
     useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
-    const handleNewProject = () => navigate('/governance');
+    const handleNewProject = useCallback(() => {
+        setSelectedProjectKey('');
+        localStorage.removeItem('governancePassed');
+        localStorage.removeItem('governanceResult');
+        localStorage.removeItem('governanceContext');
+        sessionStorage.removeItem('governanceResult');
+        sessionStorage.removeItem('governanceContext');
+        navigate('/governance?new=' + Date.now()); // Ensure unique search param to force change
+    }, [navigate]);
 
     const handleSelectProject = (project) => {
         if (!project) return;

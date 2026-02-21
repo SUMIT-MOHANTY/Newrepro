@@ -148,20 +148,12 @@ const getProjectSidebarSubtitle = (project) => {
 
 const Dashboard = ({
     user: propUser,
-    isSidebarOpen: propSidebarOpen,
-    setIsSidebarOpen: propSetSidebarOpen,
     projects: propProjects,
     selectedProjectKey: propSelectedProjectKey,
     setSelectedProjectKey: propSetSelectedProjectKey,
     showSettings: propShowSettings,
     setShowSettings: propSetShowSettings,
     currentView: propCurrentView,
-    setCurrentView: propSetCurrentView,
-    handleLogout: propHandleLogout,
-    fetchHistory: propFetchHistory,
-    handleNewProject: propHandleNewProject,
-    handleSelectProject: propHandleSelectProject,
-    getProjectSidebarSubtitle: propGetProjectSidebarSubtitle,
 }) => {
     const { projectToken } = useParams();
     const [user, setUser] = useState(propUser || null);
@@ -239,28 +231,11 @@ const Dashboard = ({
 
     const location = useLocation();
 
-    const [isSidebarOpen, setIsSidebarOpen] = useState(propSidebarOpen !== undefined ? propSidebarOpen : true);
-    const [currentView, _setCurrentView] = useState(propCurrentView || (location.pathname === '/status' ? 'statusDashboard' : 'main'));
+    const currentView = propCurrentView || (location.pathname === '/status' ? 'statusDashboard' : 'main');
 
     const [githubLinkUrl, setGithubLinkUrl] = useState('');
     const [githubLinkParsing, setGithubLinkParsing] = useState(false);
     const [githubLinkError, setGithubLinkError] = useState('');
-
-    useEffect(() => {
-        if (location.pathname === '/status-dashboard') {
-            _setCurrentView('statusDashboard');
-        } else {
-            _setCurrentView('main');
-        }
-    }, [location.pathname]);
-
-    const setCurrentView = (view) => {
-        if (view === 'statusDashboard') {
-            navigate('/status-dashboard');
-        } else {
-            navigate('/dashboard');
-        }
-    };
 
     const [governanceContext, setGovernanceContext] = useState(null);
     const [roadmapData, setRoadmapData] = useState({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
@@ -268,7 +243,6 @@ const Dashboard = ({
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
 
     const handleLogout = useCallback(() => {
-        setIsSidebarOpen(false);
         clearAuthData();
         navigate('/login');
     }, [navigate]);
@@ -1548,27 +1522,9 @@ const Dashboard = ({
         });
     };
 
-    const handleNewProject = () => {
-        setCurrentView('main');
-        localStorage.removeItem('governancePassed');
-        localStorage.removeItem('governanceResult');
-        localStorage.removeItem('governanceContext');
-        sessionStorage.removeItem('governanceResult');
-        sessionStorage.removeItem('governanceContext');
-        navigate('/governance');
-    };
 
-    const handleSelectProject = (project) => {
-        if (!project) return;
-        setCurrentView('main');
-        setSelectedProjectKey(project.key);
 
-        // Ensure we navigate to the tokenized path instead of generic /dashboard
-        const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
-        if (location.pathname !== targetPath) {
-            navigate(targetPath);
-        }
-    };
+
 
     const handleCreateRevision = async () => {
         if (!selectedProject) return;
@@ -1631,7 +1587,7 @@ const Dashboard = ({
         <>
             {currentView === 'statusDashboard' ? (
                 <div className="h-full overflow-auto">
-                    <StatusDashboard isSidebarOpen={isSidebarOpen} onOpenSidebar={() => setIsSidebarOpen(true)} projects={projects} />
+                    <StatusDashboard projects={projects} />
                 </div>
             ) : (
                 <main className="flex-1 h-full overflow-y-auto bg-gray-50 p-3 sm:p-4 md:p-8 w-full">
