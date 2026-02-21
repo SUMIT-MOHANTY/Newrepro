@@ -17,7 +17,7 @@ import ai_service
 import governance_scoring
 import github_service
 import agent_service
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
 from config import settings
 
 models.Base.metadata.create_all(bind=engine)
@@ -806,6 +806,13 @@ async def github_repo_context(
 @app.on_event("startup")
 async def startup_event():
     agent_service.seed_sample_tasks()
+    db = SessionLocal()
+    try:
+        _ensure_default_agents(db)
+        agents = db.query(models.Agent).all()
+        agent_service.initialize_agents_from_records(agents)
+    finally:
+        db.close()
 
 
 def _get_agent_credentials_map(db: Session, user_id: int) -> Dict[str, models.AgentCredential]:
@@ -815,6 +822,40 @@ def _get_agent_credentials_map(db: Session, user_id: int) -> Dict[str, models.Ag
         .all()
     )
     return {c.agent_id: c for c in creds}
+
+
+def _ensure_default_agents(db: Session) -> None:
+    existing_ids = {row[0] for row in db.query(models.Agent.id).all()}
+    for agent in agent_service.get_all_agents():
+        if agent["id"] in existing_ids:
+            continue
+        db.add(models.Agent(id=agent["id"], name=agent["name"], type=agent.get("type")))
+    db.commit()
+
+
+def _upsert_agent_record(
+    db: Session,
+    agent_id: str,
+    name: Optional[str],
+    agent_type: Optional[str],
+) -> models.Agent:
+    record = db.query(models.Agent).filter(models.Agent.id == agent_id).first()
+    if not record:
+        record = models.Agent(id=agent_id, name=name or agent_id, type=agent_type)
+        db.add(record)
+    else:
+        if name:
+            record.name = name
+        if agent_type:
+            record.type = agent_type
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def _delete_agent_record(db: Session, agent_id: str) -> None:
+    db.query(models.Agent).filter(models.Agent.id == agent_id).delete()
+    db.commit()
 
 
 def _upsert_agent_credentials(
@@ -1050,6 +1091,10 @@ class AddAgentRequest(BaseModel):
     git_token: Optional[str] = None
 
 
+class UpdateAgentRequest(BaseModel):
+    name: Optional[str] = None
+
+
 @app.post("/agents/add")
 async def add_agent(
     request: Optional[AddAgentRequest] = None,
@@ -1061,6 +1106,7 @@ async def add_agent(
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
     agent = agent_service.add_agent(name=name, git_repo_url=git_repo_url, git_token=git_token)
+    _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"))
     if git_repo_url or git_token:
         _upsert_agent_credentials(
             db,
@@ -1072,14 +1118,50 @@ async def add_agent(
     return {"agent": agent}
 
 
+@app.patch("/agents/{agent_id}")
+async def update_agent(
+    agent_id: str,
+    request: Optional[UpdateAgentRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not request or not request.name or not request.name.strip():
+        raise HTTPException(status_code=400, detail="Agent name is required")
+    try:
+        agent = agent_service.update_agent_name(agent_id, request.name)
+        _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"))
+        return {"agent": agent}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/agents/{agent_id}")
+async def update_agent_post(
+    agent_id: str,
+    request: Optional[UpdateAgentRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not request or not request.name or not request.name.strip():
+        raise HTTPException(status_code=400, detail="Agent name is required")
+    try:
+        agent = agent_service.update_agent_name(agent_id, request.name)
+        _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"))
+        return {"agent": agent}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @app.delete("/agents/{agent_id}")
 async def remove_agent(
     agent_id: str,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Remove an idle agent."""
     try:
         agent_service.remove_agent(agent_id)
+        _delete_agent_record(db, agent_id)
         return {"success": True, "removed": agent_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

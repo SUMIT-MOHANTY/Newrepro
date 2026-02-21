@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     ai_api_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
     ai_api_key: Optional[str] = None
     # ai_model: str = "qwen/qwen3.5-397b-a17b"
-    ai_model: str = "minimaxai/minimax-m2.1"
+    ai_model: str = "z-ai/glm4.7"
 
     # GitHub OAuth
     github_client_id: Optional[str] = None
@@ -31,8 +31,8 @@ class Settings(BaseSettings):
 
     # Task Management API
     task_api_base_url: str = "https://01e5-49-42-156-24.ngrok-free.app"
-    task_api_client_id: str = "proj_26_24a39ae3"
-    task_api_client_secret: str = "aKQGDatX0lXgU2nU2yMQVUumbRH-m_LAqZcc1AF9ZoY"
+    task_api_client_id: str = "proj_242_3f915867"
+    task_api_client_secret: str = "ymHyhW2HjMUrU-C7gmlgfwRfc4yCBYo8isRUl694X5E"
 
     class Config:
         env_file = ".env"

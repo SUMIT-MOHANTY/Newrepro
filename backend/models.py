@@ -29,6 +29,14 @@ class AgentCredential(Base):
 
     owner = relationship("User", back_populates="agent_credentials")
 
+class Agent(Base):
+    __tablename__ = "agents"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class Document(Base):
     __tablename__ = "documents"
 
