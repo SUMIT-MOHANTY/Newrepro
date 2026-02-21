@@ -22,22 +22,9 @@ export default function AppLayout({ children }) {
     const [selectedProjectKey, setSelectedProjectKey] = useState('');
     const [showSettings, setShowSettings] = useState(false);
 
-    const [currentView, _setCurrentView] = useState(
-        location.pathname === '/status-dashboard' ? 'statusDashboard'
-            : location.pathname === '/governance' ? 'governance'
-                : 'main'
-    );
-
-    // Sync view with URL
-    useEffect(() => {
-        if (location.pathname === '/status-dashboard') {
-            _setCurrentView('statusDashboard');
-        } else if (location.pathname === '/governance') {
-            _setCurrentView('governance');
-        } else {
-            _setCurrentView('main');
-        }
-    }, [location.pathname]);
+    const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
+        : location.pathname === '/governance' ? 'governance'
+            : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
@@ -172,9 +159,20 @@ export default function AppLayout({ children }) {
         }
     }, [handleLogout]);
 
-    useEffect(() => { fetchProjects(); }, [fetchProjects]);
+    useEffect(() => {
+        const load = async () => { await fetchProjects(); };
+        load();
+    }, [fetchProjects]);
 
-    const handleNewProject = () => navigate('/governance');
+    const handleNewProject = useCallback(() => {
+        setSelectedProjectKey('');
+        localStorage.removeItem('governancePassed');
+        localStorage.removeItem('governanceResult');
+        localStorage.removeItem('governanceContext');
+        sessionStorage.removeItem('governanceResult');
+        sessionStorage.removeItem('governanceContext');
+        navigate('/governance?new=' + Date.now()); // Ensure unique search param to force change
+    }, [navigate]);
 
     const handleSelectProject = (project) => {
         if (!project) return;
@@ -241,7 +239,7 @@ export default function AppLayout({ children }) {
                         <div className="flex-1 min-w-0 flex items-center justify-between">
                             <div className="min-w-0 truncate">
                                 <h1 className="text-lg md:text-2xl lg:text-3xl font-bold tracking-wide truncate">
-                                    {currentView === 'statusDashboard' ? 'Assessment Status Dashboard' :
+                                    {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
                                         currentView === 'governance' ? 'Project Governance' :
                                             'BRD Requirements Analyzer'}
                                 </h1>
@@ -253,7 +251,7 @@ export default function AppLayout({ children }) {
                             </div>
 
                             {/* Status Pipeline graphic top right - ONLY shown on statusDashboard */}
-                            {currentView === 'statusDashboard' && (
+                            {/* {currentView === 'statusDashboard' && (
                                 <div className="text-[9px] md:text-xs font-bold text-gray-700 flex items-center space-x-1.5 bg-white px-2 md:px-3 py-1.5 rounded-full shadow-md border border-gray-100 whitespace-nowrap ml-4 shrink-0 hidden sm:flex">
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-gray-400 rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-orange-200 rounded-full mr-1"></span><span className="hidden md:inline">PREPARE</span></div>
@@ -261,17 +259,17 @@ export default function AppLayout({ children }) {
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-blue-500 rounded-full mr-1"></span><span className="hidden md:inline">APPRAISED</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-green-500 rounded-full"></span></div>
                                 </div>
-                            )}
+                            )} */}
 
                             {/* Settings Button (Global) */}
-                            <button
+                            {/* <button
                                 type="button"
                                 onClick={() => setShowSettings(true)}
                                 className="p-1.5 md:p-2 ml-4 rounded-md text-gray-300 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0"
                                 aria-label="Open settings"
                             >
                                 <Settings className="w-4 h-4 md:w-5 md:h-5" />
-                            </button>
+                            </button> */}
                         </div>
                     </div>
                 </header>

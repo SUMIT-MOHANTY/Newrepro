@@ -772,6 +772,7 @@ class RepoContextRequest(BaseModel):
     owner: str
     repo: str
     branch: str = "main"
+    token: Optional[str] = None
 
 
 @app.post("/github/repo-context")
@@ -784,8 +785,11 @@ async def github_repo_context(
     suitable for feeding into the AI model alongside the BRD.
     """
     try:
+        # Prioritize explicitly provided token (for private links), fallback to OAuth token
+        token_to_use = payload.token if payload.token else current_user.github_token
+
         context = await github_service.build_repo_context(
-            current_user.github_token,
+            token_to_use,
             payload.owner,
             payload.repo,
             payload.branch,

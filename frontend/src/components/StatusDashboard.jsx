@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import ProjectDropdown from './ProjectDropdown';
 import { API_ENDPOINTS } from '../config';
 
-export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects = [] }) {
+export default function StatusDashboard({ projects = [] }) {
     const navigate = useNavigate();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');

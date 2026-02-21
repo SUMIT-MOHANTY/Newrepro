@@ -18,7 +18,7 @@ const GitHubIcon = ({ className = "w-5 h-5" }) => (
     </svg>
 );
 
-const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, inline = false }) => {
+const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRepoSelected, inline = false }) => {
     const [connected, setConnected] = useState(false);
     const [githubUsername, setGithubUsername] = useState('');
     const [repos, setRepos] = useState([]);
@@ -102,6 +102,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, inlin
 
     // Fetch repo context for AI
     const handleSelectRepo = async (repo) => {
+        if (onRepoSelected) onRepoSelected(repo);
         setSelectedRepo(repo);
         setShowRepoList(false);
         setFetchingContext(true);

@@ -82,16 +82,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
 /* ─────────────────────────────────────────────────────────
    MAIN FORM COMPONENT
 ───────────────────────────────────────────────────────── */
-const GovernanceForm = ({
-    user, isSidebarOpen, setIsSidebarOpen, projects,
-    selectedProjectKey, setSelectedProjectKey,
-    showSettings, setShowSettings,
-    currentView, setCurrentView,
-    handleLogout, fetchHistory,
-    handleNewProject, handleSelectProject,
-    getProjectSidebarSubtitle,
-    ...rest
-}) => {
+const GovernanceForm = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const [questions, setQuestions] = useState([]);
@@ -134,6 +125,16 @@ const GovernanceForm = ({
 
         const params = new URLSearchParams(location.search);
         const nameFromUrl = params.get('projectName');
+        const isNew = params.get('new');
+
+        if (isNew) {
+            setProjectName('');
+            setAnswers({});
+            setCurrentStep(0);
+            setResult(null);
+            navigate(location.pathname, { replace: true });
+            return;
+        }
 
         if (nameFromUrl) {
             setProjectName(decodeURIComponent(nameFromUrl));
@@ -311,22 +312,22 @@ const GovernanceForm = ({
             <div className="px-3 sm:px-4 lg:px-6 py-4 lg:py-6 max-w-[1440px] mx-auto">
 
                 {/* Page header — premium */}
-                <div className="flex items-start justify-between gap-3 mb-5">
-                    <div>
-                        <div className="flex items-center gap-3 mb-1">
+                {/* <div className="flex items-start justify-between gap-3 mb-5"> */}
+                <div>
+                    {/* <div className="flex items-center gap-3 mb-1">
                             <div className="w-1 h-8 rounded-full bg-gradient-to-b from-blue-500 to-indigo-600" />
                             <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-gray-900 via-gray-800 to-gray-700 tracking-tight">
                                 Governance Questionnaire
                             </h1>
-                        </div>
-                        <p className="text-gray-400 text-sm mt-0.5 ml-4">
+                        </div> */}
+                    {/* <p className="text-gray-400 text-sm mt-0.5 ml-4">
                             <span className="inline-flex items-center gap-1.5">
                                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                                 {questions.length} questions · {dimensions.length} dimensions
                             </span>
-                        </p>
-                    </div>
+                        </p> */}
                 </div>
+                {/* </div> */}
 
                 {/* ── Roadmap / Timeline Header ── */}
                 <RoadmapHeader steps={stepLabels} currentStep={currentStep} />
