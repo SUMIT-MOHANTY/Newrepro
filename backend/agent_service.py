@@ -834,7 +834,8 @@ async def _pick_next_task(agent_id: str) -> Optional[Dict[str, Any]]:
 
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
                     assigned_task: Dict[str, Any] = None,
-                    continuous: bool = False) -> Dict[str, Any]:
+                    continuous: bool = False,
+                    ignore_running_check: bool = False) -> Dict[str, Any]:
     """
     Main function to run an agent.
     When continuous=True, the agent keeps picking new tasks after completing
@@ -857,7 +858,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
 
-    if agent["status"] == "running":
+    if agent["status"] == "running" and not ignore_running_check:
         raise ValueError(f"Agent {agent_id} is already running")
 
     # Store git config if provided (remembered for future runs)
@@ -1454,22 +1455,41 @@ async def run_all_agents(git_repo_url: str = None, git_token: str = None) -> Dic
     """
     global _claimed_task_ids
 
-    # Fetch all tasks
-    external_tasks = await _fetch_external_tasks()
-    if not external_tasks:
-        raise ValueError("No tasks available from the external task API. Generate tasks first.")
-
-    # Filter to uncompleted, unclaimed tasks
-    available_tasks = [
-        t for t in external_tasks
-        if (t.get("status") or "").lower() not in ("completed", "done")
-        and str(t.get("external_id") or t["id"]) not in _claimed_task_ids
-    ]
-
-    # Get idle agents
+    # 1. Synchronously claim all idle agents immediately so UI updates instantly
     idle_agents = [a for a in agent_states.values() if a["status"] == "idle"]
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
+
+    for agent in idle_agents:
+        agent["status"] = "running"
+        agent["progress"] = 0
+        agent["output_log"] = []
+        agent["progress_message"] = "Initializing (fetching tasks)..."
+
+    # Fetch all tasks (this is async)
+    try:
+        external_tasks = await _fetch_external_tasks()
+        if not external_tasks:
+            raise ValueError("No tasks available from the external task API. Generate tasks first.")
+
+        # Filter to uncompleted, unclaimed tasks
+        available_tasks = [
+            t for t in external_tasks
+            if (t.get("status") or "").lower() not in ("completed", "done")
+            and str(t.get("external_id") or t["id"]) not in _claimed_task_ids
+        ]
+
+        if not available_tasks:
+            raise ValueError("No unclaimed tasks available.")
+            
+    except Exception as e:
+        # Roll back state if task fetching failed
+        for agent in idle_agents:
+            agent["status"] = "idle"
+            agent["progress"] = 0
+            agent["progress_message"] = ""
+            agent["error"] = str(e)
+        raise
 
     if not available_tasks:
         raise ValueError("No unclaimed tasks available.")
@@ -1506,7 +1526,7 @@ async def run_all_agents(git_repo_url: str = None, git_token: str = None) -> Dic
     # Launch all agents concurrently in CONTINUOUS mode
     async def _run_one(agent_id, assigned_task):
         try:
-            return await run_agent(agent_id, assigned_task=assigned_task, continuous=True)
+            return await run_agent(agent_id, assigned_task=assigned_task, continuous=True, ignore_running_check=True)
         except Exception as e:
             return {"success": False, "agent_id": agent_id, "error": str(e)}
 

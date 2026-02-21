@@ -885,9 +885,15 @@ async def run_agent(
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
 
+    # Mark as running immediately so frontend refresh sees it instantly
+    agent["status"] = "running"
+    agent["progress"] = 0
+    agent["output_log"] = []
+    agent["progress_message"] = "Initializing..."
+
     # Fire-and-forget: agent runs in background
     asyncio.create_task(
-        agent_service.run_agent(agent_id, git_repo_url=git_repo_url, git_token=git_token)
+        agent_service.run_agent(agent_id, git_repo_url=git_repo_url, git_token=git_token, ignore_running_check=True)
     )
 
     return {"started": True, "agent_id": agent_id}
@@ -928,6 +934,7 @@ async def run_all_agents(
     git_token = request.git_token if request else None
 
     # Fire-and-forget: all agents run in background
+    # Note: run_all_agents synchronously marks them as "running" as its first step.
     asyncio.create_task(
         agent_service.run_all_agents(git_repo_url=git_repo_url, git_token=git_token)
     )

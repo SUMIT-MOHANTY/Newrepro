@@ -55,9 +55,12 @@ export default function StatusDashboard({ projects = [] }) {
     }, [token]);
 
     // ── Fetch tasks (External API) ───────────────────────────────────
-    const fetchTasks = useCallback(async (append = false, page = 1) => {
-        if (append) setIsLoadingMore(true);
-        else setIsLoadingTasks(true);
+    const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
+        if (append) {
+            if (!silent) setIsLoadingMore(true);
+        } else {
+            if (!silent) setIsLoadingTasks(true);
+        }
 
         setTaskListError(null);
         try {
@@ -133,7 +136,7 @@ export default function StatusDashboard({ projects = [] }) {
         if (!hasRunning) return;
         const interval = setInterval(() => {
             fetchAgents();
-            fetchTasks();
+            fetchTasks(false, 1, true); // silent reload
         }, 3000);
         return () => clearInterval(interval);
     }, [agents, fetchAgents, fetchTasks]);
@@ -167,7 +170,7 @@ export default function StatusDashboard({ projects = [] }) {
                 body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
             });
             await fetchAgents();
-            await fetchTasks();
+            await fetchTasks(false, 1, true);
         } catch (e) {
             console.error('Run failed', e);
         } finally {
@@ -226,7 +229,7 @@ export default function StatusDashboard({ projects = [] }) {
                 body: JSON.stringify(body),
             });
             await fetchAgents();
-            await fetchTasks();
+            await fetchTasks(false, 1, true);
         } catch (e) {
             console.error('Run all failed', e);
         } finally {
