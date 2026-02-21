@@ -15,10 +15,13 @@ export default function StatusDashboard({ projects = [] }) {
     const [runningAgent, setRunningAgent] = useState(null);
     const [showLogModal, setShowLogModal] = useState(null);
 
-    // ── Git Config Modal State ───────────────────────────────────────
     const [gitModalAgent, setGitModalAgent] = useState(null);
     const [gitRepoUrl, setGitRepoUrl] = useState('');
     const [gitToken, setGitToken] = useState('');
+
+    const [agentsGitConfig, setAgentsGitConfig] = useState({});
+    const [showAddAgentModal, setShowAddAgentModal] = useState(false);
+    const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
 
     // ── External Task API State ──────────────────────────────────────
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
@@ -214,32 +217,30 @@ export default function StatusDashboard({ projects = [] }) {
     const [runningAll, setRunningAll] = useState(false);
 
     const handleRunAll = async () => {
-        const agentWithGit = agents.find(a => a.git_repo_url);
-        if (!agentWithGit && !gitRepoUrl) {
-            setGitModalAgent({ id: '__run_all__', name: 'All Agents' });
+        const idleAgents = agents.filter(a => a.status === 'idle');
+        if (idleAgents.length === 0) return;
+
+        const missingConfig = idleAgents.filter(a => !a.git_repo_url || !a.git_token);
+        if (missingConfig.length > 0) {
+            const initialMap = {};
+            const existingRepo = agents.find(a => a.git_repo_url)?.git_repo_url || '';
+            missingConfig.forEach(a => {
+                initialMap[a.id] = { git_repo_url: existingRepo, git_token: '' };
+            });
+            setAgentsGitConfig(initialMap);
+            setGitModalAgent({ id: '__run_all_setup__', name: 'Configure Specific Agents', missingConfig });
             return;
         }
-        setRunningAll(true);
 
-        // Optimistically update all idle agents to running
+        setGitModalAgent(null);
+        setRunningAll(true);
         setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
 
         try {
-            const body = {};
-            if (agentWithGit) {
-                body.git_repo_url = agentWithGit.git_repo_url;
-                body.git_token = agentWithGit.git_token || '';
-            } else if (gitRepoUrl) {
-                body.git_repo_url = gitRepoUrl;
-                body.git_token = gitToken || '';
-            }
             await fetch(API_ENDPOINTS.AGENT_RUN_ALL, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(body),
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
@@ -250,18 +251,42 @@ export default function StatusDashboard({ projects = [] }) {
         }
     };
 
-    // ── Add/Remove Agent ─────────────────────────────────────────────
-    const handleAddAgent = async (name = null) => {
+    const submitMultiAgentConfig = async () => {
+        setGitModalAgent(null);
+        setRunningAll(true);
+        setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
         try {
-            const body = name ? { name } : {};
+            await fetch(API_ENDPOINTS.AGENT_RUN_ALL, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agents_config: agentsGitConfig }),
+            });
+            await fetchAgents();
+            await fetchTasks(false, 1, true);
+        } catch (e) {
+            console.error('Run all failed with config', e);
+        } finally {
+            setRunningAll(false);
+        }
+    };
+
+    // ── Add/Remove Agent ─────────────────────────────────────────────
+    const handleAddAgent = () => {
+        setShowAddAgentModal(true);
+    };
+
+    const submitAddAgent = async () => {
+        setShowAddAgentModal(false);
+        try {
             await fetch(API_ENDPOINTS.AGENT_ADD, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(body),
+                body: JSON.stringify(newAgentConfig),
             });
+            setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
             fetchAgents();
         } catch (e) {
             console.error('Add agent failed', e);
@@ -464,18 +489,17 @@ export default function StatusDashboard({ projects = [] }) {
         <div key="task-generator" className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-400 to-indigo-500"></div>
 
-            <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-200">
-                        <Cpu className="w-5 h-5 text-white" />
+                <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-200">
+                            <Cpu className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                            <h4 className="text-sm font-bold text-gray-900">Task Auto-Generator</h4>
+                        </div>
                     </div>
-                    <div>
-                        <h4 className="text-sm font-bold text-gray-900">Task Auto-Generator</h4>
-                        <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">Agent 03</p>
-                    </div>
-                </div>
-                <div className="flex items-center gap-1.5">
-                    <span className="relative flex h-2.5 w-2.5">
+                    <div className="flex items-center gap-1.5">
+                        <span className="relative flex h-2.5 w-2.5">
                         <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isGeneratingTasks ? 'bg-blue-400 opacity-75' : 'hidden'}`}></span>
                         <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isGeneratingTasks ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
                     </span>
@@ -527,20 +551,6 @@ export default function StatusDashboard({ projects = [] }) {
                     </span>
                 </div>
             )}
-
-            <div className="flex gap-2 mt-auto">
-                <button
-                    onClick={handleGenerateTasks}
-                    disabled={isGeneratingTasks || !selectedProjectKey}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-blue-500 to-indigo-600 rounded-lg shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
-                >
-                    {isGeneratingTasks ? (
-                        <><RefreshCw className="w-3 h-3 animate-spin" /> MAPPING</>
-                    ) : (
-                        <><Play className="w-3 h-3" /> Create Tasks</>
-                    )}
-                </button>
-            </div>
         </div>
     );
 
@@ -1055,6 +1065,18 @@ export default function StatusDashboard({ projects = [] }) {
                                     {runningAll ? 'Starting...' : 'Run All'}
                                 </button>
                                 <button
+                                    onClick={handleGenerateTasks}
+                                    disabled={isGeneratingTasks || !selectedProjectKey}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
+                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                        : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                        }`}
+                                    title="Generate tasks from selected project"
+                                >
+                                    {isGeneratingTasks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                    {isGeneratingTasks ? 'Mapping...' : 'Create Tasks'}
+                                </button>
+                                <button
                                     onClick={() => handleAddAgent()}
                                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
                                     title="Add a new agent"
@@ -1347,42 +1369,95 @@ export default function StatusDashboard({ projects = [] }) {
                 )
             }
 
-            {/* Git Configuration Modal */}
+            {/* Add Agent Modal */}
             {
-                gitModalAgent && (
+                showAddAgentModal && (
                     <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
                         <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
-                                    <Bot className="w-5 h-5 text-indigo-500" /> Git Configuration
+                                    <PlusCircle className="w-5 h-5 text-indigo-500" /> Add New Agent
+                                </h3>
+                                <button type="button" onClick={() => setShowAddAgentModal(false)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <div className="p-6">
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Agent Name (optional)</label>
+                                <input type="text" value={newAgentConfig.name} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, name: e.target.value })} placeholder="e.g. Code Reviewer" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL</label>
+                                <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+
+                                <div className="flex items-center gap-3">
+                                    <button type="button" onClick={() => setShowAddAgentModal(false)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                                    <button type="button" onClick={submitAddAgent} disabled={!newAgentConfig.git_token.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30">
+                                        Add Agent
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {/* Git Configuration Modal */}
+            {
+                gitModalAgent && (
+                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                                    <Bot className="w-5 h-5 text-indigo-500" /> {gitModalAgent.id === '__run_all_setup__' ? 'Configure Agents' : 'Git Configuration'}
                                 </h3>
                                 <button type="button" onClick={() => setGitModalAgent(null)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
-                            <div className="p-6">
-                                <p className="text-sm text-gray-500 mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
+                            <div className="p-6 overflow-y-auto">
+                                {gitModalAgent.id === '__run_all_setup__' ? (
+                                    <>
+                                        <p className="text-sm text-gray-500 mb-6 font-medium">To run simultaneously, the following agents require Git configuration.</p>
+                                        <div className="space-y-6">
+                                            {gitModalAgent.missingConfig.map(agent => (
+                                                <div key={agent.id} className="p-4 border border-indigo-100 bg-indigo-50/30 rounded-xl">
+                                                    <h4 className="text-sm font-bold text-indigo-900 mb-3">{agent.name || agent.id}</h4>
 
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
-                                <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+                                                    <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                                                    <input type="text" value={agentsGitConfig[agent.id]?.git_repo_url || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_repo_url: e.target.value } })} placeholder="https://github.com/org/repo.git" className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-white text-gray-900 mb-3" />
 
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token (optional)</label>
-                                <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+                                                    <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                                    <input type="password" value={agentsGitConfig[agent.id]?.git_token || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_token: e.target.value } })} placeholder="ghp_..." className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-white text-gray-900" />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="text-sm text-gray-500 mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
 
+                                        <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                                        <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
 
-                                <div className="flex items-center gap-3">
-                                    <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
-                                    <button type="button" onClick={() => {
-                                        if (gitModalAgent.id === '__run_all__') {
-                                            setGitModalAgent(null);
-                                            handleRunAll();
-                                        } else {
-                                            handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken);
-                                        }
-                                    }} disabled={!gitRepoUrl.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
-                                        <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all__' ? 'Start All Agents' : 'Start Agent'}
-                                    </button>
-                                </div>
+                                        <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                        <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+                                    </>
+                                )}
+                            </div>
+                            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center gap-3">
+                                <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-white hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                                <button type="button" onClick={() => {
+                                    if (gitModalAgent.id === '__run_all_setup__') {
+                                        submitMultiAgentConfig();
+                                    } else {
+                                        handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken);
+                                    }
+                                }} disabled={gitModalAgent.id === '__run_all_setup__' ? gitModalAgent.missingConfig.some(a => !agentsGitConfig[a.id]?.git_repo_url?.trim() || !agentsGitConfig[a.id]?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                    <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all_setup__' ? 'Start All Agents' : 'Start Agent'}
+                                </button>
                             </div>
                         </div>
                     </div>

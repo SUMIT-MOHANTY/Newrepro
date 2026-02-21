@@ -1420,7 +1420,7 @@ def seed_sample_tasks():
 
 # ── Dynamic Agent Management ────────────────────────────────────────────────
 
-def add_agent(name: str = None) -> Dict[str, Any]:
+def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None) -> Dict[str, Any]:
     """Add a new agent dynamically."""
     idx = len(agent_states)
     agent_id = f"agent_{idx + 1:02d}"
@@ -1430,6 +1430,10 @@ def add_agent(name: str = None) -> Dict[str, Any]:
     agent = _make_agent(agent_id, idx)
     if name:
         agent["name"] = name
+    if git_repo_url:
+        agent["git_repo_url"] = git_repo_url.strip()
+    if git_token:
+        agent["git_token"] = git_token.strip()
     agent_states[agent_id] = agent
     return agent
 
@@ -1447,7 +1451,7 @@ def remove_agent(agent_id: str) -> bool:
 
 # ── Run All Agents Simultaneously ───────────────────────────────────────────
 
-async def run_all_agents(git_repo_url: str = None, git_token: str = None) -> Dict[str, Any]:
+async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dict[str, Any]:
     """
     Assign initial tasks to all idle agents and run them in CONTINUOUS mode.
     Each agent keeps picking the next uncompleted task after finishing its current one,
@@ -1515,13 +1519,16 @@ async def run_all_agents(git_repo_url: str = None, git_token: str = None) -> Dic
         # Remove linked tasks from the available pool
         available_tasks = [t for t in available_tasks if str(t.get("external_id") or t["id"]) not in used_task_ids]
 
-    # Set git config on all agents if provided
-    if git_repo_url:
-        for aid, _ in assignments:
-            agent_states[aid]["git_repo_url"] = git_repo_url.strip()
-    if git_token:
-        for aid, _ in assignments:
-            agent_states[aid]["git_token"] = git_token.strip()
+    # Set individual git config on agents if provided via agents_config
+    if agents_config:
+        for aid, task in assignments:
+            if aid in agents_config:
+                repo_val = agents_config[aid].get("git_repo_url")
+                if repo_val:
+                    agent_states[aid]["git_repo_url"] = repo_val.strip()
+                token_val = agents_config[aid].get("git_token")
+                if token_val:
+                    agent_states[aid]["git_token"] = token_val.strip()
 
     # Launch all agents concurrently in CONTINUOUS mode
     async def _run_one(agent_id, assigned_task):
