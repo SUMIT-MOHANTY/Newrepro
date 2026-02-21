@@ -884,7 +884,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     tasks_completed = 0
     all_results = []
 
-    container_name = f"agent_{agent_id}_{uuid.uuid4().hex[:8]}"
+    container_name = f"{agent_id}_{uuid.uuid4().hex[:8]}"
     container_created = False
 
     try:
