@@ -1208,6 +1208,22 @@ class AgentTaskCreate(BaseModel):
     task_type: str
     priority: str
 
+class TaskMessageRequest(BaseModel):
+    task_id: int
+    message: str
+
+class TaskProgressRequest(BaseModel):
+    task_id: int
+    task_progress: int
+    additional_info: Optional[str] = None
+
+class TaskCompleteRequest(BaseModel):
+    task_id: int
+
+class TaskTimerLogRequest(BaseModel):
+    task_id: int
+    action: str
+
 @app.post("/api/agent/tasks/")
 async def create_external_agent_task(
     task: AgentTaskCreate,
@@ -1219,6 +1235,54 @@ async def create_external_agent_task(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
+
+
+@app.post("/api/agent/messages/")
+async def post_agent_task_message(
+    payload: TaskMessageRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Post a comment/message to a task in the external task management API."""
+    try:
+        return await task_service.post_task_message(payload.dict())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to post task message: {e}")
+
+
+@app.post("/api/agent/task-progress/")
+async def post_agent_task_progress(
+    payload: TaskProgressRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Update task progress in the external task management API."""
+    try:
+        return await task_service.update_task_progress(payload.dict())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update task progress: {e}")
+
+
+@app.post("/api/agent/task-complete/")
+async def post_agent_task_complete(
+    payload: TaskCompleteRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Mark a task as complete in the external task management API."""
+    try:
+        return await task_service.complete_task(payload.dict())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to complete task: {e}")
+
+
+@app.post("/api/agent/timer-logs/")
+async def post_agent_task_timer_log(
+    payload: TaskTimerLogRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Post a timer log (clock_in/clock_out) to the external task management API."""
+    try:
+        return await task_service.post_timer_log(payload.dict())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to post timer log: {e}")
 
 @app.get("/api/agent/tasks-list/")
 async def get_external_agent_tasks(

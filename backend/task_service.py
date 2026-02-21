@@ -88,7 +88,17 @@ class TaskManagementService:
                 # Retry request with new token
                 response = await client.request(method, url, **kwargs)
                 
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                response_text = response.text
+                logger.error(
+                    f"Task Management API request failed: {method} {url} "
+                    f"status={response.status_code} response={response_text}"
+                )
+                raise Exception(
+                    f"{method} {url} failed ({response.status_code}): {response_text}"
+                ) from e
             
             # For 204 No Content, return None instead of trying to parse JSON
             if response.status_code == 204:
@@ -123,6 +133,22 @@ class TaskManagementService:
         """Add checklist items to a task via the external task management API."""
         payload = {"checklistItems": checklist_items}
         return await self._make_request("PUT", f"/api/agent/tasks/{task_id}/checklist/", json=payload)
+
+    async def post_task_message(self, payload: dict) -> dict:
+        """Post a comment/message to a task."""
+        return await self._make_request("POST", "/api/agent/messages/", json=payload)
+
+    async def update_task_progress(self, payload: dict) -> dict:
+        """Update progress for a task."""
+        return await self._make_request("POST", "/api/agent/task-progress/", json=payload)
+
+    async def complete_task(self, payload: dict) -> dict:
+        """Mark a task as complete."""
+        return await self._make_request("POST", "/api/agent/task-complete/", json=payload)
+
+    async def post_timer_log(self, payload: dict) -> dict:
+        """Post a clock in/out log for a task."""
+        return await self._make_request("POST", "/api/agent/timer-logs/", json=payload)
 
     async def get_dashboard(self) -> dict:
         """Fetch dashboard insights from the external task management API."""

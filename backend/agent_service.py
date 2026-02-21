@@ -77,6 +77,8 @@ _AGENT_TYPES = ["validator", "risk", "estimator"]
 _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimation"]
 
 _claimed_task_ids: set = set()   # tasks currently being worked on (prevents double-claim)
+_task_progress_state: Dict[str, int] = {}  # last progress per task id
+_timer_log_state: Dict[str, bool] = {}     # whether a task has clock_in logged successfully
 
 def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
@@ -443,6 +445,24 @@ def _slugify_branch_name(task_title: str) -> str:
     return f"agent/{slug}"
 
 
+def _branch_name_for_task(task: Dict[str, Any]) -> str:
+    """Create a unique, deterministic branch name per task."""
+    title = task.get("title") or "task"
+    base = _slugify_branch_name(title)
+    raw_id = _normalize_task_id(task) or task.get("external_id") or task.get("id")
+    suffix = None
+    if raw_id is not None:
+        suffix = _re.sub(r'[^a-zA-Z0-9]+', '', str(raw_id))
+        if suffix and len(suffix) > 10:
+            suffix = suffix[-10:]
+    if not suffix:
+        suffix = task.get("_branch_suffix")
+        if not suffix:
+            suffix = uuid.uuid4().hex[:8]
+            task["_branch_suffix"] = suffix
+    return f"{base}-{suffix}"
+
+
 def _build_git_auth_url(repo_url: str, token: str) -> str:
     """Insert token into HTTPS git URL for authentication."""
     repo_url = repo_url.strip()
@@ -491,7 +511,7 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         # 4. Create and checkout a new branch
         checkout = subprocess.run(
             ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "checkout", "-b", branch_name],
+             "git", "checkout", "-B", branch_name],
             capture_output=True, text=True, timeout=15,
         )
         if checkout.returncode != 0:
@@ -535,7 +555,25 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
             capture_output=True, text=True, timeout=60,
         )
         if push.returncode != 0:
-            return {"success": False, "error": f"git push failed: {push.stderr}"}
+            err = push.stderr or push.stdout
+            if "non-fast-forward" in err or "rejected" in err:
+                # Fallback: push to a new branch to avoid collisions
+                suffix = uuid.uuid4().hex[:6]
+                new_branch = f"{branch_name}-{suffix}"
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "checkout", "-B", new_branch],
+                    capture_output=True, text=True, timeout=15,
+                )
+                push2 = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "push", "-u", "origin", new_branch],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if push2.returncode == 0:
+                    return {"success": True, "pushed": True, "branch": new_branch, "renamed": True}
+                return {"success": False, "error": f"git push failed: {push2.stderr or push2.stdout}"}
+            return {"success": False, "error": f"git push failed: {err}"}
 
         return {"success": True, "pushed": True, "branch": branch_name}
 
@@ -797,9 +835,11 @@ async def _fetch_external_tasks() -> List[Dict[str, Any]]:
             elif isinstance(checklist_raw, dict):
                 checklist_items = checklist_raw.get("checklistItems", [])
 
+            task_id = t.get("id", uuid.uuid4().hex[:8])
+            external_id = t.get("external_id")
             normalized.append({
-                "id": str(t.get("id", uuid.uuid4().hex[:8])),
-                "external_id": t.get("id"),
+                "id": str(task_id),
+                "external_id": external_id if external_id is not None else task_id,
                 "title": t.get("taskName") or t.get("title") or "Untitled Task",
                 "description": t.get("description") or t.get("taskName") or "",
                 "priority": (t.get("priority") or "medium").lower(),
@@ -817,19 +857,119 @@ async def _fetch_external_tasks() -> List[Dict[str, Any]]:
         return []
 
 
-async def _mark_checklist_item(task_external_id, checklist_items: list, item_index: int):
+async def _mark_checklist_item(task_id, checklist_items: list, item_index: int):
     """Mark a single checklist item as completed via external API."""
     from task_service import task_service
     try:
+        if not task_id:
+            return
         updated = []
         for i, item in enumerate(checklist_items):
             updated.append({
                 "text": item.get("text", ""),
                 "completed": True if i <= item_index else item.get("completed", False),
             })
-        await task_service.add_checklist_to_task(int(task_external_id), updated)
+        await task_service.add_checklist_to_task(int(task_id), updated)
     except Exception as e:
-        print(f"[agent_service] Failed to update checklist for task {task_external_id}: {e}")
+        print(f"[agent_service] Failed to update checklist for task {task_id}: {e}")
+
+
+def _normalize_task_id(task: Dict[str, Any]):
+    tid = task.get("id") or task.get("external_id")
+    if tid is None:
+        return None
+    try:
+        return int(tid)
+    except (TypeError, ValueError):
+        return tid
+
+
+async def _post_task_message(task: Dict[str, Any], message: str) -> bool:
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    try:
+        await task_service.post_task_message({
+            "task_id": task_id,
+            "message": message
+        })
+        return True
+    except Exception as e:
+        print(f"[agent_service] Failed to post message for task {task_id}: {e}")
+        return False
+
+
+async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None) -> bool:
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    task_key = str(task_id)
+    last_progress = _task_progress_state.get(task_key)
+    if last_progress is not None and progress < last_progress:
+        print(
+            f"[agent_service] Skipping progress for task {task_id}: "
+            f"cannot decrease from {last_progress} to {progress}"
+        )
+        return False
+    if not _timer_log_state.get(task_key, False):
+        print(
+            f"[agent_service] Skipping progress for task {task_id}: "
+            "no successful clock_in recorded"
+        )
+        return False
+    try:
+        payload = {
+            "task_id": task_id,
+            "task_progress": progress,
+        }
+        if additional_info:
+            payload["additional_info"] = additional_info
+        await task_service.update_task_progress(payload)
+        _task_progress_state[task_key] = progress
+        return True
+    except Exception as e:
+        print(f"[agent_service] Failed to update progress for task {task_id}: {e}")
+        return False
+
+
+async def _post_task_complete(task: Dict[str, Any]) -> bool:
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    try:
+        await task_service.complete_task({
+            "task_id": task_id
+        })
+        return True
+    except Exception as e:
+        print(f"[agent_service] Failed to complete task {task_id}: {e}")
+        return False
+
+
+async def _post_timer_log(task: Dict[str, Any], action: str) -> bool:
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    try:
+        await task_service.post_timer_log({
+            "task_id": task_id,
+            "action": action
+        })
+        task_key = str(task_id)
+        if action == "clock_in":
+            _timer_log_state[task_key] = True
+        elif action == "clock_out":
+            _timer_log_state[task_key] = False
+        return True
+    except Exception as e:
+        print(f"[agent_service] Failed to post timer log for task {task_id}: {e}")
+        if action == "clock_in":
+            _timer_log_state[str(task_id)] = False
+        return False
 
 
 # ── Main Agent Execution ────────────────────────────────────────────────────
@@ -839,7 +979,7 @@ async def _pick_next_task(agent_id: str) -> Optional[Dict[str, Any]]:
     global _claimed_task_ids
     external_tasks = await _fetch_external_tasks()
     for t in external_tasks:
-        tid = str(t.get("external_id") or t["id"])
+        tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
         status_lower = (t.get("status") or "").lower()
         if status_lower not in ("completed", "done") and tid not in _claimed_task_ids:
             _claimed_task_ids.add(tid)
@@ -912,6 +1052,24 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             task["status"] = "in_progress"
             task["assigned_agent"] = agent_id
             task["started_at"] = datetime.utcnow().isoformat()
+            clock_in_ok = await _post_timer_log(task, "clock_in")
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"API: timer log clock_in {'ok' if clock_in_ok else 'failed'}"
+            })
+            msg_ok = await _post_task_message(task, f"Started by {agent_id}.")
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"API: post message {'ok' if msg_ok else 'failed'}"
+            })
+            prog_ok = await _post_task_progress(task, 10, "Started")
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"API: progress 10% {'ok' if prog_ok else 'skipped/failed'}"
+            })
 
             linked_task_ids = [str(lt) for lt in (task.get("linked_tasks") or [])]
             checklist = task.get("checklist") or []
@@ -967,7 +1125,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
                 # Clone git repo ONCE on first task
                 if use_git:
-                    first_branch = _slugify_branch_name(task["title"])
+                    first_branch = _branch_name_for_task(task)
                     agent["progress"] = 15
                     agent["progress_message"] = f"Cloning git repo & creating branch: {first_branch}"
                     agent["output_log"].append({
@@ -992,7 +1150,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             # ── Create task-specific git branch (for 2nd+ tasks) ─────
             branch_name = None
             if use_git:
-                branch_name = _slugify_branch_name(task["title"])
+                branch_name = _branch_name_for_task(task)
                 if tasks_completed > 1:
                     # Switch back to main and create new branch
                     subprocess.run(
@@ -1002,7 +1160,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     )
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "checkout", "-b", branch_name],
+                         "git", "checkout", "-B", branch_name],
                         capture_output=True, text=True, timeout=15,
                     )
                     agent["output_log"].append({
@@ -1159,6 +1317,22 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     })
                     break
 
+            build_success = result["exit_code"] == 0
+            if build_success:
+                prog_ok = await _post_task_progress(task, 70, "Build completed")
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"API: progress 70% {'ok' if prog_ok else 'skipped/failed'}"
+                })
+            else:
+                prog_ok = await _post_task_progress(task, 40, "Build finished with errors")
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"API: progress 40% {'ok' if prog_ok else 'skipped/failed'}"
+                })
+
             # ═════════════════════════════════════════════════════════
             # CAPTURE WORKSPACE
             # ═════════════════════════════════════════════════════════
@@ -1174,14 +1348,15 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             # ═════════════════════════════════════════════════════════
             # MARK CHECKLIST ITEMS COMPLETE
             # ═════════════════════════════════════════════════════════
-            if checklist and task.get("external_id"):
+            normalized_task_id = _normalize_task_id(task)
+            if checklist and normalized_task_id:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
                     "message": f"Marking {len(checklist)} checklist items as completed..."
                 })
                 for idx_cl in range(len(checklist)):
-                    await _mark_checklist_item(task["external_id"], checklist, idx_cl)
+                    await _mark_checklist_item(normalized_task_id, checklist, idx_cl)
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
@@ -1193,7 +1368,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             # ═════════════════════════════════════════════════════════
             if linked_task_ids and use_git:
                 all_ext_tasks = await _fetch_external_tasks()
-                linked_lookup = {str(t.get("external_id") or t["id"]): t for t in all_ext_tasks}
+                linked_lookup = {str(_normalize_task_id(t) or t.get("external_id") or t.get("id")): t for t in all_ext_tasks}
 
                 for li_idx, linked_id in enumerate(linked_task_ids):
                     linked_task = linked_lookup.get(linked_id)
@@ -1206,7 +1381,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         continue
 
                     lt_title = linked_task.get("title", f"linked-{linked_id}")
-                    lt_branch = _slugify_branch_name(lt_title)
+                    lt_branch = _branch_name_for_task(linked_task)
                     lt_checklist = linked_task.get("checklist") or []
 
                     agent["output_log"].append({
@@ -1222,9 +1397,23 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     )
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "checkout", "-b", lt_branch],
+                         "git", "checkout", "-B", lt_branch],
                         capture_output=True, text=True, timeout=15,
                     )
+
+                    lt_clock_in_ok = await _post_timer_log(linked_task, "clock_in")
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"API: linked task clock_in {'ok' if lt_clock_in_ok else 'failed'}"
+                    })
+                    msg_ok = await _post_task_message(linked_task, f"Started by {agent_id}.")
+                    prog_ok = await _post_task_progress(linked_task, 10, "Started")
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"API: linked task start message {'ok' if msg_ok else 'failed'}, progress 10% {'ok' if prog_ok else 'skipped/failed'}"
+                    })
 
                     lt_code = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"])
                     lt_result = await asyncio.to_thread(
@@ -1235,20 +1424,110 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         "type": "info",
                         "message": f"Linked task builder finished (exit={lt_result['exit_code']})"
                     })
+                    if lt_result["exit_code"] == 0:
+                        prog_ok = await _post_task_progress(linked_task, 70, "Build completed")
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"API: linked task progress 70% {'ok' if prog_ok else 'skipped/failed'}"
+                        })
+                    else:
+                        prog_ok = await _post_task_progress(linked_task, 40, "Build finished with errors")
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"API: linked task progress 40% {'ok' if prog_ok else 'skipped/failed'}"
+                        })
 
                     lt_commit = await asyncio.to_thread(
                         _commit_and_push, container_name, lt_title, lt_branch
                     )
-                    if lt_commit["success"]:
+                    lt_commit_success = lt_commit.get("success", False)
+                    if lt_commit_success:
+                        effective_lt_branch = lt_commit.get("branch", lt_branch)
+                        if lt_commit.get("pushed"):
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"Pushed linked task to branch: {effective_lt_branch}"
+                            })
+                            if lt_commit.get("renamed"):
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"Git push fallback used (new branch: {effective_lt_branch})"
+                                })
+                            prog_ok = await _post_task_progress(linked_task, 95, "Pushed to git")
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"API: linked task progress 95% {'ok' if prog_ok else 'skipped/failed'}"
+                            })
+                        else:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"No changes to push for branch: {effective_lt_branch}"
+                            })
+                            prog_ok = await _post_task_progress(linked_task, 95, "No changes to push")
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"API: linked task progress 95% {'ok' if prog_ok else 'skipped/failed'}"
+                            })
+                        clock_out_ok = await _post_timer_log(linked_task, "clock_out")
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"Pushed linked task to branch: {lt_branch}"
+                            "message": f"API: linked task clock_out {'ok' if clock_out_ok else 'failed'}"
+                        })
+                    else:
+                        msg_ok = await _post_task_message(linked_task, f"Git push failed: {lt_commit.get('error', 'unknown error')}")
+                        prog_ok = await _post_task_progress(linked_task, 80, "Git push failed")
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"API: linked task push failure message {'ok' if msg_ok else 'failed'}, progress 80% {'ok' if prog_ok else 'skipped/failed'}"
                         })
 
-                    if lt_checklist and linked_task.get("external_id"):
+                    lt_task_id = _normalize_task_id(linked_task)
+                    if lt_checklist and lt_task_id:
                         for ci in range(len(lt_checklist)):
-                            await _mark_checklist_item(linked_task["external_id"], lt_checklist, ci)
+                            await _mark_checklist_item(lt_task_id, lt_checklist, ci)
+
+                    # Update linked task progress/completion in external system
+                    if lt_result["exit_code"] == 0 and lt_commit_success:
+                        msg_ok = await _post_task_message(linked_task, f"Completed by {agent_id}.")
+                        prog_ok = await _post_task_progress(linked_task, 100, "Completed")
+                        complete_ok = await _post_task_complete(linked_task)
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": (
+                                f"API: linked task complete message {'ok' if msg_ok else 'failed'}, "
+                                f"progress 100% {'ok' if prog_ok else 'skipped/failed'}, "
+                                f"complete {'ok' if complete_ok else 'failed'}"
+                            )
+                        })
+                    else:
+                        if lt_result["exit_code"] != 0:
+                            lt_failure_message = f"Failed (exit={lt_result['exit_code']})."
+                        elif not lt_commit_success:
+                            lt_failure_message = "Failed (git push error)."
+                        else:
+                            lt_failure_message = "Failed."
+                        msg_ok = await _post_task_message(linked_task, lt_failure_message)
+                        prog_ok = await _post_task_progress(linked_task, 0, "Failed")
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"API: linked task failure message {'ok' if msg_ok else 'failed'}, progress 0% {'ok' if prog_ok else 'skipped/failed'}"
+                        })
+
+                    # Clear tracking state for linked task
+                    lt_task_key = str(_normalize_task_id(linked_task) or linked_task.get("external_id") or linked_task.get("id"))
+                    _task_progress_state.pop(lt_task_key, None)
+                    _timer_log_state.pop(lt_task_key, None)
 
                 # Switch back to main task branch
                 if branch_name:
@@ -1261,6 +1540,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             # ═════════════════════════════════════════════════════════
             # GIT COMMIT & PUSH for the main task
             # ═════════════════════════════════════════════════════════
+            commit_result = None
+            git_success = not use_git
             if use_git and branch_name:
                 agent["progress"] = 95
                 agent["progress_message"] = f"Committing and pushing to {branch_name}..."
@@ -1268,10 +1549,43 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     _commit_and_push, container_name, task["title"], branch_name
                 )
                 if commit_result["success"]:
+                    git_success = True
+                    effective_branch = commit_result.get("branch", branch_name)
+                    if commit_result.get("pushed"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Successfully pushed to branch: {effective_branch}"
+                        })
+                        if commit_result.get("renamed"):
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"Git push fallback used (new branch: {effective_branch})"
+                            })
+                        prog_ok = await _post_task_progress(task, 95, "Pushed to git")
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"API: progress 95% {'ok' if prog_ok else 'skipped/failed'}"
+                        })
+                    else:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"No changes to push for branch: {effective_branch}"
+                        })
+                        prog_ok = await _post_task_progress(task, 95, "No changes to push")
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"API: progress 95% {'ok' if prog_ok else 'skipped/failed'}"
+                        })
+                    clock_out_ok = await _post_timer_log(task, "clock_out")
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"Successfully pushed to branch: {branch_name}"
+                        "message": f"API: timer log clock_out {'ok' if clock_out_ok else 'failed'}"
                     })
                 else:
                     agent["output_log"].append({
@@ -1279,6 +1593,26 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         "type": "error",
                         "message": f"Git push failed: {commit_result['error']}"
                     })
+                    msg_ok = await _post_task_message(task, f"Git push failed: {commit_result.get('error', 'unknown error')}")
+                    prog_ok = await _post_task_progress(task, 80, "Git push failed")
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"API: push failure message {'ok' if msg_ok else 'failed'}, progress 80% {'ok' if prog_ok else 'skipped/failed'}"
+                    })
+            elif not use_git:
+                prog_ok = await _post_task_progress(task, 95, "Ready to complete")
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"API: progress 95% {'ok' if prog_ok else 'skipped/failed'}"
+                })
+                clock_out_ok = await _post_timer_log(task, "clock_out")
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"API: timer log clock_out {'ok' if clock_out_ok else 'failed'}"
+                })
 
             # ═════════════════════════════════════════════════════════
             # TASK COMPLETE — record result, release IDs
@@ -1288,7 +1622,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             stats["avg_time"] = f"{elapsed}s"
             agent["stats"] = stats
 
-            task["status"] = "completed" if result["exit_code"] == 0 else "completed_with_errors"
+            overall_success = (result["exit_code"] == 0) and git_success
+            task["status"] = "completed" if overall_success else "completed_with_errors"
             agent["last_run"] = datetime.utcnow().isoformat()
             agent["last_result"] = {
                 "task": task,
@@ -1301,8 +1636,41 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 "fix_iterations": fix_iteration,
             }
 
+            if overall_success:
+                msg_ok = await _post_task_message(task, f"Completed by {agent_id} in {elapsed}s.")
+                prog_ok = await _post_task_progress(task, 100, "Completed")
+                complete_ok = await _post_task_complete(task)
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": (
+                        f"API: complete message {'ok' if msg_ok else 'failed'}, "
+                        f"progress 100% {'ok' if prog_ok else 'skipped/failed'}, "
+                        f"complete {'ok' if complete_ok else 'failed'}"
+                    )
+                })
+            else:
+                if result["exit_code"] != 0:
+                    failure_message = f"Failed (exit={result['exit_code']})."
+                elif use_git and commit_result and not commit_result.get("success", False):
+                    failure_message = "Failed (git push error)."
+                else:
+                    failure_message = "Failed."
+                msg_ok = await _post_task_message(task, failure_message)
+                prog_ok = await _post_task_progress(task, 0, "Failed")
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"API: failure message {'ok' if msg_ok else 'failed'}, progress 0% {'ok' if prog_ok else 'skipped/failed'}"
+                })
+
+            # Clear tracking state for this task id
+            task_key = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
+            _task_progress_state.pop(task_key, None)
+            _timer_log_state.pop(task_key, None)
+
             # Release claimed IDs for this task
-            tid = str(task.get("external_id") or task["id"])
+            tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
             _claimed_task_ids.discard(tid)
             for lid in linked_task_ids:
                 _claimed_task_ids.discard(lid)
@@ -1384,7 +1752,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
         # Release any claimed IDs
         if task:
-            tid = str(task.get("external_id") or task["id"])
+            tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
             _claimed_task_ids.discard(tid)
             for lid in (task.get("linked_tasks") or []):
                 _claimed_task_ids.discard(str(lid))
@@ -1506,7 +1874,7 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
         available_tasks = [
             t for t in external_tasks
             if (t.get("status") or "").lower() not in ("completed", "done")
-            and str(t.get("external_id") or t["id"]) not in _claimed_task_ids
+            and str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in _claimed_task_ids
         ]
 
         if not available_tasks:
@@ -1531,7 +1899,7 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
         if not available_tasks:
             break
         task = available_tasks.pop(0)
-        task_id = str(task.get("external_id") or task["id"])
+        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
         used_task_ids.add(task_id)
 
         # Also claim linked tasks
@@ -1543,7 +1911,10 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
         assignments.append((agent["id"], task))
 
         # Remove linked tasks from the available pool
-        available_tasks = [t for t in available_tasks if str(t.get("external_id") or t["id"]) not in used_task_ids]
+        available_tasks = [
+            t for t in available_tasks
+            if str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in used_task_ids
+        ]
 
     # Set individual git config on agents if provided via agents_config
     if agents_config:
