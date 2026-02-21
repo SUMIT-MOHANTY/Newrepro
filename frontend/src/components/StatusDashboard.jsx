@@ -19,6 +19,9 @@ export default function StatusDashboard({ projects = [] }) {
     const [isLoadingTasks, setIsLoadingTasks] = useState(false);
     const [taskListError, setTaskListError] = useState(null);
 
+    // Project Info from external API
+    const [projectInfo, setProjectInfo] = useState(null);
+
     // Fetch tasks from the external API
     const fetchTasks = useCallback(async () => {
         setIsLoadingTasks(true);
@@ -53,9 +56,27 @@ export default function StatusDashboard({ projects = [] }) {
         }
     }, []);
 
+    // Fetch project info from external API
+    const fetchProjectInfo = useCallback(async () => {
+        try {
+            const token = localStorage.getItem('token');
+            const { API_ENDPOINTS } = await import('../config.js');
+            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setProjectInfo(data);
+            }
+        } catch (e) {
+            console.error("Failed to load project info:", e);
+        }
+    }, []);
+
     useEffect(() => {
         fetchTasks();
-    }, [fetchTasks]);
+        fetchProjectInfo();
+    }, [fetchTasks, fetchProjectInfo]);
 
     const handleCreateProject = () => {
         if (!newProjectName.trim()) return;
@@ -78,9 +99,7 @@ export default function StatusDashboard({ projects = [] }) {
                     'Authorization': `Bearer ${token}`
                 },
                 body: JSON.stringify({
-                    project_token: selectedProjectKey,
-                    deadline: '2026-12-31',
-                    project_wallet: 100
+                    project_token: selectedProjectKey
                 })
             });
 
@@ -91,8 +110,9 @@ export default function StatusDashboard({ projects = [] }) {
 
             const data = await response.json();
             setGeneratedTasksCount(data.tasks_created || 0);
-            // Refresh the task list to show newly created tasks
+            // Refresh the task list and project info to show newly created tasks
             await fetchTasks();
+            await fetchProjectInfo();
         } catch (err) {
             setGenerationError(err.message);
         } finally {
@@ -691,13 +711,13 @@ export default function StatusDashboard({ projects = [] }) {
                                     </div>
                                     <div className="w-px h-8 bg-gray-200"></div>
                                     <div className="text-center">
-                                        <p className="text-lg font-bold text-blue-600">Auto</p>
-                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Mode</p>
+                                        <p className="text-lg font-bold text-blue-600">{projectInfo?.project?.project_wallet ?? '-'}</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Budget</p>
                                     </div>
                                     <div className="w-px h-8 bg-gray-200"></div>
                                     <div className="text-center">
-                                        <p className="text-lg font-bold text-gray-800">100px</p>
-                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Budget</p>
+                                        <p className="text-sm font-bold text-gray-800">{projectInfo?.project?.deadline || '-'}</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Deadline</p>
                                     </div>
                                 </div>
 

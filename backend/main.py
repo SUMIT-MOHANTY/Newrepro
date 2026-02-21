@@ -871,10 +871,21 @@ async def get_agent_tasks(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {e}")
 
+@app.get("/api/agent/project-info/")
+async def get_agent_project_info(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch project info (deadline, wallet, team) from the external task management API.
+    """
+    try:
+        info = await task_service.get_project_info()
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {e}")
+
 class AutoGenerateRequest(BaseModel):
     project_token: str
-    deadline: str
-    project_wallet: int
 
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
@@ -883,11 +894,17 @@ async def auto_generate_project_tasks(
     db: Session = Depends(get_db)
 ):
     """
-    Auto-generate a project and tasks based on a BRD analysis, 
-    and push them to the external Task Management API.
+    Auto-generate tasks based on a BRD analysis, 
+    using real project deadline and wallet from the external API.
     """
     try:
-        # 1. Fetch the project and its BRD analysis from DB
+        # 1. Fetch project info from external API for deadline and wallet
+        project_info = await task_service.get_project_info()
+        project_data = project_info.get("project", {})
+        project_deadline = project_data.get("deadline", "2026-12-31")
+        project_wallet = project_data.get("project_wallet", 100)
+
+        # 2. Fetch the governance response and BRD analysis from DB
         gov_response = db.query(models.GovernanceResponse).filter(
             models.GovernanceResponse.project_token == request.project_token,
             models.GovernanceResponse.owner_id == current_user.id
@@ -896,7 +913,6 @@ async def auto_generate_project_tasks(
         if not gov_response:
              raise HTTPException(status_code=404, detail="Project not found")
              
-        # Look for the document associated with this project
         user_documents = db.query(models.Document).filter(
             models.Document.owner_id == current_user.id
         ).all()
@@ -928,29 +944,24 @@ async def auto_generate_project_tasks(
         if not analysis_report:
              raise HTTPException(status_code=400, detail="No BRD analysis found for this project.")
 
-        # 2. Fetch Agents from external API
-        agents = await task_service.get_agents()
-        agent_ids = [agent.get("user_id") for agent in agents if "user_id" in agent]
+        # 3. Fetch Agents from external API (use team_members from project-info)
+        team_members = project_info.get("team_members", [])
+        if team_members:
+            agents = team_members
+            agent_ids = [m.get("id") for m in team_members if "id" in m]
+        else:
+            agents = await task_service.get_agents()
+            agent_ids = [agent.get("user_id") for agent in agents if "user_id" in agent]
         
         if not agent_ids:
              raise HTTPException(status_code=400, detail="No active agents found in the external system.")
 
-        # 3. Create the Project in external API
-        # Temporarily skipping project creation as per user request
-        # project_data = {
-        #     "name": gov_response.project_name or "Auto-Generated Project",
-        #     "deadline": request.deadline,
-        #     "project_wallet": request.project_wallet,
-        #     "team": agent_ids
-        # }
-        # await task_service.create_project(project_data)
-        
         # 4. Use LLM to generate the tasks
         tasks_to_create = await ai_service.generate_tasks_for_project(
             analysis_report=analysis_report,
             agents=agents,
-            project_deadline=request.deadline,
-            project_wallet=request.project_wallet
+            project_deadline=project_deadline,
+            project_wallet=project_wallet
         )
         
         created_tasks = []
@@ -960,9 +971,14 @@ async def auto_generate_project_tasks(
             
         return {
              "status": "success",
-             "message": f"Successfully initialized project and automatically created {len(created_tasks)} tasks.",
-             "tasks_created": len(created_tasks)
+             "message": f"Successfully created {len(created_tasks)} tasks.",
+             "tasks_created": len(created_tasks),
+             "project_deadline": project_deadline,
+             "project_wallet": project_wallet
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
+

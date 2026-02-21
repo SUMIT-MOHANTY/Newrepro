@@ -94,5 +94,9 @@ class TaskManagementService:
         """Fetch the list of generated tasks from the external task management API."""
         return await self._make_request("GET", "/api/agent/tasks-list")
 
+    async def get_project_info(self) -> dict:
+        """Fetch project info (deadline, wallet, team) from the external task management API."""
+        return await self._make_request("GET", "/api/agent/project-info/")
+
 task_service = TaskManagementService()
 
