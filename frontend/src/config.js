@@ -39,7 +39,12 @@ export const API_ENDPOINTS = {
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
     AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,
     AGENT_CREATE_TASK: `${API_BASE_URL}/api/agent/tasks/`,
-    AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`
+    AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`,
+    AGENTS: `${API_BASE_URL}/agents`,
+    AGENTS_TASKS: `${API_BASE_URL}/agents/tasks`,
+    AGENT_STATUS: (agentId) => `${API_BASE_URL}/agents/${agentId}/status`,
+    AGENT_RUN: (agentId) => `${API_BASE_URL}/agents/${agentId}/run`,
+    AGENT_RESET: (agentId) => `${API_BASE_URL}/agents/${agentId}/reset`,
 };
 
 export default {
