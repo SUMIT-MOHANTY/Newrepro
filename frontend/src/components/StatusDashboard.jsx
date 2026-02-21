@@ -3,7 +3,7 @@ import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight } f
 import { useNavigate } from 'react-router-dom';
 import ProjectDropdown from './ProjectDropdown';
 
-export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects = [] }) {
+export default function StatusDashboard({ projects = [] }) {
     const navigate = useNavigate();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');

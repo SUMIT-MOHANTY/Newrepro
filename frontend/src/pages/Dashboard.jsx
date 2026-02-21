@@ -132,17 +132,7 @@ const buildGovernanceContextFromResult = (resultData) => {
     };
 };
 
-const getProjectSidebarSubtitle = (project) => {
-    const latestDoc = project?.latestDocument;
-    if (!latestDoc) return 'No file uploaded yet';
 
-    const filename = String(latestDoc.filename || '').trim();
-    if (filename) {
-        return filename;
-    }
-
-    return `Revision ${project?.latestRevision || 1}`;
-};
 
 
 
@@ -234,8 +224,10 @@ const Dashboard = ({
     const currentView = propCurrentView || (location.pathname === '/status' ? 'statusDashboard' : 'main');
 
     const [githubLinkUrl, setGithubLinkUrl] = useState('');
+    const [githubLinkToken, setGithubLinkToken] = useState('');
     const [githubLinkParsing, setGithubLinkParsing] = useState(false);
     const [githubLinkError, setGithubLinkError] = useState('');
+    const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
     const [roadmapData, setRoadmapData] = useState({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
@@ -1486,10 +1478,16 @@ const Dashboard = ({
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ owner, repo, branch })
+                body: JSON.stringify({ owner, repo, branch, token: githubLinkToken || null })
             });
             const data = await resp.json();
-            if (!resp.ok) throw new Error(data.detail || 'Failed to fetch public repo');
+            if (!resp.ok) {
+                let errMessage = 'Failed to fetch repository';
+                if (data.detail) {
+                    errMessage = Array.isArray(data.detail) ? data.detail.map(e => e.msg).join(', ') : data.detail;
+                }
+                throw new Error(errMessage);
+            }
 
             setRepoContext({
                 repo: `${owner}/${repo}`,
@@ -1727,16 +1725,8 @@ const Dashboard = ({
                                             className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                                             disabled={!selectedProject}
                                         >
-                                            GitHub URL
+                                            GitHub
                                         </button>
-                                        <div className="ml-auto pb-2 pl-4">
-                                            <GitHubIntegration
-                                                inline
-                                                repoContext={repoContext}
-                                                onRepoContextReady={(ctx) => setRepoContext(ctx)}
-                                                onClearRepo={() => setRepoContext(null)}
-                                            />
-                                        </div>
                                     </div>
 
                                     {activeTab === 'upload' ? (
@@ -1810,39 +1800,104 @@ const Dashboard = ({
                                             />
                                         </div>
                                     ) : (
-                                        <div className="border border-gray-200 rounded-xl p-6 text-left bg-white shadow-sm">
-                                            <label className="block text-sm font-medium text-gray-900 mb-2">Paste Public GitHub Repository URL</label>
-                                            <div className="flex gap-2 mb-4">
-                                                <input
-                                                    type="text"
-                                                    value={githubLinkUrl}
-                                                    onChange={e => setGithubLinkUrl(e.target.value)}
-                                                    placeholder="https://github.com/owner/repo"
-                                                    className="flex-1 px-4 py-2 border border-gray-200 rounded-md text-sm focus:ring-1 focus:ring-blue-500 outline-none"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={handleLoadGithubUrl}
-                                                    disabled={!githubLinkUrl || githubLinkParsing}
-                                                    className="px-4 py-2 bg-gray-900 text-white text-sm font-semibold rounded-md hover:bg-gray-800 disabled:opacity-50 transition-colors inline-flex items-center min-w-[120px] justify-center"
-                                                >
-                                                    {githubLinkParsing ? (
-                                                        <><span className="animate-spin w-3 h-3 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
-                                                    ) : 'Load Context'}
-                                                </button>
-                                            </div>
-                                            {githubLinkError && <p className="text-red-500 text-xs mb-2">{githubLinkError}</p>}
-                                            {repoContext && repoContext.fromLink && (
-                                                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md">
-                                                    <p className="text-emerald-700 text-xs font-semibold flex items-center">
-                                                        <CheckCircle2 className="w-4 h-4 mr-1.5" />
-                                                        Codebase loaded successfully: {repoContext.repo} ({repoContext.branch})
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative mx-auto">
+                                            {/* OPTION 1: GitHub Connect */}
+                                            <div className="relative border border-gray-200 rounded-xl p-5 bg-white shadow-sm flex flex-col justify-start overflow-hidden">
+                                                <div className={`absolute inset-0 bg-white/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                    <span className="text-xs text-gray-500 font-bold px-3 py-1.5 bg-gray-100 rounded-lg shadow-sm border border-gray-200 uppercase tracking-widest">Using Link Option</span>
+                                                </div>
+                                                <div className="mb-4">
+                                                    <div className="flex items-center mb-2">
+                                                        <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded flex items-center justify-center mr-2 font-black text-xs">1</div>
+                                                        <h3 className="text-sm font-bold text-gray-900">Connect Account</h3>
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 mb-2">
+                                                        Authorize via OAuth to securely browse and select private or public repositories on your account.
                                                     </p>
                                                 </div>
-                                            )}
-                                            <p className="text-xs text-gray-500 mt-3">
-                                                We'll fetch up to 40 key source files from the public repository to include in the AI analysis. Private repositories require OAuth connection using the button on the right.
-                                            </p>
+                                                <div className="mt-auto">
+                                                    <GitHubIntegration
+                                                        repoContext={repoContext}
+                                                        onRepoSelected={() => setIsOAuthRepoSelected(true)}
+                                                        onRepoContextReady={(ctx) => {
+                                                            setRepoContext(ctx);
+                                                            setGithubLinkUrl('');
+                                                            setGithubLinkError('');
+                                                        }}
+                                                        onClearRepo={() => {
+                                                            setRepoContext(null);
+                                                            setIsOAuthRepoSelected(false);
+                                                        }}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            {/* OPTION 2: Repository URL */}
+                                            <div className="relative border border-gray-200 rounded-xl bg-white shadow-sm p-5 flex flex-col justify-start overflow-hidden">
+                                                <div className={`absolute inset-0 bg-white/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || (repoContext && !repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                    <span className="text-xs text-gray-500 font-bold px-3 py-1.5 bg-gray-100 rounded-lg shadow-sm border border-gray-200 uppercase tracking-widest">Using Connected Account</span>
+                                                </div>
+                                                <div className="mb-4">
+                                                    <div className="flex items-center mb-2">
+                                                        <div className="w-6 h-6 bg-purple-100 text-purple-600 rounded flex items-center justify-center mr-2 font-black text-xs">2</div>
+                                                        <h3 className="text-sm font-bold text-gray-900">Paste Repository Link</h3>
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 mb-2">
+                                                        Provide a direct link to a GitHub repository. For private repositories, include a Personal Access Token (PAT).
+                                                    </p>
+                                                </div>
+                                                <div className="flex flex-col gap-3 mt-auto">
+                                                    <input
+                                                        type="text"
+                                                        value={githubLinkUrl}
+                                                        onChange={e => {
+                                                            setGithubLinkUrl(e.target.value);
+                                                            if (repoContext) setRepoContext(null);
+                                                        }}
+                                                        placeholder="https://github.com/owner/repo"
+                                                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-gray-50/50"
+                                                    />
+                                                    <input
+                                                        type="password"
+                                                        value={githubLinkToken}
+                                                        onChange={e => {
+                                                            setGithubLinkToken(e.target.value);
+                                                            if (repoContext) setRepoContext(null);
+                                                        }}
+                                                        placeholder="Optional PAT for private repos..."
+                                                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-gray-50/50"
+                                                    />
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleLoadGithubUrl}
+                                                            disabled={!githubLinkUrl || githubLinkParsing}
+                                                            className="flex-1 px-4 py-2 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
+                                                        >
+                                                            {githubLinkParsing ? (
+                                                                <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
+                                                            ) : 'Fetch Repository'}
+                                                        </button>
+                                                        {repoContext && repoContext.fromLink && (
+                                                            <button
+                                                                onClick={() => { setRepoContext(null); setGithubLinkUrl(''); setGithubLinkToken(''); setGithubLinkError(''); }}
+                                                                className="px-3 py-2 border border-red-200 text-red-600 bg-red-50 rounded-lg hover:bg-red-100 text-sm font-semibold h-10 transition-colors"
+                                                                title="Clear repository"
+                                                            >
+                                                                Clear
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {githubLinkError && <p className="text-red-600 text-[11px] font-medium mt-3 bg-red-50 p-2.5 rounded border border-red-100">{githubLinkError}</p>}
+                                                {repoContext && repoContext.fromLink && (
+                                                    <div className="mt-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
+                                                        <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-emerald-600" />
+                                                        <span className="truncate">Loaded: {repoContext.repo} {repoContext.branch ? `(${repoContext.branch})` : ''}</span>
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
                                     )}
 
