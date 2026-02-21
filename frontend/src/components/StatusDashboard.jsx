@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, Check } from 'lucide-react';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, Check, GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import ProjectDropdown from './ProjectDropdown';
 import { API_ENDPOINTS } from '../config';
@@ -414,14 +414,21 @@ export default function StatusDashboard({ projects = [] }) {
             stats: ['risks', 'critical', 'avg_time'],
             statLabels: { risks: 'Risks', critical: 'Critical', avg_time: 'Duration' },
         },
+        agent_03: {
+            icon: <GitBranch className="w-5 h-5 text-white" />,
+            gradient: 'from-indigo-500 to-blue-600',
+            shadow: 'shadow-indigo-200',
+            accent: 'from-indigo-500 to-blue-500',
+            color: 'indigo',
+            stats: ['avg_time'],
+            statLabels: { avg_time: 'Duration' },
+        },
     };
 
 
     // ── Render Agent Card ────────────────────────────────────────────
     const renderAgentCard = (agent) => {
-        // We handle agent_03 separately
-        if (agent.id === 'agent_03') return null;
-
+        const isGitManager = agent.id === 'agent_03';
         const cfg = agentConfig[agent.id] || agentConfig.agent_01;
         const Icon = cfg.icon;
         const isRunning = agent.status === 'running';
@@ -475,15 +482,19 @@ export default function StatusDashboard({ projects = [] }) {
                                 </div>
                             ) : (
                                 <div className="flex items-center gap-2">
-                                    <h4 className="text-sm font-bold text-gray-900">{agent.name}</h4>
-                                    <button
-                                        type="button"
-                                        onClick={() => startEditingAgentName(agent)}
-                                        className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-                                        title="Edit name"
-                                    >
-                                        <Pencil className="w-3.5 h-3.5" />
-                                    </button>
+                                    <h4 className="text-sm font-bold text-gray-900">
+                                        {isGitManager ? 'Git Manager' : agent.name}
+                                    </h4>
+                                    {!isGitManager && (
+                                        <button
+                                            type="button"
+                                            onClick={() => startEditingAgentName(agent)}
+                                            className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                                            title="Edit name"
+                                        >
+                                            <Pencil className="w-3.5 h-3.5" />
+                                        </button>
+                                    )}
                                 </div>
                             )}
                             <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
@@ -540,22 +551,24 @@ export default function StatusDashboard({ projects = [] }) {
 
                 {/* Actions */}
                 <div className="flex gap-2 mt-auto">
-                    {isIdle || isCompleted || isError ? (
-                        <button
-                            onClick={() => handleRunAgentClick(agent)}
-                            disabled={!canRun || runningAgent === agent.id}
-                            className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${canRun
-                                ? `bg-gradient-to-r ${cfg.gradient} hover:shadow-md hover:-translate-y-0.5`
-                                : 'bg-gray-300 cursor-not-allowed'
-                                }`}
-                            title={!canRun ? 'No pending tasks available' : `Run ${agent.name}`}
-                        >
-                            {runningAgent === agent.id ? (<><Loader2 className="w-3 h-3 animate-spin" /> Starting...</>) : (<><Play className="w-3 h-3" /> Run Agent</>)}
-                        </button>
-                    ) : (
-                        <button disabled className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
-                            <RefreshCw className="w-3 h-3 animate-spin" /> Running...
-                        </button>
+                    {!isGitManager && (
+                        (isIdle || isCompleted || isError) ? (
+                            <button
+                                onClick={() => handleRunAgentClick(agent)}
+                                disabled={!canRun || runningAgent === agent.id}
+                                className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${canRun
+                                    ? `bg-gradient-to-r ${cfg.gradient} hover:shadow-md hover:-translate-y-0.5`
+                                    : 'bg-gray-300 cursor-not-allowed'
+                                    }`}
+                                title={!canRun ? 'No pending tasks available' : `Run ${agent.name}`}
+                            >
+                                {runningAgent === agent.id ? (<><Loader2 className="w-3 h-3 animate-spin" /> Starting...</>) : (<><Play className="w-3 h-3" /> Run Agent</>)}
+                            </button>
+                        ) : (
+                            <button disabled className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
+                                <RefreshCw className="w-3 h-3 animate-spin" /> Running...
+                            </button>
+                        )
                     )}
                     <button
                         onClick={() => setShowLogModal(agent.id)}
@@ -563,7 +576,7 @@ export default function StatusDashboard({ projects = [] }) {
                     >
                         <Terminal className="w-3 h-3" /> Log
                     </button>
-                    {(isCompleted || isError) && (
+                    {!isGitManager && (isCompleted || isError) && (
                         <button
                             onClick={() => handleResetAgent(agent.id)}
                             className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"

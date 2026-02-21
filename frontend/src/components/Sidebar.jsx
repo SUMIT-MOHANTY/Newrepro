@@ -42,7 +42,7 @@ export default function Sidebar({
                         <div className="flex items-center min-w-0">
                             <img src={bourntecLogo} alt="App Logo" className="h-5 w-auto object-contain shrink-0" />
                             <div className="h-5 w-0.5 bg-white mx-3 shrink-0 rounded-full"></div>
-                            <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">BRD Analyzer</span>
+                            <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">DSuite</span>
                         </div>
                         <button
                             type="button"

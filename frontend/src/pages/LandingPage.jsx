@@ -150,9 +150,9 @@ const LandingPage = () => {
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="flex justify-between items-center h-16">
                         <div className="flex items-center gap-3">
-                            <img src={Logo} alt="BRD Analyzer" className="h-10 w-auto" />
+                            <img src={Logo} alt="DSuite" className="h-10 w-auto" />
                             <div className="h-6 w-px bg-slate-200"></div>
-                            <span className="text-xl font-bold tracking-tight text-slate-900">BRD Analyzer</span>
+                            <span className="text-xl font-bold tracking-tight text-slate-900">DSuite</span>
                         </div>
                         <div className="flex items-center gap-4">
                             <button
@@ -306,7 +306,7 @@ const LandingPage = () => {
                             Ready to clean up your docs?
                         </h2>
                         <p className="text-slate-300 text-base md:text-lg max-w-xl mx-auto mb-8">
-                            Join thousands of developers using BRD Analyzer today.
+                            Join thousands of developers using DSuite today.
                         </p>
                         <button
                             onClick={openSignup}
@@ -322,7 +322,7 @@ const LandingPage = () => {
             {/* Footer */}
             <footer className="bg-white border-t border-slate-100 py-8 relative z-10">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-slate-400 text-sm">
-                    <p>© 2024 BRD Analyzer. All rights reserved.</p>
+                    <p>© 2024 DSuite. All rights reserved.</p>
                 </div>
             </footer>
 

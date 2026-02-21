@@ -80,6 +80,12 @@ _claimed_task_ids: set = set()   # tasks currently being worked on (prevents dou
 _task_progress_state: Dict[str, int] = {}  # last progress per task id
 _timer_log_state: Dict[str, bool] = {}     # whether a task has clock_in logged successfully
 
+GIT_MANAGER_AGENT_ID = "agent_03"
+GIT_INTEGRATION_BRANCH = "agent/integration"
+_git_merge_queue: List[Dict[str, Any]] = []
+_git_merge_running: bool = False
+_git_merge_lock: asyncio.Lock = asyncio.Lock()
+
 def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
     atype = _AGENT_TYPES[idx % len(_AGENT_TYPES)]
@@ -473,6 +479,486 @@ def _build_git_auth_url(repo_url: str, token: str) -> str:
     return repo_url
 
 
+def _log_git_agent(message: str, level: str = "info") -> None:
+    git_agent = agent_states.get(GIT_MANAGER_AGENT_ID)
+    if not git_agent:
+        return
+    git_agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": level,
+        "message": message
+    })
+
+
+def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str]) -> Dict[str, str]:
+    git_agent = agent_states.get(GIT_MANAGER_AGENT_ID) or {}
+    return {
+        "repo_url": git_agent.get("git_repo_url") or repo_url or "",
+        "token": git_agent.get("git_token") or token or ""
+    }
+
+
+def _get_default_branch(container_name: str) -> str:
+    # Try origin/HEAD symbolic ref
+    head_ref = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if head_ref.returncode == 0:
+        ref = (head_ref.stdout or "").strip()
+        if ref.startswith("refs/remotes/origin/"):
+            return ref.replace("refs/remotes/origin/", "", 1)
+
+    # Fallback to main or master
+    main_check = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if main_check.returncode == 0:
+        return "main"
+    return "master"
+
+
+def _collect_repo_summary(container_name: str) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    file_list = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "sh", "-c", "find . -maxdepth 3 -type f | sed 's|^./||' | head -n 200"],
+        capture_output=True, text=True, timeout=20,
+    )
+    files = [f.strip() for f in (file_list.stdout or "").splitlines() if f.strip()]
+    summary["files"] = files
+
+    def has_file(name: str) -> bool:
+        return subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "sh", "-c", f"test -f {name}"],
+            capture_output=True, text=True, timeout=5,
+        ).returncode == 0
+
+    summary["has_package_json"] = has_file("package.json")
+    summary["has_requirements"] = has_file("requirements.txt")
+    summary["has_pyproject"] = has_file("pyproject.toml")
+    summary["has_setup_py"] = has_file("setup.py")
+    summary["has_pipfile"] = has_file("Pipfile")
+    summary["has_poetry_lock"] = has_file("poetry.lock")
+    summary["has_package_lock"] = has_file("package-lock.json")
+    summary["has_pnpm_lock"] = has_file("pnpm-lock.yaml")
+    summary["has_yarn_lock"] = has_file("yarn.lock")
+
+    tests_dir = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "sh", "-c", "find . -maxdepth 3 -type d \\( -name tests -o -name __tests__ \\) | head -n 1"],
+        capture_output=True, text=True, timeout=10,
+    )
+    summary["has_tests_dir"] = bool((tests_dir.stdout or "").strip())
+
+    pkg_scripts = {}
+    if summary["has_package_json"]:
+        pkg = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "cat", "package.json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if pkg.returncode == 0 and pkg.stdout:
+            try:
+                pkg_json = json.loads(pkg.stdout)
+                pkg_scripts = pkg_json.get("scripts", {}) or {}
+            except Exception:
+                pkg_scripts = {}
+    summary["package_scripts"] = pkg_scripts
+    return summary
+
+
+async def _call_ai_for_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
+    key = settings.ai_api_key
+    if not key or key == "your-api-key-here":
+        return {}
+    url = settings.ai_api_url
+    model_name = settings.ai_model
+    prompt = (
+        "You are a build engineer. Given this repo summary, return JSON only with keys "
+        "\"install\" (list of shell commands) and \"tests\" (list of shell commands). "
+        "Use only safe commands such as: pip install -r requirements.txt, pip install -e ., "
+        "python -m pytest -q, pytest -q, npm install, npm test, npm run test, npm run build, "
+        "pnpm install, pnpm test, yarn install, yarn test. If no tests, return empty lists.\n\n"
+        f"REPO SUMMARY:\n{json.dumps(summary, indent=2)}"
+    )
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": "Return only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    start = content.find("{")
+    end = content.rfind("}")
+    if start == -1 or end == -1:
+        return {}
+    try:
+        return json.loads(content[start:end + 1])
+    except Exception:
+        return {}
+
+
+def _heuristic_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
+    install_cmds: List[str] = []
+    test_cmds: List[str] = []
+
+    if summary.get("has_package_json"):
+        if summary.get("has_pnpm_lock"):
+            install_cmds.append("pnpm install")
+            if "test" in summary.get("package_scripts", {}):
+                test_cmds.append("pnpm test")
+        elif summary.get("has_yarn_lock"):
+            install_cmds.append("yarn install")
+            if "test" in summary.get("package_scripts", {}):
+                test_cmds.append("yarn test")
+        else:
+            install_cmds.append("npm install")
+            if "test" in summary.get("package_scripts", {}):
+                test_cmds.append("npm test")
+            elif "build" in summary.get("package_scripts", {}):
+                test_cmds.append("npm run build")
+
+    if summary.get("has_requirements"):
+        install_cmds.append("pip install -r requirements.txt")
+    elif summary.get("has_pyproject") or summary.get("has_setup_py"):
+        install_cmds.append("pip install -e .")
+    if summary.get("has_tests_dir") or summary.get("has_pyproject"):
+        test_cmds.append("python -m pytest -q")
+
+    return {"install": install_cmds, "tests": test_cmds}
+
+
+async def _run_commands_in_container(container_name: str, commands: List[str]) -> Dict[str, Any]:
+    last = {"exit_code": 0, "stdout": "", "stderr": ""}
+    for cmd in commands:
+        result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "sh", "-c", cmd],
+            capture_output=True, text=True, timeout=600,
+        )
+        last = {"exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr, "cmd": cmd}
+        if result.returncode != 0:
+            return last
+    return last
+
+
+def _commit_if_dirty(container_name: str, message: str) -> None:
+    status = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "status", "--porcelain"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if not (status.stdout or "").strip():
+        return
+    subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "add", "-A"],
+        capture_output=True, text=True, timeout=30,
+    )
+    subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "commit", "-m", message],
+        capture_output=True, text=True, timeout=30,
+    )
+
+
+async def _run_git_manager_tests_with_ai(container_name: str, branch: str) -> bool:
+    summary = _collect_repo_summary(container_name)
+    plan = await _call_ai_for_test_plan(summary)
+    if not plan:
+        plan = _heuristic_test_plan(summary)
+
+    install_cmds = plan.get("install") or []
+    test_cmds = plan.get("tests") or []
+    if not test_cmds:
+        _log_git_agent("No test commands detected. Skipping tests.")
+        return True
+
+    _log_git_agent(f"Running installs: {', '.join(install_cmds) if install_cmds else 'none'}")
+    install_res = await _run_commands_in_container(container_name, install_cmds)
+    if install_res.get("exit_code", 0) != 0:
+        _log_git_agent(f"Install failed: {install_res.get('cmd')}\n{install_res.get('stderr')}", "error")
+        return False
+
+    for cmd in test_cmds:
+        _log_git_agent(f"Running tests: {cmd}")
+        test_res = await _run_commands_in_container(container_name, [cmd])
+        if test_res.get("exit_code", 0) == 0:
+            continue
+
+        # Auto-fix loop
+        for iteration in range(1, MAX_FIX_ITERATIONS + 1):
+            issues_report = _detect_issues_from_output(
+                test_res.get("stdout", ""),
+                test_res.get("stderr", ""),
+                test_res.get("exit_code", 1),
+            )
+            issues = issues_report.get("issues") or []
+            if not issues:
+                tail = (test_res.get("stderr") or test_res.get("stdout") or "")[-500:]
+                issues = [f"TEST FAILURE: {tail}"]
+
+            _log_git_agent(f"AI fix iteration {iteration} for {cmd} ({len(issues)} issues)")
+            try:
+                fix_code = await _call_ai_for_fix(
+                    task_description=f"Fix failing tests after merge on {GIT_INTEGRATION_BRANCH}.",
+                    agent_type="validator",
+                    issues=issues,
+                    previous_output=(test_res.get("stdout", "") + "\n" + test_res.get("stderr", "")),
+                    iteration=iteration,
+                    builder_crashed=False,
+                )
+                await asyncio.to_thread(
+                    _exec_script_in_container, container_name, fix_code, f"git_fix_{iteration}"
+                )
+            except Exception as fix_err:
+                _log_git_agent(f"AI fix failed: {fix_err}", "error")
+                return False
+
+            # Re-run test command
+            test_res = await _run_commands_in_container(container_name, [cmd])
+            if test_res.get("exit_code", 0) == 0:
+                _commit_if_dirty(container_name, f"Auto-fix after tests ({branch})")
+                break
+        else:
+            _log_git_agent(f"Tests still failing after fixes: {cmd}", "error")
+            return False
+
+    return True
+
+
+async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Optional[str],
+                             source_agent: str, task_title: str) -> None:
+    if not branch or not repo_url:
+        return
+    _git_merge_queue.append({
+        "branch": branch,
+        "repo_url": repo_url,
+        "token": token or "",
+        "source_agent": source_agent,
+        "task_title": task_title,
+    })
+    _log_git_agent(f"Queued merge: {branch} (from {source_agent}, task '{task_title}')")
+    asyncio.create_task(_git_merge_worker())
+
+
+async def _git_merge_worker() -> None:
+    global _git_merge_running
+    async with _git_merge_lock:
+        if _git_merge_running:
+            return
+        _git_merge_running = True
+
+    try:
+        while _git_merge_queue:
+            item = _git_merge_queue.pop(0)
+            await _process_git_merge_item(item)
+    finally:
+        _git_merge_running = False
+        git_agent = agent_states.get(GIT_MANAGER_AGENT_ID)
+        if git_agent:
+            git_agent["status"] = "idle"
+            git_agent["progress"] = 100
+            git_agent["progress_message"] = "Git manager idle"
+
+
+async def _process_git_merge_item(item: Dict[str, Any]) -> None:
+    git_agent = agent_states.get(GIT_MANAGER_AGENT_ID)
+    if git_agent:
+        git_agent["status"] = "running"
+        git_agent["progress"] = 10
+        git_agent["progress_message"] = "Merging branches..."
+
+    creds = _get_git_manager_creds(item.get("repo_url"), item.get("token"))
+    repo_url = creds["repo_url"]
+    token = creds["token"]
+    branch = item.get("branch")
+    if not repo_url or not branch:
+        _log_git_agent("Git manager skipped merge (missing repo/branch)", "error")
+        return
+
+    container_name = f"git_manager_{uuid.uuid4().hex[:8]}"
+    try:
+        _log_git_agent(f"Creating git manager container: {container_name}")
+        container_result = await asyncio.to_thread(_create_persistent_container, container_name)
+        if not container_result["success"]:
+            _log_git_agent(f"Git manager container error: {container_result['error']}", "error")
+            return
+
+        # Install git
+        install = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if install.returncode != 0:
+            _log_git_agent(f"Git manager failed to install git: {install.stderr}", "error")
+            return
+
+        # Configure git user
+        subprocess.run(
+            ["docker", "exec", container_name, "git", "config", "--global", "user.email", "git-agent@brd-analyzer.ai"],
+            capture_output=True, text=True, timeout=10,
+        )
+        subprocess.run(
+            ["docker", "exec", container_name, "git", "config", "--global", "user.name", "BRD Git Manager"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+        # Clone repo
+        auth_url = _build_git_auth_url(repo_url, token)
+        clone = subprocess.run(
+            ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone.returncode != 0:
+            _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error")
+            return
+
+        # Fetch branch and checkout integration branch
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "fetch", "origin", branch],
+            capture_output=True, text=True, timeout=60,
+        )
+        default_branch = _get_default_branch(container_name)
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "checkout", "-B", GIT_INTEGRATION_BRANCH, f"origin/{default_branch}"],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        if git_agent:
+            git_agent["progress"] = 60
+            git_agent["progress_message"] = f"Merging {branch} -> {GIT_INTEGRATION_BRANCH}"
+
+        merge = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "merge", "--no-ff", f"origin/{branch}"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if merge.returncode != 0:
+            conflict_list = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "diff", "--name-only", "--diff-filter=U"],
+                capture_output=True, text=True, timeout=20,
+            )
+            files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
+            if not files:
+                _log_git_agent(f"Merge failed for {branch}: {merge.stderr}", "error")
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                return
+
+            _log_git_agent(f"Conflicts detected. Applying union merge for {len(files)} files.")
+            for file_path in files:
+                merge_script = (
+                    f"git show :2:{file_path} > /tmp/ours_merge && "
+                    f"git show :3:{file_path} > /tmp/theirs_merge && "
+                    f"git show :1:{file_path} > /tmp/base_merge 2>/dev/null || : > /tmp/base_merge; "
+                    f"git merge-file -p --union /tmp/ours_merge /tmp/base_merge /tmp/theirs_merge > \"{file_path}\" && "
+                    f"git add \"{file_path}\""
+                )
+                file_merge = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", merge_script],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if file_merge.returncode != 0:
+                    _log_git_agent(f"Union merge failed for {file_path}: {file_merge.stderr}", "error")
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    return
+
+            commit_union = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "commit", "-m", f"Auto-union merge {branch}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if commit_union.returncode != 0:
+                _log_git_agent(f"Union merge commit failed for {branch}: {commit_union.stderr}", "error")
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                return
+
+        tests_ok = await _run_git_manager_tests_with_ai(container_name, branch)
+        if not tests_ok:
+            _log_git_agent(f"Tests failed after merge for {branch}. Not pushing.", "error")
+            return
+
+        push = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
+            capture_output=True, text=True, timeout=60,
+        )
+        if push.returncode != 0:
+            err = push.stderr or push.stdout
+            if "non-fast-forward" in err or "rejected" in err:
+                # Pull and rebase remote changes before pushing
+                _log_git_agent(f"Non-fast-forward detected for {GIT_INTEGRATION_BRANCH}, pulling remote changes...")
+                pull = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "pull", "--rebase", "origin", GIT_INTEGRATION_BRANCH],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if pull.returncode == 0:
+                    # Retry push after rebase
+                    push_retry = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if push_retry.returncode == 0:
+                        _log_git_agent(f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed (after rebase).")
+                        if git_agent:
+                            git_agent["progress"] = 100
+                            git_agent["progress_message"] = f"Merged {branch}"
+                        return
+                _log_git_agent(f"Rebase failed for {GIT_INTEGRATION_BRANCH}, trying force push...", "warning")
+                # Fallback: force push to overwrite
+                push_force = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "push", "-f", "origin", GIT_INTEGRATION_BRANCH],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if push_force.returncode == 0:
+                    _log_git_agent(f"Merged {branch} into {GIT_INTEGRATION_BRANCH} (force pushed).")
+                    if git_agent:
+                        git_agent["progress"] = 100
+                        git_agent["progress_message"] = f"Merged {branch}"
+                    return
+            _log_git_agent(f"Push failed for {GIT_INTEGRATION_BRANCH}: {push.stderr}", "error")
+            return
+
+        _log_git_agent(f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed.")
+        if git_agent:
+            git_agent["progress"] = 100
+            git_agent["progress_message"] = f"Merged {branch}"
+    finally:
+        await asyncio.to_thread(_destroy_container, container_name)
+
+
 def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str) -> Dict[str, Any]:
     """Install git, clone repo into /workspace/, create and checkout a new branch."""
     try:
@@ -557,7 +1043,23 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
         if push.returncode != 0:
             err = push.stderr or push.stdout
             if "non-fast-forward" in err or "rejected" in err:
-                # Fallback: push to a new branch to avoid collisions
+                # Strategy 1: Pull and rebase to integrate remote changes
+                pull = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "pull", "--rebase", "origin", branch_name],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if pull.returncode == 0:
+                    # Rebase succeeded, try push again
+                    push_retry = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "push", "-u", "origin", branch_name],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if push_retry.returncode == 0:
+                        return {"success": True, "pushed": True, "branch": branch_name, "rebased": True}
+
+                # Strategy 2: Fallback - push to a new branch to avoid collisions
                 suffix = uuid.uuid4().hex[:6]
                 new_branch = f"{branch_name}-{suffix}"
                 subprocess.run(
@@ -1451,6 +1953,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                                 "type": "info",
                                 "message": f"Pushed linked task to branch: {effective_lt_branch}"
                             })
+                            if lt_commit.get("rebased"):
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"Git pull --rebase integrated remote changes before push"
+                                })
                             if lt_commit.get("renamed"):
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
@@ -1463,6 +1971,13 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                                 "type": "info",
                                 "message": f"API: linked task progress 95% {'ok' if prog_ok else 'skipped/failed'}"
                             })
+                            await _enqueue_git_merge(
+                                effective_lt_branch,
+                                agent.get("git_repo_url"),
+                                agent.get("git_token"),
+                                agent_id,
+                                lt_title
+                            )
                         else:
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
@@ -1496,8 +2011,13 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             await _mark_checklist_item(lt_task_id, lt_checklist, ci)
 
                     # Update linked task progress/completion in external system
-                    if lt_result["exit_code"] == 0 and lt_commit_success:
-                        msg_ok = await _post_task_message(linked_task, f"Completed by {agent_id}.")
+                    # Always complete linked task if build succeeded, regardless of git push
+                    if lt_result["exit_code"] == 0:
+                        if lt_commit_success:
+                            lt_completion_message = f"Completed by {agent_id}."
+                        else:
+                            lt_completion_message = f"Completed by {agent_id} (with git errors)."
+                        msg_ok = await _post_task_message(linked_task, lt_completion_message)
                         prog_ok = await _post_task_progress(linked_task, 100, "Completed")
                         complete_ok = await _post_task_complete(linked_task)
                         agent["output_log"].append({
@@ -1510,12 +2030,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             )
                         })
                     else:
-                        if lt_result["exit_code"] != 0:
-                            lt_failure_message = f"Failed (exit={lt_result['exit_code']})."
-                        elif not lt_commit_success:
-                            lt_failure_message = "Failed (git push error)."
-                        else:
-                            lt_failure_message = "Failed."
+                        lt_failure_message = f"Failed (exit={lt_result['exit_code']})."
                         msg_ok = await _post_task_message(linked_task, lt_failure_message)
                         prog_ok = await _post_task_progress(linked_task, 0, "Failed")
                         agent["output_log"].append({
@@ -1557,6 +2072,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             "type": "info",
                             "message": f"Successfully pushed to branch: {effective_branch}"
                         })
+                        if commit_result.get("rebased"):
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"Git pull --rebase integrated remote changes before push"
+                            })
                         if commit_result.get("renamed"):
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
@@ -1569,6 +2090,13 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             "type": "info",
                             "message": f"API: progress 95% {'ok' if prog_ok else 'skipped/failed'}"
                         })
+                        await _enqueue_git_merge(
+                            effective_branch,
+                            agent.get("git_repo_url"),
+                            agent.get("git_token"),
+                            agent_id,
+                            task["title"]
+                        )
                     else:
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
@@ -1636,8 +2164,14 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 "fix_iterations": fix_iteration,
             }
 
-            if overall_success:
-                msg_ok = await _post_task_message(task, f"Completed by {agent_id} in {elapsed}s.")
+            # Always set progress to 100% and complete task when build succeeds
+            # Git push failures won't prevent task completion
+            if result["exit_code"] == 0:
+                if overall_success:
+                    completion_message = f"Completed by {agent_id} in {elapsed}s."
+                else:
+                    completion_message = f"Completed by {agent_id} in {elapsed}s (with git errors)."
+                msg_ok = await _post_task_message(task, completion_message)
                 prog_ok = await _post_task_progress(task, 100, "Completed")
                 complete_ok = await _post_task_complete(task)
                 agent["output_log"].append({
@@ -1650,12 +2184,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     )
                 })
             else:
-                if result["exit_code"] != 0:
-                    failure_message = f"Failed (exit={result['exit_code']})."
-                elif use_git and commit_result and not commit_result.get("success", False):
-                    failure_message = "Failed (git push error)."
-                else:
-                    failure_message = "Failed."
+                failure_message = f"Failed (exit={result['exit_code']})."
                 msg_ok = await _post_task_message(task, failure_message)
                 prog_ok = await _post_task_progress(task, 0, "Failed")
                 agent["output_log"].append({
@@ -1687,6 +2216,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 "type": "info",
                 "message": f"✅ Task '{task['title']}' completed in {elapsed}s (exit={result['exit_code']})"
             })
+            agent["progress"] = 100
+            agent["progress_message"] = "Task completed"
 
             # ═════════════════════════════════════════════════════════
             # PICK NEXT TASK (only if continuous mode)

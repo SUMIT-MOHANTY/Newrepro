@@ -155,9 +155,9 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
         <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 relative">
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center space-x-4 z-10">
-                <img src={logo} alt="BRD Analyzer Logo" className="h-10 w-auto object-contain" />
+                <img src={logo} alt="DSuite Logo" className="h-10 w-auto object-contain" />
                 <div className="h-8 w-px bg-slate-300"></div>
-                <span className="text-xl font-bold text-slate-800 tracking-tight">BRD Analyzer</span>
+                <span className="text-xl font-bold text-slate-800 tracking-tight">DSuite</span>
             </div>
 
             <div className="min-h-screen flex items-center justify-center p-4">
