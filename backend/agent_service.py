@@ -104,6 +104,24 @@ agent_states: Dict[str, Dict[str, Any]] = {
     "agent_03": _make_agent("agent_03", 2),
 }
 
+def initialize_agents_from_records(records: List[Any]) -> None:
+    """
+    Replace in-memory agent states with DB-backed agent records.
+    """
+    agent_states.clear()
+    for idx, rec in enumerate(records):
+        agent_id = getattr(rec, "id", None) or (rec.get("id") if isinstance(rec, dict) else None)
+        if not agent_id:
+            continue
+        name = getattr(rec, "name", None) or (rec.get("name") if isinstance(rec, dict) else None)
+        atype = getattr(rec, "type", None) or (rec.get("type") if isinstance(rec, dict) else None)
+        agent = _make_agent(agent_id, idx)
+        if name:
+            agent["name"] = name
+        if atype:
+            agent["type"] = atype
+        agent_states[agent_id] = agent
+
 completed_tasks: List[Dict[str, Any]] = []
 
 
@@ -1435,6 +1453,14 @@ def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None)
     if git_token:
         agent["git_token"] = git_token.strip()
     agent_states[agent_id] = agent
+    return agent
+
+
+def update_agent_name(agent_id: str, name: str) -> Dict[str, Any]:
+    agent = agent_states.get(agent_id)
+    if not agent:
+        raise ValueError(f"Agent {agent_id} not found")
+    agent["name"] = name.strip()
     return agent
 
 

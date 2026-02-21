@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal } from 'lucide-react';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, Check } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import ProjectDropdown from './ProjectDropdown';
 import { API_ENDPOINTS } from '../config';
@@ -20,6 +20,9 @@ export default function StatusDashboard({ projects = [] }) {
     const [gitToken, setGitToken] = useState('');
 
     const [agentsGitConfig, setAgentsGitConfig] = useState({});
+    const [editingAgentId, setEditingAgentId] = useState(null);
+    const [editingAgentName, setEditingAgentName] = useState('');
+    const [isSavingAgentName, setIsSavingAgentName] = useState(false);
     const [showAddAgentModal, setShowAddAgentModal] = useState(false);
     const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
 
@@ -240,6 +243,43 @@ export default function StatusDashboard({ projects = [] }) {
         }
     };
 
+    const startEditingAgentName = (agent) => {
+        setEditingAgentId(agent.id);
+        setEditingAgentName(agent.name || '');
+    };
+
+    const cancelEditingAgentName = () => {
+        setEditingAgentId(null);
+        setEditingAgentName('');
+    };
+
+    const saveAgentName = async () => {
+        if (!editingAgentId) return;
+        const nextName = editingAgentName.trim();
+        if (!nextName) return;
+        setIsSavingAgentName(true);
+        try {
+            const res = await fetch(API_ENDPOINTS.AGENT_UPDATE(editingAgentId), {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ name: nextName })
+            });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || 'Failed to update agent name');
+            }
+            await fetchAgents();
+        } catch (e) {
+            console.error('Update agent name failed', e);
+        } finally {
+            setIsSavingAgentName(false);
+            cancelEditingAgentName();
+        }
+    };
+
     // ── Reset Agent ──────────────────────────────────────────────────
     const handleResetAgent = async (agentId) => {
         try {
@@ -362,7 +402,6 @@ export default function StatusDashboard({ projects = [] }) {
             shadow: 'shadow-emerald-200',
             accent: 'from-emerald-400 to-green-500',
             color: 'emerald',
-            description: 'Validates BRD completeness, checks for missing requirements, ambiguities, and ensures all acceptance criteria are well-defined.',
             stats: ['checks', 'coverage', 'avg_time'],
             statLabels: { checks: 'Checks', coverage: 'Coverage', avg_time: 'Duration' },
         },
@@ -372,7 +411,6 @@ export default function StatusDashboard({ projects = [] }) {
             shadow: 'shadow-orange-200',
             accent: 'from-amber-400 to-orange-500',
             color: 'amber',
-            description: 'Identifies technical, business, and operational risks. Analyzes dependencies, integration complexity, and security vulnerabilities.',
             stats: ['risks', 'critical', 'avg_time'],
             statLabels: { risks: 'Risks', critical: 'Critical', avg_time: 'Duration' },
         },
@@ -392,6 +430,7 @@ export default function StatusDashboard({ projects = [] }) {
         const isIdle = agent.status === 'idle';
         const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
         const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
+        const isEditing = editingAgentId === agent.id;
 
         return (
             <div key={agent.id} className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
@@ -403,7 +442,50 @@ export default function StatusDashboard({ projects = [] }) {
                             {Icon}
                         </div>
                         <div>
-                            <h4 className="text-sm font-bold text-gray-900">{agent.name}</h4>
+                            {isEditing ? (
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="text"
+                                        value={editingAgentName}
+                                        onChange={(e) => setEditingAgentName(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') saveAgentName();
+                                            if (e.key === 'Escape') cancelEditingAgentName();
+                                        }}
+                                        className="w-36 px-2 py-1 text-xs font-semibold text-gray-900 bg-gray-50 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={saveAgentName}
+                                        disabled={isSavingAgentName || !editingAgentName.trim()}
+                                        className="p-1 rounded-md bg-emerald-50 text-emerald-600 hover:bg-emerald-100 disabled:opacity-50"
+                                        title="Save name"
+                                    >
+                                        {isSavingAgentName ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={cancelEditingAgentName}
+                                        disabled={isSavingAgentName}
+                                        className="p-1 rounded-md bg-gray-50 text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                                        title="Cancel"
+                                    >
+                                        <X className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2">
+                                    <h4 className="text-sm font-bold text-gray-900">{agent.name}</h4>
+                                    <button
+                                        type="button"
+                                        onClick={() => startEditingAgentName(agent)}
+                                        className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                                        title="Edit name"
+                                    >
+                                        <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+                            )}
                             <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
                         </div>
                     </div>
@@ -419,8 +501,6 @@ export default function StatusDashboard({ projects = [] }) {
                         </span>
                     </div>
                 </div>
-
-                <p className="text-xs text-gray-500 mb-4 leading-relaxed">{cfg.description}</p>
 
                 {/* Stats */}
                 <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-gray-50 rounded-lg">
@@ -1148,7 +1228,6 @@ export default function StatusDashboard({ projects = [] }) {
 
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                             {agents.map(agent => renderAgentCard(agent))}
-                            {renderTaskGeneratorCard()}
                         </div>
                     </div>
                 </div>

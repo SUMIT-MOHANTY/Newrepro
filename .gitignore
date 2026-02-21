@@ -19,3 +19,4 @@ frontend/dist/
 
 # N-Mod EXT ignore file
 .nmodignore
+backend/.env.example
