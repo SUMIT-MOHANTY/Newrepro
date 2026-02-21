@@ -1130,7 +1130,9 @@ async def auto_generate_project_tasks(
             agents = team_members
         else:
             agents = await task_service.get_agents()
-            agent_ids = [agent.get("user_id") for agent in agents if "user_id" in agent]
+        
+        # Ensure agent_ids is always defined by extracting from whichever list we got
+        agent_ids = [a.get("user_id") or a.get("id") for a in agents if a.get("user_id") or a.get("id")]
         
         if not agent_ids:
             raise HTTPException(status_code=400, detail="No active agents found in the external system.")
