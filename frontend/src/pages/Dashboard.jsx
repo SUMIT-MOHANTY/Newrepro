@@ -91,6 +91,7 @@ const isLikelyHtml = (content = '') => {
 const sanitizeHtml = (content = '') => DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
 
 const normalizeProjectName = (name = '') => String(name || '').trim().toLowerCase();
+const GOVERNANCE_STEP_LABELS = ['Project', 'Business', 'Data', 'Integration', 'Operational', 'AI', 'Ownership', 'Review'];
 
 const normalizeDimensionScores = (dimensionScores = {}) => ({
     "Business Value & Urgency": dimensionScores["Business Value & Urgency"] ?? dimensionScores.business_value ?? 0,
@@ -230,7 +231,7 @@ const Dashboard = ({
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
-    const [roadmapData, setRoadmapData] = useState({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
+    const [roadmapData, setRoadmapData] = useState({ steps: GOVERNANCE_STEP_LABELS, current_step: 0 });
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
 
@@ -1603,8 +1604,8 @@ const Dashboard = ({
 
                         {/* ── Roadmap Header ── */}
                         <RoadmapHeader
-                            steps={roadmapData.steps || ['Governance', 'Upload BRD', 'AI Analysis', 'Complete']}
-                            currentStep={roadmapData.current_step ?? 0}
+                            steps={GOVERNANCE_STEP_LABELS}
+                            currentStep={governanceContext ? GOVERNANCE_STEP_LABELS.length - 1 : 0}
                         />
 
                         {/* Landing / Upload State */}
