@@ -1460,7 +1460,7 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
     global _claimed_task_ids
 
     # 1. Synchronously claim all idle agents immediately so UI updates instantly
-    idle_agents = [a for a in agent_states.values() if a["status"] == "idle"]
+    idle_agents = [a for a in agent_states.values() if a["status"] == "idle" and a["id"] != "agent_03"]
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
 

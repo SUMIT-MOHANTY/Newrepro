@@ -159,13 +159,16 @@ export default function StatusDashboard({ projects = [] }) {
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
-        if (!agent.git_repo_url) {
-            setGitRepoUrl('');
+        if (agent.id === 'agent_03') return;
+        const needsConfig = !agent.git_repo_url || !agent.has_git_token;
+        if (needsConfig) {
+            setGitRepoUrl(agent.git_repo_url || '');
             setGitToken('');
             setGitModalAgent(agent);
-        } else {
-            handleRunAgent(agent.id);
+            return;
         }
+
+        handleRunAgent(agent.id);
     };
 
     const handleRunAgent = async (agentId, repoUrl = null, repoToken = null) => {
@@ -175,7 +178,7 @@ export default function StatusDashboard({ projects = [] }) {
         // Optimistically update UI to show it's running immediately
         setAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
 
-        const body = repoUrl ? { git_repo_url: repoUrl, git_token: repoToken } : {};
+        const body = repoUrl && repoToken ? { git_repo_url: repoUrl, git_token: repoToken } : {};
         try {
             await fetch(API_ENDPOINTS.AGENT_RUN(agentId), {
                 method: 'POST',
@@ -217,15 +220,18 @@ export default function StatusDashboard({ projects = [] }) {
     const [runningAll, setRunningAll] = useState(false);
 
     const handleRunAll = async () => {
-        const idleAgents = agents.filter(a => a.status === 'idle');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03');
         if (idleAgents.length === 0) return;
 
-        const missingConfig = idleAgents.filter(a => !a.git_repo_url || !a.git_token);
+        const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
         if (missingConfig.length > 0) {
             const initialMap = {};
             const existingRepo = agents.find(a => a.git_repo_url)?.git_repo_url || '';
-            missingConfig.forEach(a => {
-                initialMap[a.id] = { git_repo_url: existingRepo, git_token: '' };
+            missingConfig.forEach(agent => {
+                initialMap[agent.id] = {
+                    git_repo_url: agent.git_repo_url || existingRepo,
+                    git_token: '',
+                };
             });
             setAgentsGitConfig(initialMap);
             setGitModalAgent({ id: '__run_all_setup__', name: 'Configure Specific Agents', missingConfig });
@@ -1054,8 +1060,8 @@ export default function StatusDashboard({ projects = [] }) {
                                 </span>
                                 <button
                                     onClick={handleRunAll}
-                                    disabled={runningAll || agents.filter(a => a.status === 'idle').length === 0}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle').length === 0
+                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
                                         ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                                         : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
                                         }`}
@@ -1216,7 +1222,7 @@ export default function StatusDashboard({ projects = [] }) {
                                             <ListTodo className="w-7 h-7 text-gray-300" />
                                         </div>
                                         <p className="text-sm font-bold text-gray-500">No tasks generated yet</p>
-                                        <p className="text-xs text-gray-400 max-w-xs">Select a project and click "Create Tasks" on the Task Auto-Generator agent above to get started.</p>
+                                        <p className="text-xs text-gray-400 max-w-xs">Select a project and click "Create Tasks" above to get started.</p>
                                     </div>
                                 )}
                                 {!isLoadingTasks && taskList.length > 0 && (

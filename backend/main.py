@@ -808,6 +808,57 @@ async def startup_event():
     agent_service.seed_sample_tasks()
 
 
+def _get_agent_credentials_map(db: Session, user_id: int) -> Dict[str, models.AgentCredential]:
+    creds = (
+        db.query(models.AgentCredential)
+        .filter(models.AgentCredential.owner_id == user_id)
+        .all()
+    )
+    return {c.agent_id: c for c in creds}
+
+
+def _upsert_agent_credentials(
+    db: Session,
+    user_id: int,
+    agent_id: str,
+    git_repo_url: Optional[str] = None,
+    git_token: Optional[str] = None,
+) -> models.AgentCredential:
+    cred = (
+        db.query(models.AgentCredential)
+        .filter(
+            models.AgentCredential.owner_id == user_id,
+            models.AgentCredential.agent_id == agent_id,
+        )
+        .first()
+    )
+    if not cred:
+        cred = models.AgentCredential(owner_id=user_id, agent_id=agent_id)
+        db.add(cred)
+
+    if git_repo_url:
+        cred.git_repo_url = git_repo_url.strip()
+    if git_token:
+        cred.git_token = git_token.strip()
+
+    db.commit()
+    db.refresh(cred)
+    return cred
+
+
+def _sanitize_agent_for_user(
+    agent: Dict[str, Any],
+    cred: Optional[models.AgentCredential],
+) -> Dict[str, Any]:
+    safe_agent = dict(agent)
+    if cred and cred.git_repo_url:
+        safe_agent["git_repo_url"] = cred.git_repo_url
+    safe_agent["has_git_token"] = bool(cred and cred.git_token)
+    if "git_token" in safe_agent:
+        safe_agent["git_token"] = None
+    return safe_agent
+
+
 class CreateTaskRequest(BaseModel):
     title: str
     description: str
@@ -817,9 +868,15 @@ class CreateTaskRequest(BaseModel):
 @app.get("/agents")
 async def list_agents(
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Get status of all AI agents."""
-    return {"agents": agent_service.get_all_agents()}
+    creds_map = _get_agent_credentials_map(db, current_user.id)
+    agents = [
+        _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))
+        for agent in agent_service.get_all_agents()
+    ]
+    return {"agents": agents}
 
 
 @app.get("/agents/tasks")
@@ -869,6 +926,7 @@ async def run_agent(
     agent_id: str,
     request: Optional[RunAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Trigger an idle agent to pick a pending task and start working on it.
@@ -885,6 +943,21 @@ async def run_agent(
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
 
+    cred = None
+    if git_repo_url or git_token:
+        cred = _upsert_agent_credentials(
+            db,
+            current_user.id,
+            agent_id,
+            git_repo_url=git_repo_url,
+            git_token=git_token,
+        )
+    else:
+        cred = _get_agent_credentials_map(db, current_user.id).get(agent_id)
+
+    effective_repo = git_repo_url or (cred.git_repo_url if cred else None)
+    effective_token = git_token or (cred.git_token if cred else None)
+
     # Mark as running immediately so frontend refresh sees it instantly
     agent["status"] = "running"
     agent["progress"] = 0
@@ -892,8 +965,10 @@ async def run_agent(
     agent["progress_message"] = "Initializing..."
 
     # Fire-and-forget: agent runs in background
+    run_repo = effective_repo if effective_repo and effective_token else None
+    run_token = effective_token if effective_repo and effective_token else None
     asyncio.create_task(
-        agent_service.run_agent(agent_id, git_repo_url=git_repo_url, git_token=git_token, ignore_running_check=True)
+        agent_service.run_agent(agent_id, git_repo_url=run_repo, git_token=run_token, ignore_running_check=True)
     )
 
     return {"started": True, "agent_id": agent_id}
@@ -920,21 +995,47 @@ class RunAllRequest(BaseModel):
 async def run_all_agents(
     request: Optional[RunAllRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Start all idle agents simultaneously in the BACKGROUND.
     Returns immediately — frontend polls /agents for real-time updates.
     """
-    idle_agents = [a for a in agent_service.agent_states.values() if a["status"] == "idle"]
+    idle_agents = [
+        a for a in agent_service.agent_states.values()
+        if a["status"] == "idle" and a["id"] != "agent_03"
+    ]
     if not idle_agents:
         raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
 
-    agents_config = request.agents_config if request else None
+    agents_config = dict(request.agents_config) if request and request.agents_config else {}
+    if agents_config:
+        for agent_id, cfg in agents_config.items():
+            if not cfg:
+                continue
+            _upsert_agent_credentials(
+                db,
+                current_user.id,
+                agent_id,
+                git_repo_url=cfg.get("git_repo_url"),
+                git_token=cfg.get("git_token"),
+            )
+
+    creds_map = _get_agent_credentials_map(db, current_user.id)
+    for agent in idle_agents:
+        if agent["id"] in agents_config:
+            continue
+        cred = creds_map.get(agent["id"])
+        if cred and cred.git_repo_url and cred.git_token:
+            agents_config[agent["id"]] = {
+                "git_repo_url": cred.git_repo_url,
+                "git_token": cred.git_token,
+            }
 
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
     asyncio.create_task(
-        agent_service.run_all_agents(agents_config=agents_config)
+        agent_service.run_all_agents(agents_config=agents_config if agents_config else None)
     )
 
     return {
@@ -953,12 +1054,21 @@ class AddAgentRequest(BaseModel):
 async def add_agent(
     request: Optional[AddAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Dynamically add a new agent."""
     name = request.name if request else None
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
     agent = agent_service.add_agent(name=name, git_repo_url=git_repo_url, git_token=git_token)
+    if git_repo_url or git_token:
+        _upsert_agent_credentials(
+            db,
+            current_user.id,
+            agent["id"],
+            git_repo_url=git_repo_url,
+            git_token=git_token,
+        )
     return {"agent": agent}
 
 

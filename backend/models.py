@@ -15,6 +15,19 @@ class User(Base):
 
     documents = relationship("Document", back_populates="owner")
     governance_responses = relationship("GovernanceResponse", back_populates="owner")
+    agent_credentials = relationship("AgentCredential", back_populates="owner")
+
+class AgentCredential(Base):
+    __tablename__ = "agent_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), index=True)
+    agent_id = Column(String, index=True)
+    git_repo_url = Column(String, nullable=True)
+    git_token = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    owner = relationship("User", back_populates="agent_credentials")
 
 class Document(Base):
     __tablename__ = "documents"
