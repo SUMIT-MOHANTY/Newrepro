@@ -796,3 +796,173 @@ async def github_repo_context(
         return {"context": context, "repo": f"{payload.owner}/{payload.repo}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
+
+# ─────────────────────────────── Task Management Integration ──────────────────────────
+
+from task_service import task_service
+
+@app.get("/api/agents/")
+async def get_agents(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch the list of agents from the external task management API.
+    """
+    try:
+        agents = await task_service.get_agents()
+        return agents
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch agents: {e}")
+
+class AgentProjectCreate(BaseModel):
+    name: str
+    deadline: str
+    project_wallet: int
+    team: List[int]
+
+@app.post("/api/agent/projects/")
+async def create_agent_project(
+    project: AgentProjectCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Create a new project in the external task management API.
+    """
+    try:
+        result = await task_service.create_project(project.dict())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create project: {e}")
+
+class AgentTaskCreate(BaseModel):
+    taskName: str
+    description: str
+    assignees: List[int]
+    wallet: int
+    deadline: str
+    startdate: str
+    task_type: str
+    priority: str
+
+@app.post("/api/agent/tasks/")
+async def create_agent_task(
+    task: AgentTaskCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Create a new task in the external task management API.
+    """
+    try:
+        result = await task_service.create_task(task.dict())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
+
+@app.get("/api/agent/tasks-list/")
+async def get_agent_tasks(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch the list of tasks from the external task management API.
+    """
+    try:
+        tasks = await task_service.get_tasks()
+        return tasks
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {e}")
+
+class AutoGenerateRequest(BaseModel):
+    project_token: str
+    deadline: str
+    project_wallet: int
+
+@app.post("/api/agent/auto-generate/")
+async def auto_generate_project_tasks(
+    request: AutoGenerateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Auto-generate a project and tasks based on a BRD analysis, 
+    and push them to the external Task Management API.
+    """
+    try:
+        # 1. Fetch the project and its BRD analysis from DB
+        gov_response = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == request.project_token,
+            models.GovernanceResponse.owner_id == current_user.id
+        ).first()
+        
+        if not gov_response:
+             raise HTTPException(status_code=404, detail="Project not found")
+             
+        # Look for the document associated with this project
+        user_documents = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id
+        ).all()
+        
+        analysis_report = ""
+        project_name = gov_response.project_name or ""
+        
+        for doc in user_documents:
+            if not doc.analysis_result:
+                continue
+            import json
+            try:
+                analysis = json.loads(doc.analysis_result)
+                gov_ctx = analysis.get("governanceContext") or {}
+                proj_meta = analysis.get("projectMeta") or {}
+                doc_result_id = proj_meta.get("governance_result_id") or gov_ctx.get("result_id")
+                doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
+                doc_project_name = proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
+                
+                if (doc_result_id is not None and str(doc_result_id) == str(gov_response.id)) or \
+                   (doc_token_id and str(doc_token_id) == str(gov_response.project_token)) or \
+                   (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
+                    analysis_report = analysis.get("analysis", "")
+                    if analysis_report:
+                        break
+            except (json.JSONDecodeError, AttributeError):
+                continue
+                
+        if not analysis_report:
+             raise HTTPException(status_code=400, detail="No BRD analysis found for this project.")
+
+        # 2. Fetch Agents from external API
+        agents = await task_service.get_agents()
+        agent_ids = [agent.get("user_id") for agent in agents if "user_id" in agent]
+        
+        if not agent_ids:
+             raise HTTPException(status_code=400, detail="No active agents found in the external system.")
+
+        # 3. Create the Project in external API
+        # Temporarily skipping project creation as per user request
+        # project_data = {
+        #     "name": gov_response.project_name or "Auto-Generated Project",
+        #     "deadline": request.deadline,
+        #     "project_wallet": request.project_wallet,
+        #     "team": agent_ids
+        # }
+        # await task_service.create_project(project_data)
+        
+        # 4. Use LLM to generate the tasks
+        tasks_to_create = await ai_service.generate_tasks_for_project(
+            analysis_report=analysis_report,
+            agents=agents,
+            project_deadline=request.deadline,
+            project_wallet=request.project_wallet
+        )
+        
+        created_tasks = []
+        for task_data in tasks_to_create:
+            res = await task_service.create_task(task_data)
+            created_tasks.append(res)
+            
+        return {
+             "status": "success",
+             "message": f"Successfully initialized project and automatically created {len(created_tasks)} tasks.",
+             "tasks_created": len(created_tasks)
+        }
+
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=str(e))

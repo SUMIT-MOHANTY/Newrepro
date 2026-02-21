@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import ProjectDropdown from './ProjectDropdown';
 
@@ -9,9 +9,95 @@ export default function StatusDashboard({ projects = [] }) {
     const [newProjectName, setNewProjectName] = useState('');
     const [selectedProjectKey, setSelectedProjectKey] = useState(projects[0]?.key || null);
 
+    // AI Generation States
+    const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
+    const [generatedTasksCount, setGeneratedTasksCount] = useState(0);
+    const [generationError, setGenerationError] = useState(null);
+
+    // Task List States
+    const [taskList, setTaskList] = useState([]);
+    const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+    const [taskListError, setTaskListError] = useState(null);
+
+    // Fetch tasks from the external API
+    const fetchTasks = useCallback(async () => {
+        setIsLoadingTasks(true);
+        setTaskListError(null);
+        try {
+            const token = localStorage.getItem('token');
+            const { API_ENDPOINTS } = await import('../config.js');
+            const res = await fetch(API_ENDPOINTS.AGENT_TASKS, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                // Handle both array response and object with results/count
+                if (Array.isArray(data)) {
+                    setTaskList(data);
+                    setGeneratedTasksCount(data.length);
+                } else if (data && Array.isArray(data.results)) {
+                    setTaskList(data.results);
+                    setGeneratedTasksCount(data.count || data.results.length);
+                } else if (data && typeof data.count === 'number') {
+                    setGeneratedTasksCount(data.count);
+                }
+            } else {
+                const errData = await res.json().catch(() => ({}));
+                setTaskListError(errData.detail || 'Failed to fetch tasks');
+            }
+        } catch (e) {
+            console.error("Failed to load tasks:", e);
+            setTaskListError(e.message);
+        } finally {
+            setIsLoadingTasks(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchTasks();
+    }, [fetchTasks]);
+
     const handleCreateProject = () => {
         if (!newProjectName.trim()) return;
         navigate(`/governance?projectName=${encodeURIComponent(newProjectName.trim())}`);
+    };
+
+    const handleGenerateTasks = async () => {
+        if (!selectedProjectKey) return;
+        setIsGeneratingTasks(true);
+        setGenerationError(null);
+        setGeneratedTasksCount(0);
+
+        try {
+            const token = localStorage.getItem('token');
+            const { API_ENDPOINTS } = await import('../config.js');
+            const response = await fetch(API_ENDPOINTS.AGENT_AUTO_GENERATE, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    project_token: selectedProjectKey,
+                    deadline: '2026-12-31',
+                    project_wallet: 100
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Failed to generate tasks');
+            }
+
+            const data = await response.json();
+            setGeneratedTasksCount(data.tasks_created || 0);
+            // Refresh the task list to show newly created tasks
+            await fetchTasks();
+        } catch (err) {
+            setGenerationError(err.message);
+        } finally {
+            setIsGeneratingTasks(false);
+        }
     };
 
     return (
@@ -566,7 +652,7 @@ export default function StatusDashboard({ projects = [] }) {
                                 </div>
                             </div>
 
-                            {/* Agent 3: Resource Estimation */}
+                            {/* Agent 3: Task Generation (Replaces Resource Estimation) */}
                             <div className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
                                 {/* Gradient accent bar */}
                                 <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-400 to-indigo-500"></div>
@@ -577,60 +663,262 @@ export default function StatusDashboard({ projects = [] }) {
                                             <Cpu className="w-5 h-5 text-white" />
                                         </div>
                                         <div>
-                                            <h4 className="text-sm font-bold text-gray-900">Resource Estimation</h4>
+                                            <h4 className="text-sm font-bold text-gray-900">Task Auto-Generator</h4>
                                             <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">Agent 03</p>
                                         </div>
                                     </div>
                                     {/* Status dot */}
                                     <div className="flex items-center gap-1.5">
                                         <span className="relative flex h-2.5 w-2.5">
-                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
+                                            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isGeneratingTasks ? 'bg-blue-400 opacity-75' : 'hidden'}`}></span>
+                                            <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isGeneratingTasks ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
                                         </span>
-                                        <span className="text-[10px] font-bold text-blue-600">IDLE</span>
+                                        <span className={`text-[10px] font-bold ${isGeneratingTasks ? 'text-blue-600' : 'text-gray-500'}`}>
+                                            {isGeneratingTasks ? 'RUNNING' : 'IDLE'}
+                                        </span>
                                     </div>
                                 </div>
 
                                 <p className="text-xs text-gray-500 mb-4 leading-relaxed">
-                                    Estimates team effort, project timelines, and resource allocation. Provides sprint planning recommendations and cost projections.
+                                    Analyzes the BRD Report to automatically generate external Projects, Tasks, Epics, Features, and User Stories via AI.
                                 </p>
 
                                 {/* Mini stats */}
                                 <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-gray-50 rounded-lg">
                                     <div className="text-center">
-                                        <p className="text-lg font-bold text-gray-800">8</p>
-                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Sprints</p>
+                                        <p className="text-lg font-bold text-gray-800">{generatedTasksCount || '-'}</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Generated</p>
                                     </div>
                                     <div className="w-px h-8 bg-gray-200"></div>
                                     <div className="text-center">
-                                        <p className="text-lg font-bold text-blue-600">4</p>
-                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Resources</p>
+                                        <p className="text-lg font-bold text-blue-600">Auto</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Mode</p>
                                     </div>
                                     <div className="w-px h-8 bg-gray-200"></div>
                                     <div className="text-center">
-                                        <p className="text-lg font-bold text-gray-800">8m</p>
-                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Avg Time</p>
+                                        <p className="text-lg font-bold text-gray-800">100px</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Budget</p>
                                     </div>
                                 </div>
 
-                                {/* Last run info */}
-                                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-4">
-                                    <span className="flex items-center gap-1">
-                                        <Clock className="w-3 h-3" />
-                                        Last run: 1 day ago
-                                    </span>
-                                    <span className="font-semibold text-gray-400">Awaiting trigger</span>
-                                </div>
+                                {/* Dynamic state info */}
+                                {isGeneratingTasks ? (
+                                    <div className="mb-4">
+                                        <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                                            <span>Building tasks from context...</span>
+                                            <span className="font-bold text-blue-600">Working</span>
+                                        </div>
+                                        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                            <div className="bg-gradient-to-r from-blue-400 to-indigo-500 h-full w-full animate-pulse rounded-full"></div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="flex items-center justify-between text-[10px] text-gray-400 mb-4">
+                                        <span className="flex items-center gap-1">
+                                            <Clock className="w-3 h-3" />
+                                            Last run: {generatedTasksCount > 0 ? 'Just now' : 'Awaiting trigger'}
+                                        </span>
+                                        <span className="font-semibold text-gray-400">
+                                            {generationError ? <span className="text-red-500 truncate max-w-[100px]" title={generationError}>Failed</span> : generatedTasksCount > 0 ? <span className="text-green-500">Success</span> : 'Ready'}
+                                        </span>
+                                    </div>
+                                )}
 
                                 {/* Actions */}
                                 <div className="flex gap-2 mt-auto">
-                                    <button className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-blue-500 to-indigo-600 rounded-lg shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
-                                        <Play className="w-3 h-3" /> Run Agent
-                                    </button>
-                                    <button className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
-                                        <Eye className="w-3 h-3" /> Report
+                                    <button
+                                        onClick={handleGenerateTasks}
+                                        disabled={isGeneratingTasks || !selectedProjectKey}
+                                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-blue-500 to-indigo-600 rounded-lg shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+                                    >
+                                        {isGeneratingTasks ? (
+                                            <><RefreshCw className="w-3 h-3 animate-spin" /> MAPPING</>
+                                        ) : (
+                                            <><Play className="w-3 h-3" /> Create Tasks</>
+                                        )}
                                     </button>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Generated Tasks Section */}
+            {projects.length > 0 && (
+                <div className="px-4 md:px-6 pb-6">
+                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                        {/* Section Header */}
+                        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
+                            <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
+                                    <ListTodo className="w-4.5 h-4.5 text-white" />
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-bold text-gray-900">Generated Tasks</h3>
+                                    <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
+                                        {taskList.length} task{taskList.length !== 1 ? 's' : ''} from AI Auto-Generator
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={fetchTasks}
+                                disabled={isLoadingTasks}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-700 transition-all disabled:opacity-50"
+                            >
+                                <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} />
+                                Refresh
+                            </button>
+                        </div>
+
+                        {/* Task List Content */}
+                        <div className="divide-y divide-gray-50">
+                            {/* Loading State */}
+                            {isLoadingTasks && taskList.length === 0 && (
+                                <div className="p-8 flex flex-col items-center justify-center gap-3">
+                                    <RefreshCw className="w-6 h-6 text-indigo-400 animate-spin" />
+                                    <p className="text-sm text-gray-400 font-medium">Loading tasks...</p>
+                                </div>
+                            )}
+
+                            {/* Error State */}
+                            {taskListError && !isLoadingTasks && (
+                                <div className="p-6 flex items-center gap-3 bg-red-50/50">
+                                    <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                                    <p className="text-sm text-red-600 font-medium">{taskListError}</p>
+                                </div>
+                            )}
+
+                            {/* Empty State */}
+                            {!isLoadingTasks && !taskListError && taskList.length === 0 && (
+                                <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
+                                    <div className="w-14 h-14 bg-gray-50 rounded-full flex items-center justify-center mb-2">
+                                        <ListTodo className="w-7 h-7 text-gray-300" />
+                                    </div>
+                                    <p className="text-sm font-bold text-gray-500">No tasks generated yet</p>
+                                    <p className="text-xs text-gray-400 max-w-xs">
+                                        Select a project and click "Create Tasks" on the Task Auto-Generator agent above to get started.
+                                    </p>
+                                </div>
+                            )}
+
+                            {/* Task Rows */}
+                            {!isLoadingTasks && taskList.length > 0 && taskList.map((task, index) => {
+                                const priorityStyles = {
+                                    high: 'bg-red-50 text-red-700 border-red-200',
+                                    medium: 'bg-amber-50 text-amber-700 border-amber-200',
+                                    low: 'bg-green-50 text-green-700 border-green-200'
+                                };
+                                const typeStyles = {
+                                    EPIC: 'bg-purple-100 text-purple-700',
+                                    FEATURE: 'bg-blue-100 text-blue-700',
+                                    STORY: 'bg-cyan-100 text-cyan-700',
+                                    TASK: 'bg-gray-100 text-gray-700',
+                                    BUG: 'bg-red-100 text-red-700'
+                                };
+                                const statusStyles = {
+                                    'On Going': 'bg-blue-50 text-blue-700',
+                                    'Completed': 'bg-green-50 text-green-700',
+                                    'To Do': 'bg-gray-50 text-gray-600',
+                                    'In Review': 'bg-amber-50 text-amber-700',
+                                    'Blocked': 'bg-red-50 text-red-700'
+                                };
+                                const priority = (task.priority || 'medium').toLowerCase();
+                                const taskType = (task.task_type || 'TASK').toUpperCase();
+                                const progress = task.task_progress || 0;
+                                const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
+
+                                return (
+                                    <div
+                                        key={task.id || index}
+                                        className="px-6 py-4 hover:bg-gray-50/70 transition-colors group"
+                                    >
+                                        <div className="flex items-center gap-4">
+                                            {/* Task Number + Flag */}
+                                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                                                <div className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center">
+                                                    <span className="text-[10px] font-bold text-gray-500">{index + 1}</span>
+                                                </div>
+                                                {task.is_flaged && (
+                                                    <Flag className="w-3.5 h-3.5 text-orange-400 fill-orange-400" />
+                                                )}
+                                            </div>
+
+                                            {/* Task Info */}
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2 mb-0.5">
+                                                    <h4 className="text-sm font-semibold text-gray-900 truncate">
+                                                        {task.taskName || 'Untitled Task'}
+                                                    </h4>
+                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide flex-shrink-0 ${typeStyles[taskType] || typeStyles.TASK}`}>
+                                                        {taskType}
+                                                    </span>
+                                                    {task.is_completed && (
+                                                        <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                                                    )}
+                                                </div>
+                                                <p className="text-xs text-gray-400 truncate max-w-md">
+                                                    {task.description || 'No description'}
+                                                </p>
+                                            </div>
+
+                                            {/* Status */}
+                                            <div className="flex-shrink-0 hidden lg:block">
+                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-gray-50 text-gray-600'}`}>
+                                                    {task.taskStatus || 'Unknown'}
+                                                </span>
+                                            </div>
+
+                                            {/* Priority */}
+                                            <div className="flex-shrink-0">
+                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border capitalize ${priorityStyles[priority] || priorityStyles.medium}`}>
+                                                    {priority}
+                                                </span>
+                                            </div>
+
+                                            {/* Assignees */}
+                                            <div className="flex-shrink-0 hidden md:flex items-center gap-1" title={`Assigned to: ${(task.assignedTo || []).join(', ')}`}>
+                                                <Users className="w-3.5 h-3.5 text-gray-400" />
+                                                <div className="flex items-center gap-0.5">
+                                                    {(task.assignedTo || []).map((name, i) => (
+                                                        <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] font-semibold">
+                                                            {name}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* Wallet */}
+                                            <div className="flex-shrink-0 flex items-center gap-1" title={`Wallet: ${task.task_wallet || 0}`}>
+                                                <Wallet className="w-3.5 h-3.5 text-gray-400" />
+                                                <span className="text-[10px] font-semibold text-gray-500">{task.task_wallet || 0}</span>
+                                            </div>
+
+                                            {/* Days Left / Deadline */}
+                                            <div className="flex-shrink-0 hidden md:flex items-center gap-1.5 text-[10px]">
+                                                <Calendar className="w-3 h-3 text-gray-400" />
+                                                <span className="text-gray-400">{task.deadline || '-'}</span>
+                                                {task.days_left != null && (
+                                                    <span className={`font-bold px-1.5 py-0.5 rounded-full ${task.days_left <= 3 ? 'bg-red-50 text-red-600' : task.days_left <= 7 ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}`}>
+                                                        {task.days_left}d left
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Progress Bar */}
+                                        <div className="mt-2 ml-[38px] flex items-center gap-3">
+                                            <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden max-w-[200px]">
+                                                <div
+                                                    className={`${progressColor} h-1.5 rounded-full transition-all duration-500`}
+                                                    style={{ width: `${Math.min(progress, 100)}%` }}
+                                                ></div>
+                                            </div>
+                                            <span className="text-[10px] font-bold text-gray-500">{progress}%</span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 </div>

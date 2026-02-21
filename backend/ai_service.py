@@ -5,6 +5,10 @@ Supports OpenAI-compatible APIs (OpenAI, NVIDIA, Azure, local LLMs, etc.)
 import httpx
 from typing import Optional
 from config import settings
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # BRD Analysis System Prompt
 BRD_ANALYSIS_PROMPT = """You are an expert Senior Business Analyst and Technical Architect.
@@ -325,3 +329,116 @@ async def get_ai_config() -> dict:
         "api_key_masked": masked_key,
         "model": settings.ai_model
     }
+
+TASK_GENERATION_PROMPT = """You are an expert Project Manager and Agile Practitioner.
+Given the following BRD Analysis Report and Project constraints, break down the project into an actionable, detailed task list (Epics, Features, User Stories, and Tasks).
+
+You are provided with a team of Agents (with their `user_id` and `username`) and a wallet budget.
+You MUST format your ONLY output as a JSON array of task objects matching this exact structure:
+
+[
+  {
+    "taskName": "string", // Short descriptive title
+    "description": "string", // Detailed description of the work
+    "assignees": [int], // Array of `user_id` numbers of the agents who will work on this
+    "wallet": int, // Estimated cost/effort from the budget
+    "deadline": "YYYY-MM-DD", // A realistic deadline within the project timeframe
+    "startdate": "YYYY-MM-DD", // Start date within the project timeframe
+    "task_type": "string", // Must be one of: "EPIC", "FEATURE", "STORY", "TASK", "BUG"
+    "priority": "string" // Must be one of: "high", "medium", "low"
+  }
+]
+
+Do not include any other markdown, text, or explanations. Only output the JSON array.
+"""
+
+async def generate_tasks_for_project(
+    analysis_report: str,
+    agents: list,
+    project_deadline: str,
+    project_wallet: int,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None
+) -> list:
+    """Uses the LLM to auto-generate tasks based on an analysis report and available agents."""
+    url = api_url or settings.ai_api_url
+    key = api_key or settings.ai_api_key
+    model_name = model or settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        raise Exception("API key not configured.")
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
+    text_content = (
+        f"PROJECT RESTRAINTS:\n"
+        f"- Current Date (Today): {current_date}\n"
+        f"- Deadline: {project_deadline}\n"
+        f"- Total Budget Wallet: {project_wallet}\n"
+        f"- Available Agents: {json.dumps(agents)}\n\n"
+        f"BRD ANALYSIS REPORT:\n"
+        f"{analysis_report}\n\n"
+        f"Generate the comprehensive task breakdown mapping these factors together."
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "system",
+                "content": TASK_GENERATION_PROMPT
+            },
+            {
+                "role": "user",
+                "content": text_content
+            }
+        ],
+        "stream": False,
+        "chat_template_kwargs": {
+            "thinking": False
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}"
+    }
+
+    logger.info(f"Starting AI Task Generation with model '{model_name}'")
+    logger.info(f"Passing {len(agents)} agents to LLM context.")
+    
+    try:
+        # Increase timeout drastically (e.g. 5 minutes) as mapping a whole project to tasks can take a long time for the LLM
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            
+            logger.info(f"Received LLM response with status {response.status_code}")
+            
+            response.raise_for_status()
+            
+            data = response.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0].get("message", {}).get("content", "")
+                content = content.replace("```json", "").replace("```", "").strip()
+                try:
+                     tasks = json.loads(content)
+                     if not isinstance(tasks, list):
+                         raise ValueError("LLM did not return a list")
+                     return tasks
+                except Exception as e:
+                     raise Exception(f"Failed to parse LLM response into tasks array: {e}\nResponse was: {content}")
+            else:
+                raise Exception("No response from AI model")
+    except httpx.HTTPStatusError as e:
+        import traceback
+        error_details = traceback.format_exc()
+        try:
+             error_body = e.response.json()
+        except:
+             error_body = e.response.text
+        raise Exception(f"Failed during task generation. HTTP Status: {e.response.status_code}. Response: {error_body}")
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        raise Exception(f"Failed during task generation: {str(e)}\n\nTraceback:\n{error_details}")
