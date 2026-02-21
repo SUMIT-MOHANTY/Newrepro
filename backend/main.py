@@ -859,9 +859,15 @@ async def get_agent_status(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+class RunAgentRequest(BaseModel):
+    git_repo_url: Optional[str] = None
+    git_token: Optional[str] = None
+
+
 @app.post("/agents/{agent_id}/run")
 async def run_agent(
     agent_id: str,
+    request: Optional[RunAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
@@ -874,7 +880,9 @@ async def run_agent(
     5. Return the results
     """
     try:
-        result = await agent_service.run_agent(agent_id)
+        git_repo_url = request.git_repo_url if request else None
+        git_token = request.git_token if request else None
+        result = await agent_service.run_agent(agent_id, git_repo_url=git_repo_url, git_token=git_token)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

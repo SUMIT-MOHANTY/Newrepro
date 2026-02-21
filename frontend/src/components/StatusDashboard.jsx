@@ -12,13 +12,16 @@ export default function StatusDashboard({ projects = [] }) {
 
     // ── Agent State (Backend Docker Execution) ───────────────────────
     const [agents, setAgents] = useState([]);
-    const [pendingTasks, setPendingTasks] = useState([]);
-    const [completedTasks, setCompletedTasks] = useState([]);
     const [loadingAgents, setLoadingAgents] = useState(true);
     const [runningAgent, setRunningAgent] = useState(null);
     const [showLogModal, setShowLogModal] = useState(null);
 
-    // ── External Task API State (Feature_taskcreation) ───────────────
+    // ── Git Config Modal State ───────────────────────────────────────
+    const [gitModalAgent, setGitModalAgent] = useState(null);
+    const [gitRepoUrl, setGitRepoUrl] = useState('');
+    const [gitToken, setGitToken] = useState('');
+
+    // ── External Task API State (tasks come from external API now) ───
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
     const [generatedTasksCount, setGeneratedTasksCount] = useState(0);
     const [generationError, setGenerationError] = useState(null);
@@ -28,7 +31,7 @@ export default function StatusDashboard({ projects = [] }) {
 
     const token = localStorage.getItem('token');
 
-    // ── Fetch agents & internal tasks (our Docker agent backend) ─────
+    // ── Fetch agents (our Docker agent backend) ──────────────────────
     const fetchAgents = useCallback(async () => {
         try {
             const res = await fetch(API_ENDPOINTS.AGENTS, {
@@ -40,21 +43,6 @@ export default function StatusDashboard({ projects = [] }) {
             }
         } catch (e) {
             console.error('Failed to fetch agents', e);
-        }
-    }, [token]);
-
-    const fetchInternalTasks = useCallback(async () => {
-        try {
-            const res = await fetch(API_ENDPOINTS.AGENTS_TASKS, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (res.ok) {
-                const data = await res.json();
-                setPendingTasks(data.pending_tasks || []);
-                setCompletedTasks(data.completed_tasks || []);
-            }
-        } catch (e) {
-            console.error('Failed to fetch tasks', e);
         } finally {
             setLoadingAgents(false);
         }
@@ -93,9 +81,8 @@ export default function StatusDashboard({ projects = [] }) {
 
     useEffect(() => {
         fetchAgents();
-        fetchInternalTasks();
         fetchExternalTasks();
-    }, [fetchAgents, fetchInternalTasks, fetchExternalTasks]);
+    }, [fetchAgents, fetchExternalTasks]);
 
     // Poll while agents are running
     useEffect(() => {
@@ -103,21 +90,35 @@ export default function StatusDashboard({ projects = [] }) {
         if (!hasRunning) return;
         const interval = setInterval(() => {
             fetchAgents();
-            fetchInternalTasks();
         }, 3000);
         return () => clearInterval(interval);
-    }, [agents, fetchAgents, fetchInternalTasks]);
+    }, [agents, fetchAgents]);
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
-    const handleRunAgent = async (agentId) => {
+    const handleRunAgentClick = (agent) => {
+        if (!agent.git_repo_url) {
+            setGitRepoUrl('');
+            setGitToken('');
+            setGitModalAgent(agent);
+        } else {
+            handleRunAgent(agent.id);
+        }
+    };
+
+    const handleRunAgent = async (agentId, repoUrl = null, repoToken = null) => {
         setRunningAgent(agentId);
+        setGitModalAgent(null); // close modal if open
+        const body = repoUrl ? { git_repo_url: repoUrl, git_token: repoToken } : {};
         try {
             await fetch(API_ENDPOINTS.AGENT_RUN(agentId), {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
             });
             fetchAgents();
-            fetchInternalTasks();
         } catch (e) {
             console.error('Run failed', e);
         } finally {
@@ -289,8 +290,8 @@ export default function StatusDashboard({ projects = [] }) {
                 <div className="flex gap-2 mt-auto">
                     {isIdle || isCompleted || isError ? (
                         <button
-                            onClick={() => handleRunAgent(agent.id)}
-                            disabled={runningAgent === agent.id || pendingTasks.length === 0}
+                            onClick={() => handleRunAgentClick(agent)}
+                            disabled={runningAgent === agent.id || taskList.length === 0}
                             className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r ${cfg.accent} rounded-lg shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0`}
                         >
                             {runningAgent === agent.id ? (<><Loader2 className="w-3 h-3 animate-spin" /> Starting...</>) : (<><Play className="w-3 h-3" /> Run Agent</>)}
@@ -429,9 +430,9 @@ export default function StatusDashboard({ projects = [] }) {
                     {[
                         { label: 'Total Projects', value: projects.length, color: 'text-indigo-600' },
                         { label: 'Documents Analyzed', value: projects.reduce((s, p) => s + (p.totalDocuments || 0), 0), color: 'text-blue-600' },
-                        { label: 'Pending Tasks', value: pendingTasks.length, color: 'text-orange-600' },
+                        { label: 'Available Tasks', value: taskList.length, color: 'text-orange-600' },
                         { label: 'Agents Active', value: agents.filter(a => a.status === 'running').length, color: 'text-emerald-600' },
-                        { label: 'Completed Tasks', value: completedTasks.length, color: 'text-green-600' },
+                        { label: 'Tasks Generated', value: generatedTasksCount, color: 'text-green-600' },
                         { label: 'External Tasks', value: generatedTasksCount, color: 'text-purple-600' },
                     ].map((metric, i) => (
                         <div key={i} className="bg-gray-50 rounded-xl p-3 flex flex-col items-center justify-center text-center">
@@ -468,10 +469,10 @@ export default function StatusDashboard({ projects = [] }) {
                             </div>
                             <div className="flex items-center gap-2">
                                 <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
-                                    {pendingTasks.length} Pending Tasks
+                                    {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
                                 </span>
                                 <button
-                                    onClick={() => { fetchAgents(); fetchInternalTasks(); }}
+                                    onClick={() => { fetchAgents(); fetchExternalTasks(); }}
                                     className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 transition-colors"
                                     title="Refresh"
                                 >
@@ -480,22 +481,22 @@ export default function StatusDashboard({ projects = [] }) {
                             </div>
                         </div>
 
-                        {pendingTasks.length > 0 && (
+                        {taskList.length > 0 && (
                             <div className="mb-5 bg-white rounded-xl shadow border border-gray-100 p-4">
-                                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Pending Tasks Queue</h4>
+                                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Tasks Queue (from External API)</h4>
                                 <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-                                    {pendingTasks.slice(0, 5).map((task) => (
-                                        <div key={task.id} className="flex-shrink-0 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 min-w-[200px] max-w-[250px]">
+                                    {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').slice(0, 5).map((task, idx) => (
+                                        <div key={task.id || idx} className="flex-shrink-0 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 min-w-[200px] max-w-[250px]">
                                             <div className="flex items-center gap-1.5 mb-1">
-                                                <span className={`w-1.5 h-1.5 rounded-full ${task.priority === 'high' ? 'bg-red-400' : task.priority === 'medium' ? 'bg-amber-400' : 'bg-blue-400'}`}></span>
-                                                <span className="text-[9px] font-bold text-gray-400 uppercase">{task.priority}</span>
+                                                <span className={`w-1.5 h-1.5 rounded-full ${(task.priority || '').toLowerCase() === 'high' ? 'bg-red-400' : (task.priority || '').toLowerCase() === 'medium' ? 'bg-amber-400' : 'bg-blue-400'}`}></span>
+                                                <span className="text-[9px] font-bold text-gray-400 uppercase">{task.priority || 'medium'}</span>
                                             </div>
-                                            <p className="text-xs font-medium text-gray-700 truncate">{task.title}</p>
+                                            <p className="text-xs font-medium text-gray-700 truncate">{task.taskName || task.title || 'Untitled'}</p>
                                         </div>
                                     ))}
-                                    {pendingTasks.length > 5 && (
+                                    {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 5 && (
                                         <div className="flex-shrink-0 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 flex items-center">
-                                            <span className="text-xs text-gray-400 font-bold">+{pendingTasks.length - 5} more</span>
+                                            <span className="text-xs text-gray-400 font-bold">+{taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length - 5} more</span>
                                         </div>
                                     )}
                                 </div>
@@ -508,10 +509,13 @@ export default function StatusDashboard({ projects = [] }) {
                                 <span className="text-sm text-gray-500">Loading agents...</span>
                             </div>
                         ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                                {agents.filter(a => a.id !== 'agent_03').map(agent => renderAgentCard(agent))}
-                                {renderTaskGeneratorCard()}
-                            </div>
+                            <>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                    {agents.filter(a => a.id !== 'agent_03').map(agent => renderAgentCard(agent))}
+                                    {renderTaskGeneratorCard()}
+                                </div>
+                                <p className="text-[10px] text-gray-400 mt-2 italic">Agents fetch tasks live from the external Task API. Each run creates its own isolated Docker container.</p>
+                            </>
                         )}
                     </div>
                 </div>
@@ -547,12 +551,26 @@ export default function StatusDashboard({ projects = [] }) {
                             </div>
                             {result?.generated_code && (
                                 <div className="border-t border-gray-700">
-                                    <details className="group">
-                                        <summary className="px-4 py-2 text-xs font-bold text-gray-400 cursor-pointer hover:text-gray-200 select-none">
-                                            View Generated Code ({result.generated_code.split('\n').length} lines)
+                                    <details className="group" open>
+                                        <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
+                                            <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
+                                            View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files created in Docker)
                                         </summary>
-                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-60 overflow-y-auto">
+                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-96 overflow-y-auto whitespace-pre-wrap">
                                             {result.generated_code}
+                                        </pre>
+                                    </details>
+                                </div>
+                            )}
+                            {result?.builder_scripts && (
+                                <div className="border-t border-gray-700">
+                                    <details className="group">
+                                        <summary className="px-4 py-2 text-xs font-bold text-blue-400 cursor-pointer hover:text-blue-300 select-none flex items-center gap-2">
+                                            <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
+                                            View Builder Scripts ({result.builder_scripts.split('\n').length} lines of AI-generated code)
+                                        </summary>
+                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-blue-200 bg-gray-950 max-h-60 overflow-y-auto whitespace-pre-wrap">
+                                            {result.builder_scripts}
                                         </pre>
                                     </details>
                                 </div>
@@ -691,6 +709,39 @@ export default function StatusDashboard({ projects = [] }) {
                                 <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
                                 <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-xl transition-colors shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
                                     Start track <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Git Configuration Modal */}
+            {gitModalAgent && (
+                <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                    <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                            <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                                <Bot className="w-5 h-5 text-indigo-500" /> Git Configuration
+                            </h3>
+                            <button type="button" onClick={() => setGitModalAgent(null)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="p-6">
+                            <p className="text-sm text-gray-500 mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
+
+                            <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                            <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+
+                            <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token (optional)</label>
+                            <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+                            <p className="text-xs text-gray-400 mb-6 italic">This token is used by the Docker container to clone and push code. It is securely handled and forgotten if the container crashes.</p>
+
+                            <div className="flex items-center gap-3">
+                                <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                                <button type="button" onClick={() => handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken)} disabled={!gitRepoUrl.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                    <Play className="w-4 h-4" /> Start Agent
                                 </button>
                             </div>
                         </div>
