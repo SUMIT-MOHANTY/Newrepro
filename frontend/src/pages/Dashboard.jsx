@@ -1965,6 +1965,41 @@ const Dashboard = ({
                                     </div>
                                 </div>
 
+                                {/* Go / No Go Decision Panel */}
+                                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg shadow-orange-200">
+                                            <Zap className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-sm font-bold text-gray-900">Project Decision</h3>
+                                            <p className="text-xs text-gray-500">Based on the analysis, make your go/no-go decision</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <button
+                                            onClick={() => {
+                                                navigate('/status-dashboard');
+                                            }}
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow-lg shadow-green-500/30 hover:shadow-green-500/50 hover:-translate-y-0.5 transition-all active:scale-95"
+                                        >
+                                            <CheckCircle2 className="w-4 h-4" />
+                                            Go
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                if (window.confirm('Are you sure you want to mark this project as No-Go? This will flag it for review.')) {
+                                                    setError('Project marked as No-Go. The project has been flagged for further review.');
+                                                }
+                                            }}
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-red-500 to-rose-600 rounded-lg shadow-lg shadow-red-500/30 hover:shadow-red-500/50 hover:-translate-y-0.5 transition-all active:scale-95"
+                                        >
+                                            <X className="w-4 h-4" />
+                                            No Go
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <div id="analysis-content" className="bg-transparent space-y-6">
 
                                     {/* Key Metrics Row */}

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight } from 'lucide-react';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import ProjectDropdown from './ProjectDropdown';
 
@@ -404,6 +404,232 @@ export default function StatusDashboard({ isSidebarOpen, onOpenSidebar, projects
                                     </div>
                                 </div>
                                 <p className="text-[13px] font-bold text-gray-600">Phase Progress</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ── AI AGENTS SECTION ── */}
+                    <div className="w-full mt-6">
+                        <div className="flex items-center mb-6">
+                            <div className="p-2 mr-3 bg-indigo-50 rounded text-indigo-500">
+                                <Bot className="w-5 h-5" />
+                            </div>
+                            <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
+                            <span className="ml-3 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded-full">3 Active</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                            {/* Agent 1: Requirements Validator */}
+                            <div className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+                                {/* Gradient accent bar */}
+                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-400 to-green-500"></div>
+
+                                <div className="flex items-start justify-between mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-green-600 flex items-center justify-center shadow-lg shadow-emerald-200">
+                                            <CheckCircle className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <h4 className="text-sm font-bold text-gray-900">Requirements Validator</h4>
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">Agent 01</p>
+                                        </div>
+                                    </div>
+                                    {/* Status dot */}
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="relative flex h-2.5 w-2.5">
+                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                                        </span>
+                                        <span className="text-[10px] font-bold text-emerald-600">READY</span>
+                                    </div>
+                                </div>
+
+                                <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+                                    Validates BRD completeness, checks for missing requirements, ambiguities, and ensures all acceptance criteria are well-defined.
+                                </p>
+
+                                {/* Mini stats */}
+                                <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-gray-50 rounded-lg">
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-gray-800">24</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Checks</p>
+                                    </div>
+                                    <div className="w-px h-8 bg-gray-200"></div>
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-emerald-600">98%</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Coverage</p>
+                                    </div>
+                                    <div className="w-px h-8 bg-gray-200"></div>
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-gray-800">2m</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Avg Time</p>
+                                    </div>
+                                </div>
+
+                                {/* Last run info */}
+                                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-4">
+                                    <span className="flex items-center gap-1">
+                                        <Clock className="w-3 h-3" />
+                                        Last run: 2 hours ago
+                                    </span>
+                                    <span className="font-semibold text-emerald-500">✓ All Passed</span>
+                                </div>
+
+                                {/* Actions */}
+                                <div className="flex gap-2 mt-auto">
+                                    <button className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                        <Play className="w-3 h-3" /> Run Agent
+                                    </button>
+                                    <button className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+                                        <Eye className="w-3 h-3" /> Report
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Agent 2: Risk Assessment */}
+                            <div className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+                                {/* Gradient accent bar */}
+                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-400 to-orange-500"></div>
+
+                                <div className="flex items-start justify-between mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-orange-600 flex items-center justify-center shadow-lg shadow-orange-200">
+                                            <Shield className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <h4 className="text-sm font-bold text-gray-900">Risk Assessment</h4>
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">Agent 02</p>
+                                        </div>
+                                    </div>
+                                    {/* Status dot */}
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="relative flex h-2.5 w-2.5">
+                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+                                        </span>
+                                        <span className="text-[10px] font-bold text-amber-600">RUNNING</span>
+                                    </div>
+                                </div>
+
+                                <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+                                    Identifies technical, business, and operational risks. Analyzes dependencies, integration complexity, and security vulnerabilities.
+                                </p>
+
+                                {/* Mini stats */}
+                                <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-gray-50 rounded-lg">
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-gray-800">12</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Risks</p>
+                                    </div>
+                                    <div className="w-px h-8 bg-gray-200"></div>
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-red-500">3</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Critical</p>
+                                    </div>
+                                    <div className="w-px h-8 bg-gray-200"></div>
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-gray-800">5m</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Avg Time</p>
+                                    </div>
+                                </div>
+
+                                {/* Progress bar for running state */}
+                                <div className="mb-4">
+                                    <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                                        <span>Analyzing risks...</span>
+                                        <span className="font-bold text-amber-600">67%</span>
+                                    </div>
+                                    <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                        <div className="bg-gradient-to-r from-amber-400 to-orange-500 h-1.5 rounded-full transition-all duration-1000 ease-out" style={{ width: '67%' }}></div>
+                                    </div>
+                                </div>
+
+                                {/* Last run info */}
+                                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-4">
+                                    <span className="flex items-center gap-1">
+                                        <Clock className="w-3 h-3" />
+                                        Started: 3 min ago
+                                    </span>
+                                    <span className="font-semibold text-amber-500 flex items-center gap-1">
+                                        <RefreshCw className="w-3 h-3 animate-spin" /> In Progress
+                                    </span>
+                                </div>
+
+                                {/* Actions */}
+                                <div className="flex gap-2 mt-auto">
+                                    <button disabled className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
+                                        <RefreshCw className="w-3 h-3 animate-spin" /> Running...
+                                    </button>
+                                    <button className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+                                        <Eye className="w-3 h-3" /> Report
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Agent 3: Resource Estimation */}
+                            <div className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+                                {/* Gradient accent bar */}
+                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-400 to-indigo-500"></div>
+
+                                <div className="flex items-start justify-between mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-200">
+                                            <Cpu className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <h4 className="text-sm font-bold text-gray-900">Resource Estimation</h4>
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">Agent 03</p>
+                                        </div>
+                                    </div>
+                                    {/* Status dot */}
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="relative flex h-2.5 w-2.5">
+                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
+                                        </span>
+                                        <span className="text-[10px] font-bold text-blue-600">IDLE</span>
+                                    </div>
+                                </div>
+
+                                <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+                                    Estimates team effort, project timelines, and resource allocation. Provides sprint planning recommendations and cost projections.
+                                </p>
+
+                                {/* Mini stats */}
+                                <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-gray-50 rounded-lg">
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-gray-800">8</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Sprints</p>
+                                    </div>
+                                    <div className="w-px h-8 bg-gray-200"></div>
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-blue-600">4</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Resources</p>
+                                    </div>
+                                    <div className="w-px h-8 bg-gray-200"></div>
+                                    <div className="text-center">
+                                        <p className="text-lg font-bold text-gray-800">8m</p>
+                                        <p className="text-[9px] text-gray-400 uppercase font-semibold">Avg Time</p>
+                                    </div>
+                                </div>
+
+                                {/* Last run info */}
+                                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-4">
+                                    <span className="flex items-center gap-1">
+                                        <Clock className="w-3 h-3" />
+                                        Last run: 1 day ago
+                                    </span>
+                                    <span className="font-semibold text-gray-400">Awaiting trigger</span>
+                                </div>
+
+                                {/* Actions */}
+                                <div className="flex gap-2 mt-auto">
+                                    <button className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-blue-500 to-indigo-600 rounded-lg shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                        <Play className="w-3 h-3" /> Run Agent
+                                    </button>
+                                    <button className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+                                        <Eye className="w-3 h-3" /> Report
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
