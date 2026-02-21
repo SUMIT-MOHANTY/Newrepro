@@ -140,6 +140,46 @@ print("Total Sprints: 4 | Duration: 10 weeks | Team Size: 3-4 developers")
 """,
 }
 
+# Maximum number of self-healing iterations
+MAX_FIX_ITERATIONS = 2
+
+
+# ── Helper: Detect issues from subprocess output ───────────────────────────
+
+def _detect_issues_from_output(stdout: str, stderr: str) -> Dict[str, Any]:
+    """
+    Parse subprocess output for FAIL, ERROR, CRITICAL, or gap indicators.
+    Returns a dict with has_issues=True/False and a list of issue strings.
+    """
+    issues = []
+    all_text = (stdout or "") + "\n" + (stderr or "")
+    lines = all_text.strip().split("\n")
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Detect FAIL lines
+        if "FAIL" in stripped and stripped.startswith("["):
+            issues.append(stripped)
+        # Detect CRITICAL risk lines
+        elif "CRITICAL" in stripped and stripped.startswith("["):
+            issues.append(stripped)
+        # Detect gap lines (numbered gaps)
+        elif stripped.startswith(("1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.")) and any(
+            kw in stripped.lower() for kw in ["missing", "gap", "not specified", "not defined", "undefined", "not detailed", "not documented"]
+        ):
+            issues.append(stripped)
+        # Detect explicit error lines from stderr
+        elif stderr and stripped in stderr and ("Error" in stripped or "Exception" in stripped or "Traceback" in stripped):
+            issues.append(f"RUNTIME ERROR: {stripped}")
+
+    return {
+        "has_issues": len(issues) > 0,
+        "issues": issues,
+        "issue_count": len(issues),
+    }
+
 
 # ── Helper: Call AI Model ───────────────────────────────────────────────────
 
@@ -192,6 +232,83 @@ async def _call_ai_for_code(task_description: str, agent_type: str) -> str:
         raise ValueError("No response from AI model")
 
 
+async def _call_ai_for_fix(task_description: str, agent_type: str, issues: list, previous_output: str, iteration: int) -> str:
+    """
+    Call the AI model to generate a FIX for previously detected gaps/errors.
+    Sends the original task + the specific issues found so the AI can address them.
+    """
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        raise ValueError("AI API key not configured")
+
+    system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
+
+    issues_text = "\n".join(f"  - {issue}" for issue in issues)
+
+    fix_prompt = f"""SELF-HEALING ITERATION {iteration}: FIX THE GAPS AND ERRORS
+
+You previously analyzed this task and your output contained the following gaps/errors/issues:
+
+{issues_text}
+
+PREVIOUS OUTPUT (for reference):
+{previous_output[:2000]}
+
+ORIGINAL TASK:
+{task_description}
+
+Now generate a NEW Python script that:
+1. ADDRESSES each of the gaps/errors listed above
+2. Provides concrete solutions, recommendations, or fixes for each issue
+3. For each gap, print a [FIX] line showing how it should be resolved
+4. Print a final summary showing how many issues were fixed
+
+Your output must be ONLY valid Python code. The script should print structured output like:
+print("[FIX 1] Password reset token expiration -> Recommend 15-minute expiry with one-time-use tokens")
+print("[FIX 2] Rate limiting scope -> Implement per-IP and per-user hybrid rate limiting")
+print("\\n=== FIX SUMMARY ===")
+print("Total Issues: 7 | Fixed: 7 | Remaining: 0")
+
+IMPORTANT: Use ONLY ASCII characters in your Python code. Do NOT use Unicode arrows, emojis, or special symbols.
+"""
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": fix_prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    if "choices" in data and len(data["choices"]) > 0:
+        content = data["choices"][0].get("message", {}).get("content", "")
+        content = content.strip()
+        if content.startswith("```python"):
+            content = content[len("```python"):].strip()
+        if content.startswith("```"):
+            content = content[3:].strip()
+        if content.endswith("```"):
+            content = content[:-3].strip()
+        return content
+    else:
+        raise ValueError("No response from AI model for fix iteration")
+
+
 # ── Helper: Run Python Subprocess ───────────────────────────────────────────
 
 async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
@@ -203,7 +320,8 @@ async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
 
     # Write generated code to a temp file
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix=f"agent_{agent_id}_"
+        mode="w", suffix=".py", delete=False, prefix=f"agent_{agent_id}_",
+        encoding="utf-8",
     ) as f:
         f.write(code)
         script_path = f.name
@@ -391,7 +509,7 @@ async def run_agent(agent_id: str) -> Dict[str, Any]:
 
     try:
         # 3. Call AI model to generate code
-        agent["progress"] = 30
+        agent["progress"] = 20
         agent["progress_message"] = "AI is understanding the task..."
         agent["output_log"].append({
             "time": datetime.utcnow().isoformat(),
@@ -401,7 +519,7 @@ async def run_agent(agent_id: str) -> Dict[str, Any]:
 
         generated_code = await _call_ai_for_code(task["description"], agent["type"])
 
-        agent["progress"] = 50
+        agent["progress"] = 35
         agent["progress_message"] = "Code generated, preparing execution..."
         agent["output_log"].append({
             "time": datetime.utcnow().isoformat(),
@@ -412,33 +530,127 @@ async def run_agent(agent_id: str) -> Dict[str, Any]:
         # 4. Run the subprocess
         result = await _run_python_subprocess(generated_code, agent_id)
 
+        # ═══════════════════════════════════════════════════════════════
+        # 5. SELF-HEALING LOOP: Detect issues → call AI for fix → re-run
+        # ═══════════════════════════════════════════════════════════════
+        all_generated_code = generated_code
+        all_stdout = result["stdout"]
+        fix_iteration = 0
+
+        while fix_iteration < MAX_FIX_ITERATIONS:
+            issue_report = _detect_issues_from_output(result["stdout"], result["stderr"])
+
+            if not issue_report["has_issues"]:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"✅ No gaps/errors detected — no fix iteration needed."
+                })
+                break  # No issues found, exit loop
+
+            fix_iteration += 1
+            issue_count = issue_report["issue_count"]
+
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"══════════════════════════════════════════════"
+            })
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"🔄 SELF-HEALING: Detected {issue_count} gaps/errors — starting fix iteration {fix_iteration}/{MAX_FIX_ITERATIONS}"
+            })
+
+            # Log each detected issue
+            for idx, issue in enumerate(issue_report["issues"][:10], 1):  # Cap at 10
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"  Issue {idx}: {issue[:120]}"
+                })
+
+            # Update progress for fix iteration
+            base_progress = 50 + (fix_iteration * 20)
+            agent["progress"] = min(base_progress, 90)
+            agent["progress_message"] = f"Self-healing: Fixing {issue_count} issues (iteration {fix_iteration})..."
+
+            # Call AI with the issues to get fix code
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"Calling AI model to generate fix code..."
+            })
+
+            try:
+                fix_code = await _call_ai_for_fix(
+                    task_description=task["description"],
+                    agent_type=agent["type"],
+                    issues=issue_report["issues"],
+                    previous_output=result["stdout"],
+                    iteration=fix_iteration,
+                )
+
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"AI generated {len(fix_code.splitlines())} lines of fix code"
+                })
+
+                # Run the fix code
+                result = await _run_python_subprocess(fix_code, agent_id)
+                all_generated_code += f"\n\n# ═══ FIX ITERATION {fix_iteration} ═══\n" + fix_code
+                all_stdout += f"\n\n--- FIX ITERATION {fix_iteration} ---\n" + result["stdout"]
+
+            except Exception as fix_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": f"Self-healing iteration {fix_iteration} failed: {str(fix_err)}"
+                })
+                break  # Stop trying if AI call fails
+
+        # ═══════════════════════════════════════════════════════════════
+        # 6. Final status update
+        # ═══════════════════════════════════════════════════════════════
         elapsed = round(time.time() - start_time, 1)
 
-        # 5. Parse results and update stats
-        stats = _parse_stats_from_output(result["stdout"], agent["type"])
+        stats = _parse_stats_from_output(all_stdout, agent["type"])
         stats["avg_time"] = f"{elapsed}s"
         agent["stats"] = stats
 
-        # 6. Mark as completed
+        if fix_iteration > 0:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"══════════════════════════════════════════════"
+            })
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"🏁 Self-healing complete. Ran {fix_iteration} fix iteration(s) in {elapsed}s total."
+            })
+
         if result["exit_code"] == 0:
             agent["status"] = "completed"
             agent["progress"] = 100
-            agent["progress_message"] = "Task completed successfully!"
+            agent["progress_message"] = f"Task completed successfully!" + (f" ({fix_iteration} auto-fix rounds)" if fix_iteration > 0 else "")
             task["status"] = "completed"
         else:
-            agent["status"] = "completed"  # Still completed, just with issues
+            agent["status"] = "completed"
             agent["progress"] = 100
-            agent["progress_message"] = f"Completed with exit code {result['exit_code']}"
+            agent["progress_message"] = f"Completed with exit code {result['exit_code']}" + (f" after {fix_iteration} fix rounds" if fix_iteration > 0 else "")
             task["status"] = "completed_with_errors"
 
         agent["last_run"] = datetime.utcnow().isoformat()
         agent["last_result"] = {
             "task": task,
             "exit_code": result["exit_code"],
-            "stdout": result["stdout"],
+            "stdout": all_stdout,
             "stderr": result["stderr"],
-            "generated_code": generated_code,
+            "generated_code": all_generated_code,
             "duration": elapsed,
+            "fix_iterations": fix_iteration,
         }
         agent["current_task"] = None
 
@@ -450,10 +662,11 @@ async def run_agent(agent_id: str) -> Dict[str, Any]:
             "agent_id": agent_id,
             "task": task,
             "exit_code": result["exit_code"],
-            "output": result["stdout"],
+            "output": all_stdout,
             "errors": result["stderr"],
             "duration": elapsed,
             "stats": stats,
+            "fix_iterations": fix_iteration,
         }
 
     except Exception as e:
