@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import timedelta
 from typing import Annotated, Optional, List, Dict, Any
@@ -859,26 +860,43 @@ async def get_agent_status(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+class RunAgentRequest(BaseModel):
+    git_repo_url: Optional[str] = None
+    git_token: Optional[str] = None
+
 @app.post("/agents/{agent_id}/run")
 async def run_agent(
     agent_id: str,
+    request: Optional[RunAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     Trigger an idle agent to pick a pending task and start working on it.
-    The agent will:
-    1. Pick the next pending task from the queue
-    2. Call the AI model to understand the task and generate code
-    3. Run the generated code in a Python subprocess
-    4. Return the results
+    The agent runs in the BACKGROUND — this endpoint returns immediately
+    so the frontend can poll /agents for real-time status updates.
     """
-    try:
-        result = await agent_service.run_agent(agent_id)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
+    # Validate agent exists and is idle before launching
+    agent = agent_service.agent_states.get(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    if agent["status"] == "running":
+        raise HTTPException(status_code=400, detail=f"Agent {agent_id} is already running")
+
+    git_repo_url = request.git_repo_url if request else None
+    git_token = request.git_token if request else None
+
+    # Mark as running immediately so frontend refresh sees it instantly
+    agent["status"] = "running"
+    agent["progress"] = 0
+    agent["output_log"] = []
+    agent["progress_message"] = "Initializing..."
+
+    # Fire-and-forget: agent runs in background
+    asyncio.create_task(
+        agent_service.run_agent(agent_id, git_repo_url=git_repo_url, git_token=git_token, ignore_running_check=True)
+    )
+
+    return {"started": True, "agent_id": agent_id}
 
 
 @app.post("/agents/{agent_id}/reset")
@@ -893,6 +911,66 @@ async def reset_agent(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+
+class RunAllRequest(BaseModel):
+    git_repo_url: Optional[str] = None
+    git_token: Optional[str] = None
+
+
+@app.post("/agents/run-all")
+async def run_all_agents(
+    request: Optional[RunAllRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Start all idle agents simultaneously in the BACKGROUND.
+    Returns immediately — frontend polls /agents for real-time updates.
+    """
+    idle_agents = [a for a in agent_service.agent_states.values() if a["status"] == "idle"]
+    if not idle_agents:
+        raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
+
+    git_repo_url = request.git_repo_url if request else None
+    git_token = request.git_token if request else None
+
+    # Fire-and-forget: all agents run in background
+    # Note: run_all_agents synchronously marks them as "running" as its first step.
+    asyncio.create_task(
+        agent_service.run_all_agents(git_repo_url=git_repo_url, git_token=git_token)
+    )
+
+    return {
+        "started": True,
+        "agents": [a["id"] for a in idle_agents],
+    }
+
+
+class AddAgentRequest(BaseModel):
+    name: Optional[str] = None
+
+
+@app.post("/agents/add")
+async def add_agent(
+    request: Optional[AddAgentRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Dynamically add a new agent."""
+    name = request.name if request else None
+    agent = agent_service.add_agent(name=name)
+    return {"agent": agent}
+
+
+@app.delete("/agents/{agent_id}")
+async def remove_agent(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Remove an idle agent."""
+    try:
+        agent_service.remove_agent(agent_id)
+        return {"success": True, "removed": agent_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 # ─────────────────────────────── Task Management Integration ──────────────────────────
 
 from task_service import task_service

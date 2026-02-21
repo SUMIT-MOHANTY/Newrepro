@@ -41,6 +41,9 @@ export const API_ENDPOINTS = {
     AGENT_STATUS: (agentId) => `${API_BASE_URL}/agents/${agentId}/status`,
     AGENT_RUN: (agentId) => `${API_BASE_URL}/agents/${agentId}/run`,
     AGENT_RESET: (agentId) => `${API_BASE_URL}/agents/${agentId}/reset`,
+    AGENT_RUN_ALL: `${API_BASE_URL}/agents/run-all`,
+    AGENT_ADD: `${API_BASE_URL}/agents/add`,
+    AGENT_REMOVE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,
 
     // External Task Management API
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,

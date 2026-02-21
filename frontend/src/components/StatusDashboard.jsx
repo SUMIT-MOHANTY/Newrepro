@@ -55,9 +55,12 @@ export default function StatusDashboard({ projects = [] }) {
     }, [token]);
 
     // ── Fetch tasks (External API) ───────────────────────────────────
-    const fetchTasks = useCallback(async (append = false, page = 1) => {
-        if (append) setIsLoadingMore(true);
-        else setIsLoadingTasks(true);
+    const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
+        if (append) {
+            if (!silent) setIsLoadingMore(true);
+        } else {
+            if (!silent) setIsLoadingTasks(true);
+        }
 
         setTaskListError(null);
         try {
@@ -146,7 +149,7 @@ export default function StatusDashboard({ projects = [] }) {
         if (!hasRunning) return;
         const interval = setInterval(() => {
             fetchAgents();
-            fetchTasks();
+            fetchTasks(false, 1, true); // silent reload
         }, 3000);
         return () => clearInterval(interval);
     }, [agents, fetchAgents, fetchTasks]);
@@ -165,6 +168,10 @@ export default function StatusDashboard({ projects = [] }) {
     const handleRunAgent = async (agentId, repoUrl = null, repoToken = null) => {
         setRunningAgent(agentId);
         setGitModalAgent(null); // close modal if open
+
+        // Optimistically update UI to show it's running immediately
+        setAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
+
         const body = repoUrl ? { git_repo_url: repoUrl, git_token: repoToken } : {};
         try {
             await fetch(API_ENDPOINTS.AGENT_RUN(agentId), {
@@ -175,13 +182,12 @@ export default function StatusDashboard({ projects = [] }) {
                 },
                 body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
             });
-            fetchAgents();
+            await fetchAgents();
+            await fetchTasks(false, 1, true);
         } catch (e) {
             console.error('Run failed', e);
         } finally {
             setRunningAgent(null);
-            fetchAgents();
-            fetchTasks();
         }
     };
 
@@ -202,6 +208,76 @@ export default function StatusDashboard({ projects = [] }) {
     const handleCreateProject = () => {
         if (!newProjectName.trim()) return;
         navigate(`/governance?projectName=${encodeURIComponent(newProjectName.trim())}`);
+    };
+
+    // ── Run All Agents ────────────────────────────────────────────────
+    const [runningAll, setRunningAll] = useState(false);
+
+    const handleRunAll = async () => {
+        const agentWithGit = agents.find(a => a.git_repo_url);
+        if (!agentWithGit && !gitRepoUrl) {
+            setGitModalAgent({ id: '__run_all__', name: 'All Agents' });
+            return;
+        }
+        setRunningAll(true);
+
+        // Optimistically update all idle agents to running
+        setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
+
+        try {
+            const body = {};
+            if (agentWithGit) {
+                body.git_repo_url = agentWithGit.git_repo_url;
+                body.git_token = agentWithGit.git_token || '';
+            } else if (gitRepoUrl) {
+                body.git_repo_url = gitRepoUrl;
+                body.git_token = gitToken || '';
+            }
+            await fetch(API_ENDPOINTS.AGENT_RUN_ALL, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body),
+            });
+            await fetchAgents();
+            await fetchTasks(false, 1, true);
+        } catch (e) {
+            console.error('Run all failed', e);
+        } finally {
+            setRunningAll(false);
+        }
+    };
+
+    // ── Add/Remove Agent ─────────────────────────────────────────────
+    const handleAddAgent = async (name = null) => {
+        try {
+            const body = name ? { name } : {};
+            await fetch(API_ENDPOINTS.AGENT_ADD, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body),
+            });
+            fetchAgents();
+        } catch (e) {
+            console.error('Add agent failed', e);
+        }
+    };
+
+    const handleRemoveAgent = async (agentId) => {
+        try {
+            await fetch(API_ENDPOINTS.AGENT_REMOVE(agentId), {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+            fetchAgents();
+        } catch (e) {
+            console.error('Remove agent failed', e);
+        }
     };
 
     // ── Agent Card Config ────────────────────────────────────────────
@@ -967,6 +1043,26 @@ export default function StatusDashboard({ projects = [] }) {
                                     {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
                                 </span>
                                 <button
+                                    onClick={handleRunAll}
+                                    disabled={runningAll || agents.filter(a => a.status === 'idle').length === 0}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle').length === 0
+                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                        : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                        }`}
+                                    title="Run all idle agents simultaneously"
+                                >
+                                    {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                    {runningAll ? 'Starting...' : 'Run All'}
+                                </button>
+                                <button
+                                    onClick={() => handleAddAgent()}
+                                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+                                    title="Add a new agent"
+                                >
+                                    <PlusCircle className="w-3.5 h-3.5" />
+                                    Add Agent
+                                </button>
+                                <button
                                     onClick={() => { fetchAgents(); fetchTasks(); }}
                                     className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 transition-colors"
                                     title="Refresh"
@@ -983,7 +1079,8 @@ export default function StatusDashboard({ projects = [] }) {
                     </div>
                 </div>
 
-            )}
+            )
+            }
             {showLogModal && (() => {
                 const agent = agents.find(a => a.id === showLogModal);
                 if (!agent) return null;
@@ -1040,212 +1137,257 @@ export default function StatusDashboard({ projects = [] }) {
                         </div>
                     </div>
                 );
-            })()}
+            })()
+            }
             {/* Generated Tasks Section */}
-            {projects.length > 0 && (
-                <div className="px-4 md:px-6 pb-6">
-                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
-                            <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
-                                    <ListTodo className="w-4 h-4 text-white" />
+            {
+                projects.length > 0 && (
+                    <div className="px-4 md:px-6 pb-6">
+                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
+                                        <ListTodo className="w-4 h-4 text-white" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-sm font-bold text-gray-900">Generated Tasks</h3>
+                                        <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
+                                            {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
+                                        </p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <h3 className="text-sm font-bold text-gray-900">Generated Tasks</h3>
-                                    <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
-                                        {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
-                                    </p>
+                                <button onClick={fetchTasks} disabled={isLoadingTasks} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-700 transition-all disabled:opacity-50">
+                                    <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} /> Refresh
+                                </button>
+                            </div>
+
+
+                            <div className="hidden md:block bg-gray-50/50 border-b border-gray-100 px-6 py-2.5">
+                                <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">#</div>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Task Information</div>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider text-center">Completion</div>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</div>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Priority</div>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Assignees</div>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Wallet</div>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Deadline</div>
                                 </div>
                             </div>
-                            <button onClick={fetchTasks} disabled={isLoadingTasks} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-700 transition-all disabled:opacity-50">
-                                <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} /> Refresh
-                            </button>
-                        </div>
 
-                        <div>
-                            {isLoadingTasks && taskList.length === 0 && (
-                                <div className="p-8 flex flex-col items-center justify-center gap-3">
-                                    <RefreshCw className="w-6 h-6 text-indigo-400 animate-spin" />
-                                    <p className="text-sm text-gray-400 font-medium">Loading tasks...</p>
-                                </div>
-                            )}
-                            {taskListError && !isLoadingTasks && (
-                                <div className="p-6 flex items-center gap-3 bg-red-50/50">
-                                    <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
-                                    <p className="text-sm text-red-600 font-medium">{taskListError}</p>
-                                </div>
-                            )}
-                            {!isLoadingTasks && !taskListError && taskList.length === 0 && (
-                                <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
-                                    <div className="w-14 h-14 bg-gray-50 rounded-full flex items-center justify-center mb-2">
-                                        <ListTodo className="w-7 h-7 text-gray-300" />
+                            <div className="divide-y divide-gray-50">
+                                {isLoadingTasks && taskList.length === 0 && (
+                                    <div className="p-12 flex flex-col items-center justify-center gap-3">
+                                        <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin" />
+                                        <p className="text-sm text-gray-400 font-medium">Loading tasks...</p>
                                     </div>
-                                    <p className="text-sm font-bold text-gray-500">No tasks generated yet</p>
-                                    <p className="text-xs text-gray-400 max-w-xs">Select a project and click "Create Tasks" on the Task Auto-Generator agent above to get started.</p>
-                                </div>
-                            )}
-                            {!isLoadingTasks && taskList.length > 0 && (() => {
-                                const priorityStyles = { high: 'bg-red-50 text-red-700 border-red-200', medium: 'bg-amber-50 text-amber-700 border-amber-200', low: 'bg-green-50 text-green-700 border-green-200' };
-                                const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-blue-100 text-blue-700', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-gray-100 text-gray-700', BUG: 'bg-red-100 text-red-700' };
-                                const statusStyles = { 'On Going': 'bg-blue-50 text-blue-700', 'Completed': 'bg-green-50 text-green-700', 'To Do': 'bg-gray-50 text-gray-600', 'In Review': 'bg-amber-50 text-amber-700', 'Blocked': 'bg-red-50 text-red-700' };
-
-                                return (
-                                    <div
-                                        className="divide-y divide-gray-50 overflow-y-auto"
-                                        style={{ maxHeight: '480px' }}
-                                        onScroll={(e) => {
-                                            const { scrollTop, scrollHeight, clientHeight } = e.target;
-                                            if (nextPageUrl && !isLoadingMore && scrollHeight - scrollTop - clientHeight < 100) {
-                                                const page = getPageFromUrl(nextPageUrl);
-                                                if (page) fetchTasks(true, page);
-                                            }
-                                        }}
-                                    >
+                                )}
+                                {taskListError && !isLoadingTasks && (
+                                    <div className="p-6 flex items-center gap-3 bg-red-50/50">
+                                        <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                                        <p className="text-sm text-red-600 font-medium">{taskListError}</p>
+                                    </div>
+                                )}
+                                {!isLoadingTasks && !taskListError && taskList.length === 0 && (
+                                    <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
+                                        <div className="w-14 h-14 bg-gray-50 rounded-full flex items-center justify-center mb-2">
+                                            <ListTodo className="w-7 h-7 text-gray-300" />
+                                        </div>
+                                        <p className="text-sm font-bold text-gray-500">No tasks generated yet</p>
+                                        <p className="text-xs text-gray-400 max-w-xs">Select a project and click "Create Tasks" on the Task Auto-Generator agent above to get started.</p>
+                                    </div>
+                                )}
+                                {!isLoadingTasks && taskList.length > 0 && (
+                                    <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
                                         {taskList.map((task, index) => {
+                                            const priorityStyles = { high: 'bg-red-50 text-red-700 border-red-200', medium: 'bg-amber-50 text-amber-700 border-amber-200', low: 'bg-green-50 text-green-700 border-green-200' };
+                                            const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-blue-100 text-blue-700', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-gray-100 text-gray-700', BUG: 'bg-red-100 text-red-700' };
+                                            const statusStyles = { 'On Going': 'bg-blue-50 text-blue-700', 'Completed': 'bg-green-50 text-green-700', 'To Do': 'bg-gray-50 text-gray-600', 'In Review': 'bg-amber-50 text-amber-700', 'Blocked': 'bg-red-50 text-red-700' };
                                             const priority = (task.priority || 'medium').toLowerCase();
                                             const taskType = (task.task_type || 'TASK').toUpperCase();
                                             const progress = task.task_progress || 0;
                                             const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
 
                                             return (
-                                                <div key={task.id || index} className="px-4 sm:px-6 py-2 hover:bg-gray-50/70 transition-colors group">
-                                                    <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr 72px 76px 58px 100px 40px 130px', gap: '8px', alignItems: 'center' }}>
+                                                <div key={task.id || index} className="px-6 py-3 hover:bg-gray-50/70 transition-colors group">
+                                                    <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
                                                         {/* # */}
-                                                        <div className="flex items-center gap-1">
-                                                            <div className="w-6 h-6 rounded-lg bg-gray-100 flex items-center justify-center">
-                                                                <span className="text-[10px] font-bold text-gray-500">{index + 1}</span>
-                                                            </div>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className="text-[10px] font-bold text-gray-400">{(index + 1).toString().padStart(2, '0')}</span>
+                                                            {task.is_flaged && <Flag className="w-3 h-3 text-orange-400 fill-orange-400" />}
                                                         </div>
-                                                        {/* Name + Desc */}
-                                                        <div className="min-w-0 overflow-hidden">
-                                                            <div className="flex items-center gap-1.5">
-                                                                <h4 className="text-xs sm:text-sm font-semibold text-gray-900 truncate">{task.taskName || 'Untitled Task'}</h4>
-                                                                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide flex-shrink-0 ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
-                                                                {task.is_completed && <CheckCircle className="w-3 h-3 text-green-500 flex-shrink-0" />}
+
+                                                        {/* Task Name & Desc */}
+                                                        <div className="min-w-0 pr-4">
+                                                            <div className="flex items-center gap-2 mb-0.5">
+                                                                <h4 className="text-sm font-bold text-gray-900 truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
+                                                                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
                                                             </div>
-                                                            <p className="text-[11px] text-gray-400 truncate">{task.description || 'No description'}</p>
+                                                            <p className="text-xs text-gray-400 truncate max-w-[280px]" title={task.description}>{task.description || 'No description'}</p>
                                                         </div>
+
                                                         {/* Progress */}
-                                                        <div className="flex items-center gap-1">
-                                                            <div className="flex-1 bg-gray-100 rounded-full h-1 overflow-hidden">
-                                                                <div className={`${progressColor} h-1 rounded-full`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
+                                                        <div className="flex items-center gap-3 justify-center">
+                                                            <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden max-w-[80px]">
+                                                                <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
                                                             </div>
-                                                            <span className="text-[10px] font-bold text-gray-500 whitespace-nowrap">{progress}%</span>
+                                                            <span className="text-[10px] font-bold text-gray-600 w-6">{progress}%</span>
                                                         </div>
+
                                                         {/* Status */}
                                                         <div>
-                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap ${statusStyles[task.taskStatus] || 'bg-gray-50 text-gray-600'}`}>{task.taskStatus || 'Unknown'}</span>
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-gray-50 text-gray-600'}`}>{task.taskStatus || 'Unknown'}</span>
                                                         </div>
+
                                                         {/* Priority */}
                                                         <div>
-                                                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold border capitalize whitespace-nowrap ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border capitalize ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
                                                         </div>
+
                                                         {/* Assignees */}
                                                         <div className="flex items-center gap-1 overflow-hidden">
-                                                            <Users className="w-3 h-3 text-gray-400 flex-shrink-0" />
-                                                            <div className="flex items-center gap-0.5 overflow-hidden">
+                                                            <Users className="w-3 h-3 text-gray-300 flex-shrink-0" />
+                                                            <div className="flex flex-wrap gap-0.5 max-h-8 overflow-hidden">
                                                                 {(task.assignedTo || []).slice(0, 2).map((name, i) => (
-                                                                    <span key={i} className="inline-flex items-center px-1 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] font-semibold truncate">{name}</span>
+                                                                    <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
                                                                 ))}
+                                                                {(task.assignedTo || []).length > 2 && <span className="text-[9px] font-bold text-gray-400">+{(task.assignedTo || []).length - 2}</span>}
                                                             </div>
                                                         </div>
+
                                                         {/* Wallet */}
                                                         <div className="flex items-center gap-1">
-                                                            <Wallet className="w-3 h-3 text-gray-400 flex-shrink-0" />
-                                                            <span className="text-[10px] font-semibold text-gray-500">{task.task_wallet || 0}</span>
+                                                            <Wallet className="w-3 h-3 text-gray-300" />
+                                                            <span className="text-[10px] font-bold text-gray-500">{task.task_wallet || 0}</span>
                                                         </div>
+
                                                         {/* Deadline */}
-                                                        <div className="flex items-center gap-1 text-[10px]">
-                                                            <Calendar className="w-3 h-3 text-gray-400 flex-shrink-0" />
-                                                            <span className="text-gray-400 whitespace-nowrap">{task.deadline || '-'}</span>
+                                                        <div className="flex flex-col gap-0.5">
+                                                            <div className="flex items-center gap-1 text-[10px] font-bold text-gray-500">
+                                                                <Calendar className="w-3 h-3 text-gray-300" />
+                                                                <span>{task.deadline || '-'}</span>
+                                                            </div>
                                                             {task.days_left != null && (
-                                                                <span className={`font-bold px-1 py-0.5 rounded-full whitespace-nowrap ${task.days_left <= 3 ? 'bg-red-50 text-red-600' : task.days_left <= 7 ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}`}>{task.days_left}d left</span>
+                                                                <span className={`text-[9px] font-black uppercase tracking-tighter ${task.days_left <= 3 ? 'text-red-500' : task.days_left <= 7 ? 'text-amber-500' : 'text-green-500'}`}>{task.days_left}d remaining</span>
                                                             )}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Mobile View */}
+                                                    <div className="md:hidden space-y-2">
+                                                        <div className="flex justify-between items-start">
+                                                            <h4 className="text-sm font-bold text-gray-900 line-clamp-1">{task.taskName}</h4>
+                                                            <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center text-[10px]">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className={`px-2 py-0.5 rounded font-bold ${statusStyles[task.taskStatus]}`}>{task.taskStatus}</span>
+                                                                <span className="font-bold text-gray-500">{progress}%</span>
+                                                            </div>
+                                                            <span className="font-bold text-indigo-600">${task.task_wallet || 0}</span>
                                                         </div>
                                                     </div>
                                                 </div>
                                             );
                                         })}
                                     </div>
-                                );
-                            })()}
+                                )}
 
-                            {/* Load status footer */}
-                            {isLoadingMore && (
-                                <div className="px-6 py-3 flex items-center justify-center gap-2 border-t border-gray-100 bg-gray-50/50">
-                                    <RefreshCw className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
-                                    <span className="text-xs text-gray-500 font-medium">Loading more tasks...</span>
-                                </div>
-                            )}
-                            {!nextPageUrl && taskList.length > 0 && !isLoadingMore && (
-                                <div className="px-6 py-2.5 text-center border-t border-gray-100 bg-gray-50/30">
-                                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Showing all {taskList.length} tasks</span>
-                                </div>
-                            )}
+
+                                {/* Load More Button */}
+                                {nextPageUrl && (
+                                    <div className="px-6 py-4 flex justify-center border-t border-gray-100">
+                                        <button
+                                            onClick={() => {
+                                                const page = getPageFromUrl(nextPageUrl);
+                                                if (page) fetchTasks(true, page);
+                                            }}
+                                            disabled={isLoadingMore}
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {isLoadingMore ? (
+                                                <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
+                                            ) : (
+                                                <><ChevronRight className="w-4 h-4" /> Load More ({taskList.length} of {totalTaskCount})</>
+                                            )}
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )}
 
             {/* Add Project Modal */}
-            {showModal && (
-                <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                    <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-                        <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
-                            <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
-                                <PlusCircle className="w-5 h-5 text-blue-500" /> Create Project
-                            </h3>
-                            <button type="button" onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-                        <div className="p-6">
-                            <p className="text-sm text-gray-500 mb-4 font-medium">Step 1 of Governance Track: Give your project a descriptive name to get started.</p>
-                            <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Project Name <span className="text-red-400">*</span></label>
-                            <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()} placeholder="e.g. Customer Analytics Platform" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
-                            <div className="flex items-center gap-3">
-                                <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
-                                <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-xl transition-colors shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
-                                    Start track <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            {
+                showModal && (
+                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                                    <PlusCircle className="w-5 h-5 text-blue-500" /> Create Project
+                                </h3>
+                                <button type="button" onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                    <X className="w-5 h-5" />
                                 </button>
+                            </div>
+                            <div className="p-6">
+                                <p className="text-sm text-gray-500 mb-4 font-medium">Step 1 of Governance Track: Give your project a descriptive name to get started.</p>
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Project Name <span className="text-red-400">*</span></label>
+                                <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()} placeholder="e.g. Customer Analytics Platform" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+                                <div className="flex items-center gap-3">
+                                    <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                                    <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-xl transition-colors shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                        Start track <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* Git Configuration Modal */}
-            {gitModalAgent && (
-                <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                    <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-                        <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
-                            <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
-                                <Bot className="w-5 h-5 text-indigo-500" /> Git Configuration
-                            </h3>
-                            <button type="button" onClick={() => setGitModalAgent(null)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-                        <div className="p-6">
-                            <p className="text-sm text-gray-500 mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
-
-                            <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
-                            <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
-
-                            <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token (optional)</label>
-                            <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
-                            <p className="text-xs text-gray-400 mb-6 italic">This token is used by the Docker container to clone and push code. It is securely handled and forgotten if the container crashes.</p>
-
-                            <div className="flex items-center gap-3">
-                                <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
-                                <button type="button" onClick={() => handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken)} disabled={!gitRepoUrl.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
-                                    <Play className="w-4 h-4" /> Start Agent
+            {
+                gitModalAgent && (
+                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                                    <Bot className="w-5 h-5 text-indigo-500" /> Git Configuration
+                                </h3>
+                                <button type="button" onClick={() => setGitModalAgent(null)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                    <X className="w-5 h-5" />
                                 </button>
+                            </div>
+                            <div className="p-6">
+                                <p className="text-sm text-gray-500 mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
+
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                                <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token (optional)</label>
+                                <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+
+
+                                <div className="flex items-center gap-3">
+                                    <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                                    <button type="button" onClick={() => {
+                                        if (gitModalAgent.id === '__run_all__') {
+                                            setGitModalAgent(null);
+                                            handleRunAll();
+                                        } else {
+                                            handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken);
+                                        }
+                                    }} disabled={!gitRepoUrl.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                        <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all__' ? 'Start All Agents' : 'Start Agent'}
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
-            )}
-        </div>
+                )
+            }
+        </div >
     );
 }
