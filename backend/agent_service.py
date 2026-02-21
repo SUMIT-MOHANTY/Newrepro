@@ -213,9 +213,22 @@ async def _call_ai_for_code(task_description: str, agent_type: str) -> str:
     }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        last_err = None
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    await asyncio.sleep(5 * attempt)  # backoff: 5s, 10s
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt == 2:
+                    raise
+        if last_err:
+            raise last_err
 
     if "choices" in data and len(data["choices"]) > 0:
         content = data["choices"][0].get("message", {}).get("content", "")
@@ -290,10 +303,26 @@ IMPORTANT: Use ONLY ASCII characters in your Python code. Do NOT use Unicode arr
         "Authorization": f"Bearer {key}",
     }
 
+    # Add a small delay before the fix call to avoid API rate limits
+    await asyncio.sleep(3)
+
     async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        last_err = None
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    await asyncio.sleep(5 * attempt)  # backoff: 5s, 10s
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt == 2:
+                    raise
+        if last_err:
+            raise last_err
 
     if "choices" in data and len(data["choices"]) > 0:
         content = data["choices"][0].get("message", {}).get("content", "")
@@ -309,16 +338,35 @@ IMPORTANT: Use ONLY ASCII characters in your Python code. Do NOT use Unicode arr
         raise ValueError("No response from AI model for fix iteration")
 
 
-# ── Helper: Run Python Subprocess ───────────────────────────────────────────
+# ── Docker Configuration ────────────────────────────────────────────────────
+
+DOCKER_CONTAINER_NAME = "mylinux"
+DOCKER_PYTHON_CMD = "python3"
+DOCKER_SCRIPT_DIR = "/tmp/agent_scripts"
+
+
+def _check_docker_container() -> bool:
+    """Check if the Docker container is running."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", DOCKER_CONTAINER_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() == "true"
+    except Exception:
+        return False
+
+
+# ── Helper: Run Python inside Docker Container ─────────────────────────────
 
 async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
     """
-    Write the AI-generated Python code to a temp file and run it in a subprocess.
-    Uses subprocess.run via asyncio.to_thread for Windows compatibility.
+    Write the AI-generated Python code to a temp file, copy it into the Docker
+    container, and execute it with `docker exec`. Captures stdout/stderr.
     """
     agent = agent_states[agent_id]
 
-    # Write generated code to a temp file
+    # Write generated code to a local temp file
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix=f"agent_{agent_id}_",
         encoding="utf-8",
@@ -326,29 +374,57 @@ async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
         f.write(code)
         script_path = f.name
 
+    script_name = os.path.basename(script_path)
+    container_script_path = f"{DOCKER_SCRIPT_DIR}/{script_name}"
+
     agent["progress"] = 60
-    agent["progress_message"] = "Executing generated code..."
+    agent["progress_message"] = "Executing inside Docker container..."
     agent["output_log"].append({
         "time": datetime.utcnow().isoformat(),
         "type": "info",
-        "message": f"Running script: {os.path.basename(script_path)}"
+        "message": f"Running script: {script_name}"
     })
     agent["output_log"].append({
         "time": datetime.utcnow().isoformat(),
         "type": "info",
-        "message": f"Python interpreter: {sys.executable}"
+        "message": f"Docker container: {DOCKER_CONTAINER_NAME} | Python: {DOCKER_PYTHON_CMD}"
     })
 
-    def _exec_script():
-        """Run the script synchronously (called via asyncio.to_thread)."""
+    def _exec_in_docker():
+        """Copy script into container and execute it (called via asyncio.to_thread)."""
         try:
-            result = subprocess.run(
-                [sys.executable, script_path],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                cwd=os.path.dirname(script_path),
+            # 1. Ensure the script directory exists inside the container
+            subprocess.run(
+                ["docker", "exec", DOCKER_CONTAINER_NAME, "mkdir", "-p", DOCKER_SCRIPT_DIR],
+                capture_output=True, text=True, timeout=10,
             )
+
+            # 2. Copy the script from local Windows into the Docker container
+            cp_result = subprocess.run(
+                ["docker", "cp", script_path, f"{DOCKER_CONTAINER_NAME}:{container_script_path}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if cp_result.returncode != 0:
+                return {
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": f"docker cp failed: {cp_result.stderr}",
+                    "script_path": script_path,
+                    "error": f"docker cp failed: {cp_result.stderr}",
+                }
+
+            # 3. Execute the script inside the container
+            result = subprocess.run(
+                ["docker", "exec", DOCKER_CONTAINER_NAME, DOCKER_PYTHON_CMD, container_script_path],
+                capture_output=True, text=True, timeout=60,
+            )
+
+            # 4. Clean up the script inside the container
+            subprocess.run(
+                ["docker", "exec", DOCKER_CONTAINER_NAME, "rm", "-f", container_script_path],
+                capture_output=True, text=True, timeout=10,
+            )
+
             return {
                 "exit_code": result.returncode,
                 "stdout": result.stdout or "",
@@ -356,13 +432,22 @@ async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
                 "script_path": script_path,
                 "error": None,
             }
+
         except subprocess.TimeoutExpired:
             return {
                 "exit_code": -1,
                 "stdout": "",
-                "stderr": "Script execution timed out (60s limit)",
+                "stderr": "Script execution timed out (60s limit) inside Docker",
                 "script_path": script_path,
                 "error": "timeout",
+            }
+        except FileNotFoundError:
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "Docker command not found. Is Docker installed and in PATH?",
+                "script_path": script_path,
+                "error": "docker_not_found",
             }
         except Exception as e:
             return {
@@ -374,8 +459,24 @@ async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
             }
 
     try:
-        # Run synchronously in a thread to avoid Windows asyncio subprocess issues
-        result = await asyncio.to_thread(_exec_script)
+        # Check if Docker container is running
+        container_running = await asyncio.to_thread(_check_docker_container)
+        if not container_running:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "error",
+                "message": f"Docker container '{DOCKER_CONTAINER_NAME}' is not running! Start it with: docker start {DOCKER_CONTAINER_NAME}"
+            })
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"Container '{DOCKER_CONTAINER_NAME}' not running",
+                "script_path": script_path,
+                "error": "container_not_running",
+            }
+
+        # Execute inside Docker
+        result = await asyncio.to_thread(_exec_in_docker)
 
         stdout_text = result["stdout"]
         stderr_text = result["stderr"]
@@ -402,13 +503,19 @@ async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "error",
-                "message": "Script execution timed out (60s limit)"
+                "message": "Script execution timed out (60s limit) inside Docker"
+            })
+        elif result.get("error") == "docker_not_found":
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "error",
+                "message": "Docker is not installed or not in PATH"
             })
         elif result.get("error"):
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "error",
-                "message": f"Subprocess error: {result['error']}"
+                "message": f"Docker exec error: {result['error']}"
             })
 
         return result
@@ -417,7 +524,7 @@ async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
         agent["output_log"].append({
             "time": datetime.utcnow().isoformat(),
             "type": "error",
-            "message": f"Failed to run script: {str(e)}"
+            "message": f"Failed to run script in Docker: {str(e)}"
         })
         return {
             "exit_code": -1,
@@ -426,7 +533,7 @@ async def _run_python_subprocess(code: str, agent_id: str) -> Dict[str, Any]:
             "script_path": script_path,
         }
     finally:
-        # Clean up temp file
+        # Clean up local temp file
         try:
             os.unlink(script_path)
         except OSError:
