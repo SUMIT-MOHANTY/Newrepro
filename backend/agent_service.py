@@ -73,52 +73,35 @@ def _clean_ai_code_response(content: str) -> str:
 
 # ── In-memory state stores ──────────────────────────────────────────────────
 
+_AGENT_TYPES = ["validator", "risk", "estimator"]
+_AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimation"]
+
+_claimed_task_ids: set = set()   # tasks currently being worked on (prevents double-claim)
+
+def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
+    """Create a fresh agent state dict."""
+    atype = _AGENT_TYPES[idx % len(_AGENT_TYPES)]
+    aname = _AGENT_NAMES[idx % len(_AGENT_NAMES)]
+    return {
+        "id": agent_id,
+        "name": aname,
+        "type": atype,
+        "status": "idle",
+        "current_task": None,
+        "progress": 0,
+        "progress_message": "",
+        "last_run": None,
+        "last_result": None,
+        "output_log": [],
+        "stats": {},
+        "git_repo_url": None,
+        "git_token": None,
+    }
+
 agent_states: Dict[str, Dict[str, Any]] = {
-    "agent_01": {
-        "id": "agent_01",
-        "name": "Requirements Validator",
-        "type": "validator",
-        "status": "idle",
-        "current_task": None,
-        "progress": 0,
-        "progress_message": "",
-        "last_run": None,
-        "last_result": None,
-        "output_log": [],
-        "stats": {"checks": 0, "coverage": 0, "avg_time": "0m"},
-        "git_repo_url": None,
-        "git_token": None,
-    },
-    "agent_02": {
-        "id": "agent_02",
-        "name": "Risk Assessment",
-        "type": "risk",
-        "status": "idle",
-        "current_task": None,
-        "progress": 0,
-        "progress_message": "",
-        "last_run": None,
-        "last_result": None,
-        "output_log": [],
-        "stats": {"risks": 0, "critical": 0, "avg_time": "0m"},
-        "git_repo_url": None,
-        "git_token": None,
-    },
-    "agent_03": {
-        "id": "agent_03",
-        "name": "Resource Estimation",
-        "type": "estimator",
-        "status": "idle",
-        "current_task": None,
-        "progress": 0,
-        "progress_message": "",
-        "last_run": None,
-        "last_result": None,
-        "output_log": [],
-        "stats": {"sprints": 0, "resources": 0, "avg_time": "0m"},
-        "git_repo_url": None,
-        "git_token": None,
-    },
+    "agent_01": _make_agent("agent_01", 0),
+    "agent_02": _make_agent("agent_02", 1),
+    "agent_03": _make_agent("agent_03", 2),
 }
 
 completed_tasks: List[Dict[str, Any]] = []
@@ -764,21 +747,41 @@ def _parse_stats_from_output(stdout: str, agent_type: str) -> Dict[str, Any]:
 # ── Fetch tasks from External Task API ──────────────────────────────────────
 
 async def _fetch_external_tasks() -> List[Dict[str, Any]]:
-    """Fetch tasks from the external task management API."""
+    """Fetch ALL pages of tasks from the external task management API."""
     from task_service import task_service
     try:
-        data = await task_service.get_tasks()
-        if isinstance(data, list):
-            tasks = data
-        elif isinstance(data, dict) and "results" in data:
-            tasks = data["results"]
-        else:
-            tasks = []
+        all_tasks = []
+        page = 1
+        while True:
+            data = await task_service.get_tasks(page=page)
+            if isinstance(data, list):
+                all_tasks.extend(data)
+                break
+            elif isinstance(data, dict) and "results" in data:
+                all_tasks.extend(data["results"])
+                if not data.get("next"):
+                    break
+                page += 1
+            else:
+                break
 
         normalized = []
-        for t in tasks:
+        for t in all_tasks:
+            # Parse checklist JSON
+            checklist_raw = t.get("checklist") or ""
+            checklist_items = []
+            if isinstance(checklist_raw, str) and checklist_raw.strip():
+                try:
+                    parsed = json.loads(checklist_raw)
+                    checklist_items = parsed.get("checklistItems", [])
+                except Exception:
+                    pass
+            elif isinstance(checklist_raw, dict):
+                checklist_items = checklist_raw.get("checklistItems", [])
+
             normalized.append({
                 "id": str(t.get("id", uuid.uuid4().hex[:8])),
+                "external_id": t.get("id"),
                 "title": t.get("taskName") or t.get("title") or "Untitled Task",
                 "description": t.get("description") or t.get("taskName") or "",
                 "priority": (t.get("priority") or "medium").lower(),
@@ -787,7 +790,8 @@ async def _fetch_external_tasks() -> List[Dict[str, Any]]:
                 "created_at": t.get("created_at") or datetime.utcnow().isoformat(),
                 "assigned_agent": None,
                 "started_at": None,
-                "external_id": t.get("id"),
+                "linked_tasks": t.get("linked_tasks") or [],
+                "checklist": checklist_items,
             })
         return normalized
     except Exception as e:
@@ -795,19 +799,60 @@ async def _fetch_external_tasks() -> List[Dict[str, Any]]:
         return []
 
 
+async def _mark_checklist_item(task_external_id, checklist_items: list, item_index: int):
+    """Mark a single checklist item as completed via external API."""
+    from task_service import task_service
+    try:
+        updated = []
+        for i, item in enumerate(checklist_items):
+            updated.append({
+                "text": item.get("text", ""),
+                "completed": True if i <= item_index else item.get("completed", False),
+            })
+        await task_service.add_checklist_to_task(int(task_external_id), updated)
+    except Exception as e:
+        print(f"[agent_service] Failed to update checklist for task {task_external_id}: {e}")
+
+
 # ── Main Agent Execution ────────────────────────────────────────────────────
 
-async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None) -> Dict[str, Any]:
+async def _pick_next_task(agent_id: str) -> Optional[Dict[str, Any]]:
+    """Pick the next uncompleted, unclaimed task from the external API."""
+    global _claimed_task_ids
+    external_tasks = await _fetch_external_tasks()
+    for t in external_tasks:
+        tid = str(t.get("external_id") or t["id"])
+        status_lower = (t.get("status") or "").lower()
+        if status_lower not in ("completed", "done") and tid not in _claimed_task_ids:
+            _claimed_task_ids.add(tid)
+            # Also claim its linked tasks
+            for lt in (t.get("linked_tasks") or []):
+                _claimed_task_ids.add(str(lt))
+            return t
+    return None
+
+
+async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
+                    assigned_task: Dict[str, Any] = None,
+                    continuous: bool = False) -> Dict[str, Any]:
     """
-    Main function to run an agent:
-    1. Fetch a task from the external API
-    2. Create a persistent Docker container
-    3. If git repo provided: clone repo, create task branch
-    4. AI generates project code -> runs inside the container
-    5. Self-healing loop until perfect
-    6. If git repo: commit & push changes to the task branch
-    7. Capture workspace, destroy container
+    Main function to run an agent.
+    When continuous=True, the agent keeps picking new tasks after completing
+    the current one, only stopping when NO uncompleted tasks remain.
+
+    Flow per task:
+      1. Pick task (or use pre-assigned)
+      2. Create Docker container (reused across tasks in continuous mode)
+      3. Git: clone repo, create task branch
+      4. AI generates code -> runs inside container
+      5. Self-healing loop
+      6. Mark checklist items complete via external API
+      7. Process linked tasks (separate branch each)
+      8. Git: commit & push
+      9. Loop back to step 1 if continuous
+     10. Capture workspace, destroy container when done
     """
+    global _claimed_task_ids
     agent = agent_states.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
@@ -823,366 +868,486 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
     use_git = bool(agent.get("git_repo_url"))
 
-    # 1. Fetch tasks from external API
-    external_tasks = await _fetch_external_tasks()
-    if not external_tasks:
-        raise ValueError("No tasks available from the external task API. Generate tasks first.")
+    # 1. Get the first task
+    if assigned_task:
+        task = assigned_task
+    else:
+        task = await _pick_next_task(agent_id)
+        if not task:
+            raise ValueError("No tasks available or all are completed/claimed.")
 
-    task = None
-    for t in external_tasks:
-        status_lower = (t.get("status") or "").lower()
-        if status_lower not in ("completed", "done"):
-            task = t
-            break
-
-    if not task:
-        raise ValueError("All tasks from the external API are already completed.")
-
-    task["status"] = "in_progress"
-    task["assigned_agent"] = agent_id
-    task["started_at"] = datetime.utcnow().isoformat()
-
-    # 2. Update agent state
+    # Set agent to running
     agent["status"] = "running"
-    agent["current_task"] = task
-    agent["progress"] = 5
-    agent["progress_message"] = f"Picked task: {task['title']}"
-    agent["output_log"] = [{
-        "time": datetime.utcnow().isoformat(),
-        "type": "info",
-        "message": f"Starting work on: {task['title']}"
-    }]
+    agent["output_log"] = []
+    total_start = time.time()
+    tasks_completed = 0
+    all_results = []
 
-    start_time = time.time()
     container_name = f"agent_{agent_id}_{uuid.uuid4().hex[:8]}"
+    container_created = False
 
     try:
-        # 3. Check Docker
-        docker_available = await asyncio.to_thread(_check_docker_available)
-        if not docker_available:
-            raise ValueError("Docker is not available. Make sure Docker Desktop is running.")
+        # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
+        while task is not None:
+            tasks_completed += 1
+            task["status"] = "in_progress"
+            task["assigned_agent"] = agent_id
+            task["started_at"] = datetime.utcnow().isoformat()
 
-        # 4. Create persistent container
-        agent["progress"] = 10
-        agent["progress_message"] = f"Creating Docker container: {container_name}"
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": f"Creating persistent container: {container_name} (image: {DOCKER_BASE_IMAGE})"
-        })
+            linked_task_ids = [str(lt) for lt in (task.get("linked_tasks") or [])]
+            checklist = task.get("checklist") or []
 
-        container_result = await asyncio.to_thread(_create_persistent_container, container_name)
-        if not container_result["success"]:
-            raise ValueError(f"Failed to create container: {container_result['error']}")
-
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": f"Container '{container_name}' is running with /workspace/ ready"
-        })
-
-        # 5. If git repo configured, clone it and create a task branch
-        branch_name = None
-        if use_git:
-            branch_name = _slugify_branch_name(task["title"])
-            agent["progress"] = 15
-            agent["progress_message"] = f"Cloning git repo & creating branch: {branch_name}"
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"Cloning {agent['git_repo_url']} into /workspace/..."
-            })
-
-            git_result = await asyncio.to_thread(
-                _setup_git_in_container, container_name,
-                agent["git_repo_url"], agent.get("git_token", ""), branch_name
-            )
-            if not git_result["success"]:
-                raise ValueError(f"Git setup failed: {git_result['error']}")
+            task_count_label = f" (+{len(linked_task_ids)} linked)" if linked_task_ids else ""
+            agent["current_task"] = task
+            agent["progress"] = 5
+            agent["progress_message"] = f"Task {tasks_completed}: {task['title']}"
 
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"Git repo cloned. Working on branch: {branch_name}"
+                "message": f"{'═' * 50}"
             })
-
-        # 6. Generate project-building code with AI
-        agent["progress"] = 20
-        agent["progress_message"] = "AI is generating project code..."
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": "Calling AI model to generate project code..."
-        })
-
-        generated_code = await _call_ai_for_code(task["description"], agent["type"])
-
-        agent["progress"] = 30
-        agent["progress_message"] = "Running project builder inside Docker..."
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": f"AI generated {len(generated_code.splitlines())} lines of builder code"
-        })
-
-        # 6. Execute builder code inside the persistent container
-        result = await asyncio.to_thread(
-            _exec_script_in_container, container_name, generated_code, f"build_{agent_id}"
-        )
-
-        # Log output
-        for line in (result["stdout"] or "").strip().split("\n"):
-            if line.strip():
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"▶ TASK {tasks_completed}: {task['title']}{task_count_label}"
+            })
+            if checklist:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
-                    "type": "output",
-                    "message": line.strip()
+                    "type": "info",
+                    "message": f"  {len(checklist)} checklist steps"
                 })
-        if result["stderr"] and result["stderr"].strip():
-            for line in result["stderr"].strip().split("\n"):
+
+            start_time = time.time()
+
+            # ── Docker container (create only on first iteration) ────
+            if not container_created:
+                docker_available = await asyncio.to_thread(_check_docker_available)
+                if not docker_available:
+                    raise ValueError("Docker is not available. Make sure Docker Desktop is running.")
+
+                agent["progress"] = 10
+                agent["progress_message"] = f"Creating Docker container: {container_name}"
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Creating persistent container: {container_name} (image: {DOCKER_BASE_IMAGE})"
+                })
+
+                container_result = await asyncio.to_thread(_create_persistent_container, container_name)
+                if not container_result["success"]:
+                    raise ValueError(f"Failed to create container: {container_result['error']}")
+                container_created = True
+
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Container '{container_name}' is running with /workspace/ ready"
+                })
+
+                # Clone git repo ONCE on first task
+                if use_git:
+                    first_branch = _slugify_branch_name(task["title"])
+                    agent["progress"] = 15
+                    agent["progress_message"] = f"Cloning git repo & creating branch: {first_branch}"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Cloning {agent['git_repo_url']} into /workspace/..."
+                    })
+
+                    git_result = await asyncio.to_thread(
+                        _setup_git_in_container, container_name,
+                        agent["git_repo_url"], agent.get("git_token", ""), first_branch
+                    )
+                    if not git_result["success"]:
+                        raise ValueError(f"Git setup failed: {git_result['error']}")
+
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Git repo cloned. Working on branch: {first_branch}"
+                    })
+
+            # ── Create task-specific git branch (for 2nd+ tasks) ─────
+            branch_name = None
+            if use_git:
+                branch_name = _slugify_branch_name(task["title"])
+                if tasks_completed > 1:
+                    # Switch back to main and create new branch
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "main"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "-b", branch_name],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Created branch: {branch_name}"
+                    })
+
+            # ── AI Code Generation ───────────────────────────────────
+            agent["progress"] = 20
+            agent["progress_message"] = "AI is generating project code..."
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "Calling AI model to generate project code..."
+            })
+
+            generated_code = await _call_ai_for_code(task["description"], agent["type"])
+
+            agent["progress"] = 30
+            agent["progress_message"] = "Running project builder inside Docker..."
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"AI generated {len(generated_code.splitlines())} lines of builder code"
+            })
+
+            # ── Execute builder code ─────────────────────────────────
+            result = await asyncio.to_thread(
+                _exec_script_in_container, container_name, generated_code, f"build_{agent_id}"
+            )
+
+            # Log output
+            for line in (result["stdout"] or "").strip().split("\n"):
                 if line.strip():
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
-                        "type": "error",
+                        "type": "output",
                         "message": line.strip()
                     })
-
-        # ═══════════════════════════════════════════════════════════════
-        # 7. SELF-HEALING LOOP — keep fixing until project is perfect
-        # ═══════════════════════════════════════════════════════════════
-        all_generated_code = generated_code
-        all_stdout = result["stdout"]
-        fix_iteration = 0
-
-        while fix_iteration < MAX_FIX_ITERATIONS:
-            issue_report = _detect_issues_from_output(result["stdout"], result["stderr"], result["exit_code"])
-
-            # Check if builder script itself crashed (SyntaxError etc.)
-            builder_crashed = _is_builder_script_crash(result.get("stderr", ""))
-            workspace_empty = False
-            if builder_crashed:
-                workspace_empty = await asyncio.to_thread(_is_workspace_empty, container_name)
-
-            # If workspace is empty after a crash, force rebuild
-            if builder_crashed and workspace_empty:
-                issue_report["has_issues"] = True
-                if not issue_report["issues"]:
-                    issue_report["issues"] = [f"BUILDER SCRIPT CRASHED: {result.get('stderr', '')[:200]}"]
-                    issue_report["issue_count"] = len(issue_report["issues"])
-
-            if not issue_report["has_issues"] and result["exit_code"] == 0:
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": "All checks passed -- project built successfully!"
-                })
-                break
-
-            fix_iteration += 1
-            issue_count = issue_report["issue_count"]
-
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": "=============================================="
-            })
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"SELF-HEALING: {issue_count} issues found -- fix iteration {fix_iteration}/{MAX_FIX_ITERATIONS}"
-            })
-
-            for idx, issue in enumerate(issue_report["issues"][:10], 1):
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"  Issue {idx}: {issue[:150]}"
-                })
-
-            progress_base = 30 + (fix_iteration * 12)
-            agent["progress"] = min(progress_base, 85)
-            agent["progress_message"] = f"Self-healing: fixing {issue_count} issues (round {fix_iteration})..."
-
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": "Calling AI model to generate fix code..."
-            })
-
-            try:
-                fix_code = await _call_ai_for_fix(
-                    task_description=task["description"],
-                    agent_type=agent["type"],
-                    issues=issue_report["issues"],
-                    previous_output=result["stdout"],
-                    iteration=fix_iteration,
-                    builder_crashed=(builder_crashed and workspace_empty),
-                )
-
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"AI generated {len(fix_code.splitlines())} lines of fix code"
-                })
-
-                # Run fix code in the SAME container (files persist)
-                result = await asyncio.to_thread(
-                    _exec_script_in_container, container_name, fix_code, f"fix_{agent_id}_{fix_iteration}"
-                )
-
-                # Log fix output
-                for line in (result["stdout"] or "").strip().split("\n"):
+            if result["stderr"] and result["stderr"].strip():
+                for line in result["stderr"].strip().split("\n"):
                     if line.strip():
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
-                            "type": "output",
+                            "type": "error",
                             "message": line.strip()
                         })
-                if result["stderr"] and result["stderr"].strip():
-                    for line in result["stderr"].strip().split("\n"):
-                        if line.strip():
-                            agent["output_log"].append({
-                                "time": datetime.utcnow().isoformat(),
-                                "type": "error",
-                                "message": line.strip()
-                            })
 
-                all_generated_code += f"\n\n# === FIX ITERATION {fix_iteration} ===\n" + fix_code
-                all_stdout += f"\n\n--- FIX ITERATION {fix_iteration} ---\n" + result["stdout"]
+            # ═════════════════════════════════════════════════════════
+            # SELF-HEALING LOOP
+            # ═════════════════════════════════════════════════════════
+            all_generated_code = generated_code
+            all_stdout = result["stdout"]
+            fix_iteration = 0
 
-            except Exception as fix_err:
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "error",
-                    "message": f"Self-healing iteration {fix_iteration} failed: {str(fix_err)}"
-                })
-                break
+            while fix_iteration < MAX_FIX_ITERATIONS:
+                issue_report = _detect_issues_from_output(result["stdout"], result["stderr"], result["exit_code"])
 
-        # ═══════════════════════════════════════════════════════════════
-        # 8. CAPTURE WORKSPACE — get all files + code before cleanup
-        # ═══════════════════════════════════════════════════════════════
-        agent["progress"] = 90
-        agent["progress_message"] = "Capturing project workspace..."
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": "=============================================="
-        })
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": "Capturing workspace file tree and code..."
-        })
+                builder_crashed = _is_builder_script_crash(result.get("stderr", ""))
+                workspace_empty = False
+                if builder_crashed:
+                    workspace_empty = await asyncio.to_thread(_is_workspace_empty, container_name)
 
-        workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name)
+                if builder_crashed and workspace_empty:
+                    issue_report["has_issues"] = True
+                    if not issue_report["issues"]:
+                        issue_report["issues"] = [f"BUILDER SCRIPT CRASHED: {result.get('stderr', '')[:200]}"]
+                        issue_report["issue_count"] = len(issue_report["issues"])
 
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": f"Captured {workspace_tree.count('FILE:')} files from /workspace/"
-        })
+                if not issue_report["has_issues"] and result["exit_code"] == 0:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "All checks passed -- project built successfully!"
+                    })
+                    break
 
-        # ═══════════════════════════════════════════════════════════════
-        # 9. GIT COMMIT & PUSH — if a repository was provided
-        # ═══════════════════════════════════════════════════════════════
-        if use_git and branch_name:
-            agent["progress"] = 95
-            agent["progress_message"] = f"Committing and pushing to {branch_name}..."
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"Committing changes and pushing to branch: {branch_name}..."
-            })
-            
-            commit_result = await asyncio.to_thread(
-                _commit_and_push, container_name, task["title"], branch_name
-            )
-            
-            if commit_result["success"]:
+                fix_iteration += 1
+                issue_count = issue_report["issue_count"]
+
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"Successfully pushed code to GitHub branch: {branch_name}"
+                    "message": "=============================================="
                 })
-            else:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
-                    "type": "error",
-                    "message": f"Git pushing failed: {commit_result['error']}"
+                    "type": "info",
+                    "message": f"SELF-HEALING: {issue_count} issues found -- fix iteration {fix_iteration}/{MAX_FIX_ITERATIONS}"
                 })
-        else:
+
+                for idx, issue in enumerate(issue_report["issues"][:10], 1):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"  Issue {idx}: {issue[:150]}"
+                    })
+
+                progress_base = 30 + (fix_iteration * 12)
+                agent["progress"] = min(progress_base, 85)
+                agent["progress_message"] = f"Self-healing: fixing {issue_count} issues (round {fix_iteration})..."
+
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": "Calling AI model to generate fix code..."
+                })
+
+                try:
+                    fix_code = await _call_ai_for_fix(
+                        task_description=task["description"],
+                        agent_type=agent["type"],
+                        issues=issue_report["issues"],
+                        previous_output=result["stdout"],
+                        iteration=fix_iteration,
+                        builder_crashed=(builder_crashed and workspace_empty),
+                    )
+
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"AI generated {len(fix_code.splitlines())} lines of fix code"
+                    })
+
+                    result = await asyncio.to_thread(
+                        _exec_script_in_container, container_name, fix_code, f"fix_{agent_id}_{fix_iteration}"
+                    )
+
+                    for line in (result["stdout"] or "").strip().split("\n"):
+                        if line.strip():
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "output",
+                                "message": line.strip()
+                            })
+                    if result["stderr"] and result["stderr"].strip():
+                        for line in result["stderr"].strip().split("\n"):
+                            if line.strip():
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "error",
+                                    "message": line.strip()
+                                })
+
+                    all_generated_code += f"\n\n# === FIX ITERATION {fix_iteration} ===\n" + fix_code
+                    all_stdout += f"\n\n--- FIX ITERATION {fix_iteration} ---\n" + result["stdout"]
+
+                except Exception as fix_err:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "error",
+                        "message": f"Self-healing iteration {fix_iteration} failed: {str(fix_err)}"
+                    })
+                    break
+
+            # ═════════════════════════════════════════════════════════
+            # CAPTURE WORKSPACE
+            # ═════════════════════════════════════════════════════════
+            agent["progress"] = 90
+            agent["progress_message"] = "Capturing project workspace..."
+            workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": "Git is not configured. Skipping code push."
+                "message": f"Captured {workspace_tree.count('FILE:')} files from /workspace/"
             })
 
-        # ═══════════════════════════════════════════════════════════════
-        # 10. CLEANUP container now that everything is captured
-        # ═══════════════════════════════════════════════════════════════
-        await asyncio.to_thread(_destroy_container, container_name)
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": f"Container '{container_name}' destroyed. Project code captured."
-        })
+            # ═════════════════════════════════════════════════════════
+            # MARK CHECKLIST ITEMS COMPLETE
+            # ═════════════════════════════════════════════════════════
+            if checklist and task.get("external_id"):
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Marking {len(checklist)} checklist items as completed..."
+                })
+                for idx_cl in range(len(checklist)):
+                    await _mark_checklist_item(task["external_id"], checklist, idx_cl)
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"  ✓ Checklist step {idx_cl+1}/{len(checklist)}: {checklist[idx_cl].get('text','')[:80]}"
+                    })
 
-        # ═══════════════════════════════════════════════════════════════
-        # 10. Final status update
-        # ═══════════════════════════════════════════════════════════════
-        elapsed = round(time.time() - start_time, 1)
+            # ═════════════════════════════════════════════════════════
+            # PROCESS LINKED TASKS
+            # ═════════════════════════════════════════════════════════
+            if linked_task_ids and use_git:
+                all_ext_tasks = await _fetch_external_tasks()
+                linked_lookup = {str(t.get("external_id") or t["id"]): t for t in all_ext_tasks}
 
-        stats = _parse_stats_from_output(all_stdout, agent["type"])
-        stats["avg_time"] = f"{elapsed}s"
-        agent["stats"] = stats
+                for li_idx, linked_id in enumerate(linked_task_ids):
+                    linked_task = linked_lookup.get(linked_id)
+                    if not linked_task:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Linked task {linked_id} not found in API, skipping."
+                        })
+                        continue
 
-        if fix_iteration > 0:
+                    lt_title = linked_task.get("title", f"linked-{linked_id}")
+                    lt_branch = _slugify_branch_name(lt_title)
+                    lt_checklist = linked_task.get("checklist") or []
+
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"═══ LINKED TASK {li_idx+1}/{len(linked_task_ids)}: {lt_title} ═══"
+                    })
+
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "main"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "-b", lt_branch],
+                        capture_output=True, text=True, timeout=15,
+                    )
+
+                    lt_code = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"])
+                    lt_result = await asyncio.to_thread(
+                        _exec_script_in_container, container_name, lt_code, f"linked_{linked_id}"
+                    )
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Linked task builder finished (exit={lt_result['exit_code']})"
+                    })
+
+                    lt_commit = await asyncio.to_thread(
+                        _commit_and_push, container_name, lt_title, lt_branch
+                    )
+                    if lt_commit["success"]:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Pushed linked task to branch: {lt_branch}"
+                        })
+
+                    if lt_checklist and linked_task.get("external_id"):
+                        for ci in range(len(lt_checklist)):
+                            await _mark_checklist_item(linked_task["external_id"], lt_checklist, ci)
+
+                # Switch back to main task branch
+                if branch_name:
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", branch_name],
+                        capture_output=True, text=True, timeout=15,
+                    )
+
+            # ═════════════════════════════════════════════════════════
+            # GIT COMMIT & PUSH for the main task
+            # ═════════════════════════════════════════════════════════
+            if use_git and branch_name:
+                agent["progress"] = 95
+                agent["progress_message"] = f"Committing and pushing to {branch_name}..."
+                commit_result = await asyncio.to_thread(
+                    _commit_and_push, container_name, task["title"], branch_name
+                )
+                if commit_result["success"]:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Successfully pushed to branch: {branch_name}"
+                    })
+                else:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "error",
+                        "message": f"Git push failed: {commit_result['error']}"
+                    })
+
+            # ═════════════════════════════════════════════════════════
+            # TASK COMPLETE — record result, release IDs
+            # ═════════════════════════════════════════════════════════
+            elapsed = round(time.time() - start_time, 1)
+            stats = _parse_stats_from_output(all_stdout, agent["type"])
+            stats["avg_time"] = f"{elapsed}s"
+            agent["stats"] = stats
+
+            task["status"] = "completed" if result["exit_code"] == 0 else "completed_with_errors"
+            agent["last_run"] = datetime.utcnow().isoformat()
+            agent["last_result"] = {
+                "task": task,
+                "exit_code": result["exit_code"],
+                "stdout": all_stdout,
+                "stderr": result["stderr"],
+                "generated_code": workspace_tree,
+                "builder_scripts": all_generated_code,
+                "duration": elapsed,
+                "fix_iterations": fix_iteration,
+            }
+
+            # Release claimed IDs for this task
+            tid = str(task.get("external_id") or task["id"])
+            _claimed_task_ids.discard(tid)
+            for lid in linked_task_ids:
+                _claimed_task_ids.discard(lid)
+
+            completed_tasks.append(task)
+            all_results.append({
+                "task": task["title"],
+                "exit_code": result["exit_code"],
+                "duration": elapsed,
+            })
+
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"Self-healing complete. Ran {fix_iteration} fix round(s) in {elapsed}s."
+                "message": f"✅ Task '{task['title']}' completed in {elapsed}s (exit={result['exit_code']})"
             })
 
-        if result["exit_code"] == 0:
-            agent["status"] = "completed"
-            agent["progress"] = 100
-            agent["progress_message"] = f"Project built successfully!" + (f" ({fix_iteration} fix rounds)" if fix_iteration > 0 else "")
-            task["status"] = "completed"
-        else:
-            agent["status"] = "completed"
-            agent["progress"] = 100
-            agent["progress_message"] = f"Completed with exit code {result['exit_code']}" + (f" after {fix_iteration} rounds" if fix_iteration > 0 else "")
-            task["status"] = "completed_with_errors"
+            # ═════════════════════════════════════════════════════════
+            # PICK NEXT TASK (only if continuous mode)
+            # ═════════════════════════════════════════════════════════
+            if not continuous:
+                task = None  # exit loop
+            else:
+                task = await _pick_next_task(agent_id)
+                if task:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"⏩ Moving to next task..."
+                    })
+                else:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "🎉 All tasks completed! No more tasks in queue."
+                    })
 
-        agent["last_run"] = datetime.utcnow().isoformat()
-        agent["last_result"] = {
-            "task": task,
-            "exit_code": result["exit_code"],
-            "stdout": all_stdout,
-            "stderr": result["stderr"],
-            "generated_code": workspace_tree,   # The full project structure + code
-            "builder_scripts": all_generated_code,  # The AI-generated builder scripts
-            "duration": elapsed,
-            "fix_iterations": fix_iteration,
-        }
+        # ── END OF WHILE LOOP ────────────────────────────────────────
+
+        # Destroy container after all tasks are done
+        if container_created:
+            await asyncio.to_thread(_destroy_container, container_name)
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"Container '{container_name}' destroyed."
+            })
+
+        total_elapsed = round(time.time() - total_start, 1)
+        agent["status"] = "completed"
+        agent["progress"] = 100
+        agent["progress_message"] = f"All done! {tasks_completed} task(s) in {total_elapsed}s"
         agent["current_task"] = None
-
-        completed_tasks.append(task)
 
         return {
             "success": True,
             "agent_id": agent_id,
-            "task": task,
-            "exit_code": result["exit_code"],
-            "output": all_stdout,
-            "errors": result["stderr"],
-            "duration": elapsed,
-            "stats": stats,
-            "fix_iterations": fix_iteration,
+            "tasks_completed": tasks_completed,
+            "total_duration": total_elapsed,
+            "results": all_results,
         }
 
     except Exception as e:
-        elapsed = round(time.time() - start_time, 1)
+        elapsed = round(time.time() - total_start, 1)
         agent["status"] = "error"
         agent["progress"] = 0
         agent["progress_message"] = f"Error: {str(e)}"
@@ -1194,13 +1359,22 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
         agent["last_run"] = datetime.utcnow().isoformat()
         agent["current_task"] = None
 
-        # Always clean up container on error
-        await asyncio.to_thread(_destroy_container, container_name)
+        # Clean up container on error
+        if container_created:
+            await asyncio.to_thread(_destroy_container, container_name)
+
+        # Release any claimed IDs
+        if task:
+            tid = str(task.get("external_id") or task["id"])
+            _claimed_task_ids.discard(tid)
+            for lid in (task.get("linked_tasks") or []):
+                _claimed_task_ids.discard(str(lid))
 
         return {
             "success": False,
             "agent_id": agent_id,
             "error": str(e),
+            "tasks_completed": tasks_completed,
             "duration": elapsed,
         }
 
@@ -1241,3 +1415,109 @@ def create_task(title: str, description: str, priority: str = "medium") -> Dict[
 
 def seed_sample_tasks():
     pass
+
+
+# ── Dynamic Agent Management ────────────────────────────────────────────────
+
+def add_agent(name: str = None) -> Dict[str, Any]:
+    """Add a new agent dynamically."""
+    idx = len(agent_states)
+    agent_id = f"agent_{idx + 1:02d}"
+    while agent_id in agent_states:
+        idx += 1
+        agent_id = f"agent_{idx + 1:02d}"
+    agent = _make_agent(agent_id, idx)
+    if name:
+        agent["name"] = name
+    agent_states[agent_id] = agent
+    return agent
+
+
+def remove_agent(agent_id: str) -> bool:
+    """Remove an agent (only if idle)."""
+    agent = agent_states.get(agent_id)
+    if not agent:
+        raise ValueError(f"Agent {agent_id} not found")
+    if agent["status"] == "running":
+        raise ValueError(f"Agent {agent_id} is currently running and cannot be removed.")
+    del agent_states[agent_id]
+    return True
+
+
+# ── Run All Agents Simultaneously ───────────────────────────────────────────
+
+async def run_all_agents(git_repo_url: str = None, git_token: str = None) -> Dict[str, Any]:
+    """
+    Assign initial tasks to all idle agents and run them in CONTINUOUS mode.
+    Each agent keeps picking the next uncompleted task after finishing its current one,
+    only stopping when ALL tasks are done. Agents run concurrently.
+    """
+    global _claimed_task_ids
+
+    # Fetch all tasks
+    external_tasks = await _fetch_external_tasks()
+    if not external_tasks:
+        raise ValueError("No tasks available from the external task API. Generate tasks first.")
+
+    # Filter to uncompleted, unclaimed tasks
+    available_tasks = [
+        t for t in external_tasks
+        if (t.get("status") or "").lower() not in ("completed", "done")
+        and str(t.get("external_id") or t["id"]) not in _claimed_task_ids
+    ]
+
+    # Get idle agents
+    idle_agents = [a for a in agent_states.values() if a["status"] == "idle"]
+    if not idle_agents:
+        raise ValueError("No idle agents. Reset agents or add new ones.")
+
+    if not available_tasks:
+        raise ValueError("No unclaimed tasks available.")
+
+    # Assign one initial task per agent
+    assignments = []
+    used_task_ids = set()
+    for agent in idle_agents:
+        if not available_tasks:
+            break
+        task = available_tasks.pop(0)
+        task_id = str(task.get("external_id") or task["id"])
+        used_task_ids.add(task_id)
+
+        # Also claim linked tasks
+        linked_ids = [str(lt) for lt in (task.get("linked_tasks") or [])]
+        for lid in linked_ids:
+            used_task_ids.add(lid)
+
+        _claimed_task_ids.update(used_task_ids)
+        assignments.append((agent["id"], task))
+
+        # Remove linked tasks from the available pool
+        available_tasks = [t for t in available_tasks if str(t.get("external_id") or t["id"]) not in used_task_ids]
+
+    # Set git config on all agents if provided
+    if git_repo_url:
+        for aid, _ in assignments:
+            agent_states[aid]["git_repo_url"] = git_repo_url.strip()
+    if git_token:
+        for aid, _ in assignments:
+            agent_states[aid]["git_token"] = git_token.strip()
+
+    # Launch all agents concurrently in CONTINUOUS mode
+    async def _run_one(agent_id, assigned_task):
+        try:
+            return await run_agent(agent_id, assigned_task=assigned_task, continuous=True)
+        except Exception as e:
+            return {"success": False, "agent_id": agent_id, "error": str(e)}
+
+    coroutines = [_run_one(aid, task) for aid, task in assignments]
+    results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+    return {
+        "launched": len(assignments),
+        "agents": [aid for aid, _ in assignments],
+        "results": [
+            r if isinstance(r, dict) else {"error": str(r)}
+            for r in results
+        ],
+    }
