@@ -268,17 +268,17 @@ export default function StatusDashboard({ projects = [] }) {
         }
     };
 
-    const handleRemoveAgent = async (agentId) => {
-        try {
-            await fetch(API_ENDPOINTS.AGENT_REMOVE(agentId), {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` },
-            });
-            fetchAgents();
-        } catch (e) {
-            console.error('Remove agent failed', e);
-        }
-    };
+    // const handleRemoveAgent = async (agentId) => {
+    //     try {
+    //         await fetch(API_ENDPOINTS.AGENT_REMOVE(agentId), {
+    //             method: 'DELETE',
+    //             headers: { 'Authorization': `Bearer ${token}` },
+    //         });
+    //         fetchAgents();
+    //     } catch (e) {
+    //         console.error('Remove agent failed', e);
+    //     }
+    // };
 
     // ── Agent Card Config ────────────────────────────────────────────
     const agentConfig = {
