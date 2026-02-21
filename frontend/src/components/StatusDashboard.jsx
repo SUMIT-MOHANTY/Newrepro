@@ -1223,7 +1223,7 @@ export default function StatusDashboard({ projects = [] }) {
                                                                 <h4 className="text-sm font-bold text-gray-900 truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
                                                                 <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
                                                             </div>
-                                                            <p className="text-xs text-gray-400 truncate max-w-[280px]" title={task.description}>{task.description || 'No description'}</p>
+                                                            <p className="text-xs text-gray-400 truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
                                                         </div>
 
                                                         {/* Progress */}
