@@ -1226,7 +1226,7 @@ export default function StatusDashboard({ projects = [] }) {
 
                                 <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token (optional)</label>
                                 <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
-                                <p className="text-xs text-gray-400 mb-6 italic">This token is used by the Docker container to clone and push code. It is securely handled and forgotten if the container crashes.</p>
+
 
                                 <div className="flex items-center gap-3">
                                     <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
