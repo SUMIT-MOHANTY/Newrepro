@@ -152,7 +152,7 @@ const GovernanceForm = () => {
                 const r = {};
                 savedContext.answers.forEach((a) => {
                     if (a?.question_id !== undefined && a?.score !== undefined)
-                        r[a.question_id] = a.score;
+                        r[a.question_id] = { score: a.score, label: a.selected_option };
                 });
                 setAnswers(r);
             }
@@ -178,8 +178,8 @@ const GovernanceForm = () => {
 
 
 
-    const handleAnswer = (questionId, score) =>
-        setAnswers((prev) => ({ ...prev, [questionId]: score }));
+    const handleAnswer = (questionId, option) =>
+        setAnswers((prev) => ({ ...prev, [questionId]: option }));
 
     /* ── submit ── */
     const handleSubmit = async (e) => {
@@ -198,8 +198,8 @@ const GovernanceForm = () => {
                 question_id: q.id,
                 question: q.question,
                 dimension: q.dimension,
-                score: answers[q.id],
-                selected_option: q.options.find((o) => o.score === answers[q.id])?.label || '',
+                score: answers[q.id]?.score ?? 0,
+                selected_option: answers[q.id]?.label || '',
             }));
 
             const submission = {
@@ -515,7 +515,7 @@ const GovernanceForm = () => {
                                                         {/* Options — 2 cols on wider screens */}
                                                         <div className="ml-10 grid grid-cols-1 sm:grid-cols-2 gap-2">
                                                             {question.options.map((option) => {
-                                                                const selected = answers[question.id] === option.score;
+                                                                const selected = answers[question.id]?.label === option.label;
                                                                 return (
                                                                     <label
                                                                         key={option.label}
@@ -528,7 +528,7 @@ const GovernanceForm = () => {
                                                                             name={`question-${question.id}`}
                                                                             value={option.score}
                                                                             checked={selected}
-                                                                            onChange={() => handleAnswer(question.id, option.score)}
+                                                                            onChange={() => handleAnswer(question.id, option)}
                                                                             className="sr-only"
                                                                         />
                                                                         {/* Custom radio indicator */}
