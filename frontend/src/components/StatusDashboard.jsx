@@ -887,7 +887,7 @@ export default function StatusDashboard({ projects = [] }) {
                                     </div>
 
                                     {/* The Stacked Bar */}
-                                    <div className="w-[30%] min-w-[150px] relative z-10 flex flex-col justify-end">
+                                    <div className="w-[30%] min-w-[150px] relative z-10 flex flex-col justify-end h-[200px]">
                                         {/* Remaining Work */}
                                         <div className="bg-[#feebad] w-full relative flex items-center justify-center" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
                                             <span className="text-orange-500 font-bold text-sm">{dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}%</span>

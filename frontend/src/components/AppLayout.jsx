@@ -257,7 +257,7 @@ export default function AppLayout({ children }) {
                                             'BRD Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-gray-300 mt-0.5 md:mt-1 truncate">
-                                    {currentView === 'statusDashboard' ? 'Epic Hub Assessment Report' :
+                                    {currentView === 'statusDashboard' ? '' :
                                         currentView === 'governance' ? 'Questionnaire & Configuration' :
                                             'Project Insight & AI Assessment'}
                                 </h2>
