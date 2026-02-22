@@ -916,33 +916,7 @@ export default function StatusDashboard({ projects = [] }) {
                                 </div>
                             </div>
 
-                            {/* Assessment Coverage & Progress */}
-                            <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
-                                <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Assessment Coverage & Progress</h3>
-                                <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '120px', maxHeight: '320px' }}>
-                                    <table className="min-w-full text-sm">
-                                        <thead className="sticky top-0 z-10">
-                                            <tr className="bg-[#f27a24] text-white">
-                                                <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                <th className="px-4 py-2.5 text-right font-bold text-xs w-20">Target</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-100 bg-white">
-                                            {(dashboardData?.assessment_areas || []).map((area, idx) => (
-                                                <tr key={idx} className="hover:bg-gray-50">
-                                                    <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
-                                                    <td className="px-4 py-3 text-gray-800 font-medium">{area.description || area.task_type}</td>
-                                                    <td className="px-4 py-3 text-right text-gray-800 font-bold">{area.target_percentage ?? Math.round((area.completed / Math.max(area.total, 1)) * 100)}%</td>
-                                                </tr>
-                                            ))}
-                                            {(!dashboardData?.assessment_areas || dashboardData.assessment_areas.length === 0) && (
-                                                <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No assessment data available</td></tr>
-                                            )}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
+
                         </div>
 
                         {/* Right Column (Sidebar Summary) */}
