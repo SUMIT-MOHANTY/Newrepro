@@ -20,17 +20,27 @@ import httpx
 
 # ── AI Response Cleaner ─────────────────────────────────────────────────────
 
-def _clean_ai_code_response(content: str) -> str:
+def _clean_ai_code_response(content: str) -> tuple[str, str]:
     """
     Robustly extract pure Python code from an AI model response.
-    Handles: <think> blocks, markdown fences, narrative preamble,
+    Returns (code_string, thought_string).
+    Handles: <comment> blocks, markdown fences, narrative preamble,
     and Unicode curly quotes that cause SyntaxErrors.
     """
     content = content.strip()
+    
+    # Extract thought if present
+    thought_text = ""
+    # Find all comment blocks and join them
+    think_matches = _re.findall(r'<comment>(.*?)</comment>', content, flags=_re.DOTALL)
+    if think_matches:
+        thought_text = "\n\n".join(t.strip() for t in think_matches)
 
-    # 1. Strip <think>...</think> blocks
+    # 1. Strip <think>...</think> and <comment>...</comment> blocks
     content = _re.sub(r'<think>.*?</think>', '', content, flags=_re.DOTALL).strip()
     content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL).strip()
+    content = _re.sub(r'<comment>.*?</comment>', '', content, flags=_re.DOTALL).strip()
+    content = _re.sub(r'<comment>.*', '', content, flags=_re.DOTALL).strip()
 
     # 2. Extract code from markdown fences
     fence_match = _re.search(r'```python\s*\n(.*?)```', content, flags=_re.DOTALL)
@@ -56,9 +66,12 @@ def _clean_ai_code_response(content: str) -> str:
         if stripped.startswith(('#', 'import ', 'from ', 'def ', 'class ', 'print(', 'if ', 'for ', 'while ', 'try:', 'with ', 'os.', 'subprocess')) or '=' in stripped:
             first_code_line = i
             break
+            
+    narrative = ""
     if first_code_line > 0:
         preamble = '\n'.join(lines[:first_code_line]).strip()
         if not preamble.startswith('#'):
+            narrative = preamble
             content = '\n'.join(lines[first_code_line:])
 
     # 4. Replace Unicode with ASCII
@@ -68,7 +81,13 @@ def _clean_ai_code_response(content: str) -> str:
     content = content.replace('\u2026', '...')
     content = content.replace('\u2192', '->').replace('\u2190', '<-')
 
-    return content.strip()
+    final_thought = thought_text
+    if narrative and not final_thought:
+        final_thought = narrative
+    elif narrative and final_thought:
+        final_thought += "\n" + narrative
+
+    return content.strip(), final_thought.strip()
 
 
 # ── In-memory state stores ──────────────────────────────────────────────────
@@ -145,6 +164,17 @@ CRITICAL SCRIPT SIZE RULES:
 - Write each file's content using regular strings with explicit \\n, NOT triple-quoted multi-line strings.
 - Focus on the 10-15 most essential files. Do NOT try to create 30+ files in one script.
 - Each file write should be 1-3 lines of code, not 50-line inline strings.
+
+If you have want to add a comment to the task if you fell necessary or want to , wrap it in <comment>...</comment> tags anytime in your response. For example:
+<comment>
+I will implement a Flask backend with a PostgreSQL database as requested.
+</comment>
+```python
+# your code here
+```
+<comment>
+I finished the initial implementation, but note that the database still needs schema setup.
+</comment>
 
 Example of the CORRECT compact pattern:
 import os
@@ -265,7 +295,7 @@ def _is_workspace_empty(container_name: str) -> bool:
 
 # ── Helper: Call AI Model ───────────────────────────────────────────────────
 
-async def _call_ai_for_code(task_description: str, agent_type: str) -> str:
+async def _call_ai_for_code(task_description: str, agent_type: str) -> tuple[str, str]:
     """Call AI model to generate project-building Python code."""
     url = settings.ai_api_url
     key = settings.ai_api_key
@@ -316,7 +346,7 @@ async def _call_ai_for_code(task_description: str, agent_type: str) -> str:
         raise ValueError("No response from AI model")
 
 
-async def _call_ai_for_fix(task_description: str, agent_type: str, issues: list, previous_output: str, iteration: int, builder_crashed: bool = False) -> str:
+async def _call_ai_for_fix(task_description: str, agent_type: str, issues: list, previous_output: str, iteration: int, builder_crashed: bool = False) -> tuple[str, str]:
     """
     Call AI to generate a fix script. If builder_crashed=True, the builder script
     itself had a SyntaxError and /workspace/ is empty, so we regenerate from scratch.
@@ -716,7 +746,7 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str) -> bo
 
             _log_git_agent(f"AI fix iteration {iteration} for {cmd} ({len(issues)} issues)")
             try:
-                fix_code = await _call_ai_for_fix(
+                fix_code, thought = await _call_ai_for_fix(
                     task_description=f"Fix failing tests after merge on {GIT_INTEGRATION_BRANCH}.",
                     agent_type="validator",
                     issues=issues,
@@ -1680,7 +1710,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 "message": "Calling AI model to generate project code..."
             })
 
-            generated_code = await _call_ai_for_code(task["description"], agent["type"])
+            generated_code, thought = await _call_ai_for_code(task["description"], agent["type"])
+            if thought:
+                await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}")
 
             agent["progress"] = 30
             agent["progress_message"] = "Running project builder inside Docker..."
@@ -1773,7 +1805,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 })
 
                 try:
-                    fix_code = await _call_ai_for_fix(
+                    fix_code, thought = await _call_ai_for_fix(
                         task_description=task["description"],
                         agent_type=agent["type"],
                         issues=issue_report["issues"],
@@ -1781,6 +1813,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         iteration=fix_iteration,
                         builder_crashed=(builder_crashed and workspace_empty),
                     )
+                    if thought:
+                        await _post_task_message(task, f"🤔 {agent_id} thought (fix round {fix_iteration}):\n{thought}")
 
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -1917,7 +1951,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         "message": f"API: linked task start message {'ok' if msg_ok else 'failed'}, progress 10% {'ok' if prog_ok else 'skipped/failed'}"
                     })
 
-                    lt_code = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"])
+                    lt_code, thought = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"])
+                    if thought:
+                        await _post_task_message(linked_task, f"🤔 {agent_id} thought:\n{thought}")
                     lt_result = await asyncio.to_thread(
                         _exec_script_in_container, container_name, lt_code, f"linked_{linked_id}"
                     )

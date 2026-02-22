@@ -708,11 +708,15 @@ export default function StatusDashboard({ projects = [] }) {
                 <div className="pt-4"></div>
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-4 md:px-8 py-2 mb-2 gap-3">
                     <div className="flex items-center space-x-4 flex-shrink-0">
-                        <div className="text-sm font-bold text-[#f27a24]">As of : {dashboardData?.generated_at ? new Date(dashboardData.generated_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' }) : new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })}</div>
-                        <div className="text-sm font-bold text-gray-800 flex items-center">
-                            <div className={`w-4 h-4 mr-2 rounded-sm shadow-sm inline-block ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-emerald-500' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-amber-500' : 'bg-red-500'}`}></div>
-                            Overall: {dashboardData?.project_status?.overall_health ?? '—'}
-                        </div>
+                        {projects.length > 0 && (
+                            <>
+                                <div className="text-sm font-bold text-[#f27a24]">As of : {dashboardData?.generated_at ? new Date(dashboardData.generated_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' }) : new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })}</div>
+                                <div className="text-sm font-bold text-gray-800 flex items-center">
+                                    <div className={`w-4 h-4 mr-2 rounded-sm shadow-sm inline-block ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-emerald-500' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-amber-500' : 'bg-red-500'}`}></div>
+                                    Overall: {dashboardData?.project_status?.overall_health ?? '—'}
+                                </div>
+                            </>
+                        )}
                     </div>
                     <ProjectDropdown
                         projects={projects}

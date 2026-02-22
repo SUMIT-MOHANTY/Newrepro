@@ -154,6 +154,7 @@ GOVERNANCE_QUESTIONS = [
         "question": "Is AI used only for summarization/search?",
         "options": [
             {"label": "Yes", "score": 0},
+            {"label": "No", "score": 0},
             {"label": "Includes decision support", "score": 1},
             {"label": "Includes tool execution", "score": 3},
         ]

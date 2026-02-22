@@ -322,7 +322,7 @@ const LandingPage = () => {
             {/* Footer */}
             <footer className="bg-white border-t border-slate-100 py-8 relative z-10">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-slate-400 text-sm">
-                    <p>© 2024 DSuite. All rights reserved.</p>
+                    <p>© 2026 DSuite. All rights reserved.</p>
                 </div>
             </footer>
 

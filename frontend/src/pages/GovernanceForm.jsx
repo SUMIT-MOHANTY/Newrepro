@@ -256,9 +256,37 @@ const GovernanceForm = () => {
                     const tokenData = await tokenRes.json();
                     const taskToken = tokenData.access;
 
+                    // Fetch agents to assign as the team
+                    let teamIds = [];
+                    try {
+                        const agentsUrl = API_ENDPOINTS.TASK_TOKEN.replace('token/task/', 'agents/');
+                        const agentsRes = await fetch(agentsUrl, {
+                            method: 'GET',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                Authorization: `Bearer ${token}`,
+                                'x-task-token': taskToken,
+                            }
+                        });
+                        if (agentsRes.ok) {
+                            const agentsData = await agentsRes.json();
+                            if (Array.isArray(agentsData) && agentsData.length > 0) {
+                                teamIds = agentsData.map(a => a.user_id || a.id).filter(Boolean);
+                            } else if (agentsData.results && Array.isArray(agentsData.results)) {
+                                teamIds = agentsData.results.map(a => a.user_id || a.id).filter(Boolean);
+                            }
+                        }
+                    } catch (err) {
+                        console.error("Failed to fetch team members:", err);
+                    }
+
                     // 2. Create the Project
                     // Provide defaults for team and deadline
                     const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+
+                    const projectDeadline = new Date();
+                    projectDeadline.setFullYear(projectDeadline.getFullYear() + 1);
+
                     await fetch(projectCreationUrl, {
                         method: 'POST',
                         headers: {
@@ -268,9 +296,9 @@ const GovernanceForm = () => {
                         },
                         body: JSON.stringify({
                             name: projectName,
-                            deadline: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split('T')[0], // 1 year from now
-                            project_wallet: 100, // Default wallet value
-                            team: [24], // Default team per requirement
+                            deadline: projectDeadline.toISOString().split('T')[0],
+                            project_wallet: 1000,
+                            team: teamIds.length > 0 ? teamIds : [24],
                             project_token: resultData.project_token
                         }),
                     });
