@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, H
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from pydantic import BaseModel
 
 import auth
@@ -808,34 +809,109 @@ async def github_repo_context(
 
 # ═══════════════════════════════ AI AGENTS ═══════════════════════════════════
 
+def _normalize_project_token(project_token: Optional[str]) -> Optional[str]:
+    if not project_token:
+        return None
+    token = project_token.strip()
+    return token or None
+
+
+def _stored_agent_id(agent_id: str, project_token: Optional[str]) -> str:
+    project_token = _normalize_project_token(project_token)
+    if not project_token:
+        return agent_id
+    prefix = f"{project_token}::"
+    if agent_id.startswith(prefix):
+        return agent_id
+    return f"{prefix}{agent_id}"
+
+
+def _public_agent_id(agent_id: str, project_token: Optional[str]) -> str:
+    project_token = _normalize_project_token(project_token)
+    if not project_token:
+        return agent_id
+    prefix = f"{project_token}::"
+    if agent_id.startswith(prefix):
+        return agent_id[len(prefix):]
+    return agent_id
+
+
+def _runtime_agent_records(records: List[models.Agent], project_token: Optional[str]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": _public_agent_id(rec.id, project_token),
+            "name": rec.name,
+            "type": rec.type,
+        }
+        for rec in records
+    ]
+
+
+def _ensure_agent_project_columns() -> None:
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(agents)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "project_token" not in columns:
+            conn.execute(text("ALTER TABLE agents ADD COLUMN project_token VARCHAR"))
+            conn.commit()
+
+        result = conn.execute(text("PRAGMA table_info(agent_credentials)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "project_token" not in columns:
+            conn.execute(text("ALTER TABLE agent_credentials ADD COLUMN project_token VARCHAR"))
+            conn.commit()
+
+
 # Seed sample tasks on startup
 @app.on_event("startup")
 async def startup_event():
     agent_service.seed_sample_tasks()
     db = SessionLocal()
     try:
+        _ensure_agent_project_columns()
         _ensure_default_agents(db)
-        agents = db.query(models.Agent).all()
-        agent_service.initialize_agents_from_records(agents)
+        agents = db.query(models.Agent).filter(models.Agent.project_token.is_(None)).all()
+        agent_service.initialize_agents_from_records(_runtime_agent_records(agents, None))
     finally:
         db.close()
 
 
-def _get_agent_credentials_map(db: Session, user_id: int) -> Dict[str, models.AgentCredential]:
-    creds = (
-        db.query(models.AgentCredential)
-        .filter(models.AgentCredential.owner_id == user_id)
-        .all()
+def _get_agent_credentials_map(
+    db: Session,
+    user_id: int,
+    project_token: Optional[str],
+) -> Dict[str, models.AgentCredential]:
+    creds_query = db.query(models.AgentCredential).filter(
+        models.AgentCredential.owner_id == user_id
     )
+    if project_token:
+        creds_query = creds_query.filter(models.AgentCredential.project_token == project_token)
+    else:
+        creds_query = creds_query.filter(models.AgentCredential.project_token.is_(None))
+    creds = creds_query.all()
     return {c.agent_id: c for c in creds}
 
 
-def _ensure_default_agents(db: Session) -> None:
-    existing_ids = {row[0] for row in db.query(models.Agent.id).all()}
-    for agent in agent_service.get_all_agents():
-        if agent["id"] in existing_ids:
+def _ensure_default_agents(db: Session, project_token: Optional[str] = None) -> None:
+    project_token = _normalize_project_token(project_token)
+    existing_query = db.query(models.Agent.id)
+    if project_token:
+        existing_query = existing_query.filter(models.Agent.project_token == project_token)
+    else:
+        existing_query = existing_query.filter(models.Agent.project_token.is_(None))
+    existing_ids = {row[0] for row in existing_query.all()}
+    for agent in agent_service.get_default_agents():
+        stored_id = _stored_agent_id(agent["id"], project_token)
+        if stored_id in existing_ids:
             continue
-        db.add(models.Agent(id=agent["id"], name=agent["name"], type=agent.get("type")))
+        db.add(
+            models.Agent(
+                id=stored_id,
+                name=agent["name"],
+                type=agent.get("type"),
+                project_token=project_token,
+            )
+        )
     db.commit()
 
 
@@ -844,10 +920,23 @@ def _upsert_agent_record(
     agent_id: str,
     name: Optional[str],
     agent_type: Optional[str],
+    project_token: Optional[str],
 ) -> models.Agent:
-    record = db.query(models.Agent).filter(models.Agent.id == agent_id).first()
+    project_token = _normalize_project_token(project_token)
+    stored_id = _stored_agent_id(agent_id, project_token)
+    record_query = db.query(models.Agent).filter(models.Agent.id == stored_id)
+    if project_token:
+        record_query = record_query.filter(models.Agent.project_token == project_token)
+    else:
+        record_query = record_query.filter(models.Agent.project_token.is_(None))
+    record = record_query.first()
     if not record:
-        record = models.Agent(id=agent_id, name=name or agent_id, type=agent_type)
+        record = models.Agent(
+            id=stored_id,
+            name=name or agent_id,
+            type=agent_type,
+            project_token=project_token,
+        )
         db.add(record)
     else:
         if name:
@@ -859,8 +948,15 @@ def _upsert_agent_record(
     return record
 
 
-def _delete_agent_record(db: Session, agent_id: str) -> None:
-    db.query(models.Agent).filter(models.Agent.id == agent_id).delete()
+def _delete_agent_record(db: Session, agent_id: str, project_token: Optional[str]) -> None:
+    project_token = _normalize_project_token(project_token)
+    stored_id = _stored_agent_id(agent_id, project_token)
+    query = db.query(models.Agent).filter(models.Agent.id == stored_id)
+    if project_token:
+        query = query.filter(models.Agent.project_token == project_token)
+    else:
+        query = query.filter(models.Agent.project_token.is_(None))
+    query.delete()
     db.commit()
 
 
@@ -870,17 +966,27 @@ def _upsert_agent_credentials(
     agent_id: str,
     git_repo_url: Optional[str] = None,
     git_token: Optional[str] = None,
+    project_token: Optional[str] = None,
 ) -> models.AgentCredential:
-    cred = (
+    project_token = _normalize_project_token(project_token)
+    cred_query = (
         db.query(models.AgentCredential)
         .filter(
             models.AgentCredential.owner_id == user_id,
             models.AgentCredential.agent_id == agent_id,
         )
-        .first()
     )
+    if project_token:
+        cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
+    else:
+        cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
+    cred = cred_query.first()
     if not cred:
-        cred = models.AgentCredential(owner_id=user_id, agent_id=agent_id)
+        cred = models.AgentCredential(
+            owner_id=user_id,
+            agent_id=agent_id,
+            project_token=project_token,
+        )
         db.add(cred)
 
     if git_repo_url:
@@ -930,12 +1036,23 @@ class CreateTaskRequest(BaseModel):
 async def list_agents(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
 ):
     """Get status of all AI agents."""
-    creds_map = _get_agent_credentials_map(db, current_user.id)
+    project_token = _normalize_project_token(project_token)
+    _ensure_default_agents(db, project_token)
+    query = db.query(models.Agent)
+    if project_token:
+        query = query.filter(models.Agent.project_token == project_token)
+    else:
+        query = query.filter(models.Agent.project_token.is_(None))
+    records = query.all()
+    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+
+    creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
     agents = [
         _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))
-        for agent in agent_service.get_all_agents()
+        for agent in agent_service.get_all_agents(project_token)
     ]
     return {"agents": agents}
 
@@ -943,11 +1060,13 @@ async def list_agents(
 @app.get("/agents/tasks")
 async def get_pending_tasks(
     current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
 ):
     """Get all pending tasks waiting to be picked up by agents."""
+    project_token = _normalize_project_token(project_token)
     return {
-        "pending_tasks": agent_service.get_pending_tasks(),
-        "completed_tasks": agent_service.completed_tasks,
+        "pending_tasks": agent_service.get_pending_tasks(project_token),
+        "completed_tasks": agent_service.get_completed_tasks(project_token),
     }
 
 
@@ -969,10 +1088,12 @@ async def create_agent_task(
 async def get_agent_status(
     agent_id: str,
     current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
 ):
     """Get the current status and details of a specific agent."""
     try:
-        agent = agent_service.get_agent_status(agent_id)
+        project_token = _normalize_project_token(project_token)
+        agent = agent_service.get_agent_status(agent_id, project_token)
         return {"agent": agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -995,10 +1116,17 @@ async def run_agent(
     The agent runs in the BACKGROUND — this endpoint returns immediately
     so the frontend can poll /agents for real-time status updates.
     """
-    # Validate agent exists and is idle before launching
-    agent = agent_service.agent_states.get(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    project_token = _normalize_project_token(project_token)
+    _ensure_default_agents(db, project_token)
+    query = db.query(models.Agent)
+    if project_token:
+        query = query.filter(models.Agent.project_token == project_token)
+    else:
+        query = query.filter(models.Agent.project_token.is_(None))
+    records = query.all()
+    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+
+    agent = agent_service.get_agent_status(agent_id, project_token)
     if agent["status"] == "running":
         raise HTTPException(status_code=400, detail=f"Agent {agent_id} is already running")
 
@@ -1013,9 +1141,10 @@ async def run_agent(
             agent_id,
             git_repo_url=git_repo_url,
             git_token=git_token,
+            project_token=project_token,
         )
     else:
-        cred = _get_agent_credentials_map(db, current_user.id).get(agent_id)
+        cred = _get_agent_credentials_map(db, current_user.id, project_token).get(agent_id)
 
     effective_repo = git_repo_url or (cred.git_repo_url if cred else None)
     effective_token = git_token or (cred.git_token if cred else None)
@@ -1047,10 +1176,21 @@ async def run_agent(
 async def reset_agent(
     agent_id: str,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
 ):
     """Reset an agent back to idle state."""
     try:
-        agent = agent_service.reset_agent(agent_id)
+        project_token = _normalize_project_token(project_token)
+        _ensure_default_agents(db, project_token)
+        query = db.query(models.Agent)
+        if project_token:
+            query = query.filter(models.Agent.project_token == project_token)
+        else:
+            query = query.filter(models.Agent.project_token.is_(None))
+        records = query.all()
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+        agent = agent_service.reset_agent(agent_id, project_token)
         return {"agent": agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1071,8 +1211,18 @@ async def run_all_agents(
     Start all idle agents simultaneously in the BACKGROUND.
     Returns immediately — frontend polls /agents for real-time updates.
     """
+    project_token = _normalize_project_token(project_token)
+    _ensure_default_agents(db, project_token)
+    query = db.query(models.Agent)
+    if project_token:
+        query = query.filter(models.Agent.project_token == project_token)
+    else:
+        query = query.filter(models.Agent.project_token.is_(None))
+    records = query.all()
+    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+
     idle_agents = [
-        a for a in agent_service.agent_states.values()
+        a for a in agent_service.get_all_agents(project_token)
         if a["status"] == "idle" and a["id"] != "agent_03"
     ]
     if not idle_agents:
@@ -1089,9 +1239,10 @@ async def run_all_agents(
                 agent_id,
                 git_repo_url=cfg.get("git_repo_url"),
                 git_token=cfg.get("git_token"),
+                project_token=project_token,
             )
 
-    creds_map = _get_agent_credentials_map(db, current_user.id)
+    creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
     for agent in idle_agents:
         if agent["id"] in agents_config:
             continue
@@ -1133,13 +1284,29 @@ async def add_agent(
     request: Optional[AddAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
 ):
     """Dynamically add a new agent."""
     name = request.name if request else None
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
-    agent = agent_service.add_agent(name=name, git_repo_url=git_repo_url, git_token=git_token)
-    _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"))
+    project_token = _normalize_project_token(project_token)
+    _ensure_default_agents(db, project_token)
+    query = db.query(models.Agent)
+    if project_token:
+        query = query.filter(models.Agent.project_token == project_token)
+    else:
+        query = query.filter(models.Agent.project_token.is_(None))
+    records = query.all()
+    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+
+    agent = agent_service.add_agent(
+        name=name,
+        git_repo_url=git_repo_url,
+        git_token=git_token,
+        project_token=project_token,
+    )
+    _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
     if git_repo_url or git_token:
         _upsert_agent_credentials(
             db,
@@ -1147,6 +1314,7 @@ async def add_agent(
             agent["id"],
             git_repo_url=git_repo_url,
             git_token=git_token,
+            project_token=project_token,
         )
     return {"agent": agent}
 
@@ -1157,12 +1325,23 @@ async def update_agent(
     request: Optional[UpdateAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
 ):
     if not request or not request.name or not request.name.strip():
         raise HTTPException(status_code=400, detail="Agent name is required")
     try:
-        agent = agent_service.update_agent_name(agent_id, request.name)
-        _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"))
+        project_token = _normalize_project_token(project_token)
+        _ensure_default_agents(db, project_token)
+        query = db.query(models.Agent)
+        if project_token:
+            query = query.filter(models.Agent.project_token == project_token)
+        else:
+            query = query.filter(models.Agent.project_token.is_(None))
+        records = query.all()
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+
+        agent = agent_service.update_agent_name(agent_id, request.name, project_token)
+        _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
         return {"agent": agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1174,12 +1353,23 @@ async def update_agent_post(
     request: Optional[UpdateAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
 ):
     if not request or not request.name or not request.name.strip():
         raise HTTPException(status_code=400, detail="Agent name is required")
     try:
-        agent = agent_service.update_agent_name(agent_id, request.name)
-        _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"))
+        project_token = _normalize_project_token(project_token)
+        _ensure_default_agents(db, project_token)
+        query = db.query(models.Agent)
+        if project_token:
+            query = query.filter(models.Agent.project_token == project_token)
+        else:
+            query = query.filter(models.Agent.project_token.is_(None))
+        records = query.all()
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+
+        agent = agent_service.update_agent_name(agent_id, request.name, project_token)
+        _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
         return {"agent": agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1190,11 +1380,22 @@ async def remove_agent(
     agent_id: str,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
 ):
     """Remove an idle agent."""
     try:
-        agent_service.remove_agent(agent_id)
-        _delete_agent_record(db, agent_id)
+        project_token = _normalize_project_token(project_token)
+        _ensure_default_agents(db, project_token)
+        query = db.query(models.Agent)
+        if project_token:
+            query = query.filter(models.Agent.project_token == project_token)
+        else:
+            query = query.filter(models.Agent.project_token.is_(None))
+        records = query.all()
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+
+        agent_service.remove_agent(agent_id, project_token)
+        _delete_agent_record(db, agent_id, project_token)
         return {"success": True, "removed": agent_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
