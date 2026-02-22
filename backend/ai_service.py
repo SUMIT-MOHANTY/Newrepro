@@ -341,14 +341,14 @@ async def get_ai_config() -> dict:
 TASK_GENERATION_PROMPT = """You are an expert Project Manager and Agile Practitioner.
 Given the following BRD Analysis Report and Project constraints, break down the project into an actionable, detailed task list (Epics, Features, User Stories, and Tasks).
 
-You are provided with a team of Agents (with their `user_id` and `username`) and a wallet budget.
+You are provided with a team of Agents (with their `user_id` and `username`) and a wallet budget. However, YOU MUST NOT assign any agents. The `assignees` field MUST ALWAYS be an empty array `[]`.
+
 You MUST format your ONLY output as a JSON array of task objects matching this exact structure:
 
 [
   {
     "taskName": "string", // Short descriptive title
     "description": "string", // Detailed description of the work
-    "assignees": [int], // Array of `user_id` numbers of the agents who will work on this
     "wallet": int, // Estimated cost/effort from the budget (MUST be between 1 and 10)
     "deadline": "YYYY-MM-DD", // A realistic deadline within the project timeframe
     "startdate": "YYYY-MM-DD", // Start date within the project timeframe
@@ -374,6 +374,7 @@ RULES:
 2. DO NOT repeat any tasks that have already been created (listed below).
 3. The total wallet for this batch MUST NOT exceed the REMAINING WALLET provided.
 4. Each task's wallet MUST be between 1 and 10 (inclusive). Never assign 0 or any value above 10.
+5. YOU MUST NOT assign any agents. The `assignees` field MUST ALWAYS be an empty array `[]`.
 6. Continue logically from where the previous batch left off.
 7. Ensure tasks follow a logical sequence (e.g., setup before features, features before testing).
 8. **Complexity-based Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
@@ -385,7 +386,7 @@ Output ONLY a JSON array of task objects (max 5) with this structure:
   {
     "taskName": "string",
     "description": "string",
-    "assignees": [int],
+    "assignees": [],     // ALWAYS an empty array
     "wallet": int,       // MUST be between 1 and 10
     "deadline": "YYYY-MM-DD",
     "startdate": "YYYY-MM-DD",

@@ -245,12 +245,14 @@ export default function StatusDashboard({ projects = [] }) {
 
         const body = repoUrl && repoToken ? { git_repo_url: repoUrl, git_token: repoToken } : {};
         try {
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+            if (taskToken) headers['x-task-token'] = taskToken;
             await fetch(API_ENDPOINTS.AGENT_RUN(agentId), {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
+                headers,
                 body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
             });
             await fetchAgents();
@@ -345,9 +347,11 @@ export default function StatusDashboard({ projects = [] }) {
         setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
 
         try {
+            const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (taskToken) headers['x-task-token'] = taskToken;
             await fetch(API_ENDPOINTS.AGENT_RUN_ALL, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({}),
             });
             await fetchAgents();
@@ -364,9 +368,11 @@ export default function StatusDashboard({ projects = [] }) {
         setRunningAll(true);
         setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
         try {
+            const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (taskToken) headers['x-task-token'] = taskToken;
             await fetch(API_ENDPOINTS.AGENT_RUN_ALL, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ agents_config: agentsGitConfig }),
             });
             await fetchAgents();

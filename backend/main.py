@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from datetime import timedelta
 from typing import Annotated, Optional, List, Dict, Any
@@ -23,6 +24,7 @@ from config import settings
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="BRD Analysis API", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -904,6 +906,20 @@ def _sanitize_agent_for_user(
     return safe_agent
 
 
+def _log_background_task_result(task: asyncio.Task) -> None:
+    """Consume and log exceptions from fire-and-forget tasks."""
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("Failed to inspect background task state")
+        return
+
+    if exc:
+        logger.exception("Background task failed", exc_info=exc)
+
+
 class CreateTaskRequest(BaseModel):
     title: str
     description: str
@@ -972,6 +988,7 @@ async def run_agent(
     request: Optional[RunAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None),
 ):
     """
     Trigger an idle agent to pick a pending task and start working on it.
@@ -1012,9 +1029,16 @@ async def run_agent(
     # Fire-and-forget: agent runs in background
     run_repo = effective_repo if effective_repo and effective_token else None
     run_token = effective_token if effective_repo and effective_token else None
-    asyncio.create_task(
-        agent_service.run_agent(agent_id, git_repo_url=run_repo, git_token=run_token, ignore_running_check=True)
+    bg_task = asyncio.create_task(
+        agent_service.run_agent(
+            agent_id,
+            git_repo_url=run_repo,
+            git_token=run_token,
+            ignore_running_check=True,
+            task_token=x_task_token,
+        )
     )
+    bg_task.add_done_callback(_log_background_task_result)
 
     return {"started": True, "agent_id": agent_id}
 
@@ -1041,6 +1065,7 @@ async def run_all_agents(
     request: Optional[RunAllRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None),
 ):
     """
     Start all idle agents simultaneously in the BACKGROUND.
@@ -1079,9 +1104,13 @@ async def run_all_agents(
 
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
-    asyncio.create_task(
-        agent_service.run_all_agents(agents_config=agents_config if agents_config else None)
+    bg_task = asyncio.create_task(
+        agent_service.run_all_agents(
+            agents_config=agents_config if agents_config else None,
+            task_token=x_task_token,
+        )
     )
+    bg_task.add_done_callback(_log_background_task_result)
 
     return {
         "started": True,
@@ -1279,6 +1308,10 @@ class TaskTimerLogRequest(BaseModel):
     task_id: int
     action: str
 
+class TaskOptInRequest(BaseModel):
+    task_id: int
+    username: str
+
 @app.post("/api/agent/tasks/")
 async def create_external_agent_task(
     task: AgentTaskCreate,
@@ -1297,10 +1330,11 @@ async def create_external_agent_task(
 async def post_agent_task_message(
     payload: TaskMessageRequest,
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
 ):
     """Post a comment/message to a task in the external task management API."""
     try:
-        return await task_service.post_task_message(payload.dict())
+        return await task_service.post_task_message(payload.dict(), task_token=x_task_token)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to post task message: {e}")
 
@@ -1309,10 +1343,11 @@ async def post_agent_task_message(
 async def post_agent_task_progress(
     payload: TaskProgressRequest,
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
 ):
     """Update task progress in the external task management API."""
     try:
-        return await task_service.update_task_progress(payload.dict())
+        return await task_service.update_task_progress(payload.dict(), task_token=x_task_token)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update task progress: {e}")
 
@@ -1321,10 +1356,11 @@ async def post_agent_task_progress(
 async def post_agent_task_complete(
     payload: TaskCompleteRequest,
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
 ):
     """Mark a task as complete in the external task management API."""
     try:
-        return await task_service.complete_task(payload.dict())
+        return await task_service.complete_task(payload.dict(), task_token=x_task_token)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to complete task: {e}")
 
@@ -1333,12 +1369,24 @@ async def post_agent_task_complete(
 async def post_agent_task_timer_log(
     payload: TaskTimerLogRequest,
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
 ):
     """Post a timer log (clock_in/clock_out) to the external task management API."""
     try:
-        return await task_service.post_timer_log(payload.dict())
+        return await task_service.post_timer_log(payload.dict(), task_token=x_task_token)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to post timer log: {e}")
+
+@app.post("/api/agent/task-opt-in/")
+async def post_agent_task_opt_in(
+    payload: TaskOptInRequest,
+    x_task_token: Optional[str] = Header(None),
+):
+    """Opt in a user to a task in the external task management API."""
+    try:
+        return await task_service.opt_in_task(payload.dict(), task_token=x_task_token)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to opt in to task: {e}")
 
 @app.get("/api/agent/tasks-list/")
 async def get_external_agent_tasks(
@@ -1505,4 +1553,3 @@ async def auto_generate_project_tasks(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

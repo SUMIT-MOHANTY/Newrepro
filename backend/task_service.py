@@ -157,24 +157,44 @@ class TaskManagementService:
             "PUT", f"/api/agent/tasks/{task_id}/checklist/", task_token=task_token, json=payload
         )
 
-    async def post_task_message(self, payload: dict) -> dict:
+    async def post_task_message(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Post a comment/message to a task."""
-        return await self._make_request("POST", "/api/agent/messages/", json=payload)
+        return await self._make_request("POST", "/api/agent/messages/", task_token=task_token, json=payload)
 
-    async def update_task_progress(self, payload: dict) -> dict:
+    async def update_task_progress(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update progress for a task."""
-        return await self._make_request("POST", "/api/agent/task-progress/", json=payload)
+        return await self._make_request("POST", "/api/agent/task-progress/", task_token=task_token, json=payload)
 
-    async def complete_task(self, payload: dict) -> dict:
+    async def complete_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Mark a task as complete."""
-        return await self._make_request("POST", "/api/agent/task-complete/", json=payload)
+        return await self._make_request("POST", "/api/agent/task-complete/", task_token=task_token, json=payload)
 
-    async def post_timer_log(self, payload: dict) -> dict:
+    async def post_timer_log(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Post a clock in/out log for a task."""
-        return await self._make_request("POST", "/api/agent/timer-logs/", json=payload)
+        return await self._make_request("POST", "/api/agent/timer-logs/", task_token=task_token, json=payload)
 
     async def get_dashboard(self, task_token: Optional[str] = None) -> dict:
         """Fetch dashboard insights from the external task management API."""
         return await self._make_request("GET", "/api/agent/dashboard/", task_token=task_token)
+
+    async def opt_in_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Opt in to a task in the external task management API using X-API-Key."""
+        if task_token:
+            return await self._make_request("POST", "/api/agent/task-opt-in/", task_token=task_token, json=payload)
+
+        url = f"{self.base_url.rstrip('/')}/api/agent/task-opt-in/"
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": f"{self.client_id}:{self.client_secret}"
+        }
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(url, json=payload, headers=headers, timeout=10.0)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                response_text = e.response.text
+                logger.error(f"Failed to opt-in to task: {e.response.status_code} {response_text}")
+                raise Exception(f"Failed to opt-in to task ({e.response.status_code}): {response_text}")
 
 task_service = TaskManagementService()

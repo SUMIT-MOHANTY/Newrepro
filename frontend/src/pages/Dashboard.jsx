@@ -927,9 +927,113 @@ const Dashboard = ({
                 }
             };
             setProjectState(taskKey, { result: finalResult, progress: 100, progressMessage: 'Analysis complete!' });
-            saveToHistory(finalResult, taskKey);
+            await saveToHistory(finalResult, taskKey);
+            createProjectFromMetrics(finalResult, metrics);
         } catch (err) {
             setProjectState(taskKey, { error: `Start Error: ${err.message}` });
+        }
+    };
+
+    const createProjectFromMetrics = async (finalResult, metrics) => {
+        try {
+            const token = localStorage.getItem('token');
+            const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    client_id: import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282",
+                    client_secret: import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E"
+                })
+            });
+
+            if (!tokenRes.ok) throw new Error("Failed to fetch task token");
+
+            const tokenData = await tokenRes.json();
+            const taskToken = tokenData.access;
+
+            let teamIds = [];
+            try {
+                const agentsUrl = API_ENDPOINTS.TASK_TOKEN.replace('token/task/', 'agents/');
+                const agentsRes = await fetch(agentsUrl, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'x-task-token': taskToken }
+                });
+                if (agentsRes.ok) {
+                    const agentsData = await agentsRes.json();
+                    if (Array.isArray(agentsData) && agentsData.length > 0) {
+                        teamIds = agentsData.map(a => a.user_id || a.id).filter(Boolean);
+                    } else if (agentsData.results && Array.isArray(agentsData.results)) {
+                        teamIds = agentsData.results.map(a => a.user_id || a.id).filter(Boolean);
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to fetch team members:", err);
+            }
+
+            const timelineStr = metrics?.timeline || "";
+            const parseTimelineToDate = (timeline) => {
+                const defaultDate = new Date();
+                defaultDate.setFullYear(defaultDate.getFullYear() + 1);
+                if (!timeline) return defaultDate.toISOString().split('T')[0];
+
+                const lower = String(timeline).toLowerCase();
+                const date = new Date();
+
+                const monthsMatch = lower.match(/(?:^|\s)(\d+)(?:\s*-\s*(\d+))?\s*months?/);
+                if (monthsMatch) {
+                    const maxVal = monthsMatch[2] ? parseInt(monthsMatch[2], 10) : parseInt(monthsMatch[1], 10);
+                    date.setMonth(date.getMonth() + maxVal);
+                    return date.toISOString().split('T')[0];
+                }
+                const weeksMatch = lower.match(/(?:^|\s)(\d+)(?:\s*-\s*(\d+))?\s*weeks?/);
+                if (weeksMatch) {
+                    const maxVal = weeksMatch[2] ? parseInt(weeksMatch[2], 10) : parseInt(weeksMatch[1], 10);
+                    date.setDate(date.getDate() + maxVal * 7);
+                    return date.toISOString().split('T')[0];
+                }
+                const daysMatch = lower.match(/(?:^|\s)(\d+)(?:\s*-\s*(\d+))?\s*days?/);
+                if (daysMatch) {
+                    const maxVal = daysMatch[2] ? parseInt(daysMatch[2], 10) : parseInt(daysMatch[1], 10);
+                    date.setDate(date.getDate() + maxVal);
+                    return date.toISOString().split('T')[0];
+                }
+                const yearsMatch = lower.match(/(?:^|\s)(\d+)(?:\s*-\s*(\d+))?\s*years?/);
+                if (yearsMatch) {
+                    const maxVal = yearsMatch[2] ? parseInt(yearsMatch[2], 10) : parseInt(yearsMatch[1], 10);
+                    date.setFullYear(date.getFullYear() + maxVal);
+                    return date.toISOString().split('T')[0];
+                }
+                return defaultDate.toISOString().split('T')[0];
+            };
+
+            const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+            const projName = selectedProject?.name || governanceContext?.project_name || "New AI Project";
+            let pToken = selectedProject?.projectToken || null;
+            if (!pToken) {
+                const storedResult = localStorage.getItem('governanceResult');
+                if (storedResult) {
+                    const res = JSON.parse(storedResult);
+                    pToken = res.project_token;
+                }
+            }
+
+            await fetch(projectCreationUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                    'x-task-token': taskToken,
+                },
+                body: JSON.stringify({
+                    name: projName,
+                    deadline: parseTimelineToDate(timelineStr),
+                    project_wallet: 1000,
+                    team: teamIds.length > 0 ? teamIds : [24],
+                    project_token: pToken
+                }),
+            });
+        } catch (err) {
+            console.error("Project generation error:", err);
         }
     };
 
@@ -1045,7 +1149,8 @@ const Dashboard = ({
                 progressMessage: 'Analysis complete!',
                 aiQuestions: questions?.length ? questions : []
             });
-            saveToHistory(finalResult, taskKey);
+            await saveToHistory(finalResult, taskKey);
+            createProjectFromMetrics(finalResult, metrics);
         } catch (err) {
             setProjectState(taskKey, { error: `Stream Error: ${err.message}` });
         }
