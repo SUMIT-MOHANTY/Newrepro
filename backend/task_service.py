@@ -150,11 +150,14 @@ class TaskManagementService:
         """Fetch project info (deadline, wallet, team) from the external task management API."""
         return await self._make_request("GET", "/api/agent/project-info/", task_token=task_token)
 
-    async def add_checklist_to_task(self, task_id: int, checklist_items: list, task_token: Optional[str] = None) -> dict:
+    async def add_checklist_to_task(self, task_id: Any, checklist_items: list, task_token: Optional[str] = None) -> dict:
         """Add checklist items to a task via the external task management API."""
+        normalized_task_id = str(task_id).strip()
+        if not normalized_task_id:
+            raise Exception("Invalid task_id for checklist update")
         payload = {"checklistItems": checklist_items}
         return await self._make_request(
-            "PUT", f"/api/agent/tasks/{task_id}/checklist/", task_token=task_token, json=payload
+            "PUT", f"/api/agent/tasks/{normalized_task_id}/checklist/", task_token=task_token, json=payload
         )
 
     async def post_task_message(self, payload: dict, task_token: Optional[str] = None) -> dict:

@@ -1706,52 +1706,205 @@ async def auto_generate_project_tasks(
         if not agent_ids:
             raise HTTPException(status_code=400, detail="No active agents found in the external system.")
 
-        # 4. Use LLM to generate the tasks
-        tasks_to_create = await ai_service.generate_tasks_for_project(
-            analysis_report=analysis_report,
-            agents=agents,
-            project_deadline=project_deadline,
-            project_wallet=project_wallet
+        # 4. Build context from existing tasks so AI avoids duplicates across runs.
+        existing_tasks_context: List[Dict[str, Any]] = []
+        known_task_name_keys = set()
+        existing_wallet_used = 0
+        try:
+            page = 1
+            while True:
+                existing_page = await task_service.get_tasks(page=page, task_token=x_task_token)
+                if isinstance(existing_page, list):
+                    page_results = existing_page
+                    has_next = False
+                elif isinstance(existing_page, dict):
+                    page_results = existing_page.get("results") if isinstance(existing_page.get("results"), list) else []
+                    has_next = bool(existing_page.get("next"))
+                else:
+                    page_results = []
+                    has_next = False
+
+                for t in page_results:
+                    task_name = (t.get("taskName") or t.get("title") or "").strip()
+                    if not task_name:
+                        continue
+                    name_key = task_name.lower()
+                    if name_key in known_task_name_keys:
+                        continue
+                    known_task_name_keys.add(name_key)
+
+                    wallet_raw = t.get("task_wallet", t.get("wallet", 0))
+                    try:
+                        wallet_val = int(wallet_raw or 0)
+                    except (TypeError, ValueError):
+                        wallet_val = 0
+                    existing_wallet_used += max(wallet_val, 0)
+
+                    existing_tasks_context.append({
+                        "taskName": task_name,
+                        "task_type": t.get("task_type", "TASK"),
+                        "wallet": max(wallet_val, 0),
+                        "startdate": t.get("startdate"),
+                        "deadline": t.get("deadline"),
+                    })
+
+                if not has_next:
+                    break
+                page += 1
+        except Exception as e:
+            logger.warning(f"Failed to fetch existing tasks for duplicate-context: {e}")
+
+        try:
+            project_wallet_int = int(project_wallet or 100)
+        except (TypeError, ValueError):
+            project_wallet_int = 100
+        project_wallet_int = max(project_wallet_int, 0)
+
+        remaining_wallet = max(project_wallet_int - existing_wallet_used, 0)
+        if remaining_wallet <= 0:
+            return {
+                "status": "success",
+                "message": (
+                    "No wallet remaining for additional tasks. "
+                    f"Existing tasks already consume ~{existing_wallet_used} wallet points."
+                ),
+                "tasks_created": 0,
+                "batches_processed": 0,
+                "duplicates_skipped": 0,
+                "existing_tasks_considered": len(existing_tasks_context),
+                "checklists_generated_for": 0,
+                "checklists_attached": 0,
+                "checklist_attach_failures": [],
+                "project_deadline": project_deadline,
+                "project_wallet": project_wallet_int,
+                "remaining_wallet": remaining_wallet,
+            }
+
+        # 5. Generate tasks in incremental batches of up to 5, then attach checklists per batch.
+        generation_context = list(existing_tasks_context)
+        created_tasks: List[Dict[str, Any]] = []
+        checklists_generated_for = 0
+        checklists_attached = 0
+        checklist_attach_failures: List[Dict[str, str]] = []
+        duplicates_skipped = 0
+        batches_processed = 0
+        batch_number = 1
+        max_batches = 20
+
+        while remaining_wallet > 0 and batch_number <= max_batches:
+            batch_tasks = await ai_service.generate_task_batch(
+                analysis_report=analysis_report,
+                agents=agents,
+                project_deadline=project_deadline,
+                remaining_wallet=remaining_wallet,
+                total_project_wallet=project_wallet_int,
+                already_created_tasks=generation_context,
+                batch_number=batch_number,
+            )
+            if not batch_tasks:
+                break
+            # Hard guard: process max 5 per batch even if model returns more.
+            batch_tasks = batch_tasks[:5]
+
+            batches_processed += 1
+            batch_created_tasks: List[Dict[str, Any]] = []
+            batch_wallet_used = 0
+
+            for task_data in batch_tasks:
+                task_name = (task_data.get("taskName") or "").strip()
+                if not task_name:
+                    continue
+                task_name_key = task_name.lower()
+                if task_name_key in known_task_name_keys:
+                    duplicates_skipped += 1
+                    continue
+
+                res = await task_service.create_task(task_data, task_token=x_task_token)
+                if isinstance(res, dict) and "id" in res:
+                    # Preserve generated values for downstream checklist generation / context.
+                    res["taskName"] = task_name
+                    res["description"] = task_data.get("description", "")
+                    res["task_type"] = task_data.get("task_type", "")
+                    res["priority"] = task_data.get("priority", "")
+                    batch_created_tasks.append(res)
+                    created_tasks.append(res)
+
+                    wallet_raw = task_data.get("wallet", 1)
+                    try:
+                        wallet_val = int(wallet_raw or 1)
+                    except (TypeError, ValueError):
+                        wallet_val = 1
+                    wallet_val = max(1, min(10, wallet_val))
+                    batch_wallet_used += wallet_val
+
+                    generation_context.append({
+                        "taskName": task_name,
+                        "task_type": task_data.get("task_type", "TASK"),
+                        "wallet": wallet_val,
+                        "startdate": task_data.get("startdate"),
+                        "deadline": task_data.get("deadline"),
+                    })
+                    known_task_name_keys.add(task_name_key)
+                else:
+                    created_tasks.append(res)
+
+            remaining_wallet = max(remaining_wallet - batch_wallet_used, 0)
+
+            # Attach checklist immediately for this batch.
+            if batch_created_tasks:
+                try:
+                    checklists_map = await ai_service.generate_checklists_for_tasks(
+                        tasks_with_ids=batch_created_tasks,
+                        analysis_report=analysis_report
+                    )
+                    if checklists_map:
+                        for str_task_id, checklist_items in checklists_map.items():
+                            if checklist_items:
+                                checklists_generated_for += 1
+                                try:
+                                    await task_service.add_checklist_to_task(
+                                        task_id=str_task_id,
+                                        checklist_items=checklist_items,
+                                        task_token=x_task_token
+                                    )
+                                    checklists_attached += 1
+                                except Exception as checklist_err:
+                                    checklist_attach_failures.append({
+                                        "task_id": str(str_task_id),
+                                        "error": str(checklist_err),
+                                    })
+                except Exception as e:
+                    logger.warning(f"Failed checklist generation/attach for batch {batch_number}: {e}")
+
+            # Avoid infinite loop when everything in a batch is duplicate/invalid.
+            if not batch_created_tasks:
+                break
+            batch_number += 1
+
+        message = (
+            f"Successfully created {len(created_tasks)} task(s) across {batches_processed} batch(es) of up to 5. "
+            f"Skipped {duplicates_skipped} duplicate task suggestion(s). "
         )
-        
-        created_tasks = []
-        for task_data in tasks_to_create:
-            res = await task_service.create_task(task_data, task_token=x_task_token)
-            if isinstance(res, dict) and "id" in res:
-                # Store the taskName and description from input since response might not have it
-                res["taskName"] = task_data.get("taskName", "")
-                res["description"] = task_data.get("description", "")
-                res["task_type"] = task_data.get("task_type", "")
-                res["priority"] = task_data.get("priority", "")
-            created_tasks.append(res)
-            
-        # 5. Generate and attach checklists to the newly created tasks
-        if created_tasks:
-            try:
-                checklists_map = await ai_service.generate_checklists_for_tasks(
-                    tasks_with_ids=[t for t in created_tasks if isinstance(t, dict) and "id" in t],
-                    analysis_report=analysis_report
-                )
-                
-                # Add checklists via task management API
-                if checklists_map:
-                    for str_task_id, checklist_items in checklists_map.items():
-                        if checklist_items:
-                            await task_service.add_checklist_to_task(
-                                task_id=int(str_task_id), 
-                                checklist_items=checklist_items, 
-                                task_token=x_task_token
-                            )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f"Failed to generate/add checklists during auto-generate: {e}")
-            
+        if checklists_attached:
+            message += f"Attached checklists to {checklists_attached} task(s)."
+        elif checklists_generated_for:
+            message += "Checklist generation succeeded but checklist attach failed."
+        else:
+            message += "No checklists were generated."
+
         return {
              "status": "success",
-             "message": f"Successfully created {len(created_tasks)} tasks with checklists.",
+             "message": message,
              "tasks_created": len(created_tasks),
+             "batches_processed": batches_processed,
+             "duplicates_skipped": duplicates_skipped,
+             "existing_tasks_considered": len(existing_tasks_context),
+             "checklists_generated_for": checklists_generated_for,
+             "checklists_attached": checklists_attached,
+             "checklist_attach_failures": checklist_attach_failures,
              "project_deadline": project_deadline,
-             "project_wallet": project_wallet
+             "project_wallet": project_wallet_int,
+             "remaining_wallet": remaining_wallet,
         }
 
     except HTTPException:

@@ -1455,16 +1455,23 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
         normalized = []
         for t in all_tasks:
             # Parse checklist JSON
-            checklist_raw = t.get("checklist") or ""
+            checklist_raw = t.get("checklist")
+            if checklist_raw in (None, ""):
+                checklist_raw = t.get("checklistItems")
             checklist_items = []
-            if isinstance(checklist_raw, str) and checklist_raw.strip():
+            if isinstance(checklist_raw, list):
+                checklist_items = checklist_raw
+            elif isinstance(checklist_raw, str) and checklist_raw.strip():
                 try:
                     parsed = json.loads(checklist_raw)
-                    checklist_items = parsed.get("checklistItems", [])
+                    if isinstance(parsed, list):
+                        checklist_items = parsed
+                    elif isinstance(parsed, dict):
+                        checklist_items = parsed.get("checklistItems", []) or parsed.get("items", [])
                 except Exception:
                     pass
             elif isinstance(checklist_raw, dict):
-                checklist_items = checklist_raw.get("checklistItems", [])
+                checklist_items = checklist_raw.get("checklistItems", []) or checklist_raw.get("items", [])
 
             task_id = t.get("id", uuid.uuid4().hex[:8])
             external_id = t.get("external_id")
