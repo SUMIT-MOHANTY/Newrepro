@@ -798,8 +798,10 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
                 tail = (test_res.get("stderr") or test_res.get("stdout") or "")[-500:]
                 issues = [f"TEST FAILURE: {tail}"]
 
+            # Log the actual issues for debugging
+            issues_summary = "; ".join(str(i)[:200] for i in issues[:3])
             _log_git_agent(
-                f"AI fix iteration {iteration} for {cmd} ({len(issues)} issues)",
+                f"AI fix iteration {iteration} for {cmd}: {issues_summary}",
                 project_token=project_token
             )
             try:
@@ -950,7 +952,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
 
         merge = subprocess.run(
             ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "merge", "--no-ff", f"origin/{branch}"],
+             "git", "merge", "--no-ff", "--allow-unrelated-histories", f"origin/{branch}"],
             capture_output=True, text=True, timeout=60,
         )
         if merge.returncode != 0:
