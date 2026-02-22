@@ -44,6 +44,12 @@ export default function StatusDashboard({ projects = [] }) {
     const [dashboardData, setDashboardData] = useState(null);
 
     const token = localStorage.getItem('token');
+    const withProjectToken = useCallback((url) => {
+        if (!selectedProjectKey) return url;
+        const parsed = new URL(url);
+        parsed.searchParams.set('project_token', selectedProjectKey);
+        return parsed.toString();
+    }, [selectedProjectKey]);
 
     // ── Dynamic Task Token State ─────────────────────────────────────
     const [taskToken, setTaskToken] = useState(null);
@@ -91,7 +97,7 @@ export default function StatusDashboard({ projects = [] }) {
     // ── Fetch agents (Docker agent backend) ──────────────────────────
     const fetchAgents = useCallback(async () => {
         try {
-            const res = await fetch(API_ENDPOINTS.AGENTS, {
+            const res = await fetch(withProjectToken(API_ENDPOINTS.AGENTS), {
                 headers: { Authorization: `Bearer ${token}` },
             });
             if (res.ok) {
@@ -101,7 +107,7 @@ export default function StatusDashboard({ projects = [] }) {
         } catch (e) {
             console.error('Failed to fetch agents', e);
         }
-    }, [token]);
+    }, [token, withProjectToken]);
 
     // ── Fetch tasks (External API) ───────────────────────────────────
     const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
@@ -245,12 +251,15 @@ export default function StatusDashboard({ projects = [] }) {
 
         const body = repoUrl && repoToken ? { git_repo_url: repoUrl, git_token: repoToken } : {};
         try {
-            await fetch(API_ENDPOINTS.AGENT_RUN(agentId), {
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+            if (taskToken) headers['x-task-token'] = taskToken;
+
+            await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN(agentId)), {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
+                headers,
                 body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
             });
             await fetchAgents();
@@ -278,7 +287,7 @@ export default function StatusDashboard({ projects = [] }) {
         if (!nextName) return;
         setIsSavingAgentName(true);
         try {
-            const res = await fetch(API_ENDPOINTS.AGENT_UPDATE(editingAgentId), {
+            const res = await fetch(withProjectToken(API_ENDPOINTS.AGENT_UPDATE(editingAgentId)), {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -302,7 +311,7 @@ export default function StatusDashboard({ projects = [] }) {
     // ── Reset Agent ──────────────────────────────────────────────────
     const handleResetAgent = async (agentId) => {
         try {
-            await fetch(API_ENDPOINTS.AGENT_RESET(agentId), {
+            await fetch(withProjectToken(API_ENDPOINTS.AGENT_RESET(agentId)), {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}` },
             });
@@ -345,9 +354,11 @@ export default function StatusDashboard({ projects = [] }) {
         setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
 
         try {
-            await fetch(API_ENDPOINTS.AGENT_RUN_ALL, {
+            const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (taskToken) headers['x-task-token'] = taskToken;
+            await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({}),
             });
             await fetchAgents();
@@ -364,9 +375,11 @@ export default function StatusDashboard({ projects = [] }) {
         setRunningAll(true);
         setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
         try {
-            await fetch(API_ENDPOINTS.AGENT_RUN_ALL, {
+            const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (taskToken) headers['x-task-token'] = taskToken;
+            await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ agents_config: agentsGitConfig }),
             });
             await fetchAgents();
@@ -386,7 +399,7 @@ export default function StatusDashboard({ projects = [] }) {
     const submitAddAgent = async () => {
         setShowAddAgentModal(false);
         try {
-            await fetch(API_ENDPOINTS.AGENT_ADD, {
+            await fetch(withProjectToken(API_ENDPOINTS.AGENT_ADD), {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`,

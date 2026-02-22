@@ -95,15 +95,44 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
 _AGENT_TYPES = ["validator", "risk", "estimator"]
 _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimation"]
 
-_claimed_task_ids: set = set()   # tasks currently being worked on (prevents double-claim)
-_task_progress_state: Dict[str, int] = {}  # last progress per task id
-_timer_log_state: Dict[str, bool] = {}     # whether a task has clock_in logged successfully
-
 GIT_MANAGER_AGENT_ID = "agent_03"
 GIT_INTEGRATION_BRANCH = "agent/integration"
-_git_merge_queue: List[Dict[str, Any]] = []
-_git_merge_running: bool = False
-_git_merge_lock: asyncio.Lock = asyncio.Lock()
+DEFAULT_PROJECT_TOKEN = "__default__"
+
+_project_states: Dict[str, Dict[str, Any]] = {}
+
+def _project_key(project_token: Optional[str]) -> str:
+    token = (project_token or "").strip()
+    return token or DEFAULT_PROJECT_TOKEN
+
+def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
+    key = _project_key(project_token)
+    state = _project_states.get(key)
+    if state is None:
+        state = {
+            "agent_states": {},
+            "claimed_task_ids": set(),
+            "task_progress_state": {},
+            "timer_log_state": {},
+            "completed_tasks": [],
+            "task_token": None,
+            "git_merge_queue": [],
+            "git_merge_running": False,
+            "git_merge_lock": asyncio.Lock(),
+        }
+        _project_states[key] = state
+    return state
+
+def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    return _ensure_project_state(project_token)["agent_states"]
+
+def set_project_task_token(project_token: Optional[str], task_token: Optional[str]) -> None:
+    if not task_token:
+        return
+    _ensure_project_state(project_token)["task_token"] = task_token
+
+def get_project_task_token(project_token: Optional[str]) -> Optional[str]:
+    return _ensure_project_state(project_token).get("task_token")
 
 def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
@@ -125,16 +154,18 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
         "git_token": None,
     }
 
-agent_states: Dict[str, Dict[str, Any]] = {
-    "agent_01": _make_agent("agent_01", 0),
-    "agent_02": _make_agent("agent_02", 1),
-    "agent_03": _make_agent("agent_03", 2),
-}
+def get_default_agents() -> List[Dict[str, Any]]:
+    return [
+        _make_agent("agent_01", 0),
+        _make_agent("agent_02", 1),
+        _make_agent("agent_03", 2),
+    ]
 
-def initialize_agents_from_records(records: List[Any]) -> None:
+def initialize_agents_from_records(records: List[Any], project_token: Optional[str] = None) -> None:
     """
     Replace in-memory agent states with DB-backed agent records.
     """
+    agent_states = _get_agent_states(project_token)
     agent_states.clear()
     for idx, rec in enumerate(records):
         agent_id = getattr(rec, "id", None) or (rec.get("id") if isinstance(rec, dict) else None)
@@ -149,7 +180,17 @@ def initialize_agents_from_records(records: List[Any]) -> None:
             agent["type"] = atype
         agent_states[agent_id] = agent
 
-completed_tasks: List[Dict[str, Any]] = []
+def ensure_project_initialized(project_token: Optional[str], records: List[Any]) -> None:
+    state = _ensure_project_state(project_token)
+    if state["agent_states"]:
+        return
+    initialize_agents_from_records(records, project_token=project_token)
+
+def get_completed_tasks(project_token: Optional[str]) -> List[Dict[str, Any]]:
+    return list(_ensure_project_state(project_token)["completed_tasks"])
+
+# Backward compatibility default scope.
+agent_states = _get_agent_states(None)
 
 
 # ── Agent System Prompts ────────────────────────────────────────────────────
@@ -509,8 +550,9 @@ def _build_git_auth_url(repo_url: str, token: str) -> str:
     return repo_url
 
 
-def _log_git_agent(message: str, level: str = "info") -> None:
-    git_agent = agent_states.get(GIT_MANAGER_AGENT_ID)
+def _log_git_agent(message: str, level: str = "info", project_token: Optional[str] = None) -> None:
+    project_agents = _get_agent_states(project_token)
+    git_agent = project_agents.get(GIT_MANAGER_AGENT_ID)
     if not git_agent:
         return
     git_agent["output_log"].append({
@@ -520,8 +562,9 @@ def _log_git_agent(message: str, level: str = "info") -> None:
     })
 
 
-def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str]) -> Dict[str, str]:
-    git_agent = agent_states.get(GIT_MANAGER_AGENT_ID) or {}
+def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str], project_token: Optional[str] = None) -> Dict[str, str]:
+    project_agents = _get_agent_states(project_token)
+    git_agent = project_agents.get(GIT_MANAGER_AGENT_ID) or {}
     return {
         "repo_url": git_agent.get("git_repo_url") or repo_url or "",
         "token": git_agent.get("git_token") or token or ""
@@ -708,7 +751,7 @@ def _commit_if_dirty(container_name: str, message: str) -> None:
     )
 
 
-async def _run_git_manager_tests_with_ai(container_name: str, branch: str) -> bool:
+async def _run_git_manager_tests_with_ai(container_name: str, branch: str, project_token: Optional[str] = None) -> bool:
     summary = _collect_repo_summary(container_name)
     plan = await _call_ai_for_test_plan(summary)
     if not plan:
@@ -717,17 +760,24 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str) -> bo
     install_cmds = plan.get("install") or []
     test_cmds = plan.get("tests") or []
     if not test_cmds:
-        _log_git_agent("No test commands detected. Skipping tests.")
+        _log_git_agent("No test commands detected. Skipping tests.", project_token=project_token)
         return True
 
-    _log_git_agent(f"Running installs: {', '.join(install_cmds) if install_cmds else 'none'}")
+    _log_git_agent(
+        f"Running installs: {', '.join(install_cmds) if install_cmds else 'none'}",
+        project_token=project_token
+    )
     install_res = await _run_commands_in_container(container_name, install_cmds)
     if install_res.get("exit_code", 0) != 0:
-        _log_git_agent(f"Install failed: {install_res.get('cmd')}\n{install_res.get('stderr')}", "error")
+        _log_git_agent(
+            f"Install failed: {install_res.get('cmd')}\n{install_res.get('stderr')}",
+            "error",
+            project_token=project_token
+        )
         return False
 
     for cmd in test_cmds:
-        _log_git_agent(f"Running tests: {cmd}")
+        _log_git_agent(f"Running tests: {cmd}", project_token=project_token)
         test_res = await _run_commands_in_container(container_name, [cmd])
         if test_res.get("exit_code", 0) == 0:
             continue
@@ -744,7 +794,10 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str) -> bo
                 tail = (test_res.get("stderr") or test_res.get("stdout") or "")[-500:]
                 issues = [f"TEST FAILURE: {tail}"]
 
-            _log_git_agent(f"AI fix iteration {iteration} for {cmd} ({len(issues)} issues)")
+            _log_git_agent(
+                f"AI fix iteration {iteration} for {cmd} ({len(issues)} issues)",
+                project_token=project_token
+            )
             try:
                 fix_code, thought = await _call_ai_for_fix(
                     task_description=f"Fix failing tests after merge on {GIT_INTEGRATION_BRANCH}.",
@@ -758,7 +811,7 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str) -> bo
                     _exec_script_in_container, container_name, fix_code, f"git_fix_{iteration}"
                 )
             except Exception as fix_err:
-                _log_git_agent(f"AI fix failed: {fix_err}", "error")
+                _log_git_agent(f"AI fix failed: {fix_err}", "error", project_token=project_token)
                 return False
 
             # Re-run test command
@@ -767,41 +820,48 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str) -> bo
                 _commit_if_dirty(container_name, f"Auto-fix after tests ({branch})")
                 break
         else:
-            _log_git_agent(f"Tests still failing after fixes: {cmd}", "error")
+            _log_git_agent(f"Tests still failing after fixes: {cmd}", "error", project_token=project_token)
             return False
 
     return True
 
 
 async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Optional[str],
-                             source_agent: str, task_title: str) -> None:
+                             source_agent: str, task_title: str,
+                             project_token: Optional[str] = None) -> None:
     if not branch or not repo_url:
         return
-    _git_merge_queue.append({
+    state = _ensure_project_state(project_token)
+    state["git_merge_queue"].append({
         "branch": branch,
         "repo_url": repo_url,
         "token": token or "",
         "source_agent": source_agent,
         "task_title": task_title,
+        "project_token": project_token,
     })
-    _log_git_agent(f"Queued merge: {branch} (from {source_agent}, task '{task_title}')")
-    asyncio.create_task(_git_merge_worker())
+    _log_git_agent(
+        f"Queued merge: {branch} (from {source_agent}, task '{task_title}')",
+        project_token=project_token
+    )
+    asyncio.create_task(_git_merge_worker(project_token))
 
 
-async def _git_merge_worker() -> None:
-    global _git_merge_running
-    async with _git_merge_lock:
-        if _git_merge_running:
+async def _git_merge_worker(project_token: Optional[str] = None) -> None:
+    state = _ensure_project_state(project_token)
+    async with state["git_merge_lock"]:
+        if state["git_merge_running"]:
             return
-        _git_merge_running = True
+        state["git_merge_running"] = True
 
     try:
-        while _git_merge_queue:
-            item = _git_merge_queue.pop(0)
+        while state["git_merge_queue"]:
+            item = state["git_merge_queue"].pop(0)
             await _process_git_merge_item(item)
     finally:
-        _git_merge_running = False
-        git_agent = agent_states.get(GIT_MANAGER_AGENT_ID)
+        state["git_merge_running"] = False
+        project_agents = _get_agent_states(project_token)
+        git_agent = project_agents.get(GIT_MANAGER_AGENT_ID)
         if git_agent:
             git_agent["status"] = "idle"
             git_agent["progress"] = 100
@@ -809,26 +869,32 @@ async def _git_merge_worker() -> None:
 
 
 async def _process_git_merge_item(item: Dict[str, Any]) -> None:
-    git_agent = agent_states.get(GIT_MANAGER_AGENT_ID)
+    project_token = item.get("project_token")
+    project_agents = _get_agent_states(project_token)
+    git_agent = project_agents.get(GIT_MANAGER_AGENT_ID)
     if git_agent:
         git_agent["status"] = "running"
         git_agent["progress"] = 10
         git_agent["progress_message"] = "Merging branches..."
 
-    creds = _get_git_manager_creds(item.get("repo_url"), item.get("token"))
+    creds = _get_git_manager_creds(
+        item.get("repo_url"),
+        item.get("token"),
+        project_token=project_token
+    )
     repo_url = creds["repo_url"]
     token = creds["token"]
     branch = item.get("branch")
     if not repo_url or not branch:
-        _log_git_agent("Git manager skipped merge (missing repo/branch)", "error")
+        _log_git_agent("Git manager skipped merge (missing repo/branch)", "error", project_token=project_token)
         return
 
     container_name = f"git_manager_{uuid.uuid4().hex[:8]}"
     try:
-        _log_git_agent(f"Creating git manager container: {container_name}")
+        _log_git_agent(f"Creating git manager container: {container_name}", project_token=project_token)
         container_result = await asyncio.to_thread(_create_persistent_container, container_name)
         if not container_result["success"]:
-            _log_git_agent(f"Git manager container error: {container_result['error']}", "error")
+            _log_git_agent(f"Git manager container error: {container_result['error']}", "error", project_token=project_token)
             return
 
         # Install git
@@ -838,7 +904,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             capture_output=True, text=True, timeout=120,
         )
         if install.returncode != 0:
-            _log_git_agent(f"Git manager failed to install git: {install.stderr}", "error")
+            _log_git_agent(f"Git manager failed to install git: {install.stderr}", "error", project_token=project_token)
             return
 
         # Configure git user
@@ -858,7 +924,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             capture_output=True, text=True, timeout=120,
         )
         if clone.returncode != 0:
-            _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error")
+            _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error", project_token=project_token)
             return
 
         # Fetch branch and checkout integration branch
@@ -891,14 +957,17 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             )
             files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
             if not files:
-                _log_git_agent(f"Merge failed for {branch}: {merge.stderr}", "error")
+                _log_git_agent(f"Merge failed for {branch}: {merge.stderr}", "error", project_token=project_token)
                 subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
                     capture_output=True, text=True, timeout=10,
                 )
                 return
 
-            _log_git_agent(f"Conflicts detected. Applying union merge for {len(files)} files.")
+            _log_git_agent(
+                f"Conflicts detected. Applying union merge for {len(files)} files.",
+                project_token=project_token
+            )
             for file_path in files:
                 merge_script = (
                     f"git show :2:{file_path} > /tmp/ours_merge && "
@@ -912,7 +981,11 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     capture_output=True, text=True, timeout=60,
                 )
                 if file_merge.returncode != 0:
-                    _log_git_agent(f"Union merge failed for {file_path}: {file_merge.stderr}", "error")
+                    _log_git_agent(
+                        f"Union merge failed for {file_path}: {file_merge.stderr}",
+                        "error",
+                        project_token=project_token
+                    )
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
                         capture_output=True, text=True, timeout=10,
@@ -925,16 +998,20 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 capture_output=True, text=True, timeout=30,
             )
             if commit_union.returncode != 0:
-                _log_git_agent(f"Union merge commit failed for {branch}: {commit_union.stderr}", "error")
+                _log_git_agent(
+                    f"Union merge commit failed for {branch}: {commit_union.stderr}",
+                    "error",
+                    project_token=project_token
+                )
                 subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
                     capture_output=True, text=True, timeout=10,
                 )
                 return
 
-        tests_ok = await _run_git_manager_tests_with_ai(container_name, branch)
+        tests_ok = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
         if not tests_ok:
-            _log_git_agent(f"Tests failed after merge for {branch}. Not pushing.", "error")
+            _log_git_agent(f"Tests failed after merge for {branch}. Not pushing.", "error", project_token=project_token)
             return
 
         push = subprocess.run(
@@ -945,43 +1022,60 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
         if push.returncode != 0:
             err = push.stderr or push.stdout
             if "non-fast-forward" in err or "rejected" in err:
-                # Pull and rebase remote changes before pushing
-                _log_git_agent(f"Non-fast-forward detected for {GIT_INTEGRATION_BRANCH}, pulling remote changes...")
+                _log_git_agent(
+                    f"Non-fast-forward detected for {GIT_INTEGRATION_BRANCH}, pulling remote changes...",
+                    project_token=project_token
+                )
                 pull = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name,
                      "git", "pull", "--rebase", "origin", GIT_INTEGRATION_BRANCH],
                     capture_output=True, text=True, timeout=60,
                 )
                 if pull.returncode == 0:
-                    # Retry push after rebase
                     push_retry = subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
                         capture_output=True, text=True, timeout=60,
                     )
                     if push_retry.returncode == 0:
-                        _log_git_agent(f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed (after rebase).")
+                        _log_git_agent(
+                            f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed (after rebase).",
+                            project_token=project_token
+                        )
                         if git_agent:
                             git_agent["progress"] = 100
                             git_agent["progress_message"] = f"Merged {branch}"
                         return
-                _log_git_agent(f"Rebase failed for {GIT_INTEGRATION_BRANCH}, trying force push...", "warning")
-                # Fallback: force push to overwrite
+                _log_git_agent(
+                    f"Rebase failed for {GIT_INTEGRATION_BRANCH}, trying force push...",
+                    "warning",
+                    project_token=project_token
+                )
                 push_force = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name,
                      "git", "push", "-f", "origin", GIT_INTEGRATION_BRANCH],
                     capture_output=True, text=True, timeout=60,
                 )
                 if push_force.returncode == 0:
-                    _log_git_agent(f"Merged {branch} into {GIT_INTEGRATION_BRANCH} (force pushed).")
+                    _log_git_agent(
+                        f"Merged {branch} into {GIT_INTEGRATION_BRANCH} (force pushed).",
+                        project_token=project_token
+                    )
                     if git_agent:
                         git_agent["progress"] = 100
                         git_agent["progress_message"] = f"Merged {branch}"
                     return
-            _log_git_agent(f"Push failed for {GIT_INTEGRATION_BRANCH}: {push.stderr}", "error")
+            _log_git_agent(
+                f"Push failed for {GIT_INTEGRATION_BRANCH}: {push.stderr}",
+                "error",
+                project_token=project_token
+            )
             return
 
-        _log_git_agent(f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed.")
+        _log_git_agent(
+            f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed.",
+            project_token=project_token
+        )
         if git_agent:
             git_agent["progress"] = 100
             git_agent["progress_message"] = f"Merged {branch}"
@@ -1334,14 +1428,15 @@ def _parse_stats_from_output(stdout: str, agent_type: str) -> Dict[str, Any]:
 
 # ── Fetch tasks from External Task API ──────────────────────────────────────
 
-async def _fetch_external_tasks() -> List[Dict[str, Any]]:
+async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fetch ALL pages of tasks from the external task management API."""
     from task_service import task_service
     try:
+        task_token = get_project_task_token(project_token)
         all_tasks = []
         page = 1
         while True:
-            data = await task_service.get_tasks(page=page)
+            data = await task_service.get_tasks(page=page, task_token=task_token)
             if isinstance(data, list):
                 all_tasks.extend(data)
                 break
@@ -1382,6 +1477,7 @@ async def _fetch_external_tasks() -> List[Dict[str, Any]]:
                 "started_at": None,
                 "linked_tasks": t.get("linked_tasks") or [],
                 "checklist": checklist_items,
+                "_project_token": project_token,
             })
         return normalized
     except Exception as e:
@@ -1389,7 +1485,7 @@ async def _fetch_external_tasks() -> List[Dict[str, Any]]:
         return []
 
 
-async def _mark_checklist_item(task_id, checklist_items: list, item_index: int):
+async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, project_token: Optional[str] = None):
     """Mark a single checklist item as completed via external API."""
     from task_service import task_service
     try:
@@ -1401,7 +1497,8 @@ async def _mark_checklist_item(task_id, checklist_items: list, item_index: int):
                 "text": item.get("text", ""),
                 "completed": True if i <= item_index else item.get("completed", False),
             })
-        await task_service.add_checklist_to_task(int(task_id), updated)
+        task_token = get_project_task_token(project_token)
+        await task_service.add_checklist_to_task(int(task_id), updated, task_token=task_token)
     except Exception as e:
         print(f"[agent_service] Failed to update checklist for task {task_id}: {e}")
 
@@ -1416,36 +1513,40 @@ def _normalize_task_id(task: Dict[str, Any]):
         return tid
 
 
-async def _post_task_message(task: Dict[str, Any], message: str) -> bool:
+async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None) -> bool:
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     try:
         await task_service.post_task_message({
             "task_id": task_id,
             "message": message
-        })
+        }, task_token=get_project_task_token(resolved_project))
         return True
     except Exception as e:
         print(f"[agent_service] Failed to post message for task {task_id}: {e}")
         return False
 
 
-async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None) -> bool:
+async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None,
+                              project_token: Optional[str] = None) -> bool:
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    state = _ensure_project_state(resolved_project)
     task_key = str(task_id)
-    last_progress = _task_progress_state.get(task_key)
+    last_progress = state["task_progress_state"].get(task_key)
     if last_progress is not None and progress < last_progress:
         print(
             f"[agent_service] Skipping progress for task {task_id}: "
             f"cannot decrease from {last_progress} to {progress}"
         )
         return False
-    if not _timer_log_state.get(task_key, False):
+    if not state["timer_log_state"].get(task_key, False):
         print(
             f"[agent_service] Skipping progress for task {task_id}: "
             "no successful clock_in recorded"
@@ -1458,66 +1559,70 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
         }
         if additional_info:
             payload["additional_info"] = additional_info
-        await task_service.update_task_progress(payload)
-        _task_progress_state[task_key] = progress
+        await task_service.update_task_progress(payload, task_token=get_project_task_token(resolved_project))
+        state["task_progress_state"][task_key] = progress
         return True
     except Exception as e:
         print(f"[agent_service] Failed to update progress for task {task_id}: {e}")
         return False
 
 
-async def _post_task_complete(task: Dict[str, Any]) -> bool:
+async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str] = None) -> bool:
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     try:
         await task_service.complete_task({
             "task_id": task_id
-        })
+        }, task_token=get_project_task_token(resolved_project))
         return True
     except Exception as e:
         print(f"[agent_service] Failed to complete task {task_id}: {e}")
         return False
 
 
-async def _post_timer_log(task: Dict[str, Any], action: str) -> bool:
+async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None) -> bool:
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     try:
         await task_service.post_timer_log({
             "task_id": task_id,
             "action": action
-        })
+        }, task_token=get_project_task_token(resolved_project))
         task_key = str(task_id)
+        state = _ensure_project_state(resolved_project)
         if action == "clock_in":
-            _timer_log_state[task_key] = True
+            state["timer_log_state"][task_key] = True
         elif action == "clock_out":
-            _timer_log_state[task_key] = False
+            state["timer_log_state"][task_key] = False
         return True
     except Exception as e:
         print(f"[agent_service] Failed to post timer log for task {task_id}: {e}")
         if action == "clock_in":
-            _timer_log_state[str(task_id)] = False
+            _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
         return False
 
 
 # ── Main Agent Execution ────────────────────────────────────────────────────
 
-async def _pick_next_task(agent_id: str) -> Optional[Dict[str, Any]]:
+async def _pick_next_task(agent_id: str, project_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pick the next uncompleted, unclaimed task from the external API."""
-    global _claimed_task_ids
-    external_tasks = await _fetch_external_tasks()
+    state = _ensure_project_state(project_token)
+    claimed_task_ids = state["claimed_task_ids"]
+    external_tasks = await _fetch_external_tasks(project_token)
     for t in external_tasks:
         tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
         status_lower = (t.get("status") or "").lower()
-        if status_lower not in ("completed", "done") and tid not in _claimed_task_ids:
-            _claimed_task_ids.add(tid)
+        if status_lower not in ("completed", "done") and tid not in claimed_task_ids:
+            claimed_task_ids.add(tid)
             # Also claim its linked tasks
             for lt in (t.get("linked_tasks") or []):
-                _claimed_task_ids.add(str(lt))
+                claimed_task_ids.add(str(lt))
             return t
     return None
 
@@ -1525,7 +1630,9 @@ async def _pick_next_task(agent_id: str) -> Optional[Dict[str, Any]]:
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
                     assigned_task: Dict[str, Any] = None,
                     continuous: bool = False,
-                    ignore_running_check: bool = False) -> Dict[str, Any]:
+                    ignore_running_check: bool = False,
+                    project_token: Optional[str] = None,
+                    task_token: Optional[str] = None) -> Dict[str, Any]:
     """
     Main function to run an agent.
     When continuous=True, the agent keeps picking new tasks after completing
@@ -1543,8 +1650,16 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
       9. Loop back to step 1 if continuous
      10. Capture workspace, destroy container when done
     """
-    global _claimed_task_ids
-    agent = agent_states.get(agent_id)
+    state = _ensure_project_state(project_token)
+    if task_token:
+        state["task_token"] = task_token
+    project_agents = state["agent_states"]
+    claimed_task_ids = state["claimed_task_ids"]
+    task_progress_state = state["task_progress_state"]
+    timer_log_state = state["timer_log_state"]
+    completed_tasks = state["completed_tasks"]
+
+    agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
 
@@ -1563,9 +1678,11 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     if assigned_task:
         task = assigned_task
     else:
-        task = await _pick_next_task(agent_id)
+        task = await _pick_next_task(agent_id, project_token=project_token)
         if not task:
             raise ValueError("No tasks available or all are completed/claimed.")
+    if isinstance(task, dict) and project_token:
+        task.setdefault("_project_token", project_token)
 
     # Set agent to running
     agent["status"] = "running"
@@ -1892,7 +2009,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "message": f"Marking {len(checklist)} checklist items as completed..."
                 })
                 for idx_cl in range(len(checklist)):
-                    await _mark_checklist_item(normalized_task_id, checklist, idx_cl)
+                    await _mark_checklist_item(
+                        normalized_task_id,
+                        checklist,
+                        idx_cl,
+                        project_token=project_token
+                    )
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
@@ -1903,7 +2025,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             # PROCESS LINKED TASKS
             # ═════════════════════════════════════════════════════════
             if linked_task_ids and use_git:
-                all_ext_tasks = await _fetch_external_tasks()
+                all_ext_tasks = await _fetch_external_tasks(project_token)
                 linked_lookup = {str(_normalize_task_id(t) or t.get("external_id") or t.get("id")): t for t in all_ext_tasks}
 
                 for li_idx, linked_id in enumerate(linked_task_ids):
@@ -2012,7 +2134,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                                 agent.get("git_repo_url"),
                                 agent.get("git_token"),
                                 agent_id,
-                                lt_title
+                                lt_title,
+                                project_token=project_token
                             )
                         else:
                             agent["output_log"].append({
@@ -2044,7 +2167,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     lt_task_id = _normalize_task_id(linked_task)
                     if lt_checklist and lt_task_id:
                         for ci in range(len(lt_checklist)):
-                            await _mark_checklist_item(lt_task_id, lt_checklist, ci)
+                            await _mark_checklist_item(
+                                lt_task_id,
+                                lt_checklist,
+                                ci,
+                                project_token=project_token
+                            )
 
                     # Update linked task progress/completion in external system
                     # Always complete linked task if build succeeded, regardless of git push
@@ -2077,8 +2205,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
                     # Clear tracking state for linked task
                     lt_task_key = str(_normalize_task_id(linked_task) or linked_task.get("external_id") or linked_task.get("id"))
-                    _task_progress_state.pop(lt_task_key, None)
-                    _timer_log_state.pop(lt_task_key, None)
+                    task_progress_state.pop(lt_task_key, None)
+                    timer_log_state.pop(lt_task_key, None)
 
                 # Switch back to main task branch
                 if branch_name:
@@ -2131,7 +2259,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             agent.get("git_repo_url"),
                             agent.get("git_token"),
                             agent_id,
-                            task["title"]
+                            task["title"],
+                            project_token=project_token
                         )
                     else:
                         agent["output_log"].append({
@@ -2231,14 +2360,14 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
             # Clear tracking state for this task id
             task_key = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
-            _task_progress_state.pop(task_key, None)
-            _timer_log_state.pop(task_key, None)
+            task_progress_state.pop(task_key, None)
+            timer_log_state.pop(task_key, None)
 
             # Release claimed IDs for this task
             tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
-            _claimed_task_ids.discard(tid)
+            claimed_task_ids.discard(tid)
             for lid in linked_task_ids:
-                _claimed_task_ids.discard(lid)
+                claimed_task_ids.discard(lid)
 
             completed_tasks.append(task)
             all_results.append({
@@ -2261,7 +2390,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             if not continuous:
                 task = None  # exit loop
             else:
-                task = await _pick_next_task(agent_id)
+                task = await _pick_next_task(agent_id, project_token=project_token)
                 if task:
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -2320,9 +2449,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
         # Release any claimed IDs
         if task:
             tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
-            _claimed_task_ids.discard(tid)
+            claimed_task_ids.discard(tid)
             for lid in (task.get("linked_tasks") or []):
-                _claimed_task_ids.discard(str(lid))
+                claimed_task_ids.discard(str(lid))
 
         return {
             "success": False,
@@ -2335,20 +2464,23 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
 # ── Agent & Task Management Helpers ─────────────────────────────────────────
 
-def get_pending_tasks() -> List[Dict[str, Any]]:
+def get_pending_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     return []
 
-def get_agent_status(agent_id: str) -> Dict[str, Any]:
-    agent = agent_states.get(agent_id)
+def get_agent_status(agent_id: str, project_token: Optional[str] = None) -> Dict[str, Any]:
+    project_agents = _get_agent_states(project_token)
+    agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
     return agent
 
-def get_all_agents() -> List[Dict[str, Any]]:
-    return list(agent_states.values())
+def get_all_agents(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
+    project_agents = _get_agent_states(project_token)
+    return list(project_agents.values())
 
-def reset_agent(agent_id: str) -> Dict[str, Any]:
-    agent = agent_states.get(agent_id)
+def reset_agent(agent_id: str, project_token: Optional[str] = None) -> Dict[str, Any]:
+    project_agents = _get_agent_states(project_token)
+    agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
     agent["status"] = "idle"
@@ -2373,11 +2505,13 @@ def seed_sample_tasks():
 
 # ── Dynamic Agent Management ────────────────────────────────────────────────
 
-def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None) -> Dict[str, Any]:
+def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None,
+              project_token: Optional[str] = None) -> Dict[str, Any]:
     """Add a new agent dynamically."""
-    idx = len(agent_states)
+    project_agents = _get_agent_states(project_token)
+    idx = len(project_agents)
     agent_id = f"agent_{idx + 1:02d}"
-    while agent_id in agent_states:
+    while agent_id in project_agents:
         idx += 1
         agent_id = f"agent_{idx + 1:02d}"
     agent = _make_agent(agent_id, idx)
@@ -2387,41 +2521,49 @@ def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None)
         agent["git_repo_url"] = git_repo_url.strip()
     if git_token:
         agent["git_token"] = git_token.strip()
-    agent_states[agent_id] = agent
+    project_agents[agent_id] = agent
     return agent
 
 
-def update_agent_name(agent_id: str, name: str) -> Dict[str, Any]:
-    agent = agent_states.get(agent_id)
+def update_agent_name(agent_id: str, name: str, project_token: Optional[str] = None) -> Dict[str, Any]:
+    project_agents = _get_agent_states(project_token)
+    agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
     agent["name"] = name.strip()
     return agent
 
 
-def remove_agent(agent_id: str) -> bool:
+def remove_agent(agent_id: str, project_token: Optional[str] = None) -> bool:
     """Remove an agent (only if idle)."""
-    agent = agent_states.get(agent_id)
+    project_agents = _get_agent_states(project_token)
+    agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
     if agent["status"] == "running":
         raise ValueError(f"Agent {agent_id} is currently running and cannot be removed.")
-    del agent_states[agent_id]
+    del project_agents[agent_id]
     return True
 
 
 # ── Run All Agents Simultaneously ───────────────────────────────────────────
 
-async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dict[str, Any]:
+async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
+                         project_token: Optional[str] = None,
+                         task_token: Optional[str] = None) -> Dict[str, Any]:
     """
     Assign initial tasks to all idle agents and run them in CONTINUOUS mode.
     Each agent keeps picking the next uncompleted task after finishing its current one,
     only stopping when ALL tasks are done. Agents run concurrently.
     """
-    global _claimed_task_ids
+    state = _ensure_project_state(project_token)
+    if task_token:
+        state["task_token"] = task_token
+    project_agents = state["agent_states"]
+    claimed_task_ids = state["claimed_task_ids"]
 
     # 1. Synchronously claim all idle agents immediately so UI updates instantly
-    idle_agents = [a for a in agent_states.values() if a["status"] == "idle" and a["id"] != "agent_03"]
+    idle_agents = [a for a in project_agents.values() if a["status"] == "idle" and a["id"] != "agent_03"]
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
 
@@ -2433,7 +2575,7 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
 
     # Fetch all tasks (this is async)
     try:
-        external_tasks = await _fetch_external_tasks()
+        external_tasks = await _fetch_external_tasks(project_token)
         if not external_tasks:
             raise ValueError("No tasks available from the external task API. Generate tasks first.")
 
@@ -2441,7 +2583,7 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
         available_tasks = [
             t for t in external_tasks
             if (t.get("status") or "").lower() not in ("completed", "done")
-            and str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in _claimed_task_ids
+            and str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in claimed_task_ids
         ]
 
         if not available_tasks:
@@ -2474,7 +2616,7 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
         for lid in linked_ids:
             used_task_ids.add(lid)
 
-        _claimed_task_ids.update(used_task_ids)
+        claimed_task_ids.update(used_task_ids)
         assignments.append((agent["id"], task))
 
         # Remove linked tasks from the available pool
@@ -2489,15 +2631,22 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None) -> Dic
             if aid in agents_config:
                 repo_val = agents_config[aid].get("git_repo_url")
                 if repo_val:
-                    agent_states[aid]["git_repo_url"] = repo_val.strip()
+                    project_agents[aid]["git_repo_url"] = repo_val.strip()
                 token_val = agents_config[aid].get("git_token")
                 if token_val:
-                    agent_states[aid]["git_token"] = token_val.strip()
+                    project_agents[aid]["git_token"] = token_val.strip()
 
     # Launch all agents concurrently in CONTINUOUS mode
     async def _run_one(agent_id, assigned_task):
         try:
-            return await run_agent(agent_id, assigned_task=assigned_task, continuous=True, ignore_running_check=True)
+            return await run_agent(
+                agent_id,
+                assigned_task=assigned_task,
+                continuous=True,
+                ignore_running_check=True,
+                project_token=project_token,
+                task_token=task_token,
+            )
         except Exception as e:
             return {"success": False, "agent_id": agent_id, "error": str(e)}
 

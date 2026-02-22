@@ -157,21 +157,21 @@ class TaskManagementService:
             "PUT", f"/api/agent/tasks/{task_id}/checklist/", task_token=task_token, json=payload
         )
 
-    async def post_task_message(self, payload: dict) -> dict:
+    async def post_task_message(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Post a comment/message to a task."""
-        return await self._make_request("POST", "/api/agent/messages/", json=payload)
+        return await self._make_request("POST", "/api/agent/messages/", task_token=task_token, json=payload)
 
-    async def update_task_progress(self, payload: dict) -> dict:
+    async def update_task_progress(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update progress for a task."""
-        return await self._make_request("POST", "/api/agent/task-progress/", json=payload)
+        return await self._make_request("POST", "/api/agent/task-progress/", task_token=task_token, json=payload)
 
-    async def complete_task(self, payload: dict) -> dict:
+    async def complete_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Mark a task as complete."""
-        return await self._make_request("POST", "/api/agent/task-complete/", json=payload)
+        return await self._make_request("POST", "/api/agent/task-complete/", task_token=task_token, json=payload)
 
-    async def post_timer_log(self, payload: dict) -> dict:
+    async def post_timer_log(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Post a clock in/out log for a task."""
-        return await self._make_request("POST", "/api/agent/timer-logs/", json=payload)
+        return await self._make_request("POST", "/api/agent/timer-logs/", task_token=task_token, json=payload)
 
     async def get_dashboard(self, task_token: Optional[str] = None) -> dict:
         """Fetch dashboard insights from the external task management API."""

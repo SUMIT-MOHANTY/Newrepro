@@ -22,6 +22,7 @@ class AgentCredential(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id"), index=True)
+    project_token = Column(String, index=True, nullable=True)
     agent_id = Column(String, index=True)
     git_repo_url = Column(String, nullable=True)
     git_token = Column(String, nullable=True)
@@ -35,6 +36,7 @@ class Agent(Base):
     id = Column(String, primary_key=True, index=True)
     name = Column(String, nullable=False)
     type = Column(String, nullable=True)
+    project_token = Column(String, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Document(Base):
