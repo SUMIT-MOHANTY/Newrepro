@@ -1,14 +1,86 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, Check, GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
+import 'react-loading-skeleton/dist/skeleton.css';
 import ProjectDropdown from './ProjectDropdown';
 import { API_ENDPOINTS } from '../config';
 
-export default function StatusDashboard({ projects = [] }) {
+const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
+const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
+const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
+const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
+
+function decodeJwtExpiry(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length < 2) return null;
+        const payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const padded = payloadB64 + '='.repeat((4 - (payloadB64.length % 4)) % 4);
+        const payload = JSON.parse(atob(padded));
+        return typeof payload.exp === 'number' ? payload.exp : null;
+    } catch {
+        return null;
+    }
+}
+
+function readTaskTokenCache() {
+    try {
+        const raw = localStorage.getItem(TASK_TOKEN_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeTaskTokenCache(cache) {
+    try {
+        localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function getCachedTaskToken(projectKey, minTtlSeconds = 0) {
+    if (!projectKey) return null;
+    const cache = readTaskTokenCache();
+    const entry = cache[projectKey];
+    if (!entry || !entry.token) return null;
+
+    if (entry.expiresAt) {
+        const now = Math.floor(Date.now() / 1000);
+        if (entry.expiresAt <= now + minTtlSeconds) {
+            delete cache[projectKey];
+            writeTaskTokenCache(cache);
+            return null;
+        }
+    }
+    return entry;
+}
+
+function cacheTaskToken(projectKey, token) {
+    if (!projectKey || !token) return;
+    const cache = readTaskTokenCache();
+    cache[projectKey] = {
+        token,
+        expiresAt: decodeJwtExpiry(token),
+    };
+    writeTaskTokenCache(cache);
+}
+
+export default function StatusDashboard({ projects = [], projectsLoading = false }) {
     const navigate = useNavigate();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
-    const [selectedProjectKey, setSelectedProjectKey] = useState(projects[0]?.key || null);
+    const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
+        try {
+            return localStorage.getItem(PROJECT_STORAGE_KEY);
+        } catch {
+            return null;
+        }
+    });
 
     // ── Agent State (Docker Agents) ──────────────────────────────────
     const [agents, setAgents] = useState([]);
@@ -25,6 +97,9 @@ export default function StatusDashboard({ projects = [] }) {
     const [isSavingAgentName, setIsSavingAgentName] = useState(false);
     const [showAddAgentModal, setShowAddAgentModal] = useState(false);
     const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
+    const [isLoadingAgents, setIsLoadingAgents] = useState(false);
+    const [isLoadingProjectInfo, setIsLoadingProjectInfo] = useState(false);
+    const [isLoadingDashboardData, setIsLoadingDashboardData] = useState(false);
 
     // ── External Task API State ──────────────────────────────────────
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
@@ -42,8 +117,12 @@ export default function StatusDashboard({ projects = [] }) {
 
     // ── Dashboard Data State ─────────────────────────────────────────
     const [dashboardData, setDashboardData] = useState(null);
+    const selectedProjectKeyRef = useRef(selectedProjectKey);
+    const dashboardRequestIdRef = useRef(0);
 
     const token = localStorage.getItem('token');
+    const isInitialProjectsLoading = projectsLoading && projects.length === 0;
+    const isDashboardSkeletonVisible = projects.length > 0 && !dashboardData && (isLoadingAgents || isLoadingProjectInfo || isLoadingDashboardData);
     const withProjectToken = useCallback((url) => {
         if (!selectedProjectKey) return url;
         const parsed = new URL(url);
@@ -52,21 +131,106 @@ export default function StatusDashboard({ projects = [] }) {
     }, [selectedProjectKey]);
 
     // ── Dynamic Task Token State ─────────────────────────────────────
-    const [taskToken, setTaskToken] = useState(null);
+    const [taskToken, setTaskToken] = useState(() => {
+        try {
+            const initialProjectKey = localStorage.getItem(PROJECT_STORAGE_KEY);
+            return getCachedTaskToken(initialProjectKey, TOKEN_CACHE_MIN_TTL_SECONDS)?.token || null;
+        } catch {
+            return null;
+        }
+    });
+    const [taskTokenProjectKey, setTaskTokenProjectKey] = useState(() => {
+        try {
+            const initialProjectKey = localStorage.getItem(PROJECT_STORAGE_KEY);
+            return getCachedTaskToken(initialProjectKey, TOKEN_CACHE_MIN_TTL_SECONDS)?.token ? initialProjectKey : null;
+        } catch {
+            return null;
+        }
+    });
+    const hasValidTaskToken = Boolean(taskToken) && taskTokenProjectKey === selectedProjectKey;
+
+    useEffect(() => {
+        selectedProjectKeyRef.current = selectedProjectKey;
+    }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setTaskToken(null);
+            setTaskTokenProjectKey(null);
+            return;
+        }
+        const cached = getCachedTaskToken(selectedProjectKey, TOKEN_CACHE_MIN_TTL_SECONDS);
+        setTaskToken(cached?.token || null);
+        setTaskTokenProjectKey(cached?.token ? selectedProjectKey : null);
+    }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (!projects.length) return;
+
+        const projectKeys = new Set(projects.map((p) => p.key));
+        if (selectedProjectKey && projectKeys.has(selectedProjectKey)) return;
+
+        let storedProjectKey = null;
+        try {
+            storedProjectKey = localStorage.getItem(PROJECT_STORAGE_KEY);
+        } catch {
+            storedProjectKey = null;
+        }
+
+        if (storedProjectKey && projectKeys.has(storedProjectKey)) {
+            setSelectedProjectKey(storedProjectKey);
+            return;
+        }
+
+        setSelectedProjectKey(projects[0]?.key || null);
+    }, [projects, selectedProjectKey]);
+
+    useEffect(() => {
+        try {
+            if (selectedProjectKey) {
+                localStorage.setItem(PROJECT_STORAGE_KEY, selectedProjectKey);
+            } else {
+                localStorage.removeItem(PROJECT_STORAGE_KEY);
+            }
+        } catch {
+            // Ignore storage access errors in restricted browser contexts.
+        }
+    }, [selectedProjectKey]);
 
     useEffect(() => {
         let isMounted = true;
         const fetchTaskToken = async () => {
-            if (!selectedProjectKey || projects.length === 0) {
-                if (isMounted) setTaskToken(null);
+            if (!selectedProjectKey) {
                 return;
             }
+
+            const cached = getCachedTaskToken(selectedProjectKey, TOKEN_CACHE_MIN_TTL_SECONDS);
+            const hasCachedToken = Boolean(cached?.token);
+            if (hasCachedToken && isMounted) {
+                setTaskToken(cached.token);
+                setTaskTokenProjectKey(selectedProjectKey);
+            }
+            if (projects.length === 0) {
+                return;
+            }
+
             const proj = projects.find(p => p.key === selectedProjectKey);
             const clientId = proj?.client_id;
             const clientSecret = proj?.client_secret;
 
             if (!clientId || !clientSecret) {
-                if (isMounted) setTaskToken(null);
+                if (!hasCachedToken && isMounted) {
+                    setTaskToken(null);
+                    setTaskTokenProjectKey(null);
+                }
+                return;
+            }
+
+            const shouldRefresh =
+                !hasCachedToken ||
+                !cached?.expiresAt ||
+                (cached.expiresAt - Math.floor(Date.now() / 1000)) <= TOKEN_REFRESH_THRESHOLD_SECONDS;
+            if (!shouldRefresh) {
                 return;
             }
             try {
@@ -78,12 +242,20 @@ export default function StatusDashboard({ projects = [] }) {
                 if (res.ok && isMounted) {
                     const data = await res.json();
                     setTaskToken(data.access);
+                    setTaskTokenProjectKey(selectedProjectKey);
+                    cacheTaskToken(selectedProjectKey, data.access);
                 } else if (isMounted) {
-                    setTaskToken(null);
+                    if (!hasCachedToken) {
+                        setTaskToken(null);
+                        setTaskTokenProjectKey(null);
+                    }
                 }
             } catch (e) {
                 console.error("Error fetching task token", e);
-                if (isMounted) setTaskToken(null);
+                if (!hasCachedToken && isMounted) {
+                    setTaskToken(null);
+                    setTaskTokenProjectKey(null);
+                }
             }
         };
 
@@ -95,7 +267,8 @@ export default function StatusDashboard({ projects = [] }) {
     }, [selectedProjectKey, projects]);
 
     // ── Fetch agents (Docker agent backend) ──────────────────────────
-    const fetchAgents = useCallback(async () => {
+    const fetchAgents = useCallback(async (silent = false) => {
+        if (!silent) setIsLoadingAgents(true);
         try {
             const res = await fetch(withProjectToken(API_ENDPOINTS.AGENTS), {
                 headers: { Authorization: `Bearer ${token}` },
@@ -106,12 +279,14 @@ export default function StatusDashboard({ projects = [] }) {
             }
         } catch (e) {
             console.error('Failed to fetch agents', e);
+        } finally {
+            if (!silent) setIsLoadingAgents(false);
         }
     }, [token, withProjectToken]);
 
     // ── Fetch tasks (External API) ───────────────────────────────────
     const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
-        if (!taskToken) {
+        if (!hasValidTaskToken) {
             setTaskList([]);
             setTotalTaskCount(0);
             setGeneratedTasksCount(0);
@@ -128,7 +303,7 @@ export default function StatusDashboard({ projects = [] }) {
         try {
             const url = page > 1 ? `${API_ENDPOINTS.AGENT_TASKS}?page=${page}` : API_ENDPOINTS.AGENT_TASKS;
             const headers = { 'Authorization': `Bearer ${token}` };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             const res = await fetch(url, { headers });
             if (res.ok) {
@@ -161,17 +336,18 @@ export default function StatusDashboard({ projects = [] }) {
             setIsLoadingTasks(false);
             setIsLoadingMore(false);
         }
-    }, [token, taskToken]);
+    }, [token, taskToken, hasValidTaskToken]);
 
     // ── Fetch project info ───────────────────────────────────────────
-    const fetchProjectInfo = useCallback(async () => {
-        if (!taskToken) {
+    const fetchProjectInfo = useCallback(async (silent = false) => {
+        if (!hasValidTaskToken) {
             setProjectInfo(null);
             return;
         }
+        if (!silent) setIsLoadingProjectInfo(true);
         try {
             const headers = { 'Authorization': `Bearer ${token}` };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
             if (res.ok) {
                 const data = await res.json();
@@ -179,27 +355,47 @@ export default function StatusDashboard({ projects = [] }) {
             }
         } catch (e) {
             console.error("Failed to load project info:", e);
+        } finally {
+            if (!silent) setIsLoadingProjectInfo(false);
         }
-    }, [token, taskToken]);
+    }, [token, taskToken, hasValidTaskToken]);
 
     // ── Fetch dashboard data ─────────────────────────────────────────
-    const fetchDashboardData = useCallback(async () => {
-        if (!taskToken) {
+    const fetchDashboardData = useCallback(async (silent = false) => {
+        if (!hasValidTaskToken) {
             setDashboardData(null);
             return;
         }
+        const requestProjectKey = selectedProjectKey;
+        const requestId = ++dashboardRequestIdRef.current;
+        if (!silent) setIsLoadingDashboardData(true);
         try {
             const headers = { 'Authorization': `Bearer ${token}` };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, { headers });
             if (res.ok) {
                 const data = await res.json();
+                if (requestId !== dashboardRequestIdRef.current || selectedProjectKeyRef.current !== requestProjectKey) {
+                    return;
+                }
                 setDashboardData(data);
             }
         } catch (e) {
             console.error("Failed to load dashboard data:", e);
+        } finally {
+            if (!silent && requestId === dashboardRequestIdRef.current && selectedProjectKeyRef.current === requestProjectKey) {
+                setIsLoadingDashboardData(false);
+            }
         }
-    }, [token, taskToken]);
+    }, [token, taskToken, hasValidTaskToken, selectedProjectKey]);
+
+    useEffect(() => {
+        dashboardRequestIdRef.current += 1;
+        setIsLoadingProjectInfo(false);
+        setIsLoadingDashboardData(false);
+        setProjectInfo(null);
+        setDashboardData(null);
+    }, [selectedProjectKey]);
 
     const getPageFromUrl = (url) => {
         if (!url) return null;
@@ -208,21 +404,21 @@ export default function StatusDashboard({ projects = [] }) {
     };
 
     useEffect(() => {
-        // Wait until taskToken is resolved if we have a project selected.
-        if (selectedProjectKey && !taskToken) return;
-
         const load = async () => {
-            await Promise.all([fetchAgents(), fetchTasks(), fetchProjectInfo(), fetchDashboardData()]);
+            await fetchAgents();
+            // task endpoints need x-task-token; wait until it is available.
+            if (selectedProjectKey && !hasValidTaskToken) return;
+            await Promise.all([fetchTasks(), fetchProjectInfo(), fetchDashboardData()]);
         };
         load();
-    }, [fetchAgents, fetchTasks, fetchProjectInfo, fetchDashboardData, selectedProjectKey, taskToken]);
+    }, [fetchAgents, fetchTasks, fetchProjectInfo, fetchDashboardData, selectedProjectKey, hasValidTaskToken]);
 
     // Poll while agents are running
     useEffect(() => {
         const hasRunning = agents.some(a => a.status === 'running');
         if (!hasRunning) return;
         const interval = setInterval(() => {
-            fetchAgents();
+            fetchAgents(true);
             fetchTasks(false, 1, true); // silent reload
         }, 3000);
         return () => clearInterval(interval);
@@ -255,7 +451,7 @@ export default function StatusDashboard({ projects = [] }) {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
             };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN(agentId)), {
                 method: 'POST',
                 headers,
@@ -354,7 +550,7 @@ export default function StatusDashboard({ projects = [] }) {
 
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
                 headers,
@@ -375,7 +571,7 @@ export default function StatusDashboard({ projects = [] }) {
         setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
                 headers,
@@ -634,7 +830,7 @@ export default function StatusDashboard({ projects = [] }) {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             const response = await fetch(API_ENDPOINTS.AGENT_AUTO_GENERATE, {
                 method: 'POST',
@@ -730,6 +926,171 @@ export default function StatusDashboard({ projects = [] }) {
         </div>
     );
 
+    const renderDashboardSkeleton = () => (
+        <SkeletonTheme baseColor="#e5e7eb" highlightColor="#f3f4f6">
+            <div className="flex-1 p-4 md:p-6 flex flex-col gap-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {[0, 1, 2, 3].map((idx) => (
+                        <div key={idx} className="bg-white p-4 rounded-xl shadow border border-gray-100">
+                            <Skeleton height={12} width="45%" />
+                            <div className="mt-2">
+                                <Skeleton height={30} width="70%" />
+                            </div>
+                            <div className="mt-2">
+                                <Skeleton height={10} width="35%" />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 w-full items-start">
+                    <div className="space-y-6 lg:col-start-1 w-full min-w-0">
+                        <div className="bg-white rounded-xl shadow border border-gray-100 p-6">
+                            <Skeleton height={20} width={220} />
+                            <div className="mt-5 space-y-3">
+                                {[0, 1, 2, 3].map((i) => (
+                                    <div key={i} className="grid grid-cols-3 gap-4">
+                                        <Skeleton height={14} />
+                                        <Skeleton height={14} />
+                                        <Skeleton height={14} />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-xl shadow border border-gray-100 p-6">
+                            <Skeleton height={20} width={260} />
+                            <div className="mt-6 flex items-end justify-center gap-6">
+                                <Skeleton height={160} width={120} />
+                                <div className="space-y-3">
+                                    <div className="flex items-center gap-2">
+                                        <Skeleton height={14} width={24} />
+                                        <Skeleton height={12} width={140} />
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Skeleton height={14} width={24} />
+                                        <Skeleton height={12} width={140} />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="w-full bg-white rounded-xl shadow border border-gray-100 p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
+                        <Skeleton height={28} width={170} />
+                        <div className="w-full mt-4 mb-6">
+                            <Skeleton height={2} />
+                        </div>
+                        <Skeleton circle width={96} height={96} />
+                        <div className="mt-3">
+                            <Skeleton height={14} width={130} />
+                        </div>
+                        <div className="w-full mt-6 space-y-5">
+                            {[0, 1, 2].map((i) => (
+                                <div key={i} className="flex flex-col items-center">
+                                    <Skeleton circle width={92} height={92} />
+                                    <div className="mt-3">
+                                        <Skeleton height={12} width={120} />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="w-full mt-6 lg:col-start-1 min-w-0">
+                    <div className="flex items-center justify-between mb-6">
+                        <Skeleton height={24} width={180} />
+                        <div className="flex items-center gap-2">
+                            <Skeleton height={28} width={90} />
+                            <Skeleton height={28} width={80} />
+                            <Skeleton height={28} width={90} />
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                        {[0, 1, 2].map((idx) => (
+                            <div key={idx} className="bg-white rounded-xl shadow border border-gray-100 p-5">
+                                <div className="flex items-center justify-between">
+                                    <Skeleton circle width={40} height={40} />
+                                    <Skeleton height={12} width={56} />
+                                </div>
+                                <div className="mt-4">
+                                    <Skeleton height={14} width="70%" />
+                                </div>
+                                <div className="mt-2">
+                                    <Skeleton height={10} width="45%" />
+                                </div>
+                                <div className="mt-5 space-y-2">
+                                    <Skeleton height={8} />
+                                    <Skeleton height={8} />
+                                </div>
+                                <div className="mt-5 flex gap-2">
+                                    <Skeleton height={30} width={80} />
+                                    <Skeleton height={30} width={80} />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </SkeletonTheme>
+    );
+
+    const renderGeneratedTasksSkeleton = () => (
+        <SkeletonTheme baseColor="#e5e7eb" highlightColor="#f3f4f6">
+            <div className="px-4 md:px-6 pb-6">
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
+                        <div className="flex items-center gap-3">
+                            <Skeleton circle width={36} height={36} />
+                            <div>
+                                <Skeleton height={14} width={140} />
+                                <div className="mt-1">
+                                    <Skeleton height={10} width={220} />
+                                </div>
+                            </div>
+                        </div>
+                        <Skeleton height={28} width={86} />
+                    </div>
+
+                    <div className="hidden md:block bg-gray-50/50 border-b border-gray-100 px-6 py-2.5">
+                        <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                            {[0, 1, 2, 3, 4, 5, 6, 7].map((idx) => (
+                                <Skeleton key={idx} height={10} />
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="divide-y divide-gray-50 p-4 md:p-0">
+                        {[0, 1, 2, 3, 4, 5].map((row) => (
+                            <div key={row} className="px-6 py-3">
+                                <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                    <Skeleton height={10} width={18} />
+                                    <div>
+                                        <Skeleton height={13} width="58%" />
+                                        <div className="mt-1">
+                                            <Skeleton height={10} width="72%" />
+                                        </div>
+                                    </div>
+                                    <Skeleton height={10} width={110} />
+                                    <Skeleton height={18} width={70} />
+                                    <Skeleton height={18} width={62} />
+                                    <Skeleton height={12} width={92} />
+                                    <Skeleton height={10} width={42} />
+                                    <Skeleton height={10} width={94} />
+                                </div>
+                                <div className="md:hidden space-y-2">
+                                    <Skeleton height={14} />
+                                    <Skeleton height={10} width="70%" />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </SkeletonTheme>
+    );
+
     return (
         <div className="w-full min-h-full bg-gray-50 flex flex-col font-sans overflow-y-auto relative">
             {/* Top Graphic Header Area */}
@@ -752,14 +1113,21 @@ export default function StatusDashboard({ projects = [] }) {
                     <ProjectDropdown
                         projects={projects}
                         selectedKey={selectedProjectKey}
-                        onSelect={(proj) => setSelectedProjectKey(proj.key)}
+                        onSelect={(proj) => {
+                            if (!proj?.key || proj.key === selectedProjectKey) return;
+                            setTaskToken(null);
+                            setTaskTokenProjectKey(null);
+                            setSelectedProjectKey(proj.key);
+                        }}
                         className="w-full sm:w-72"
                     />
                 </div>
             </div>
 
             {/* Empty State vs Full Data */}
-            {projects.length === 0 ? (
+            {isInitialProjectsLoading ? (
+                renderDashboardSkeleton()
+            ) : projects.length === 0 ? (
                 <div className="flex-1 p-4 md:p-6 flex flex-col items-center justify-center min-h-[500px]">
                     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-10 max-w-md w-full text-center flex flex-col items-center">
                         <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6 shadow-inner">
@@ -779,6 +1147,8 @@ export default function StatusDashboard({ projects = [] }) {
                         </button>
                     </div>
                 </div>
+            ) : isDashboardSkeletonVisible ? (
+                renderDashboardSkeleton()
             ) : (
                 <div className="flex-1 p-4 md:p-6 flex flex-col gap-6">
 
@@ -1317,6 +1687,9 @@ export default function StatusDashboard({ projects = [] }) {
             {/* Generated Tasks Section */}
             {
                 projects.length > 0 && (
+                    isDashboardSkeletonVisible && taskList.length === 0 ? (
+                        renderGeneratedTasksSkeleton()
+                    ) : (
                     <div className="px-4 md:px-6 pb-6">
                         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                             <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
@@ -1352,9 +1725,24 @@ export default function StatusDashboard({ projects = [] }) {
 
                             <div className="divide-y divide-gray-50">
                                 {isLoadingTasks && taskList.length === 0 && (
-                                    <div className="p-12 flex flex-col items-center justify-center gap-3">
-                                        <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin" />
-                                        <p className="text-sm text-gray-400 font-medium">Loading tasks...</p>
+                                    <div className="p-6 space-y-4">
+                                        {[0, 1, 2, 3].map((row) => (
+                                            <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_140px_90px_80px_120px_60px_130px] gap-2 items-center">
+                                                <Skeleton height={10} width={18} />
+                                                <div>
+                                                    <Skeleton height={13} width="52%" />
+                                                    <div className="mt-1">
+                                                        <Skeleton height={10} width="70%" />
+                                                    </div>
+                                                </div>
+                                                <Skeleton height={10} width={108} />
+                                                <Skeleton height={18} width={72} />
+                                                <Skeleton height={18} width={64} />
+                                                <Skeleton height={12} width={90} />
+                                                <Skeleton height={10} width={42} />
+                                                <Skeleton height={10} width={90} />
+                                            </div>
+                                        ))}
                                     </div>
                                 )}
                                 {taskListError && !isLoadingTasks && (
@@ -1491,6 +1879,7 @@ export default function StatusDashboard({ projects = [] }) {
                             </div>
                         </div>
                     </div>
+                    )
                 )}
 
             {/* Add Project Modal */}

@@ -19,6 +19,7 @@ export default function AppLayout({ children }) {
     const [user, setUser] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [projects, setProjects] = useState([]);
+    const [isProjectsLoading, setIsProjectsLoading] = useState(true);
     const [selectedProjectKey, setSelectedProjectKey] = useState('');
     const [showSettings, setShowSettings] = useState(false);
 
@@ -60,22 +61,22 @@ export default function AppLayout({ children }) {
 
     // Fetch projects for sidebar
     const fetchProjects = useCallback(async () => {
+        setIsProjectsLoading(true);
         try {
             const token = localStorage.getItem('token');
-            // Fetch governance history
-            const govRes = await fetch(API_ENDPOINTS.GOVERNANCE_HISTORY, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            if (govRes.status === 401) { handleLogout(); return; }
-            const govPayload = govRes.ok ? await govRes.json() : {};
-            const submissions = Array.isArray(govPayload?.submissions) ? govPayload.submissions : [];
+            const authHeaders = { Authorization: `Bearer ${token}` };
+            const [govRes, histRes] = await Promise.all([
+                fetch(API_ENDPOINTS.GOVERNANCE_HISTORY, { headers: authHeaders }),
+                fetch(API_ENDPOINTS.HISTORY, { headers: authHeaders }),
+            ]);
+            if (govRes.status === 401 || histRes.status === 401) { handleLogout(); return; }
 
-            // Fetch document history
-            const histRes = await fetch(API_ENDPOINTS.HISTORY, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            if (histRes.status === 401) { handleLogout(); return; }
-            const history = histRes.ok ? await histRes.json() : [];
+            const [govPayload, historyPayload] = await Promise.all([
+                govRes.ok ? govRes.json() : Promise.resolve({}),
+                histRes.ok ? histRes.json() : Promise.resolve([]),
+            ]);
+            const submissions = Array.isArray(govPayload?.submissions) ? govPayload.submissions : [];
+            const history = Array.isArray(historyPayload) ? historyPayload : [];
 
             // Build project map
             const normalizeProjectName = (name) =>
@@ -103,7 +104,7 @@ export default function AppLayout({ children }) {
                 });
             });
 
-            (Array.isArray(history) ? history : []).forEach((doc) => {
+            history.forEach((doc) => {
                 let parsedAnalysis = null;
                 try { parsedAnalysis = doc?.analysis_result ? JSON.parse(doc.analysis_result) : null; } catch { /* ignore */ }
 
@@ -169,6 +170,8 @@ export default function AppLayout({ children }) {
             setProjects(builtProjects);
         } catch (err) {
             console.error('Error fetching projects for layout:', err);
+        } finally {
+            setIsProjectsLoading(false);
         }
     }, [handleLogout]);
 
@@ -210,6 +213,7 @@ export default function AppLayout({ children }) {
 
     const layoutProps = {
         user, isSidebarOpen, setIsSidebarOpen, projects,
+        projectsLoading: isProjectsLoading,
         selectedProjectKey, setSelectedProjectKey,
         showSettings, setShowSettings,
         currentView, setCurrentView,

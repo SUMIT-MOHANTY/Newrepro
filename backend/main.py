@@ -1110,6 +1110,7 @@ async def run_agent(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
+    project_token: Optional[str] = None,
 ):
     """
     Trigger an idle agent to pick a pending task and start working on it.
@@ -1164,6 +1165,7 @@ async def run_agent(
             git_repo_url=run_repo,
             git_token=run_token,
             ignore_running_check=True,
+            project_token=project_token,
             task_token=x_task_token,
         )
     )
@@ -1206,6 +1208,7 @@ async def run_all_agents(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
+    project_token: Optional[str] = None,
 ):
     """
     Start all idle agents simultaneously in the BACKGROUND.
@@ -1258,6 +1261,7 @@ async def run_all_agents(
     bg_task = asyncio.create_task(
         agent_service.run_all_agents(
             agents_config=agents_config if agents_config else None,
+            project_token=project_token,
             task_token=x_task_token,
         )
     )

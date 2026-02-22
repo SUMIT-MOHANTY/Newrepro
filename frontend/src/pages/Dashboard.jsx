@@ -140,6 +140,7 @@ const buildGovernanceContextFromResult = (resultData) => {
 const Dashboard = ({
     user: propUser,
     projects: propProjects,
+    projectsLoading: propProjectsLoading,
     selectedProjectKey: propSelectedProjectKey,
     setSelectedProjectKey: propSetSelectedProjectKey,
     showSettings: propShowSettings,
@@ -162,6 +163,7 @@ const Dashboard = ({
     const [governanceHistory, setGovernanceHistory] = useState([]);
     const [internalProjects, setInternalProjects] = useState([]);
     const projects = propProjects || internalProjects;
+    const projectsLoading = propProjectsLoading ?? false;
     const setProjects = setInternalProjects;
 
     const [internalSelectedProjectKey, setInternalSelectedProjectKey] = useState('');
@@ -1691,7 +1693,7 @@ const Dashboard = ({
         <>
             {currentView === 'statusDashboard' ? (
                 <div className="h-full overflow-auto">
-                    <StatusDashboard projects={projects} />
+                    <StatusDashboard projects={projects} projectsLoading={projectsLoading} />
                 </div>
             ) : (
                 <main className="flex-1 h-full overflow-y-auto bg-gray-50 p-3 sm:p-4 md:p-8 w-full">
