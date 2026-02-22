@@ -833,10 +833,10 @@ export default function StatusDashboard({ projects = [] }) {
                     </div>
 
                     {/* Bottom Section: 2 Columns */}
-                    <div className="flex flex-col lg:flex-row gap-6 w-full">
+                    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 w-full items-start">
 
                         {/* Left Column (Main Content) */}
-                        <div className="flex-1 space-y-6 min-w-0">
+                        <div className="space-y-6 lg:col-start-1 w-full min-w-0">
 
                             {/* KEY MILESTONES & DATES */}
                             <div className="bg-white rounded-xl shadow border border-gray-100 p-6 relative">
@@ -846,7 +846,7 @@ export default function StatusDashboard({ projects = [] }) {
                                     </div>
                                     <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">KEY MILESTONES & DATES</h3>
                                 </div>
-                                <div className="overflow-auto rounded-lg border border-gray-100" style={{ minHeight: '120px', maxHeight: '320px' }}>
+                                <div className="overflow-auto rounded-lg border border-gray-100" style={{ maxHeight: '320px' }}>
                                     <table className="min-w-full text-sm">
                                         <colgroup><col style={{ width: '30%' }} /><col style={{ width: '35%' }} /><col style={{ width: '35%' }} /></colgroup>
                                         <thead className="bg-[#fdf4e6] sticky top-0 z-10">
@@ -882,7 +882,7 @@ export default function StatusDashboard({ projects = [] }) {
                             </div>
 
                             {/* ACTUAL VS REMAINING WORK */}
-                            <div className="bg-white rounded-xl shadow border border-gray-100 p-6 flex flex-col relative min-h-[300px]">
+                            <div className="bg-white rounded-xl shadow border border-gray-100 p-6 flex flex-col relative">
                                 <div className="flex items-center mb-8">
                                     <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
                                         <Activity className="w-5 h-5" />
@@ -890,16 +890,15 @@ export default function StatusDashboard({ projects = [] }) {
                                     <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">ACTUAL VS REMAINING WORK</h3>
                                 </div>
 
-                                <div className="flex-1 flex items-end justify-center px-12 pb-6 relative">
-                                    {/* Y Axis markings */}
-                                    <div className="absolute left-10 flex flex-col justify-between h-[200px] bottom-6 text-xs font-bold text-gray-500 w-10 text-right pr-2">
-                                        <span className="relative -top-2">80%</span>
-                                        <span className="relative">40%</span>
+                                <div className="flex-1 flex items-end justify-center px-12 mb-8 relative">
+                                    <div className="absolute left-10 flex flex-col justify-between h-[200px] bottom-0 text-xs font-bold text-gray-500 w-10 text-right pr-2">
+                                        <span className="relative -top-2">100%</span>
+                                        <span className="relative">50%</span>
                                         <span className="relative top-2">0%</span>
                                     </div>
 
                                     {/* Grid lines */}
-                                    <div className="absolute left-20 right-40 flex flex-col justify-between h-[200px] bottom-6 pointer-events-none">
+                                    <div className="absolute left-20 right-40 flex flex-col justify-between h-[200px] bottom-0 pointer-events-none">
                                         <div className="w-full border-t border-gray-300"></div>
                                         <div className="w-full border-t border-gray-300"></div>
                                         <div className="w-full border-t border-gray-500"></div>
@@ -917,7 +916,7 @@ export default function StatusDashboard({ projects = [] }) {
                                         </div>
                                     </div>
 
-                                    <div className="absolute bottom-[-15px] w-full text-center text-[10px] font-bold text-gray-500">
+                                    <div className="absolute bottom-[-25px] w-full text-center text-[10px] font-bold text-gray-500">
                                         Overall Assessment Progress
                                     </div>
 
@@ -939,7 +938,7 @@ export default function StatusDashboard({ projects = [] }) {
                         </div>
 
                         {/* Right Column (Sidebar Summary) */}
-                        <div className="w-full shrink-0 lg:w-[320px] bg-white rounded-xl shadow border border-gray-100 p-4 md:p-6 flex flex-col items-center">
+                        <div className="w-full bg-white rounded-xl shadow border border-gray-100 p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
                             <h2 className="text-[22px] font-bold text-[#f27a24] mb-4">Project Status</h2>
                             <div className="w-full border-t-2 border-[#f27a24] mb-8 opacity-50"></div>
 
@@ -1044,201 +1043,202 @@ export default function StatusDashboard({ projects = [] }) {
                                 <p className="text-[13px] font-bold text-gray-600">Sprint Progress</p>
                             </div>
                         </div>
-                    </div>
 
-                    {/* Task Tables Section - matching screenshot layout */}
-                    {dashboardData?.tasks && (
-                        <div className="mt-8 space-y-6">
-                            {/* Row 1: Late Tasks + Upcoming Tasks (Next Period) */}
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                {/* Late Tasks Table */}
-                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
-                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Late Tasks</h3>
-                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                        <table className="min-w-full text-sm">
-                                            <thead className="sticky top-0 z-10">
-                                                <tr className="bg-[#f27a24] text-white">
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-100 bg-white">
-                                                {(dashboardData.tasks.late_tasks || []).map((task, idx) => (
-                                                    <tr key={task.id} className="hover:bg-red-50/50">
-                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
-                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                        <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                        {/* Task Tables Section - matching screenshot layout */}
+                        {dashboardData?.tasks && (
+                            <div className="mt-8 space-y-6 lg:col-start-1 w-full min-w-0">
+                                {/* Row 1: Late Tasks + Upcoming Tasks (Next Period) */}
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                    {/* Late Tasks Table */}
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Late Tasks</h3>
+                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                            <table className="min-w-full text-sm">
+                                                <thead className="sticky top-0 z-10">
+                                                    <tr className="bg-[#f27a24] text-white">
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
                                                     </tr>
-                                                ))}
-                                                {(!dashboardData.tasks.late_tasks || dashboardData.tasks.late_tasks.length === 0) && (
-                                                    <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No late tasks</td></tr>
-                                                )}
-                                            </tbody>
-                                        </table>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                    {(dashboardData.tasks.late_tasks || []).map((task, idx) => (
+                                                        <tr key={task.id} className="hover:bg-red-50/50">
+                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                            <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                        </tr>
+                                                    ))}
+                                                    {(!dashboardData.tasks.late_tasks || dashboardData.tasks.late_tasks.length === 0) && (
+                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No late tasks</td></tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    {/* Upcoming Tasks (Next Period) Table */}
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Upcoming Tasks (Next Period)</h3>
+                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                            <table className="min-w-full text-sm">
+                                                <thead className="sticky top-0 z-10">
+                                                    <tr className="bg-[#f27a24] text-white">
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                    {(dashboardData.tasks.upcoming_tasks_next_period || []).map((task, idx) => (
+                                                        <tr key={task.id} className="hover:bg-gray-50">
+                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                            <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.target_date ? new Date(task.target_date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                        </tr>
+                                                    ))}
+                                                    {(!dashboardData.tasks.upcoming_tasks_next_period || dashboardData.tasks.upcoming_tasks_next_period.length === 0) && (
+                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No upcoming tasks</td></tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     </div>
                                 </div>
 
-                                {/* Upcoming Tasks (Next Period) Table */}
-                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
-                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Upcoming Tasks (Next Period)</h3>
-                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                        <table className="min-w-full text-sm">
-                                            <thead className="sticky top-0 z-10">
-                                                <tr className="bg-[#f27a24] text-white">
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-100 bg-white">
-                                                {(dashboardData.tasks.upcoming_tasks_next_period || []).map((task, idx) => (
-                                                    <tr key={task.id} className="hover:bg-gray-50">
-                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
-                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                        <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.target_date ? new Date(task.target_date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                {/* Row 2: Due This Week + In Progress / Recently Completed */}
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                    {/* Due This Week Table */}
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Due This Week</h3>
+                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                            <table className="min-w-full text-sm">
+                                                <thead className="sticky top-0 z-10">
+                                                    <tr className="bg-[#f27a24] text-white">
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                        <th className="px-4 py-2.5 text-center font-bold text-xs w-20">Progress</th>
+                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Deadline</th>
                                                     </tr>
-                                                ))}
-                                                {(!dashboardData.tasks.upcoming_tasks_next_period || dashboardData.tasks.upcoming_tasks_next_period.length === 0) && (
-                                                    <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No upcoming tasks</td></tr>
-                                                )}
-                                            </tbody>
-                                        </table>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                    {(dashboardData.tasks.due_this_week || []).map((task, idx) => (
+                                                        <tr key={task.id} className="hover:bg-orange-50/50">
+                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                            <td className="px-4 py-3 text-center text-gray-700 font-bold">{task.progress ?? 0}%</td>
+                                                            <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                        </tr>
+                                                    ))}
+                                                    {(!dashboardData.tasks.due_this_week || dashboardData.tasks.due_this_week.length === 0) && (
+                                                        <tr><td colSpan="4" className="px-4 py-6 text-center text-gray-400 italic">No tasks due this week</td></tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    {/* In Progress + Recently Completed Table */}
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">In Progress & Recently Completed</h3>
+                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                            <table className="min-w-full text-sm">
+                                                <thead className="sticky top-0 z-10">
+                                                    <tr className="bg-[#f27a24] text-white">
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-24">Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                    {(dashboardData.tasks.in_progress || []).map((task, idx) => (
+                                                        <tr key={task.id} className="hover:bg-blue-50/50">
+                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                            <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-700 text-xs font-bold rounded">{task.progress ?? 0}%</span></td>
+                                                        </tr>
+                                                    ))}
+                                                    {(dashboardData.tasks.recently_completed || []).map((task, idx) => (
+                                                        <tr key={task.id} className="hover:bg-green-50/50">
+                                                            <td className="px-4 py-3 text-gray-400 font-semibold">{(dashboardData.tasks.in_progress?.length || 0) + idx + 1}</td>
+                                                            <td className="px-4 py-3 text-gray-400 font-medium line-through">{task.name || task.description || 'Untitled'}</td>
+                                                            <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded">Done</span></td>
+                                                        </tr>
+                                                    ))}
+                                                    {(!dashboardData.tasks.in_progress?.length && !dashboardData.tasks.recently_completed?.length) && (
+                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No tasks in progress or recently completed</td></tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
+                        )}
 
-                            {/* Row 2: Due This Week + In Progress / Recently Completed */}
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                {/* Due This Week Table */}
-                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
-                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Due This Week</h3>
-                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                        <table className="min-w-full text-sm">
-                                            <thead className="sticky top-0 z-10">
-                                                <tr className="bg-[#f27a24] text-white">
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                    <th className="px-4 py-2.5 text-center font-bold text-xs w-20">Progress</th>
-                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Deadline</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-100 bg-white">
-                                                {(dashboardData.tasks.due_this_week || []).map((task, idx) => (
-                                                    <tr key={task.id} className="hover:bg-orange-50/50">
-                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
-                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                        <td className="px-4 py-3 text-center text-gray-700 font-bold">{task.progress ?? 0}%</td>
-                                                        <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
-                                                    </tr>
-                                                ))}
-                                                {(!dashboardData.tasks.due_this_week || dashboardData.tasks.due_this_week.length === 0) && (
-                                                    <tr><td colSpan="4" className="px-4 py-6 text-center text-gray-400 italic">No tasks due this week</td></tr>
-                                                )}
-                                            </tbody>
-                                        </table>
+                        {/* ── AI AGENTS SECTION ── */}
+                        <div className="w-full mt-6 lg:col-start-1 min-w-0">
+                            <div className="flex items-center justify-between mb-6">
+                                <div className="flex items-center">
+                                    <div className="p-2 mr-3 bg-indigo-50 rounded text-indigo-500">
+                                        <Bot className="w-5 h-5" />
                                     </div>
+                                    <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
+                                    <span className="ml-3 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded-full">
+                                        {agents.filter(a => a.status === 'running').length} Running
+                                    </span>
                                 </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
+                                        {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
+                                    </span>
+                                    <button
+                                        onClick={handleRunAll}
+                                        disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
+                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
+                                            ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                            : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                            }`}
+                                        title="Run all idle agents simultaneously"
+                                    >
+                                        {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                        {runningAll ? 'Starting...' : 'Run All'}
+                                    </button>
+                                    <button
+                                        onClick={handleGenerateTasks}
+                                        disabled={isGeneratingTasks || !selectedProjectKey}
+                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
+                                            ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                            : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                            }`}
+                                        title="Generate tasks from selected project"
+                                    >
+                                        {isGeneratingTasks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                        {isGeneratingTasks ? 'Mapping...' : 'Create Tasks'}
+                                    </button>
+                                    <button
+                                        onClick={() => handleAddAgent()}
+                                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+                                        title="Add a new agent"
+                                    >
+                                        <PlusCircle className="w-3.5 h-3.5" />
+                                        Add Agent
+                                    </button>
+                                    <button
+                                        onClick={() => { fetchAgents(); fetchTasks(); }}
+                                        className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 transition-colors"
+                                        title="Refresh"
+                                    >
+                                        <RefreshCw className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            </div>
 
-                                {/* In Progress + Recently Completed Table */}
-                                <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
-                                    <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">In Progress & Recently Completed</h3>
-                                    <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                        <table className="min-w-full text-sm">
-                                            <thead className="sticky top-0 z-10">
-                                                <tr className="bg-[#f27a24] text-white">
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                    <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                    <th className="px-4 py-2.5 text-right font-bold text-xs w-24">Status</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-100 bg-white">
-                                                {(dashboardData.tasks.in_progress || []).map((task, idx) => (
-                                                    <tr key={task.id} className="hover:bg-blue-50/50">
-                                                        <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
-                                                        <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                        <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-700 text-xs font-bold rounded">{task.progress ?? 0}%</span></td>
-                                                    </tr>
-                                                ))}
-                                                {(dashboardData.tasks.recently_completed || []).map((task, idx) => (
-                                                    <tr key={task.id} className="hover:bg-green-50/50">
-                                                        <td className="px-4 py-3 text-gray-400 font-semibold">{(dashboardData.tasks.in_progress?.length || 0) + idx + 1}</td>
-                                                        <td className="px-4 py-3 text-gray-400 font-medium line-through">{task.name || task.description || 'Untitled'}</td>
-                                                        <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded">Done</span></td>
-                                                    </tr>
-                                                ))}
-                                                {(!dashboardData.tasks.in_progress?.length && !dashboardData.tasks.recently_completed?.length) && (
-                                                    <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No tasks in progress or recently completed</td></tr>
-                                                )}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                {agents.map(agent => renderAgentCard(agent))}
                             </div>
                         </div>
-                    )}
-
-                    {/* ── AI AGENTS SECTION ── */}
-                    <div className="w-full mt-6">
-                        <div className="flex items-center justify-between mb-6">
-                            <div className="flex items-center">
-                                <div className="p-2 mr-3 bg-indigo-50 rounded text-indigo-500">
-                                    <Bot className="w-5 h-5" />
-                                </div>
-                                <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
-                                <span className="ml-3 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded-full">
-                                    {agents.filter(a => a.status === 'running').length} Running
-                                </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
-                                    {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
-                                </span>
-                                <button
-                                    onClick={handleRunAll}
-                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
-                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                                        : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
-                                        }`}
-                                    title="Run all idle agents simultaneously"
-                                >
-                                    {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                    {runningAll ? 'Starting...' : 'Run All'}
-                                </button>
-                                <button
-                                    onClick={handleGenerateTasks}
-                                    disabled={isGeneratingTasks || !selectedProjectKey}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
-                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                                        : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
-                                        }`}
-                                    title="Generate tasks from selected project"
-                                >
-                                    {isGeneratingTasks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                    {isGeneratingTasks ? 'Mapping...' : 'Create Tasks'}
-                                </button>
-                                <button
-                                    onClick={() => handleAddAgent()}
-                                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
-                                    title="Add a new agent"
-                                >
-                                    <PlusCircle className="w-3.5 h-3.5" />
-                                    Add Agent
-                                </button>
-                                <button
-                                    onClick={() => { fetchAgents(); fetchTasks(); }}
-                                    className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 transition-colors"
-                                    title="Refresh"
-                                >
-                                    <RefreshCw className="w-4 h-4" />
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                            {agents.map(agent => renderAgentCard(agent))}
-                        </div>
+                        {/* Closes CSS grid layout */}
                     </div>
                 </div>
 
