@@ -56,9 +56,13 @@ export default function StatusDashboard({ projects = [] }) {
                 return;
             }
             const proj = projects.find(p => p.key === selectedProjectKey);
-            const clientId = proj?.client_id || import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
-            const clientSecret = proj?.client_secret || import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
+            const clientId = proj?.client_id;
+            const clientSecret = proj?.client_secret;
 
+            if (!clientId || !clientSecret) {
+                if (isMounted) setTaskToken(null);
+                return;
+            }
             try {
                 const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
                     method: 'POST',
@@ -101,6 +105,13 @@ export default function StatusDashboard({ projects = [] }) {
 
     // ── Fetch tasks (External API) ───────────────────────────────────
     const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
+        if (!taskToken) {
+            setTaskList([]);
+            setTotalTaskCount(0);
+            setGeneratedTasksCount(0);
+            return;
+        }
+
         if (append) {
             if (!silent) setIsLoadingMore(true);
         } else {
@@ -148,6 +159,10 @@ export default function StatusDashboard({ projects = [] }) {
 
     // ── Fetch project info ───────────────────────────────────────────
     const fetchProjectInfo = useCallback(async () => {
+        if (!taskToken) {
+            setProjectInfo(null);
+            return;
+        }
         try {
             const headers = { 'Authorization': `Bearer ${token}` };
             if (taskToken) headers['x-task-token'] = taskToken;
@@ -163,6 +178,10 @@ export default function StatusDashboard({ projects = [] }) {
 
     // ── Fetch dashboard data ─────────────────────────────────────────
     const fetchDashboardData = useCallback(async () => {
+        if (!taskToken) {
+            setDashboardData(null);
+            return;
+        }
         try {
             const headers = { 'Authorization': `Bearer ${token}` };
             if (taskToken) headers['x-task-token'] = taskToken;
