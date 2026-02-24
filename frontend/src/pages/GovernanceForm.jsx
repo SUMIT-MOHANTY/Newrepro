@@ -5,7 +5,7 @@ import {
     Send, AlertCircle, CheckCircle2, AlertTriangle,
     ChevronRight, ChevronLeft, ArrowRight, Check
 } from 'lucide-react';
-import RoadmapHeader from '../components/RoadmapHeader';
+
 
 /* ─────────────────────────────────────────────────────────
    STEP INDICATOR  (compact, responsive)
@@ -330,8 +330,7 @@ const GovernanceForm = () => {
                 </div>
                 {/* </div> */}
 
-                {/* ── Roadmap / Timeline Header ── */}
-                <RoadmapHeader steps={stepLabels} currentStep={currentStep} />
+
 
                 <div className="flex gap-5 items-start">
 

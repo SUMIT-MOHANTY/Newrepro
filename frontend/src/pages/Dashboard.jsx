@@ -8,7 +8,7 @@ import remarkGfm from 'remark-gfm';
 import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X, CheckCircle2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import AIConfig from '../components/AIConfig';
-import RoadmapHeader from '../components/RoadmapHeader';
+
 // import bourntecLogo from '../assets/bourntec_logo.png';
 import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
@@ -91,7 +91,7 @@ const isLikelyHtml = (content = '') => {
 const sanitizeHtml = (content = '') => DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
 
 const normalizeProjectName = (name = '') => String(name || '').trim().toLowerCase();
-const GOVERNANCE_STEP_LABELS = ['Project', 'Business', 'Data', 'Integration', 'Operational', 'AI', 'Ownership', 'Review'];
+
 
 const normalizeDimensionScores = (dimensionScores = {}) => ({
     "Business Value & Urgency": dimensionScores["Business Value & Urgency"] ?? dimensionScores.business_value ?? 0,
@@ -146,6 +146,7 @@ const Dashboard = ({
     showSettings: propShowSettings,
     setShowSettings: propSetShowSettings,
     currentView: propCurrentView,
+    isNewProjectMode,
 }) => {
     const { projectToken } = useParams();
     const [user, setUser] = useState(propUser || null);
@@ -233,7 +234,6 @@ const Dashboard = ({
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
-    const [roadmapData, setRoadmapData] = useState({ steps: GOVERNANCE_STEP_LABELS, current_step: 0 });
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
 
@@ -625,6 +625,8 @@ const Dashboard = ({
             setSelectedProjectKey('');
             return;
         }
+        // Don't auto-select when the user is creating a new project
+        if (isNewProjectMode) return;
         if (selectedProjectKey && projects.some((project) => project.key === selectedProjectKey)) {
             return;
         }
@@ -642,7 +644,7 @@ const Dashboard = ({
             : null;
 
         setSelectedProjectKey(preferredByToken?.key || preferredById?.key || preferredByName?.key || projects[0].key);
-    }, [projects, selectedProjectKey, governanceContext]);
+    }, [projects, selectedProjectKey, governanceContext, isNewProjectMode]);
 
     useEffect(() => {
         if (!selectedProject?.governanceResultId) return;
@@ -652,27 +654,6 @@ const Dashboard = ({
         loadGovernanceContextForProject(selectedProject.governanceResultId);
     }, [selectedProject, governanceContext, loadGovernanceContextForProject]);
 
-    useEffect(() => {
-        if (!selectedProjectKey) {
-            setRoadmapData({ steps: ['Governance', 'Upload BRD', 'AI Analysis', 'Complete'], current_step: 0 });
-            return;
-        }
-        const fetchRoadmapStep = async () => {
-            try {
-                const token = localStorage.getItem('token');
-                const res = await fetch(API_ENDPOINTS.GOVERNANCE_ROADMAP_STEP(selectedProjectKey), {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    setRoadmapData(data);
-                }
-            } catch (e) {
-                console.error('Failed to fetch roadmap step', e);
-            }
-        };
-        fetchRoadmapStep();
-    }, [selectedProjectKey, result]);
 
     const loadHistoryItem = (doc, taskKey = selectedProjectKey) => {
         try {
@@ -1709,11 +1690,7 @@ const Dashboard = ({
                             </div>
                         )}
 
-                        {/* ── Roadmap Header ── */}
-                        <RoadmapHeader
-                            steps={GOVERNANCE_STEP_LABELS}
-                            currentStep={governanceContext ? GOVERNANCE_STEP_LABELS.length - 1 : 0}
-                        />
+
 
                         {/* Landing / Upload State */}
                         {!result && (

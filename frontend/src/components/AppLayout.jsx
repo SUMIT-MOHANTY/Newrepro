@@ -4,6 +4,14 @@ import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { Menu, Settings } from 'lucide-react';
 import Sidebar from './Sidebar';
+import RoadmapHeader from './RoadmapHeader';
+
+const DEFAULT_ROADMAP = {
+    steps: ['Project Setup', 'Governance', 'AI Analysis', 'Task Creation', 'Agent Execution', 'Complete'],
+    current_step: 0,
+    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending'],
+    failed_step: null,
+};
 
 /**
  * AppLayout – Shared layout wrapper providing the sidebar/navbar
@@ -22,6 +30,8 @@ export default function AppLayout({ children }) {
     const [isProjectsLoading, setIsProjectsLoading] = useState(true);
     const [selectedProjectKey, setSelectedProjectKey] = useState('');
     const [showSettings, setShowSettings] = useState(false);
+    const [roadmapData, setRoadmapData] = useState(DEFAULT_ROADMAP);
+    const [isNewProjectMode, setIsNewProjectMode] = useState(false);
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
         : location.pathname === '/governance' ? 'governance'
@@ -175,23 +185,55 @@ export default function AppLayout({ children }) {
         }
     }, [handleLogout]);
 
+    // Fetch roadmap data for a project
+    const fetchRoadmapData = useCallback(async (projectKey) => {
+        if (!projectKey) {
+            setRoadmapData(DEFAULT_ROADMAP);
+            return;
+        }
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(API_ENDPOINTS.GOVERNANCE_ROADMAP_STEP(projectKey), {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setRoadmapData(data);
+            } else {
+                setRoadmapData(DEFAULT_ROADMAP);
+            }
+        } catch (e) {
+            console.error('Failed to fetch roadmap data', e);
+            setRoadmapData(DEFAULT_ROADMAP);
+        }
+    }, []);
+
     useEffect(() => {
         const load = async () => { await fetchProjects(); };
         load();
     }, [fetchProjects]);
 
+    // Re-fetch roadmap whenever selected project changes
+    useEffect(() => {
+        fetchRoadmapData(selectedProjectKey);
+    }, [selectedProjectKey, fetchRoadmapData]);
+
     const handleNewProject = useCallback(() => {
+        // Reset roadmap immediately and enter "new project" mode
+        setRoadmapData(DEFAULT_ROADMAP);
         setSelectedProjectKey('');
+        setIsNewProjectMode(true);
         localStorage.removeItem('governancePassed');
         localStorage.removeItem('governanceResult');
         localStorage.removeItem('governanceContext');
         sessionStorage.removeItem('governanceResult');
         sessionStorage.removeItem('governanceContext');
-        navigate('/governance?new=' + Date.now()); // Ensure unique search param to force change
+        navigate('/governance?new=' + Date.now());
     }, [navigate]);
 
     const handleSelectProject = (project) => {
         if (!project) return;
+        setIsNewProjectMode(false);
         setSelectedProjectKey(project.key);
         const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
         if (location.pathname !== targetPath) navigate(targetPath);
@@ -220,6 +262,8 @@ export default function AppLayout({ children }) {
         handleLogout, fetchHistory: fetchProjects,
         handleNewProject, handleSelectProject,
         getProjectSidebarSubtitle,
+        roadmapData, fetchRoadmapData,
+        isNewProjectMode, setIsNewProjectMode,
     };
 
     return (
@@ -290,6 +334,18 @@ export default function AppLayout({ children }) {
                         </div>
                     </div>
                 </header>
+
+                {/* ── Project-level Roadmap Stepper — shown on all pages ── */}
+                {roadmapData && (
+                    <div className="bg-white border-b border-gray-100 shadow-sm shrink-0 overflow-x-auto">
+                        <RoadmapHeader
+                            steps={roadmapData.steps || []}
+                            currentStep={roadmapData.current_step || 0}
+                            stepStatuses={roadmapData.step_statuses || null}
+                            failedStep={roadmapData.failed_step ?? null}
+                        />
+                    </div>
+                )}
 
                 <div className="flex-1 h-full overflow-hidden">
                     {typeof children === 'function'
