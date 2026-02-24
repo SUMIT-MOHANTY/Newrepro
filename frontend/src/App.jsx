@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import GovernanceForm from './pages/GovernanceForm';
 import GitHubCallback from './pages/GitHubCallback';
 import LandingPage from './pages/LandingPage';
+import HowItWorks from './pages/HowItWorks';
 import AppLayout from './components/AppLayout';
 
 function App() {
@@ -15,6 +16,7 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/" element={<LandingPage />} />
+        <Route path="/how-it-works" element={<HowItWorks />} />
         <Route path="/github/callback" element={<GitHubCallback />} />
 
         {/* Authenticated routes — wrapped with AppLayout for uniform sidebar/navbar */}
