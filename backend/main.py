@@ -508,23 +508,31 @@ async def get_project_roadmap_step(
     identifier: str,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None),
 ):
     """
     Get the current roadmap step for a project.
 
     Steps:
-        0 - Governance  (assessment submitted)
-        1 - Upload BRD  (document uploaded for this project)
-        2 - AI Analysis (analysis completed on the document)
-        3 - Complete     (workflow finished)
+        0 - Project Setup     (project named)
+        1 - Governance        (governance assessment completed)
+        2 - AI Analysis       (BRD uploaded & analysis completed)
+        3 - Task Creation     (tasks auto-generated via external API)
+        4 - Agent Execution   (agents working on tasks)
+        5 - Complete          (all tasks completed)
 
-    The step is determined by inspecting:
-        - GovernanceResponse existence → at least step 0 complete
-        - Document rows linked to this governance result → step 1 complete
-        - analysis_result present on those documents → step 2 complete
-        - All of the above → step 3 (complete)
+    Returns a `step_statuses` array with per-step status:
+        "completed" | "active" | "pending" | "failed"
+    And a `failed_step` index (null if none failed).
     """
-    STEP_LABELS = ["Governance", "Upload BRD", "AI Analysis", "Complete"]
+    STEP_LABELS = [
+        "Project Setup",
+        "Governance",
+        "AI Analysis",
+        "Task Creation",
+        "Agent Execution",
+        "Complete",
+    ]
 
     # 1. Check governance response exists for this user
     query = db.query(models.GovernanceResponse).filter(
@@ -538,13 +546,12 @@ async def get_project_roadmap_step(
     if not governance:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Step 0 is complete: governance submitted
-    current_step = 1  # user is now at "Upload BRD"
+    # Step 0 (Project Setup) is always complete once a governance response exists
+    # Step 1 (Governance) is complete: governance submitted
+    current_step = 2  # user is now at "AI Analysis"
+    failed_step = None
 
     # 2. Find documents linked to this governance result
-    #    Documents store a JSON `analysis_result` field that contains
-    #    `projectMeta.governance_result_id` matching this result_id.
-    #    We also match by project name as a fallback.
     project_name = governance.project_name or ""
     user_documents = db.query(models.Document).filter(
         models.Document.owner_id == current_user.id,
@@ -563,7 +570,6 @@ async def get_project_roadmap_step(
             doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
             doc_project_name = proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
 
-            # Check matches: numeric ID, project_token or project_name
             if (doc_result_id is not None and str(doc_result_id) == str(governance.id)) or \
                (doc_token_id and str(doc_token_id) == str(governance.project_token)) or \
                (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
@@ -571,25 +577,78 @@ async def get_project_roadmap_step(
         except (json.JSONDecodeError, AttributeError):
             continue
 
+    has_analysis = False
     if linked_docs:
-        # Step 1 complete: at least one document uploaded
-        current_step = 2  # user is now at "AI Analysis"
-
-        # 3. Check if any document has a completed AI analysis
         has_analysis = any(
             _doc_has_completed_analysis(doc) for doc in linked_docs
         )
         if has_analysis:
-            current_step = 3  # Workflow complete
+            current_step = 3  # AI Analysis complete, now at "Task Creation"
+
+    # 3. Check external task management for task creation & agent execution
+    has_tasks = False
+    all_tasks_complete = False
+    any_agent_working = False
+
+    if has_analysis and x_task_token:
+        try:
+            existing_page = await task_service.get_tasks(page=1, task_token=x_task_token)
+            if isinstance(existing_page, list):
+                page_results = existing_page
+            elif isinstance(existing_page, dict):
+                page_results = existing_page.get("results") if isinstance(existing_page.get("results"), list) else []
+            else:
+                page_results = []
+
+            if page_results:
+                has_tasks = True
+                current_step = 4  # Tasks created, now at "Agent Execution"
+
+                # Check if any agent is actively working (has progress or is assigned)
+                any_agent_working = any(
+                    (t.get("status") or "").lower() in ("in_progress", "in progress", "working", "assigned", "started")
+                    or (t.get("completion_percentage") or 0) > 0
+                    for t in page_results
+                )
+
+                if any_agent_working:
+                    current_step = 4  # Still at Agent Execution (active)
+
+                # Check if ALL tasks are completed
+                all_tasks_complete = all(
+                    (t.get("status") or "").lower() in ("completed", "done", "closed", "complete")
+                    or (t.get("completion_percentage") or 0) >= 100
+                    for t in page_results
+                )
+
+                if all_tasks_complete:
+                    current_step = 5  # Complete
+        except Exception as e:
+            print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
+            # If task check fails, we don't mark it as failed - just stay at current step
+
+    # Build per-step statuses
+    step_statuses = []
+    for i in range(len(STEP_LABELS)):
+        if failed_step is not None and i == failed_step:
+            step_statuses.append("failed")
+        elif i < current_step:
+            step_statuses.append("completed")
+        elif i == current_step:
+            step_statuses.append("active")
+        else:
+            step_statuses.append("pending")
 
     return {
         "result_id": governance.id,
         "project_token": governance.project_token or str(governance.id),
         "project_name": governance.project_name,
         "current_step": current_step,
-        "current_step_label": STEP_LABELS[current_step],
+        "current_step_label": STEP_LABELS[current_step] if current_step < len(STEP_LABELS) else "Complete",
         "total_steps": len(STEP_LABELS),
         "steps": STEP_LABELS,
+        "step_statuses": step_statuses,
+        "failed_step": failed_step,
         "classification": governance.classification,
     }
 
