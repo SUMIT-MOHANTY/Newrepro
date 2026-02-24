@@ -98,8 +98,24 @@ _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimatio
 GIT_MANAGER_AGENT_ID = "agent_03"
 GIT_INTEGRATION_BRANCH = "agent/integration"
 DEFAULT_PROJECT_TOKEN = "__default__"
+AGENT_SESSION_NOTES_DIR = "agent_handoff"
+BOOTSTRAP_WAIT_TIMEOUT_SECONDS = 1800
+BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS = 20
 
 _project_states: Dict[str, Dict[str, Any]] = {}
+
+
+def _new_repo_bootstrap_state() -> Dict[str, Any]:
+    return {
+        "repo_url": None,
+        "required": None,
+        "agent_id": None,
+        "status": "unknown",
+        "source_branch": None,
+        "message": "",
+        "started_at": None,
+        "completed_at": None,
+    }
 
 def _project_key(project_token: Optional[str]) -> str:
     token = (project_token or "").strip()
@@ -119,6 +135,9 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "git_merge_queue": [],
             "git_merge_running": False,
             "git_merge_lock": asyncio.Lock(),
+            "repo_bootstrap": _new_repo_bootstrap_state(),
+            "repo_bootstrap_lock": asyncio.Lock(),
+            "repo_bootstrap_event": asyncio.Event(),
         }
         _project_states[key] = state
     return state
@@ -169,6 +188,8 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
     state["claimed_task_ids"].clear()
     state["task_progress_state"].clear()
     state["timer_log_state"].clear()
+    state["repo_bootstrap"] = _new_repo_bootstrap_state()
+    state["repo_bootstrap_event"] = asyncio.Event()
     agent_states = state["agent_states"]
     agent_states.clear()
     for idx, rec in enumerate(records):
@@ -552,6 +573,289 @@ def _build_git_auth_url(repo_url: str, token: str) -> str:
     if repo_url.startswith("https://"):
         return repo_url.replace("https://", f"https://{token.strip()}@", 1)
     return repo_url
+
+
+def _to_single_line(value: str, limit: int = 260) -> str:
+    text = _re.sub(r"\s+", " ", (value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _repo_has_project_structure(container_name: str) -> bool:
+    probe = (
+        "if [ -f package.json ] || [ -f requirements.txt ] || [ -f pyproject.toml ] || "
+        "[ -f setup.py ] || [ -f go.mod ] || [ -f pom.xml ] || [ -f Cargo.toml ] || "
+        "[ -f composer.json ] || [ -f Gemfile ]; then echo yes; exit 0; fi; "
+        "if [ -d src ] || [ -d app ] || [ -d backend ] || [ -d frontend ] || [ -d server ]; "
+        "then echo yes; exit 0; fi; "
+        "count=$(find . -maxdepth 2 -type f ! -path './.git/*' | wc -l); "
+        "if [ \"$count\" -ge 6 ]; then echo yes; else echo no; fi"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", probe],
+        capture_output=True, text=True, timeout=20,
+    )
+    if result.returncode != 0:
+        return False
+    return (result.stdout or "").strip().lower() == "yes"
+
+
+def _choose_bootstrap_agent_id(project_token: Optional[str], fallback_agent_id: str) -> str:
+    project_agents = _get_agent_states(project_token)
+    running = sorted(
+        aid for aid, data in project_agents.items()
+        if aid != GIT_MANAGER_AGENT_ID and data.get("status") == "running"
+    )
+    if running:
+        return running[0]
+    available = sorted(aid for aid in project_agents.keys() if aid != GIT_MANAGER_AGENT_ID)
+    if available:
+        return available[0]
+    return fallback_agent_id
+
+
+def _sync_local_branch_from_remote(
+    container_name: str,
+    local_branch: str,
+    source_branch: str,
+) -> Dict[str, Any]:
+    fetch = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name, "git", "fetch", "origin"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if fetch.returncode != 0:
+        return {"success": False, "error": f"git fetch failed: {fetch.stderr or fetch.stdout}"}
+
+    verify = subprocess.run(
+        [
+            "docker", "exec", "-w", "/workspace", container_name,
+            "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{source_branch}",
+        ],
+        capture_output=True, text=True, timeout=20,
+    )
+    if verify.returncode != 0:
+        return {"success": False, "error": f"remote branch origin/{source_branch} not found"}
+
+    checkout = subprocess.run(
+        [
+            "docker", "exec", "-w", "/workspace", container_name,
+            "git", "checkout", "-B", local_branch, f"origin/{source_branch}",
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    if checkout.returncode != 0:
+        return {"success": False, "error": f"git checkout failed: {checkout.stderr or checkout.stdout}"}
+    return {"success": True, "base_branch": source_branch}
+
+
+async def _mark_repo_bootstrap_result(
+    project_token: Optional[str],
+    source_agent: str,
+    success: bool,
+    source_branch: Optional[str] = None,
+    message: str = "",
+) -> None:
+    state = _ensure_project_state(project_token)
+    async with state["repo_bootstrap_lock"]:
+        bootstrap = state["repo_bootstrap"]
+        if bootstrap.get("required") is not True:
+            return
+        if bootstrap.get("status") in ("completed", "failed"):
+            return
+        bootstrap["status"] = "completed" if success else "failed"
+        bootstrap["source_branch"] = source_branch
+        bootstrap["completed_at"] = datetime.utcnow().isoformat()
+        bootstrap["message"] = message or (
+            f"Bootstrap released by {source_agent}"
+            if success else f"Bootstrap failed on {source_agent}"
+        )
+    state["repo_bootstrap_event"].set()
+
+
+async def _coordinate_repo_bootstrap(
+    *,
+    agent: Dict[str, Any],
+    agent_id: str,
+    repo_url: str,
+    container_name: str,
+    local_branch: str,
+    needs_bootstrap: bool,
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    state = _ensure_project_state(project_token)
+    lock = state["repo_bootstrap_lock"]
+    event = state["repo_bootstrap_event"]
+
+    async with lock:
+        bootstrap = state["repo_bootstrap"]
+
+        if repo_url and bootstrap.get("repo_url") and bootstrap.get("repo_url") != repo_url:
+            state["repo_bootstrap"] = _new_repo_bootstrap_state()
+            bootstrap = state["repo_bootstrap"]
+            state["repo_bootstrap_event"] = asyncio.Event()
+            event = state["repo_bootstrap_event"]
+
+        if repo_url and not bootstrap.get("repo_url"):
+            bootstrap["repo_url"] = repo_url
+
+        if bootstrap.get("required") is None:
+            now = datetime.utcnow().isoformat()
+            if needs_bootstrap:
+                bootstrap_agent = _choose_bootstrap_agent_id(project_token, agent_id)
+                bootstrap["required"] = True
+                bootstrap["agent_id"] = bootstrap_agent
+                bootstrap["status"] = "running"
+                bootstrap["started_at"] = now
+                bootstrap["message"] = (
+                    f"Repository is blank. Waiting for {bootstrap_agent} to push initial scaffold."
+                )
+                event.clear()
+            else:
+                bootstrap["required"] = False
+                bootstrap["status"] = "not_required"
+                bootstrap["completed_at"] = now
+                bootstrap["message"] = "Repository already has structure; bootstrap lock not needed."
+                event.set()
+
+        required = bootstrap.get("required") is True
+        bootstrap_agent = bootstrap.get("agent_id")
+
+    if not required:
+        return {"role": "none", "base_branch": None}
+
+    if bootstrap_agent == agent_id:
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": (
+                f"Repository appears blank. {agent_id} is bootstrap owner; "
+                "other agents will wait for initial push."
+            ),
+        })
+        return {"role": "bootstrap", "base_branch": None}
+
+    wait_start = time.time()
+    next_wait_log = BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS
+    agent["progress"] = max(agent.get("progress", 0), 15)
+    agent["progress_message"] = f"Waiting for {bootstrap_agent} bootstrap push..."
+    agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": "info",
+        "message": f"Waiting for {bootstrap_agent} to push initial scaffold before starting work.",
+    })
+
+    while not event.is_set():
+        await asyncio.sleep(3)
+        waited = int(time.time() - wait_start)
+        if waited >= BOOTSTRAP_WAIT_TIMEOUT_SECONDS:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "error",
+                "message": (
+                    f"Bootstrap wait timed out after {waited}s; continuing without synced baseline."
+                ),
+            })
+            return {"role": "follower", "base_branch": None, "waited_seconds": waited}
+        if waited >= next_wait_log:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"Still waiting for {bootstrap_agent} bootstrap push... ({waited}s)",
+            })
+            next_wait_log += BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS
+
+    waited = int(time.time() - wait_start)
+    async with lock:
+        bootstrap = state["repo_bootstrap"]
+        bootstrap_status = bootstrap.get("status")
+        source_branch = bootstrap.get("source_branch")
+        bootstrap_message = bootstrap.get("message") or ""
+
+    if bootstrap_status != "completed" or not source_branch:
+        reason = bootstrap_message or "Bootstrap finished without a branch reference."
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "error",
+            "message": f"Bootstrap released with warning: {reason}",
+        })
+        return {"role": "follower", "base_branch": None, "waited_seconds": waited}
+
+    sync_result = await asyncio.to_thread(
+        _sync_local_branch_from_remote, container_name, local_branch, source_branch
+    )
+    if not sync_result.get("success"):
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "error",
+            "message": (
+                f"Bootstrap branch sync failed ({sync_result.get('error')}). "
+                "Continuing on current branch."
+            ),
+        })
+        return {"role": "follower", "base_branch": None, "waited_seconds": waited}
+
+    agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": "info",
+        "message": (
+            f"Bootstrap ready from {source_branch}. Synced local branch after waiting {waited}s."
+        ),
+    })
+    return {"role": "follower", "base_branch": source_branch, "waited_seconds": waited}
+
+
+def _append_agent_session_note(
+    container_name: str,
+    agent_id: str,
+    task: Dict[str, Any],
+    branch_name: str,
+    build_exit_code: int,
+    fix_iterations: int = 0,
+    linked_task: bool = False,
+) -> Dict[str, Any]:
+    task_title = (task.get("title") or task.get("taskName") or "Untitled task").strip()
+    task_id = _normalize_task_id(task) or task.get("external_id") or task.get("id") or "unknown"
+    task_description = _to_single_line(task.get("description") or "No description provided.")
+    safe_agent_id = _re.sub(r"[^a-zA-Z0-9_-]+", "", agent_id) or "agent"
+    rel_path = f"{AGENT_SESSION_NOTES_DIR}/{safe_agent_id}.md"
+    abs_path = f"/workspace/{rel_path}"
+
+    section = "Linked Task" if linked_task else "Main Task"
+    build_status = "success" if build_exit_code == 0 else f"failed (exit={build_exit_code})"
+    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    entry = (
+        f"## {timestamp} - {section}\n"
+        f"- Agent: `{agent_id}`\n"
+        f"- Task: `{task_title}`\n"
+        f"- Task ID: `{task_id}`\n"
+        f"- Branch: `{branch_name}`\n"
+        f"- Build Status: `{build_status}`\n"
+        f"- Fix Iterations: `{fix_iterations}`\n"
+        f"- Summary: {task_description}\n\n"
+    )
+    header = f"# Session Notes for {agent_id}\n\n"
+
+    script = (
+        "from pathlib import Path\n"
+        f"path = Path({json.dumps(abs_path)})\n"
+        "path.parent.mkdir(parents=True, exist_ok=True)\n"
+        f"header = {json.dumps(header)}\n"
+        f"entry = {json.dumps(entry)}\n"
+        "if not path.exists():\n"
+        "    path.write_text(header, encoding='utf-8')\n"
+        "with path.open('a', encoding='utf-8') as f:\n"
+        "    f.write(entry)\n"
+    )
+
+    write = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name, "python3", "-c", script],
+        capture_output=True, text=True, timeout=20,
+    )
+    if write.returncode != 0:
+        err = write.stderr or write.stdout or "unknown error"
+        return {"success": False, "error": f"Failed writing session note: {err.strip()}"}
+    return {"success": True, "path": rel_path}
 
 
 def _log_git_agent(message: str, level: str = "info", project_token: Optional[str] = None) -> None:
@@ -1038,12 +1342,20 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     capture_output=True, text=True, timeout=60,
                 )
                 if pull.returncode == 0:
-                    push_retry = subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    if push_retry.returncode == 0:
+                    # Retry push with backoff
+                    push_success = False
+                    for attempt in range(5):
+                        await asyncio.sleep(2 * attempt)  # Increasing delay
+                        push_retry = subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name,
+                             "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        if push_retry.returncode == 0:
+                            push_success = True
+                            break
+
+                    if push_success:
                         _log_git_agent(
                             f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed (after rebase).",
                             project_token=project_token
@@ -1052,17 +1364,27 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                             git_agent["progress"] = 100
                             git_agent["progress_message"] = f"Merged {branch}"
                         return
+
                 _log_git_agent(
                     f"Rebase failed for {GIT_INTEGRATION_BRANCH}, trying force push...",
                     "warning",
                     project_token=project_token
                 )
-                push_force = subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "push", "-f", "origin", GIT_INTEGRATION_BRANCH],
-                    capture_output=True, text=True, timeout=60,
-                )
-                if push_force.returncode == 0:
+
+                # Retry force push with backoff
+                push_force_success = False
+                for attempt in range(5):
+                    await asyncio.sleep(2 * attempt)  # Increasing delay
+                    push_force = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "push", "-f", "origin", GIT_INTEGRATION_BRANCH],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if push_force.returncode == 0:
+                        push_force_success = True
+                        break
+
+                if push_force_success:
                     _log_git_agent(
                         f"Merged {branch} into {GIT_INTEGRATION_BRANCH} (force pushed).",
                         project_token=project_token
@@ -1071,6 +1393,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                         git_agent["progress"] = 100
                         git_agent["progress_message"] = f"Merged {branch}"
                     return
+
             _log_git_agent(
                 f"Push failed for {GIT_INTEGRATION_BRANCH}: {push.stderr}",
                 "error",
@@ -1090,7 +1413,10 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
 
 
 def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str) -> Dict[str, Any]:
-    """Install git, clone repo into /workspace/, create and checkout a new branch."""
+    """
+    Install git, clone repo into /workspace/, and create the working branch.
+    Also detects whether bootstrap coordination is required.
+    """
     try:
         # 1. Install git
         install = subprocess.run(
@@ -1124,21 +1450,68 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         if clone.returncode != 0:
             return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
 
-        # 4. Create and checkout a new branch
+        # 4. Detect repo baseline state (blank/no structure) and create branch
+        head_check = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "rev-parse", "--verify", "HEAD"],
+            capture_output=True, text=True, timeout=15,
+        )
+        repo_empty = head_check.returncode != 0
+        default_branch = None
+        needs_bootstrap = repo_empty
+
+        if not repo_empty:
+            default_branch = _get_default_branch(container_name)
+            has_structure = _repo_has_project_structure(container_name)
+            needs_bootstrap = not has_structure
+
+        checkout_cmd = ["git", "checkout", "-B", branch_name]
+        if repo_empty:
+            checkout_cmd = ["git", "checkout", "--orphan", branch_name]
+
         checkout = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "checkout", "-B", branch_name],
+            ["docker", "exec", "-w", "/workspace", container_name, *checkout_cmd],
             capture_output=True, text=True, timeout=15,
         )
         if checkout.returncode != 0:
             return {"success": False, "error": f"Branch creation failed: {checkout.stderr}"}
 
-        return {"success": True, "branch": branch_name}
+        if repo_empty:
+            default_branch = branch_name
+
+        return {
+            "success": True,
+            "branch": branch_name,
+            "repo_empty": repo_empty,
+            "default_branch": default_branch,
+            "needs_bootstrap": needs_bootstrap,
+        }
 
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Git setup timed out"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _run_git_command_with_retry(container_name: str, command: List[str],
+                                 max_retries: int = 10, delay: float = 1.0,
+                                 operation: str = "operation") -> subprocess.CompletedProcess:
+    """Run a git command with automatic retry until it succeeds."""
+    import time
+    last_error = None
+    for attempt in range(max_retries):
+        result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name] + command,
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0:
+            return result
+        last_error = result.stderr or result.stdout
+        if attempt < max_retries - 1:
+            time.sleep(delay * (attempt + 1))  # Exponential backoff
+    # Return the last result even if failed
+    return subprocess.CompletedProcess(args=command, returncode=last_error.returncode if hasattr(last_error, 'returncode') else 1,
+                                        stdout=getattr(last_error, 'stdout', '') or '',
+                                        stderr=getattr(last_error, 'stderr', str(last_error)))
 
 
 def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> Dict[str, Any]:
@@ -1192,19 +1565,29 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                 # Strategy 2: Fallback - push to a new branch to avoid collisions
                 suffix = uuid.uuid4().hex[:6]
                 new_branch = f"{branch_name}-{suffix}"
-                subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "checkout", "-B", new_branch],
-                    capture_output=True, text=True, timeout=15,
+
+                # Retry checkout until it succeeds
+                checkout = _run_git_command_with_retry(
+                    container_name,
+                    ["git", "checkout", "-B", new_branch],
+                    max_retries=10,
+                    delay=1.0,
+                    operation="checkout"
                 )
-                push2 = subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "push", "-u", "origin", new_branch],
-                    capture_output=True, text=True, timeout=60,
+                if checkout.returncode != 0:
+                    return {"success": False, "error": f"Failed to create branch {new_branch}: {checkout.stderr}"}
+
+                # Retry push until it succeeds
+                push2 = _run_git_command_with_retry(
+                    container_name,
+                    ["git", "push", "-u", "origin", new_branch],
+                    max_retries=10,
+                    delay=1.0,
+                    operation="push"
                 )
                 if push2.returncode == 0:
                     return {"success": True, "pushed": True, "branch": new_branch, "renamed": True}
-                return {"success": False, "error": f"git push failed: {push2.stderr or push2.stdout}"}
+                return {"success": False, "error": f"git push failed: {push2.stderr}"}
             return {"success": False, "error": f"git push failed: {err}"}
 
         return {"success": True, "pushed": True, "branch": branch_name}
@@ -1746,6 +2129,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
     container_name = f"{agent_id}_{uuid.uuid4().hex[:8]}"
     container_created = False
+    repo_base_branch = "main"
+    bootstrap_role = "none"
+    bootstrap_signal_sent = False
 
     try:
         # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
@@ -1859,15 +2245,40 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         "message": f"Git repo cloned. Working on branch: {first_branch}"
                     })
 
+                    repo_base_branch = git_result.get("default_branch") or repo_base_branch
+                    bootstrap_info = await _coordinate_repo_bootstrap(
+                        agent=agent,
+                        agent_id=agent_id,
+                        repo_url=agent.get("git_repo_url") or "",
+                        container_name=container_name,
+                        local_branch=first_branch,
+                        needs_bootstrap=bool(git_result.get("needs_bootstrap")),
+                        project_token=project_token,
+                    )
+                    bootstrap_role = bootstrap_info.get("role", "none")
+                    if bootstrap_info.get("base_branch"):
+                        repo_base_branch = bootstrap_info["base_branch"]
+                    if repo_base_branch and bootstrap_role == "bootstrap":
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Bootstrap base branch set to: {repo_base_branch}"
+                        })
+
             # ── Create task-specific git branch (for 2nd+ tasks) ─────
             branch_name = None
             if use_git:
                 branch_name = _branch_name_for_task(task)
                 if tasks_completed > 1:
-                    # Switch back to main and create new branch
+                    # Switch back to repo base branch and create a new task branch.
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "checkout", "main"],
+                         "git", "fetch", "origin"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "-B", repo_base_branch, f"origin/{repo_base_branch}"],
                         capture_output=True, text=True, timeout=15,
                     )
                     subprocess.run(
@@ -2118,7 +2529,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "checkout", "main"],
+                         "git", "fetch", "origin"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "-B", repo_base_branch, f"origin/{repo_base_branch}"],
                         capture_output=True, text=True, timeout=15,
                     )
                     subprocess.run(
@@ -2165,6 +2581,29 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
                             "message": f"API: linked task progress 40% {'ok' if prog_ok else 'skipped/failed'}"
+                        })
+
+                    linked_note_result = await asyncio.to_thread(
+                        _append_agent_session_note,
+                        container_name,
+                        agent_id,
+                        linked_task,
+                        lt_branch,
+                        lt_result.get("exit_code", -1),
+                        0,
+                        True,
+                    )
+                    if linked_note_result.get("success"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Updated session note: {linked_note_result.get('path')}"
+                        })
+                    else:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "error",
+                            "message": linked_note_result.get("error", "Failed to update session note.")
                         })
 
                     lt_commit = await asyncio.to_thread(
@@ -2297,6 +2736,30 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             if use_git and branch_name:
                 agent["progress"] = 95
                 agent["progress_message"] = f"Committing and pushing to {branch_name}..."
+
+                note_result = await asyncio.to_thread(
+                    _append_agent_session_note,
+                    container_name,
+                    agent_id,
+                    task,
+                    branch_name,
+                    result.get("exit_code", -1),
+                    fix_iteration,
+                    False,
+                )
+                if note_result.get("success"):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Updated session note: {note_result.get('path')}"
+                    })
+                else:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "error",
+                        "message": note_result.get("error", "Failed to update session note.")
+                    })
+
                 commit_result = await asyncio.to_thread(
                     _commit_and_push, container_name, task["title"], branch_name
                 )
@@ -2335,6 +2798,25 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             task["title"],
                             project_token=project_token
                         )
+                        if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
+                            await _mark_repo_bootstrap_result(
+                                project_token=project_token,
+                                source_agent=agent_id,
+                                success=True,
+                                source_branch=effective_branch,
+                                message=(
+                                    f"Initial scaffold pushed by {agent_id} on branch {effective_branch}."
+                                ),
+                            )
+                            bootstrap_signal_sent = True
+                            repo_base_branch = effective_branch
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": (
+                                    "Bootstrap release sent. Waiting agents can now sync and start work."
+                                )
+                            })
                     else:
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
@@ -2347,6 +2829,24 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             "type": "info",
                             "message": f"API: progress 95% {'ok' if prog_ok else 'skipped/failed'}"
                         })
+                        if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
+                            await _mark_repo_bootstrap_result(
+                                project_token=project_token,
+                                source_agent=agent_id,
+                                success=False,
+                                source_branch=None,
+                                message=(
+                                    f"Bootstrap agent {agent_id} finished without pushing initial scaffold."
+                                ),
+                            )
+                            bootstrap_signal_sent = True
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "error",
+                                "message": (
+                                    "Bootstrap release sent with warning: no initial push detected."
+                                )
+                            })
                     clock_out_ok = await _post_timer_log(task, "clock_out", task_token=task_token)
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -2370,6 +2870,24 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         "type": "info",
                         "message": f"API: push failure message {'ok' if msg_ok else 'failed'}, progress 80% {'ok' if prog_ok else 'skipped/failed'}"
                     })
+                    if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
+                        await _mark_repo_bootstrap_result(
+                            project_token=project_token,
+                            source_agent=agent_id,
+                            success=False,
+                            source_branch=None,
+                            message=(
+                                f"Bootstrap push failed on {agent_id}: {commit_result.get('error', 'unknown error')}"
+                            ),
+                        )
+                        bootstrap_signal_sent = True
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "error",
+                            "message": (
+                                "Bootstrap release sent with failure. Other agents will continue unsynced."
+                            )
+                        })
             elif not use_git:
                 prog_ok = await _post_task_progress(task, 95, "Ready to complete", task_token=task_token)
                 agent["output_log"].append({
@@ -2509,6 +3027,15 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
         }
 
     except Exception as e:
+        if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
+            await _mark_repo_bootstrap_result(
+                project_token=project_token,
+                source_agent=agent_id,
+                success=False,
+                source_branch=None,
+                message=f"Bootstrap agent {agent_id} failed before initial push: {str(e)}",
+            )
+            bootstrap_signal_sent = True
         elapsed = round(time.time() - total_start, 1)
         agent["status"] = "error"
         agent["progress"] = 0

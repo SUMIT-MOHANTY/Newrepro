@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, Check, GitBranch } from 'lucide-react';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
@@ -94,6 +94,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [agentsGitConfig, setAgentsGitConfig] = useState({});
     const [editingAgentId, setEditingAgentId] = useState(null);
     const [editingAgentName, setEditingAgentName] = useState('');
+    const [editingAgentRepoUrl, setEditingAgentRepoUrl] = useState('');
+    const [editingAgentToken, setEditingAgentToken] = useState('');
     const [isSavingAgentName, setIsSavingAgentName] = useState(false);
     const [showAddAgentModal, setShowAddAgentModal] = useState(false);
     const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
@@ -469,17 +471,27 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const startEditingAgentName = (agent) => {
         setEditingAgentId(agent.id);
         setEditingAgentName(agent.name || '');
+        setEditingAgentRepoUrl(agent.git_repo_url || '');
+        setEditingAgentToken('');
     };
 
     const cancelEditingAgentName = () => {
         setEditingAgentId(null);
         setEditingAgentName('');
+        setEditingAgentRepoUrl('');
+        setEditingAgentToken('');
     };
 
     const saveAgentName = async () => {
         if (!editingAgentId) return;
         const nextName = editingAgentName.trim();
         if (!nextName) return;
+        const nextRepo = editingAgentRepoUrl.trim();
+        const nextToken = editingAgentToken.trim();
+        const payload = { name: nextName, git_repo_url: nextRepo };
+        if (nextToken) {
+            payload.git_token = nextToken;
+        }
         setIsSavingAgentName(true);
         try {
             const res = await fetch(withProjectToken(API_ENDPOINTS.AGENT_UPDATE(editingAgentId)), {
@@ -488,15 +500,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ name: nextName })
+                body: JSON.stringify(payload)
             });
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || 'Failed to update agent name');
+                throw new Error(errData.detail || 'Failed to update agent settings');
             }
             await fetchAgents();
         } catch (e) {
-            console.error('Update agent name failed', e);
+            console.error('Update agent settings failed', e);
         } finally {
             setIsSavingAgentName(false);
             cancelEditingAgentName();
@@ -664,7 +676,6 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const isIdle = agent.status === 'idle';
         const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
         const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
-        const isEditing = editingAgentId === agent.id;
 
         return (
             <div key={agent.id} className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
@@ -676,55 +687,27 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             {Icon}
                         </div>
                         <div>
-                            {isEditing ? (
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="text"
-                                        value={editingAgentName}
-                                        onChange={(e) => setEditingAgentName(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') saveAgentName();
-                                            if (e.key === 'Escape') cancelEditingAgentName();
-                                        }}
-                                        className="w-36 px-2 py-1 text-xs font-semibold text-gray-900 bg-gray-50 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                                    />
+                            <div className="flex items-center gap-2">
+                                <h4 className="text-sm font-bold text-gray-900">
+                                    {isGitManager ? 'Git Manager' : agent.name}
+                                </h4>
+                                {!isGitManager && (
                                     <button
                                         type="button"
-                                        onClick={saveAgentName}
-                                        disabled={isSavingAgentName || !editingAgentName.trim()}
-                                        className="p-1 rounded-md bg-emerald-50 text-emerald-600 hover:bg-emerald-100 disabled:opacity-50"
-                                        title="Save name"
+                                        onClick={() => startEditingAgentName(agent)}
+                                        className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                                        title="Edit agent settings"
                                     >
-                                        {isSavingAgentName ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                                        <Pencil className="w-3.5 h-3.5" />
                                     </button>
-                                    <button
-                                        type="button"
-                                        onClick={cancelEditingAgentName}
-                                        disabled={isSavingAgentName}
-                                        className="p-1 rounded-md bg-gray-50 text-gray-500 hover:bg-gray-100 disabled:opacity-50"
-                                        title="Cancel"
-                                    >
-                                        <X className="w-3.5 h-3.5" />
-                                    </button>
-                                </div>
-                            ) : (
-                                <div className="flex items-center gap-2">
-                                    <h4 className="text-sm font-bold text-gray-900">
-                                        {isGitManager ? 'Git Manager' : agent.name}
-                                    </h4>
-                                    {!isGitManager && (
-                                        <button
-                                            type="button"
-                                            onClick={() => startEditingAgentName(agent)}
-                                            className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-                                            title="Edit name"
-                                        >
-                                            <Pencil className="w-3.5 h-3.5" />
-                                        </button>
-                                    )}
-                                </div>
-                            )}
+                                )}
+                            </div>
                             <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
+                            {!isGitManager && (
+                                <p className="text-[10px] text-gray-400">
+                                    Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
+                                </p>
+                            )}
                         </div>
                     </div>
                     <div className="flex items-center gap-1.5">
@@ -1903,6 +1886,61 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
                                     <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-xl transition-colors shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
                                         Start track <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {/* Edit Agent Modal */}
+            {
+                editingAgentId && (
+                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                                    <Pencil className="w-5 h-5 text-indigo-500" /> Edit Agent Settings
+                                </h3>
+                                <button type="button" onClick={cancelEditingAgentName} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <div className="p-6">
+                                <p className="text-sm text-gray-500 mb-4 font-medium">Update agent name, Git repository URL, and Personal Access Token.</p>
+
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Agent Name <span className="text-red-400">*</span></label>
+                                <input
+                                    type="text"
+                                    value={editingAgentName}
+                                    onChange={(e) => setEditingAgentName(e.target.value)}
+                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4"
+                                />
+
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL</label>
+                                <input
+                                    type="text"
+                                    value={editingAgentRepoUrl}
+                                    onChange={(e) => setEditingAgentRepoUrl(e.target.value)}
+                                    placeholder="https://github.com/org/repo.git"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4"
+                                />
+
+                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token</label>
+                                <input
+                                    type="password"
+                                    value={editingAgentToken}
+                                    onChange={(e) => setEditingAgentToken(e.target.value)}
+                                    placeholder="Leave blank to keep existing PAT"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium"
+                                />
+                                <p className="text-xs text-gray-400 mt-2 mb-6">Leave token blank if you do not want to change it.</p>
+
+                                <div className="flex items-center gap-3">
+                                    <button type="button" onClick={cancelEditingAgentName} disabled={isSavingAgentName} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors disabled:opacity-50">Cancel</button>
+                                    <button type="button" onClick={saveAgentName} disabled={isSavingAgentName || !editingAgentName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2">
+                                        {isSavingAgentName ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : 'Save Changes'}
                                     </button>
                                 </div>
                             </div>
