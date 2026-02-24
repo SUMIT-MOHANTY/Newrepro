@@ -1048,10 +1048,12 @@ def _upsert_agent_credentials(
         )
         db.add(cred)
 
-    if git_repo_url:
-        cred.git_repo_url = git_repo_url.strip()
-    if git_token:
-        cred.git_token = git_token.strip()
+    if git_repo_url is not None:
+        cleaned_repo = git_repo_url.strip()
+        cred.git_repo_url = cleaned_repo or None
+    if git_token is not None:
+        cleaned_token = git_token.strip()
+        cred.git_token = cleaned_token or None
 
     db.commit()
     db.refresh(cred)
@@ -1340,6 +1342,8 @@ class AddAgentRequest(BaseModel):
 
 class UpdateAgentRequest(BaseModel):
     name: Optional[str] = None
+    git_repo_url: Optional[str] = None
+    git_token: Optional[str] = None
 
 
 @app.post("/agents/add")
@@ -1390,8 +1394,16 @@ async def update_agent(
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
 ):
-    if not request or not request.name or not request.name.strip():
-        raise HTTPException(status_code=400, detail="Agent name is required")
+    if not request:
+        raise HTTPException(status_code=400, detail="Request body is required")
+    name_provided = request.name is not None
+    repo_provided = request.git_repo_url is not None
+    token_provided = request.git_token is not None
+    if not (name_provided or repo_provided or token_provided):
+        raise HTTPException(status_code=400, detail="Provide at least one field to update")
+    next_name = request.name.strip() if name_provided and request.name else None
+    if name_provided and not next_name:
+        raise HTTPException(status_code=400, detail="Agent name cannot be empty")
     try:
         project_token = _normalize_project_token(project_token)
         _ensure_default_agents(db, project_token)
@@ -1403,9 +1415,21 @@ async def update_agent(
         records = query.all()
         agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-        agent = agent_service.update_agent_name(agent_id, request.name, project_token)
+        agent = agent_service.get_agent_status(agent_id, project_token)
+        if next_name:
+            agent = agent_service.update_agent_name(agent_id, next_name, project_token)
         _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
-        return {"agent": agent}
+        if repo_provided or token_provided:
+            _upsert_agent_credentials(
+                db,
+                current_user.id,
+                agent_id,
+                git_repo_url=request.git_repo_url,
+                git_token=request.git_token,
+                project_token=project_token,
+            )
+        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1418,8 +1442,16 @@ async def update_agent_post(
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
 ):
-    if not request or not request.name or not request.name.strip():
-        raise HTTPException(status_code=400, detail="Agent name is required")
+    if not request:
+        raise HTTPException(status_code=400, detail="Request body is required")
+    name_provided = request.name is not None
+    repo_provided = request.git_repo_url is not None
+    token_provided = request.git_token is not None
+    if not (name_provided or repo_provided or token_provided):
+        raise HTTPException(status_code=400, detail="Provide at least one field to update")
+    next_name = request.name.strip() if name_provided and request.name else None
+    if name_provided and not next_name:
+        raise HTTPException(status_code=400, detail="Agent name cannot be empty")
     try:
         project_token = _normalize_project_token(project_token)
         _ensure_default_agents(db, project_token)
@@ -1431,9 +1463,21 @@ async def update_agent_post(
         records = query.all()
         agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-        agent = agent_service.update_agent_name(agent_id, request.name, project_token)
+        agent = agent_service.get_agent_status(agent_id, project_token)
+        if next_name:
+            agent = agent_service.update_agent_name(agent_id, next_name, project_token)
         _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
-        return {"agent": agent}
+        if repo_provided or token_provided:
+            _upsert_agent_credentials(
+                db,
+                current_user.id,
+                agent_id,
+                git_repo_url=request.git_repo_url,
+                git_token=request.git_token,
+                project_token=project_token,
+            )
+        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

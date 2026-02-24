@@ -197,12 +197,12 @@ const LandingPage = () => {
                                 Start Analysis Free
                                 <ArrowRight className="ml-2 h-5 w-5" />
                             </button>
-                            <a
-                                href="#features"
+                            <Link
+                                to="/how-it-works"
                                 className="inline-flex justify-center items-center px-8 py-4 text-base font-bold text-slate-700 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors"
                             >
                                 How it works
-                            </a>
+                            </Link>
                         </div>
                         <div className="flex flex-wrap justify-center lg:justify-start gap-4 pt-4 text-sm text-slate-500">
                             <div className="flex items-center gap-1">
