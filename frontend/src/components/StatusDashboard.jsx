@@ -77,7 +77,7 @@ function cacheTaskToken(projectKey, token) {
     writeTaskTokenCache(cache);
 }
 
-export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, setSelectedProjectKey, selectedRole, setSelectedRole }) {
+export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole }) {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
@@ -164,7 +164,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         queryClient.setQueryData(['agents', selectedProjectKey], updater);
     }, [queryClient, selectedProjectKey]);
 
-    const { isFetching: isLoadingProjectInfo } = useQuery({
+    const { data: projectInfo = null, isFetching: isLoadingProjectInfo } = useQuery({
         queryKey: ['projectInfo', selectedProjectKey, taskToken],
         queryFn: async () => {
             const headers = { 'Authorization': `Bearer ${token}` };

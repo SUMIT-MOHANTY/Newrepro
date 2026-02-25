@@ -52,7 +52,8 @@ export default function AppLayout({ children }) {
     });
 
     useEffect(() => {
-        if (!DASHBOARD_ROLES.some((role) => role.value === selectedRole)) {
+        if (!DASHBOARD_ROLES.some((r) => r.value === selectedRole)) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setSelectedRole('project');
             return;
         }
