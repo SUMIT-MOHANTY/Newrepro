@@ -8,8 +8,14 @@ import { API_ENDPOINTS } from '../config';
 
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
+const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
+const DASHBOARD_ROLES = [
+    { value: 'cxo', label: 'CXO Dashboard', description: 'Executive snapshot' },
+    { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
+    { value: 'sales', label: 'Sales Dashboard', description: 'Commercial and commitments' },
+];
 
 function decodeJwtExpiry(token) {
     try {
@@ -79,6 +85,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             return localStorage.getItem(PROJECT_STORAGE_KEY);
         } catch {
             return null;
+        }
+    });
+    const [selectedRole, setSelectedRole] = useState(() => {
+        try {
+            const storedRole = localStorage.getItem(ROLE_STORAGE_KEY);
+            return DASHBOARD_ROLES.some((role) => role.value === storedRole) ? storedRole : 'project';
+        } catch {
+            return 'project';
         }
     });
 
@@ -198,6 +212,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             // Ignore storage access errors in restricted browser contexts.
         }
     }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (!DASHBOARD_ROLES.some((role) => role.value === selectedRole)) {
+            setSelectedRole('project');
+            return;
+        }
+        try {
+            localStorage.setItem(ROLE_STORAGE_KEY, selectedRole);
+        } catch {
+            // Ignore storage access errors in restricted browser contexts.
+        }
+    }, [selectedRole]);
 
     useEffect(() => {
         let isMounted = true;
@@ -1074,6 +1100,41 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         </SkeletonTheme>
     );
 
+    const selectedRoleMeta = DASHBOARD_ROLES.find((role) => role.value === selectedRole) || DASHBOARD_ROLES[1];
+    const overallHealth = dashboardData?.project_status?.overall_health || 'Unknown';
+    const lateTaskCount = dashboardData?.tasks?.late_tasks?.length || 0;
+    const upcomingTaskCount = dashboardData?.tasks?.upcoming_tasks_next_period?.length || 0;
+    const dueThisWeekCount = dashboardData?.tasks?.due_this_week?.length || 0;
+    const inProgressTaskCount = dashboardData?.tasks?.in_progress?.length || 0;
+    const completedTaskCount = dashboardData?.tasks?.recently_completed?.length || 0;
+    const projectWallet = Number(projectInfo?.project?.project_wallet || 0) || 0;
+    const usedWallet = (taskList || []).reduce((total, task) => total + (Number(task?.task_wallet) || 0), 0);
+    const remainingWallet = Math.max(projectWallet - usedWallet, 0);
+    const launchConfidence = overallHealth === 'Good' ? 'High'
+        : overallHealth === 'At Risk' ? 'Medium'
+            : 'Low';
+    const cxoRiskLabel = lateTaskCount > 0 || overallHealth === 'Critical' ? 'High'
+        : overallHealth === 'At Risk' ? 'Medium'
+            : 'Low';
+    const salesSignals = [
+        {
+            label: 'Pipeline Stage',
+            value: dashboardData?.sales?.pipeline_stage || dashboardData?.project?.status || 'Backend field needed',
+        },
+        {
+            label: 'Deal Owner',
+            value: dashboardData?.sales?.deal_owner || 'Backend field needed',
+        },
+        {
+            label: 'Win Probability',
+            value: dashboardData?.sales?.win_probability || 'Backend field needed',
+        },
+        {
+            label: 'Booked Revenue',
+            value: dashboardData?.sales?.booked_revenue || 'Backend field needed',
+        },
+    ];
+
     return (
         <div className="w-full min-h-full bg-gray-50 flex flex-col font-sans overflow-y-auto relative">
             {/* Top Graphic Header Area */}
@@ -1093,17 +1154,35 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </>
                         )}
                     </div>
-                    <ProjectDropdown
-                        projects={projects}
-                        selectedKey={selectedProjectKey}
-                        onSelect={(proj) => {
-                            if (!proj?.key || proj.key === selectedProjectKey) return;
-                            setTaskToken(null);
-                            setTaskTokenProjectKey(null);
-                            setSelectedProjectKey(proj.key);
-                        }}
-                        className="w-full sm:w-72"
-                    />
+                    <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2">
+                        <div className="w-full sm:w-64">
+                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Role View</label>
+                            <select
+                                value={selectedRole}
+                                onChange={(e) => setSelectedRole(e.target.value)}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                            >
+                                {DASHBOARD_ROLES.map((role) => (
+                                    <option key={role.value} value={role.value}>
+                                        {role.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="w-full sm:w-72">
+                            <ProjectDropdown
+                                projects={projects}
+                                selectedKey={selectedProjectKey}
+                                onSelect={(proj) => {
+                                    if (!proj?.key || proj.key === selectedProjectKey) return;
+                                    setTaskToken(null);
+                                    setTaskTokenProjectKey(null);
+                                    setSelectedProjectKey(proj.key);
+                                }}
+                                className="w-full"
+                            />
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1134,6 +1213,220 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 renderDashboardSkeleton()
             ) : (
                 <div className="flex-1 p-4 md:p-6 flex flex-col gap-6">
+                    <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                            <p className="text-[10px] uppercase tracking-widest font-bold text-gray-400">Active Role View</p>
+                            <p className="text-sm font-bold text-gray-900">{selectedRoleMeta.label}</p>
+                        </div>
+                        <p className="text-xs text-gray-500">{selectedRoleMeta.description}</p>
+                    </div>
+
+                    {selectedRole === 'cxo' && (
+                        <>
+                            <div className="rounded-2xl bg-gradient-to-r from-slate-900 to-slate-700 text-white p-6 shadow-lg">
+                                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-200 font-bold mb-2">Executive Overview</p>
+                                <h3 className="text-2xl font-bold">Portfolio Decision Dashboard</h3>
+                                <p className="text-sm text-slate-200 mt-2">
+                                    Strategic snapshot with health, launch readiness, milestone movement, and delivery risk.
+                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Overall Health</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{overallHealth}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Launch Confidence</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{launchConfidence}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Completion</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{dashboardData?.kpi?.completion_percentage ?? 0}%</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Launch In</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{dashboardData?.project_status?.days_until_launch ?? 0} days</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Project Budget</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{projectInfo?.project?.project_wallet ?? '-'}</p>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                <div className="lg:col-span-2 bg-white rounded-xl shadow border border-gray-100 p-6">
+                                    <div className="flex items-center mb-5">
+                                        <Flag className="w-4 h-4 text-orange-500 mr-2" />
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Milestone Visibility</h3>
+                                    </div>
+                                    <div className="overflow-auto rounded-lg border border-gray-100" style={{ maxHeight: '320px' }}>
+                                        <table className="min-w-full text-sm">
+                                            <thead className="bg-orange-50 sticky top-0 z-10">
+                                                <tr>
+                                                    <th className="px-4 py-3 text-left font-bold text-gray-700">Milestone</th>
+                                                    <th className="px-4 py-3 text-left font-bold text-gray-700">Status</th>
+                                                    <th className="px-4 py-3 text-left font-bold text-gray-700">Date</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 text-gray-700">
+                                                {(dashboardData?.milestones?.completed || []).map((milestone) => (
+                                                    <tr key={`done-${milestone.id}`}>
+                                                        <td className="px-4 py-3">{milestone.name}</td>
+                                                        <td className="px-4 py-3 text-emerald-600 font-semibold">Completed</td>
+                                                        <td className="px-4 py-3">{milestone.deadline || '-'}</td>
+                                                    </tr>
+                                                ))}
+                                                {(dashboardData?.milestones?.key_milestones_and_dates || []).map((milestone) => (
+                                                    <tr key={`open-${milestone.id}`}>
+                                                        <td className="px-4 py-3">{milestone.name}</td>
+                                                        <td className="px-4 py-3 text-amber-600 font-semibold">In Progress</td>
+                                                        <td className="px-4 py-3">{milestone.deadline || '-'}</td>
+                                                    </tr>
+                                                ))}
+                                                {!(dashboardData?.milestones?.completed?.length || dashboardData?.milestones?.key_milestones_and_dates?.length) && (
+                                                    <tr>
+                                                        <td className="px-4 py-6 text-center text-gray-400 italic" colSpan="3">No milestone records available</td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                                        <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Risk Exposure</p>
+                                        <p className="text-3xl font-bold text-gray-900 mt-2">{cxoRiskLabel}</p>
+                                        <p className="text-xs text-gray-500 mt-1">{lateTaskCount} late task(s) currently flagged</p>
+                                    </div>
+                                    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                                        <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Workload Split</p>
+                                        <p className="text-2xl font-bold text-gray-900 mt-2">
+                                            {dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0}% complete
+                                        </p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}% remaining effort
+                                        </p>
+                                    </div>
+                                    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                                        <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Task Distribution</p>
+                                        <p className="text-2xl font-bold text-gray-900 mt-2">{dashboardData?.summary_statistics?.total_tasks ?? 0}</p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {dashboardData?.summary_statistics?.in_progress_tasks ?? 0} in progress, {dashboardData?.summary_statistics?.completed_tasks ?? 0} completed
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {selectedRole === 'sales' && (
+                        <>
+                            <div className="rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 text-white p-6 shadow-lg">
+                                <p className="text-[11px] uppercase tracking-[0.2em] text-orange-100 font-bold mb-2">Commercial Snapshot</p>
+                                <h3 className="text-2xl font-bold">Sales Commitment Dashboard</h3>
+                                <p className="text-sm text-orange-100 mt-2">
+                                    Delivery commitments, budget posture, and deal-facing metrics for customer communication.
+                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Project Status</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{dashboardData?.project?.status || '-'}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Total Wallet</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{projectInfo?.project?.project_wallet ?? '-'}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Consumed Wallet</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{usedWallet}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Remaining Wallet</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{remainingWallet}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Delivery Team</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{projectInfo?.team_members?.length ?? 0}</p>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                                    <div className="flex items-center mb-5">
+                                        <Calendar className="w-4 h-4 text-orange-500 mr-2" />
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Client-Facing Delivery Commitments</h3>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-orange-50">
+                                            <span className="text-sm font-semibold text-gray-700">Due This Week</span>
+                                            <span className="text-lg font-bold text-orange-600">{dueThisWeekCount}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-gray-50">
+                                            <span className="text-sm font-semibold text-gray-700">Upcoming Next Period</span>
+                                            <span className="text-lg font-bold text-gray-900">{upcomingTaskCount}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-red-50">
+                                            <span className="text-sm font-semibold text-gray-700">Late Tasks</span>
+                                            <span className="text-lg font-bold text-red-600">{lateTaskCount}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50">
+                                            <span className="text-sm font-semibold text-gray-700">In Progress</span>
+                                            <span className="text-lg font-bold text-blue-600">{inProgressTaskCount}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                                    <div className="flex items-center mb-5">
+                                        <Tag className="w-4 h-4 text-orange-500 mr-2" />
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Delivery Readiness</h3>
+                                    </div>
+                                    <div className="space-y-4">
+                                        <div className="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Expected Launch Date</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-1">
+                                                {dashboardData?.project_status?.expected_launch_date
+                                                    ? new Date(dashboardData.project_status.expected_launch_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })
+                                                    : '-'}
+                                            </p>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Completion Status</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-1">
+                                                {dashboardData?.kpi?.completion_percentage ?? 0}% complete, {completedTaskCount} recently completed
+                                            </p>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Overall Health Signal</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-1">{overallHealth}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                                <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">Sales Signals</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                    {salesSignals.map((signal) => (
+                                        <div key={signal.label} className="rounded-lg border border-gray-100 bg-gray-50 p-4">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">{signal.label}</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-2">{signal.value}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                                <p className="text-xs text-gray-500 mt-4">
+                                    Fields showing "Backend field needed" can be connected once sales data APIs are available.
+                                </p>
+                            </div>
+                        </>
+                    )}
+
+                    {selectedRole === 'project' && (
+                        <>
 
                     {/* Top Metric Cards - Full Width */}
                     <div className="w-full flex flex-col gap-3 md:gap-4">
@@ -1605,6 +1898,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </div>
                         {/* Closes CSS grid layout */}
                     </div>
+                        </>
+                    )}
                 </div>
 
             )
@@ -1669,7 +1964,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             }
             {/* Generated Tasks Section */}
             {
-                projects.length > 0 && (
+                projects.length > 0 && selectedRole === 'project' && (
                     isDashboardSkeletonVisible && taskList.length === 0 ? (
                         renderGeneratedTasksSkeleton()
                     ) : (
