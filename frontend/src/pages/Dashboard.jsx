@@ -148,6 +148,8 @@ const Dashboard = ({
     currentView: propCurrentView,
     isNewProjectMode,
     fetchRoadmapData,
+    selectedRole,
+    setSelectedRole,
 }) => {
     const { projectToken } = useParams();
     const [user, setUser] = useState(propUser || null);
@@ -1685,7 +1687,14 @@ const Dashboard = ({
         <>
             {currentView === 'statusDashboard' ? (
                 <div className="h-full overflow-auto">
-                    <StatusDashboard projects={projects} projectsLoading={projectsLoading} />
+                    <StatusDashboard
+                        projects={projects}
+                        projectsLoading={projectsLoading}
+                        selectedProjectKey={selectedProjectKey}
+                        setSelectedProjectKey={setSelectedProjectKey}
+                        selectedRole={selectedRole}
+                        setSelectedRole={setSelectedRole}
+                    />
                 </div>
             ) : (
                 <main className="flex-1 h-full overflow-y-auto bg-app-bg-page p-3 sm:p-4 md:p-8 w-full">
