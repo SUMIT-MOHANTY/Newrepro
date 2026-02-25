@@ -72,34 +72,34 @@ const faqs = [
 
 const HowItWorks = () => {
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+    <div className="min-h-screen bg-app-bg-page text-app-text-main font-sans">
       {/* Top nav – consistent with landing but simple */}
-      <nav className="w-full bg-white/90 backdrop-blur-md z-40 border-b border-slate-100 sticky top-0">
+      <nav className="w-full bg-app-bg-card/90 backdrop-blur-md z-40 border-b border-app-border-light sticky top-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <Link to="/" className="flex items-center gap-3">
               <img src={Logo} alt="DSuite" className="h-9 w-auto" />
-              <div className="h-6 w-px bg-slate-200" />
-              <span className="text-lg font-bold tracking-tight text-slate-900">
+              <div className="h-6 w-px bg-app-bg-hover" />
+              <span className="text-lg font-bold tracking-tight text-app-text-main">
                 DSuite
               </span>
             </Link>
             <div className="flex items-center gap-3">
               <Link
                 to="/"
-                className="text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+                className="text-sm font-medium text-app-text-label hover:text-app-text-main transition-colors"
               >
                 Back to home
               </Link>
               <Link
                 to="/login"
-                className="hidden sm:inline-flex text-sm font-semibold text-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 border border-slate-200 transition-colors"
+                className="hidden sm:inline-flex text-sm font-semibold text-app-text-label px-3 py-1.5 rounded-lg hover:bg-app-bg-page border border-app-border transition-colors"
               >
                 Log in
               </Link>
               <Link
                 to="/signup"
-                className="inline-flex items-center text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg shadow-sm shadow-blue-500/30 transition-colors"
+                className="inline-flex items-center text-sm font-semibold text-white bg-app-primary hover:bg-app-primary-hover px-4 py-2 rounded-lg shadow-sm shadow-blue-500/30 transition-colors"
               >
                 Get started
                 <ArrowRight className="ml-1.5 h-4 w-4" />
@@ -110,34 +110,34 @@ const HowItWorks = () => {
       </nav>
 
       {/* Hero */}
-      <section className="pt-10 pb-10 sm:pt-14 sm:pb-14 lg:pt-16 lg:pb-16 px-4 sm:px-6 lg:px-8 bg-gradient-to-b from-white via-slate-50 to-slate-100 border-b border-slate-100">
+      <section className="pt-10 pb-10 sm:pt-14 sm:pb-14 lg:pt-16 lg:pb-16 px-4 sm:px-6 lg:px-8 bg-gradient-to-b from-white via-slate-50 to-slate-100 border-b border-app-border-light">
         <div className="max-w-6xl mx-auto grid lg:grid-cols-[1.4fr,1fr] gap-10 lg:gap-14 items-center">
           <div className="space-y-5 sm:space-y-6">
-            <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-50 border border-blue-100 rounded-full text-blue-600 text-xs font-semibold">
+            <div className="inline-flex items-center gap-2 px-3 py-1 bg-app-primary-light border border-app-primary-light rounded-full text-app-primary text-xs font-semibold">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
               How DSuite works
             </div>
-            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-slate-900">
+            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-app-text-main">
               From{' '}
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
                 document
               </span>{' '}
               to decision in minutes.
             </h1>
-            <p className="text-base sm:text-lg text-slate-600 max-w-xl">
+            <p className="text-base sm:text-lg text-app-text-label max-w-xl">
               DSuite turns long requirement documents into structured, technical insight so your teams can
               validate feasibility, align architecture, and plan delivery without days of manual reading.
             </p>
-            <div className="flex flex-wrap gap-3 text-sm text-slate-600">
+            <div className="flex flex-wrap gap-3 text-sm text-app-text-label">
               <div className="inline-flex items-center gap-1.5">
-                <CheckCircle className="h-4 w-4 text-green-500" />
+                <CheckCircle className="h-4 w-4 text-app-status-success" />
                 <span>No change to your current BRD templates</span>
               </div>
               <div className="inline-flex items-center gap-1.5">
-                <CheckCircle className="h-4 w-4 text-green-500" />
+                <CheckCircle className="h-4 w-4 text-app-status-success" />
                 <span>Designed for enterprise governance</span>
               </div>
             </div>
@@ -145,56 +145,56 @@ const HowItWorks = () => {
 
           <div className="relative">
             <div className="absolute -inset-4 bg-gradient-to-tr from-blue-100/70 via-indigo-100/60 to-slate-50 rounded-3xl blur-2xl opacity-70" />
-            <div className="relative bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+            <div className="relative bg-app-bg-card border border-app-border rounded-2xl shadow-xl overflow-hidden">
+              <div className="p-5 border-b border-app-border-light flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center">
-                    <Sparkles className="h-4 w-4 text-blue-600" />
+                  <div className="h-8 w-8 rounded-full bg-app-primary-light flex items-center justify-center">
+                    <Sparkles className="h-4 w-4 text-app-primary" />
                   </div>
                   <div>
-                    <p className="text-xs font-medium text-slate-500">Sample BRD</p>
-                    <p className="text-sm font-semibold text-slate-900">E-commerce Platform Revamp</p>
+                    <p className="text-xs font-medium text-app-text-muted">Sample BRD</p>
+                    <p className="text-sm font-semibold text-app-text-main">E-commerce Platform Revamp</p>
                   </div>
                 </div>
-                <span className="text-[11px] font-semibold text-green-600 bg-green-50 border border-green-100 px-2 py-0.5 rounded-full">
+                <span className="text-[11px] font-semibold text-app-status-success bg-app-status-successBg border border-green-100 px-2 py-0.5 rounded-full">
                   Analyzed
                 </span>
               </div>
-              <div className="p-5 space-y-4 bg-slate-50/60">
+              <div className="p-5 space-y-4 bg-app-bg-page/60">
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="bg-white border border-slate-100 rounded-xl p-3 space-y-1">
-                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                  <div className="bg-app-bg-card border border-app-border-light rounded-xl p-3 space-y-1">
+                    <p className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wide">
                       Feasibility
                     </p>
-                    <p className="text-sm font-semibold text-emerald-600">Viable with minor risks</p>
-                    <p className="text-[11px] text-slate-500">
+                    <p className="text-sm font-semibold text-app-status-success">Viable with minor risks</p>
+                    <p className="text-[11px] text-app-text-muted">
                       2 integration risks identified, 1 scope clarification.
                     </p>
                   </div>
-                  <div className="bg-white border border-slate-100 rounded-xl p-3 space-y-1">
-                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                  <div className="bg-app-bg-card border border-app-border-light rounded-xl p-3 space-y-1">
+                    <p className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wide">
                       Architecture
                     </p>
                     <p className="text-sm font-semibold text-slate-800">Suggested microservice design</p>
-                    <p className="text-[11px] text-slate-500">
+                    <p className="text-[11px] text-app-text-muted">
                       Recommends API gateway, notification service, and reporting module.
                     </p>
                   </div>
                 </div>
-                <div className="bg-white border border-slate-100 rounded-xl p-3 space-y-2">
-                  <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                <div className="bg-app-bg-card border border-app-border-light rounded-xl p-3 space-y-2">
+                  <p className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wide">
                     Questions to clarify with stakeholders
                   </p>
                   <ul className="space-y-1">
-                    <li className="flex gap-2 text-[11px] text-slate-600">
+                    <li className="flex gap-2 text-[11px] text-app-text-label">
                       <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-blue-500 flex-shrink-0" />
                       <span>Payment provider SLAs and reconciliation requirements.</span>
                     </li>
-                    <li className="flex gap-2 text-[11px] text-slate-600">
+                    <li className="flex gap-2 text-[11px] text-app-text-label">
                       <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-blue-500 flex-shrink-0" />
                       <span>Expected traffic spikes during campaigns.</span>
                     </li>
-                    <li className="flex gap-2 text-[11px] text-slate-600">
+                    <li className="flex gap-2 text-[11px] text-app-text-label">
                       <span className="mt-[6px] h-1.5 w-1.5 rounded-full bg-blue-500 flex-shrink-0" />
                       <span>Compliance and data residency constraints.</span>
                     </li>
@@ -207,13 +207,13 @@ const HowItWorks = () => {
       </section>
 
       {/* Steps section */}
-      <section className="py-14 sm:py-16 lg:py-20 bg-white">
+      <section className="py-14 sm:py-16 lg:py-20 bg-app-bg-card">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-3xl mb-10">
-            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mb-3">
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-app-text-main mb-3">
               How DSuite fits into your delivery flow
             </h2>
-            <p className="text-slate-600 text-sm sm:text-base">
+            <p className="text-app-text-label text-sm sm:text-base">
               DSuite is designed to sit between requirements and execution, giving teams a shared,
               technical view of what&apos;s being asked before estimates, architecture, and planning
               begin.
@@ -225,11 +225,11 @@ const HowItWorks = () => {
               return (
                 <div
                   key={step.title}
-                  className="relative bg-slate-50 border border-slate-100 rounded-2xl p-5 sm:p-6 hover:border-blue-200 hover:shadow-sm transition-colors"
+                  className="relative bg-app-bg-page border border-app-border-light rounded-2xl p-5 sm:p-6 hover:border-app-primary-ring hover:shadow-sm transition-colors"
                 >
                   <div className="flex items-start gap-4">
                     <div className="flex flex-col items-center">
-                      <div className="h-10 w-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-md shadow-blue-500/30">
+                      <div className="h-10 w-10 rounded-xl bg-app-primary text-white flex items-center justify-center shadow-md shadow-blue-500/30">
                         <Icon className="h-5 w-5" />
                       </div>
                       {index < steps.length - 1 && (
@@ -238,14 +238,14 @@ const HowItWorks = () => {
                     </div>
                     <div className="space-y-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-600 border border-blue-100">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-app-primary-light text-app-primary border border-app-primary-light">
                           {step.badge}
                         </span>
                       </div>
-                      <h3 className="text-base sm:text-lg font-semibold text-slate-900">
+                      <h3 className="text-base sm:text-lg font-semibold text-app-text-main">
                         {step.title}
                       </h3>
-                      <p className="text-sm text-slate-600 leading-relaxed">{step.description}</p>
+                      <p className="text-sm text-app-text-label leading-relaxed">{step.description}</p>
                     </div>
                   </div>
                 </div>
@@ -256,32 +256,32 @@ const HowItWorks = () => {
       </section>
 
       {/* Concrete example section */}
-      <section className="py-10 sm:py-12 lg:py-16 bg-slate-50 border-t border-slate-100">
+      <section className="py-10 sm:py-12 lg:py-16 bg-app-bg-page border-t border-app-border-light">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-3xl mb-6">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 mb-2">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main mb-2">
               See it with a real project example
             </h2>
-            <p className="text-sm sm:text-base text-slate-600">
+            <p className="text-sm sm:text-base text-app-text-label">
               Here&apos;s what DSuite would do with a typical &quot;Online Loan Origination System BRD&quot;.
             </p>
           </div>
           <div className="grid md:grid-cols-2 gap-6 items-start">
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-sm">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+            <div className="bg-app-bg-card rounded-2xl border border-app-border p-5 sm:p-6 shadow-sm">
+              <p className="text-xs font-semibold text-app-text-muted uppercase tracking-wide mb-2">
                 Input from your side
               </p>
-              <ul className="space-y-2 text-sm text-slate-600">
+              <ul className="space-y-2 text-sm text-app-text-label">
                 <li>• 55-page BRD covering customer onboarding, KYC, scoring, and disbursement.</li>
                 <li>• High-level non-functional section with performance and availability targets.</li>
                 <li>• A few scattered notes about integrations (CBS, bureau, SMS gateway).</li>
               </ul>
             </div>
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-sm">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+            <div className="bg-app-bg-card rounded-2xl border border-app-border p-5 sm:p-6 shadow-sm">
+              <p className="text-xs font-semibold text-app-text-muted uppercase tracking-wide mb-2">
                 What DSuite gives back
               </p>
-              <ul className="space-y-2 text-sm text-slate-600">
+              <ul className="space-y-2 text-sm text-app-text-label">
                 <li>• A project map split into modules like &quot;Onboarding&quot;, &quot;Decisioning&quot;, &quot;Servicing&quot;.</li>
                 <li>• Feasibility summary with key risks (e.g. missing SLA details for CBS, unclear batch vs. real-time flows).</li>
                 <li>• Suggested architecture options and integration points for each external system.</li>
@@ -293,7 +293,7 @@ const HowItWorks = () => {
       </section>
 
       {/* Value section */}
-      <section className="py-12 sm:py-16 lg:py-18 bg-slate-900 text-white relative overflow-hidden">
+      <section className="py-12 sm:py-16 lg:py-18 bg-app-text-main text-white relative overflow-hidden">
         <div className="absolute inset-0 opacity-20 mix-blend-overlay bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.2),_transparent_60%),radial-gradient(circle_at_bottom,_rgba(129,140,248,0.25),_transparent_55%)]" />
         <div className="relative max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-3xl mb-10">
@@ -309,7 +309,7 @@ const HowItWorks = () => {
             {valuePoints.map((point) => (
               <div
                 key={point.title}
-                className="bg-white/5 border border-white/10 rounded-2xl p-5 sm:p-6 backdrop-blur-sm"
+                className="bg-app-bg-card/5 border border-white/10 rounded-2xl p-5 sm:p-6 backdrop-blur-sm"
               >
                 <h3 className="text-base sm:text-lg font-semibold mb-2">{point.title}</h3>
                 <p className="text-sm text-slate-200 leading-relaxed">{point.description}</p>
@@ -331,13 +331,13 @@ const HowItWorks = () => {
       </section>
 
       {/* FAQ */}
-      <section className="py-14 sm:py-16 lg:py-20 bg-white">
+      <section className="py-14 sm:py-16 lg:py-20 bg-app-bg-card">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-8">
-            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mb-2">
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-app-text-main mb-2">
               Frequently asked questions
             </h2>
-            <p className="text-sm sm:text-base text-slate-600">
+            <p className="text-sm sm:text-base text-app-text-label">
               A quick overview of how DSuite behaves in real-world projects.
             </p>
           </div>
@@ -345,12 +345,12 @@ const HowItWorks = () => {
             {faqs.map((item) => (
               <div
                 key={item.q}
-                className="border border-slate-200 rounded-xl p-4 sm:p-5 bg-slate-50/60 hover:border-blue-200 transition-colors"
+                className="border border-app-border rounded-xl p-4 sm:p-5 bg-app-bg-page/60 hover:border-app-primary-ring transition-colors"
               >
-                <h3 className="text-sm sm:text-base font-semibold text-slate-900 mb-1.5">
+                <h3 className="text-sm sm:text-base font-semibold text-app-text-main mb-1.5">
                   {item.q}
                 </h3>
-                <p className="text-sm text-slate-600 leading-relaxed">{item.a}</p>
+                <p className="text-sm text-app-text-label leading-relaxed">{item.a}</p>
               </div>
             ))}
           </div>
@@ -358,26 +358,26 @@ const HowItWorks = () => {
       </section>
 
       {/* Final CTA */}
-      <section className="py-12 sm:py-16 bg-slate-50 border-t border-slate-200">
+      <section className="py-12 sm:py-16 bg-app-bg-page border-t border-app-border">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-3">
+          <h2 className="text-2xl sm:text-3xl font-bold text-app-text-main mb-3">
             Ready to see your BRDs the way engineers do?
           </h2>
-          <p className="text-sm sm:text-base text-slate-600 max-w-2xl mx-auto mb-6">
+          <p className="text-sm sm:text-base text-app-text-label max-w-2xl mx-auto mb-6">
             Start with a single document, get a complete technical breakdown, and share it with your
             delivery and architecture teams in minutes.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
             <Link
               to="/signup"
-              className="inline-flex items-center justify-center px-7 py-3 text-sm sm:text-base font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-lg shadow-blue-500/30 transition-colors"
+              className="inline-flex items-center justify-center px-7 py-3 text-sm sm:text-base font-semibold text-white bg-app-primary hover:bg-app-primary-hover rounded-xl shadow-lg shadow-blue-500/30 transition-colors"
             >
               Start analysis free
               <ArrowRight className="ml-2 h-4 w-4" />
             </Link>
             <Link
               to="/login"
-              className="inline-flex items-center justify-center px-7 py-3 text-sm sm:text-base font-semibold text-slate-800 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors"
+              className="inline-flex items-center justify-center px-7 py-3 text-sm sm:text-base font-semibold text-slate-800 bg-app-bg-card border border-app-border rounded-xl hover:bg-app-bg-page transition-colors"
             >
               Log in to DSuite
             </Link>

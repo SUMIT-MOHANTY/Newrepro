@@ -147,6 +147,7 @@ const Dashboard = ({
     setShowSettings: propSetShowSettings,
     currentView: propCurrentView,
     isNewProjectMode,
+    fetchRoadmapData,
 }) => {
     const { projectToken } = useParams();
     const [user, setUser] = useState(propUser || null);
@@ -912,6 +913,11 @@ const Dashboard = ({
             setProjectState(taskKey, { result: finalResult, progress: 100, progressMessage: 'Analysis complete!' });
             await saveToHistory(finalResult, taskKey);
             createProjectFromMetrics(finalResult, metrics);
+
+            // Auto-refresh roadmap stepper after analysis completes
+            if (fetchRoadmapData && selectedProjectKey) {
+                fetchRoadmapData(selectedProjectKey);
+            }
         } catch (err) {
             setProjectState(taskKey, { error: `Start Error: ${err.message}` });
         }
@@ -1134,6 +1140,11 @@ const Dashboard = ({
             });
             await saveToHistory(finalResult, taskKey);
             createProjectFromMetrics(finalResult, metrics);
+
+            // Auto-refresh roadmap stepper after analysis completes
+            if (fetchRoadmapData && selectedProjectKey) {
+                fetchRoadmapData(selectedProjectKey);
+            }
         } catch (err) {
             setProjectState(taskKey, { error: `Stream Error: ${err.message}` });
         }
@@ -1664,8 +1675,8 @@ const Dashboard = ({
 
     if (!user) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-gray-100">
-                <div className="text-gray-600">Loading...</div>
+            <div className="flex items-center justify-center min-h-screen bg-app-bg-muted">
+                <div className="text-app-text-label">Loading...</div>
             </div>
         );
     }
@@ -1677,16 +1688,16 @@ const Dashboard = ({
                     <StatusDashboard projects={projects} projectsLoading={projectsLoading} />
                 </div>
             ) : (
-                <main className="flex-1 h-full overflow-y-auto bg-gray-50 p-3 sm:p-4 md:p-8 w-full">
+                <main className="flex-1 h-full overflow-y-auto bg-app-bg-page p-3 sm:p-4 md:p-8 w-full">
                     <div className="max-w-5xl mx-auto space-y-6">
 
                         {error && (
-                            <div className="rounded-lg bg-red-50 p-4 border border-red-200 flex items-start animate-fade-in-down">
+                            <div className="rounded-lg bg-app-status-errorBg p-4 border border-red-200 flex items-start animate-fade-in-down">
                                 <div className="ml-3">
                                     <h3 className="text-sm font-medium text-red-800">Error</h3>
                                     <div className="mt-1 text-sm text-red-700">{error}</div>
                                 </div>
-                                <button onClick={() => setError('')} className="ml-auto text-red-500 hover:text-red-700">✕</button>
+                                <button onClick={() => setError('')} className="ml-auto text-app-status-error hover:text-red-700">✕</button>
                             </div>
                         )}
 
@@ -1695,10 +1706,10 @@ const Dashboard = ({
                         {/* Landing / Upload State */}
                         {!result && (
                             <div className="text-center mb-10 animate-fade-in-down">
-                                <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight sm:text-4xl mb-3">
+                                <h1 className="text-3xl font-extrabold text-app-text-main tracking-tight sm:text-4xl mb-3">
                                     AI-Powered BRD Analysis
                                 </h1>
-                                <p className="text-lg text-gray-600 max-w-2xl mx-auto">
+                                <p className="text-lg text-app-text-label max-w-2xl mx-auto">
                                     Upload your Business Requirements Document to get instant feasibility analysis, targeted technical questions, and a go/no-go recommendation.
                                 </p>
                             </div>
@@ -1706,16 +1717,16 @@ const Dashboard = ({
 
 
                         {!result && (
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md max-w-3xl mx-auto">
-                                <h2 className="text-xl font-bold text-gray-900 mb-6 flex items-center">
-                                    <span className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-600 mr-3 text-sm font-bold">1</span>
+                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md max-w-3xl mx-auto">
+                                <h2 className="text-xl font-bold text-app-text-main mb-6 flex items-center">
+                                    <span className="flex items-center justify-center w-8 h-8 rounded-full bg-app-primary-light text-app-primary mr-3 text-sm font-bold">1</span>
                                     Project BRD Upload
                                 </h2>
 
                                 <form onSubmit={handleUpload} className="space-y-6">
 
                                     {selectedProject ? (
-                                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                                        <div className="rounded-xl border border-emerald-200 bg-app-status-successBg p-4">
                                             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                                 <div>
                                                     <p className="text-sm font-semibold text-emerald-900">Selected Project</p>
@@ -1758,7 +1769,7 @@ const Dashboard = ({
                                                             type="button"
                                                             onClick={handleCreateRevision}
                                                             disabled={selectedProject.classification === 'ENTERPRISE'}
-                                                            className="text-xs font-semibold text-blue-700 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                                            className="text-xs font-semibold text-app-primary-hover hover:text-blue-900 disabled:text-app-text-light disabled:cursor-not-allowed"
                                                         >
                                                             Create New Revision
                                                         </button>
@@ -1766,24 +1777,24 @@ const Dashboard = ({
                                                 </div>
                                             </div>
                                             {revisionUnlocked && (
-                                                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                                                <div className="mt-3 rounded-lg border border-app-primary-ring bg-app-primary-light p-3">
                                                     <p className="text-xs font-semibold text-blue-900">Revision unlocked for this upload</p>
-                                                    <p className="text-xs text-blue-800 mt-1">Reason: {revisionReason}</p>
+                                                    <p className="text-xs text-app-primary-dark mt-1">Reason: {revisionReason}</p>
                                                 </div>
                                             )}
                                         </div>
                                     ) : (
-                                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                        <div className="rounded-xl border border-amber-200 bg-app-status-warningBg p-4">
                                             <p className="text-sm font-semibold text-amber-900">Select a project from the left panel to continue.</p>
                                         </div>
                                     )}
 
                                     {/* Tabs */}
-                                    <div className="flex items-center border-b border-gray-200 mb-6 overflow-x-auto whitespace-nowrap scrollbar-hide py-1">
+                                    <div className="flex items-center border-b border-app-border mb-6 overflow-x-auto whitespace-nowrap scrollbar-hide py-1">
                                         <button
                                             type="button"
                                             onClick={() => setActiveTab('upload')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
                                             disabled={!selectedProject}
                                         >
                                             Upload File
@@ -1791,7 +1802,7 @@ const Dashboard = ({
                                         <button
                                             type="button"
                                             onClick={() => setActiveTab('linked-doc')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'linked-doc' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'linked-doc' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
                                             disabled={!selectedProject}
                                         >
                                             Linked Project Document
@@ -1799,7 +1810,7 @@ const Dashboard = ({
                                         <button
                                             type="button"
                                             onClick={() => setActiveTab('text')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
                                             disabled={!selectedProject}
                                         >
                                             Write Text
@@ -1807,7 +1818,7 @@ const Dashboard = ({
                                         <button
                                             type="button"
                                             onClick={() => setActiveTab('github-link')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
                                             disabled={!selectedProject}
                                         >
                                             GitHub
@@ -1815,7 +1826,7 @@ const Dashboard = ({
                                     </div>
 
                                     {activeTab === 'upload' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
                                             <input
                                                 type="file"
                                                 id={`file-upload-${activeTab}`}
@@ -1825,27 +1836,27 @@ const Dashboard = ({
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
                                             />
-                                            <div className="mx-auto w-12 h-12 text-gray-400 mb-3 group-hover:text-blue-500 transition-colors">
+                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
                                                 <FileText className="w-12 h-12" />
                                             </div>
-                                            <span className="mt-2 block text-sm font-medium text-gray-900">
+                                            <span className="mt-2 block text-sm font-medium text-app-text-main">
                                                 {files.length > 0
                                                     ? `${files.length} file(s) selected`
                                                     : "Click to select documents (max 100MB total)"}
                                             </span>
                                             {files.length > 0 && (
-                                                <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
+                                                <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
                                                     {files.map((f, i) => (
                                                         <span key={i} className="truncate max-w-[200px]">{f.name}</span>
                                                     ))}
                                                 </div>
                                             )}
-                                            <span className="mt-1 block text-xs text-gray-400">
+                                            <span className="mt-1 block text-xs text-app-text-light">
                                                 PDF, DOCX, PPTX, HTML, Images
                                             </span>
                                         </div>
                                     ) : activeTab === 'linked-doc' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-gray-50/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-gray-200 hover:border-blue-400 cursor-pointer' : 'border-gray-200 opacity-60'}`}>
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
                                             <input
                                                 type="file"
                                                 id={`file-upload-linked`}
@@ -1855,22 +1866,22 @@ const Dashboard = ({
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
                                             />
-                                            <div className="mx-auto w-12 h-12 text-gray-400 mb-3 group-hover:text-blue-500 transition-colors">
+                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
                                                 <FileText className="w-12 h-12" />
                                             </div>
-                                            <span className="mt-2 block text-sm font-medium text-gray-900">
+                                            <span className="mt-2 block text-sm font-medium text-app-text-main">
                                                 {linkedFiles.length > 0
                                                     ? `${linkedFiles.length} linked document(s) selected`
                                                     : "Click to select linked documents (max 100MB total)"}
                                             </span>
                                             {linkedFiles.length > 0 && (
-                                                <div className="mt-2 text-xs text-gray-500 flex flex-col items-center">
+                                                <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
                                                     {linkedFiles.map((f, i) => (
                                                         <span key={i} className="truncate max-w-[200px]">{f.name}</span>
                                                     ))}
                                                 </div>
                                             )}
-                                            <span className="mt-1 block text-xs text-gray-400">
+                                            <span className="mt-1 block text-xs text-app-text-light">
                                                 PDF, DOCX, PPTX, HTML, Images
                                             </span>
                                         </div>
@@ -1880,23 +1891,23 @@ const Dashboard = ({
                                                 value={textInput}
                                                 onChange={handleTextChange}
                                                 placeholder="Write your requirements here..."
-                                                className="w-full h-64 p-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50/50 resize-none font-mono"
+                                                className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
                                             />
                                         </div>
                                     ) : (
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative mx-auto">
                                             {/* OPTION 1: GitHub Connect */}
-                                            <div className="relative border border-gray-200 rounded-xl p-5 bg-white shadow-sm flex flex-col justify-start overflow-hidden">
-                                                <div className={`absolute inset-0 bg-white/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
-                                                    <span className="text-xs text-gray-500 font-bold px-3 py-1.5 bg-gray-100 rounded-lg shadow-sm border border-gray-200 uppercase tracking-widest">Using Link Option</span>
+                                            <div className="relative border border-app-border rounded-xl p-5 bg-app-bg-card shadow-sm flex flex-col justify-start overflow-hidden">
+                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                    <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Link Option</span>
                                                 </div>
                                                 <div className="mb-4">
                                                     <div className="flex items-center mb-2">
-                                                        <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded flex items-center justify-center mr-2 font-black text-xs">1</div>
-                                                        <h3 className="text-sm font-bold text-gray-900">Connect Account</h3>
+                                                        <div className="w-6 h-6 bg-app-primary-light text-app-primary rounded flex items-center justify-center mr-2 font-black text-xs">1</div>
+                                                        <h3 className="text-sm font-bold text-app-text-main">Connect Account</h3>
                                                     </div>
-                                                    <p className="text-xs text-gray-500 mb-2">
+                                                    <p className="text-xs text-app-text-muted mb-2">
                                                         Authorize via OAuth to securely browse and select private or public repositories on your account.
                                                     </p>
                                                 </div>
@@ -1918,16 +1929,16 @@ const Dashboard = ({
                                             </div>
 
                                             {/* OPTION 2: Repository URL */}
-                                            <div className="relative border border-gray-200 rounded-xl bg-white shadow-sm p-5 flex flex-col justify-start overflow-hidden">
-                                                <div className={`absolute inset-0 bg-white/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || (repoContext && !repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
-                                                    <span className="text-xs text-gray-500 font-bold px-3 py-1.5 bg-gray-100 rounded-lg shadow-sm border border-gray-200 uppercase tracking-widest">Using Connected Account</span>
+                                            <div className="relative border border-app-border rounded-xl bg-app-bg-card shadow-sm p-5 flex flex-col justify-start overflow-hidden">
+                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || (repoContext && !repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                    <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Connected Account</span>
                                                 </div>
                                                 <div className="mb-4">
                                                     <div className="flex items-center mb-2">
                                                         <div className="w-6 h-6 bg-purple-100 text-purple-600 rounded flex items-center justify-center mr-2 font-black text-xs">2</div>
-                                                        <h3 className="text-sm font-bold text-gray-900">Paste Repository Link</h3>
+                                                        <h3 className="text-sm font-bold text-app-text-main">Paste Repository Link</h3>
                                                     </div>
-                                                    <p className="text-xs text-gray-500 mb-2">
+                                                    <p className="text-xs text-app-text-muted mb-2">
                                                         Provide a direct link to a GitHub repository. For private repositories, include a Personal Access Token (PAT).
                                                     </p>
                                                 </div>
@@ -1940,7 +1951,7 @@ const Dashboard = ({
                                                             if (repoContext) setRepoContext(null);
                                                         }}
                                                         placeholder="https://github.com/owner/repo"
-                                                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-gray-50/50"
+                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                     />
                                                     <input
                                                         type="password"
@@ -1950,14 +1961,14 @@ const Dashboard = ({
                                                             if (repoContext) setRepoContext(null);
                                                         }}
                                                         placeholder="Optional PAT for private repos..."
-                                                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-gray-50/50"
+                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                     />
                                                     <div className="flex items-center gap-2">
                                                         <button
                                                             type="button"
                                                             onClick={handleLoadGithubUrl}
                                                             disabled={!githubLinkUrl || githubLinkParsing}
-                                                            className="flex-1 px-4 py-2 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
+                                                            className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
                                                         >
                                                             {githubLinkParsing ? (
                                                                 <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
@@ -1966,7 +1977,7 @@ const Dashboard = ({
                                                         {repoContext && repoContext.fromLink && (
                                                             <button
                                                                 onClick={() => { setRepoContext(null); setGithubLinkUrl(''); setGithubLinkToken(''); setGithubLinkError(''); }}
-                                                                className="px-3 py-2 border border-red-200 text-red-600 bg-red-50 rounded-lg hover:bg-red-100 text-sm font-semibold h-10 transition-colors"
+                                                                className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-red-100 text-sm font-semibold h-10 transition-colors"
                                                                 title="Clear repository"
                                                             >
                                                                 Clear
@@ -1975,10 +1986,10 @@ const Dashboard = ({
                                                     </div>
                                                 </div>
 
-                                                {githubLinkError && <p className="text-red-600 text-[11px] font-medium mt-3 bg-red-50 p-2.5 rounded border border-red-100">{githubLinkError}</p>}
+                                                {githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{githubLinkError}</p>}
                                                 {repoContext && repoContext.fromLink && (
-                                                    <div className="mt-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
-                                                        <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-emerald-600" />
+                                                    <div className="mt-3 p-2.5 bg-app-status-successBg border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
+                                                        <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-app-status-success" />
                                                         <span className="truncate">Loaded: {repoContext.repo} {repoContext.branch ? `(${repoContext.branch})` : ''}</span>
                                                     </div>
                                                 )}
@@ -1990,13 +2001,13 @@ const Dashboard = ({
 
                                     {processing && (
                                         <div className="space-y-3 animate-pulse mt-6">
-                                            <div className="flex justify-between items-center text-xs uppercase tracking-wider text-gray-500 font-semibold">
+                                            <div className="flex justify-between items-center text-xs uppercase tracking-wider text-app-text-muted font-semibold">
                                                 <span>{progressMessage}</span>
                                                 <span>{progress}%</span>
                                             </div>
-                                            <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                            <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
                                                 <div
-                                                    className="bg-blue-600 h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                    className="bg-app-primary h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
                                                     style={{ width: `${progress}%` }}
                                                 ></div>
                                             </div>
@@ -2007,7 +2018,7 @@ const Dashboard = ({
                                         <button
                                             type="button"
                                             onClick={goToGovernanceAssessment}
-                                            className="inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-gray-700 bg-gray-100 hover:bg-gray-200 transition-all transform active:scale-95 shadow-md"
+                                            className="inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-app-text-label bg-app-bg-muted hover:bg-app-bg-hover transition-all transform active:scale-95 shadow-md"
                                         >
                                             <Zap className="w-4 h-4 mr-2" />
                                             Change Governance
@@ -2017,7 +2028,7 @@ const Dashboard = ({
                                             disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
                                             className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
                                                 ? 'bg-gray-300 cursor-not-allowed shadow-none'
-                                                : 'bg-blue-600 hover:bg-blue-700 hover:-translate-y-0.5 hover:shadow-lg'
+                                                : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
                                         >
                                             <Zap className={`w-4 h-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
@@ -2031,14 +2042,14 @@ const Dashboard = ({
                         {result && (
                             <div className="space-y-6 animate-fade-in-up">
                                 {/* Result Header */}
-                                <div className="flex flex-col md:flex-row md:items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                                <div className="flex flex-col md:flex-row md:items-center justify-between bg-app-bg-card p-4 rounded-xl shadow-sm border border-app-border-light">
                                     <div className="flex items-center mb-4 md:mb-0">
-                                        <div className="p-2 bg-green-50 rounded-lg mr-3">
-                                            <FileText className="w-5 h-5 text-green-600" />
+                                        <div className="p-2 bg-app-status-successBg rounded-lg mr-3">
+                                            <FileText className="w-5 h-5 text-app-status-success" />
                                         </div>
                                         <div>
-                                            <h2 className="text-lg font-bold text-gray-900 break-all sm:break-normal">{result.filename}</h2>
-                                            <p className="text-xs text-gray-500">
+                                            <h2 className="text-lg font-bold text-app-text-main break-all sm:break-normal">{result.filename}</h2>
+                                            <p className="text-xs text-app-text-muted">
                                                 {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
                                             </p>
                                         </div>
@@ -2046,7 +2057,7 @@ const Dashboard = ({
                                     <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
                                         <button
                                             onClick={handleDownloadPDF}
-                                            className="text-sm text-gray-600 hover:text-gray-900 font-medium hover:underline flex items-center transition-colors"
+                                            className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
                                             title="Download PDF Report"
                                         >
                                             <Download className="w-4 h-4 mr-1" /> Download PDF
@@ -2054,7 +2065,7 @@ const Dashboard = ({
                                         <div className="hidden sm:block h-4 w-px bg-gray-300"></div>
                                         <button
                                             onClick={handleNewAnalysis}
-                                            className="text-sm text-blue-600 hover:text-blue-800 font-medium hover:underline flex items-center"
+                                            className="text-sm text-app-primary hover:text-app-primary-dark font-medium hover:underline flex items-center"
                                         >
                                             <Plus className="w-4 h-4 mr-1" /> Analyze Another
                                         </button>
@@ -2062,14 +2073,14 @@ const Dashboard = ({
                                 </div>
 
                                 {/* Go / No Go Decision Panel */}
-                                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                                     <div className="flex items-center gap-3">
                                         <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg shadow-orange-200">
                                             <Zap className="w-5 h-5 text-white" />
                                         </div>
                                         <div>
-                                            <h3 className="text-sm font-bold text-gray-900">Project Decision</h3>
-                                            <p className="text-xs text-gray-500">Based on the analysis, make your go/no-go decision</p>
+                                            <h3 className="text-sm font-bold text-app-text-main">Project Decision</h3>
+                                            <p className="text-xs text-app-text-muted">Based on the analysis, make your go/no-go decision</p>
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-3">
@@ -2104,14 +2115,14 @@ const Dashboard = ({
                                             {(() => {
                                                 const metrics = result.analysis.metrics || {};
                                                 const metricItems = [
-                                                    { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-blue-600', bg: 'bg-blue-50' },
+                                                    { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-app-primary', bg: 'bg-app-primary-light' },
                                                     { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
                                                     { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
-                                                    { label: 'Timeline', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-green-600', bg: 'bg-green-50' }
+                                                    { label: 'Timeline', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
                                                 ];
 
                                                 return metricItems.map((metric, idx) => (
-                                                    <div key={idx} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
+                                                    <div key={idx} className="bg-app-bg-card p-4 rounded-xl border border-app-border-light shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
                                                         <div className="flex items-center justify-between mb-2">
                                                             <div className={`p-2 ${metric.bg} rounded-lg`}>
                                                                 <metric.icon className={`w-4 h-4 ${metric.color}`} />
@@ -2119,8 +2130,8 @@ const Dashboard = ({
                                                             {/* Optional status indicator dot could go here */}
                                                         </div>
                                                         <div>
-                                                            <p className="text-[10px] uppercase tracking-wider font-semibold text-gray-400">{metric.label}</p>
-                                                            <p className="text-sm font-bold text-gray-900 line-clamp-2 leading-tight" title={metric.value}>
+                                                            <p className="text-[10px] uppercase tracking-wider font-semibold text-app-text-light">{metric.label}</p>
+                                                            <p className="text-sm font-bold text-app-text-main line-clamp-2 leading-tight" title={metric.value}>
                                                                 {metric.value}
                                                             </p>
                                                         </div>
@@ -2134,11 +2145,11 @@ const Dashboard = ({
                                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                                         {/* Left Column: Report (8 cols) */}
                                         <div className="lg:col-span-8 space-y-6">
-                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6">
-                                                <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-gray-100">
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
+                                                <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-app-border-light">
                                                     Executive Summary & Analysis
                                                 </h3>
-                                                <div className="prose prose-sm prose-slate max-w-none text-gray-700 leading-relaxed">
+                                                <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
                                                     {(() => {
                                                         const analysisContent = result.analysis?.analysis || '';
                                                         const explicitHtml = result.analysis?.html;
@@ -2147,7 +2158,7 @@ const Dashboard = ({
                                                         if (htmlToRender) {
                                                             return (
                                                                 <div
-                                                                    className="bg-white rounded-lg border border-gray-200 p-4"
+                                                                    className="bg-app-bg-card rounded-lg border border-app-border p-4"
                                                                     dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
                                                                 />
                                                             );
@@ -2155,7 +2166,7 @@ const Dashboard = ({
 
                                                         if (processing && !analysisContent.trim()) {
                                                             return (
-                                                                <div className="text-sm text-gray-500 italic">
+                                                                <div className="text-sm text-app-text-muted italic">
                                                                     Generating analysis...
                                                                 </div>
                                                             );
@@ -2171,9 +2182,9 @@ const Dashboard = ({
                                             </div>
 
                                             {/* Raw Source (Collapsed) */}
-                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4">
                                                 <details className="group">
-                                                    <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-gray-400 uppercase tracking-widest hover:text-gray-600 transition-colors">
+                                                    <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-app-text-light uppercase tracking-widest hover:text-app-text-label transition-colors">
                                                         <span>View Processed Content</span>
                                                         <span className="transition-transform group-open:rotate-180">
                                                             <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
@@ -2181,7 +2192,7 @@ const Dashboard = ({
                                                     </summary>
                                                     <div className="mt-4 pt-4 border-t border-gray-50">
                                                         {result.extraction?.html ? (
-                                                            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                                                            <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
                                                                 <iframe
                                                                     srcDoc={result.extraction.html}
                                                                     className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
@@ -2190,7 +2201,7 @@ const Dashboard = ({
                                                                 />
                                                             </div>
                                                         ) : (
-                                                            <div className="bg-gray-50 rounded-lg p-4 text-xs font-mono text-gray-600 max-h-96 overflow-y-auto whitespace-pre-wrap border border-gray-100">
+                                                            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
                                                                 {result.extraction?.markdown || '(No content extracted)'}
                                                             </div>
                                                         )}
@@ -2201,53 +2212,53 @@ const Dashboard = ({
 
                                         {/* Right Column: Key Actions / Q&A (4 cols) */}
                                         <div className="lg:col-span-4 space-y-6">
-                                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5 lg:sticky lg:top-6">
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:sticky lg:top-6">
                                                 <div className="flex items-center mb-4">
                                                     <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-2"></div>
-                                                    <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                                                    <h3 className="text-sm font-bold text-app-text-main uppercase tracking-wide">
                                                         Clarification Needed
                                                     </h3>
                                                 </div>
 
-                                                <p className="text-xs text-gray-500 mb-6 leading-relaxed">
+                                                <p className="text-xs text-app-text-muted mb-6 leading-relaxed">
                                                     The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
                                                 </p>
 
                                                 {aiQuestions?.length > 0 ? (
                                                     <div className="space-y-4 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
                                                         {aiQuestions.map((q, i) => (
-                                                            <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-                                                                <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
+                                                            <div key={i} className="bg-app-bg-page rounded-lg p-3 border border-app-border-light">
+                                                                <p className="text-xs font-medium text-app-text-label mb-2">{q}</p>
                                                                 <input
                                                                     type="text"
                                                                     value={(userAnswers || {})[i] || ''}
                                                                     onChange={e => setUserAnswers(prev => ({ ...(prev || {}), [i]: e.target.value }))}
-                                                                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                                                    className="w-full px-3 py-2 text-xs border border-app-border rounded-md focus:ring-1 focus:ring-app-primary focus:border-app-primary bg-app-bg-card"
                                                                     placeholder="Your answer..."
                                                                 />
                                                             </div>
                                                         ))}
                                                     </div>
                                                 ) : (
-                                                    <div className="text-center py-8 bg-gray-50 rounded-lg border border-dashed border-gray-200">
-                                                        <p className="text-xs text-gray-400">No specific questions generated.</p>
+                                                    <div className="text-center py-8 bg-app-bg-page rounded-lg border border-dashed border-app-border">
+                                                        <p className="text-xs text-app-text-light">No specific questions generated.</p>
                                                     </div>
                                                 )}
 
-                                                <div className="mt-6 pt-4 border-t border-gray-100">
-                                                    <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
+                                                <div className="mt-6 pt-4 border-t border-app-border-light">
+                                                    <label className="block text-xs font-medium text-app-text-label mb-2">Additional Context</label>
                                                     <textarea
                                                         value={userFeedback}
                                                         onChange={(e) => setUserFeedback(e.target.value)}
                                                         placeholder="Any other details..."
-                                                        className="w-full p-3 border border-gray-200 rounded-lg focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-gray-50 resize-none"
+                                                        className="w-full p-3 border border-app-border rounded-lg focus:ring-app-primary focus:border-app-primary min-h-[80px] text-xs bg-app-bg-page resize-none"
                                                     />
                                                     <button
                                                         onClick={handleRefineAnalysis}
                                                         disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
                                                         className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
                                                             ? 'bg-gray-400 cursor-not-allowed'
-                                                            : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
+                                                            : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
                                                             }`}
                                                     >
                                                         {processing ? 'Refining...' : 'Update Analysis'}
@@ -2266,21 +2277,21 @@ const Dashboard = ({
             {/* AI Config Modal */}
             {showSettings && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
-                        <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-                            <h2 className="font-bold text-lg text-gray-900 flex items-center">
-                                <Settings className="w-5 h-5 mr-2 text-blue-600" />
+                    <div className="bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
+                        <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
+                            <h2 className="font-bold text-lg text-app-text-main flex items-center">
+                                <Settings className="w-5 h-5 mr-2 text-app-primary" />
                                 AI Configuration
                             </h2>
-                            <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-600 transition-colors">✕</button>
+                            <button onClick={() => setShowSettings(false)} className="text-app-text-light hover:text-app-text-label transition-colors">✕</button>
                         </div>
                         <div className="p-6">
                             <AIConfig aiConfig={aiConfig} setAiConfig={setAiConfig} />
                         </div>
-                        <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+                        <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
                             <button
                                 onClick={() => setShowSettings(false)}
-                                className="px-5 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 font-medium text-sm transition-colors"
+                                className="px-5 py-2 bg-app-text-main text-white rounded-lg hover:bg-app-text-label font-medium text-sm transition-colors"
                             >
                                 Done
                             </button>

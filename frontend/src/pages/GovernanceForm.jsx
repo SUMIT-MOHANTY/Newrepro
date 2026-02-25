@@ -1,12 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
-import {
-    Send, AlertCircle, CheckCircle2, AlertTriangle,
-    ChevronRight, ChevronLeft, ArrowRight, Check
-} from 'lucide-react';
-
-
+import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check } from 'lucide-react';
+import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
+import colors from '../styles/colors';
 /* ─────────────────────────────────────────────────────────
    STEP INDICATOR  (compact, responsive)
 ───────────────────────────────────────────────────────── */
@@ -27,13 +24,13 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
                         const active = idx === currentStep;
                         return (
                             <div key={step} className={`flex items-center gap-3.5 py-2.5 px-2 rounded-xl cursor-default transition-all duration-300 group
-                                ${active ? 'bg-gradient-to-r from-blue-50 to-indigo-50/60' : 'hover:bg-gray-50/60'}`}
+                                ${active ? 'bg-gradient-to-r from-blue-50 to-indigo-50/60' : 'hover:bg-app-bg-page/60'}`}
                             >
                                 {/* Indicator Circle */}
                                 <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-300 flex-shrink-0
                                     ${done ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
-                                        : active ? 'bg-white border-2 border-blue-500 text-blue-600 shadow-lg shadow-blue-100 ring-4 ring-blue-50'
-                                            : 'bg-gray-100 border border-gray-200 text-gray-400 group-hover:border-gray-300 group-hover:text-gray-500'}`}
+                                        : active ? 'bg-app-bg-card border-2 border-app-primary text-app-primary shadow-lg shadow-blue-100 ring-4 ring-blue-50'
+                                            : 'bg-app-bg-muted border border-app-border text-app-text-light group-hover:border-app-border group-hover:text-app-text-muted'}`}
                                 >
                                     {done ? <Check className="w-3.5 h-3.5" /> : idx + 1}
                                     {active && <span className="absolute inset-0 rounded-full animate-ping bg-blue-400/20" />}
@@ -41,12 +38,12 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
                                 {/* Label */}
                                 <div className="flex flex-col min-w-0">
                                     <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors duration-200
-                                        ${active ? 'text-blue-600' : done ? 'text-blue-500/70' : 'text-gray-400'}`}
+                                        ${active ? 'text-app-primary' : done ? 'text-blue-500/70' : 'text-app-text-light'}`}
                                     >
                                         Step {idx + 1}
                                     </span>
                                     <span className={`text-[13px] font-semibold transition-colors duration-200 truncate
-                                        ${active ? 'text-gray-900' : done ? 'text-gray-600' : 'text-gray-400'}`}
+                                        ${active ? 'text-app-text-main' : done ? 'text-app-text-label' : 'text-app-text-light'}`}
                                     >
                                         {step}
                                     </span>
@@ -65,9 +62,9 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
         <div className="w-full mb-6">
             <div className="flex items-center justify-between text-xs mb-2.5">
                 <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Step {currentStep + 1} of {steps.length}</span>
-                <span className="text-gray-600 font-semibold truncate ml-2">{steps[currentStep]}</span>
+                <span className="text-app-text-label font-semibold truncate ml-2">{steps[currentStep]}</span>
             </div>
-            <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden shadow-inner">
+            <div className="w-full bg-app-bg-muted rounded-full h-2.5 overflow-hidden shadow-inner">
                 <div
                     className="bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-600 h-full rounded-full transition-all duration-500 ease-out relative overflow-hidden"
                     style={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
@@ -82,14 +79,16 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
 /* ─────────────────────────────────────────────────────────
    MAIN FORM COMPONENT
 ───────────────────────────────────────────────────────── */
-const GovernanceForm = () => {
+const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     const navigate = useNavigate();
     const location = useLocation();
-    const [questions, setQuestions] = useState([]);
+    const { data: questionsData, isLoading: loading, error: queryError } = useGovernanceQuestions();
+    const { mutate: submitGovernance, isPending: submitting } = useSubmitGovernance();
+
+    const questions = questionsData?.questions || [];
+
     const [answers, setAnswers] = useState({});
     const [projectName, setProjectName] = useState('');
-    const [loading, setLoading] = useState(true);
-    const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
     const [result, setResult] = useState(null);
 
@@ -121,68 +120,60 @@ const GovernanceForm = () => {
 
     /* ── mount ── */
     useEffect(() => {
-        fetchQuestions();
-
         const params = new URLSearchParams(location.search);
         const nameFromUrl = params.get('projectName');
         const isNew = params.get('new');
 
-        if (isNew) {
-            setProjectName('');
-            setAnswers({});
-            setCurrentStep(0);
-            setResult(null);
-            navigate(location.pathname, { replace: true });
-            return;
-        }
-
-        if (nameFromUrl) {
-            setProjectName(decodeURIComponent(nameFromUrl));
-            setCurrentStep(1); // Skip Project Name step
-            // Also store it so it persists on reload
-            sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
-            // Clean up the URL
-            navigate(location.pathname, { replace: true });
-        }
-
-        const savedContext = getStoredJson('governanceContext');
-        if (savedContext && !nameFromUrl) {
-            if (savedContext.project_name) setProjectName(savedContext.project_name);
-            if (Array.isArray(savedContext.answers)) {
-                const r = {};
-                savedContext.answers.forEach((a) => {
-                    if (a?.question_id !== undefined && a?.score !== undefined)
-                        r[a.question_id] = { score: a.score, label: a.selected_option };
-                });
-                setAnswers(r);
+        setTimeout(() => {
+            if (isNew) {
+                setProjectName('');
+                setAnswers({});
+                setCurrentStep(0);
+                setResult(null);
+                navigate(location.pathname, { replace: true });
+                return;
             }
-        }
 
-        const savedResult = getStoredJson('governanceResult');
-        if (savedResult) setResult(savedResult);
+            if (nameFromUrl) {
+                setProjectName(decodeURIComponent(nameFromUrl));
+                setCurrentStep(1); // Skip Project Name step
+                // Also store it so it persists on reload
+                sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
+                // Clean up the URL
+                navigate(location.pathname, { replace: true });
+            }
+
+            const savedContext = getStoredJson('governanceContext');
+            if (savedContext && !nameFromUrl) {
+                if (savedContext.project_name) setProjectName(savedContext.project_name);
+                if (Array.isArray(savedContext.answers)) {
+                    const r = {};
+                    savedContext.answers.forEach((a) => {
+                        if (a?.question_id !== undefined && a?.score !== undefined)
+                            r[a.question_id] = { score: a.score, label: a.selected_option };
+                    });
+                    setAnswers(r);
+                }
+            }
+
+            const savedResult = getStoredJson('governanceResult');
+            if (savedResult) setResult(savedResult);
+        }, 0);
     }, [location.search, location.pathname, navigate]);
 
-    /* ── API: questions ── */
-    const fetchQuestions = async () => {
-        try {
-            const res = await fetch(API_ENDPOINTS.GOVERNANCE_QUESTIONS);
-            if (!res.ok) throw new Error('Failed to load questions');
-            const data = await res.json();
-            setQuestions(data.questions);
-            setLoading(false);
-        } catch (err) {
-            setError('Failed to load governance questions: ' + err.message);
-            setLoading(false);
+    useEffect(() => {
+        if (queryError) {
+            setTimeout(() => {
+                setError(prev => prev || `Failed to load governance questions: ${queryError.message}`);
+            }, 0);
         }
-    };
-
-
+    }, [queryError]);
 
     const handleAnswer = (questionId, option) =>
         setAnswers((prev) => ({ ...prev, [questionId]: option }));
 
     /* ── submit ── */
-    const handleSubmit = async (e) => {
+    const handleSubmit = (e) => {
         e?.preventDefault();
 
         if (!projectName.trim()) { setError('Please enter a project name'); return; }
@@ -191,59 +182,58 @@ const GovernanceForm = () => {
             return;
         }
 
-        setSubmitting(true);
         setError('');
-        try {
-            const formattedAnswers = questions.map((q) => ({
-                question_id: q.id,
-                question: q.question,
-                dimension: q.dimension,
-                score: answers[q.id]?.score ?? 0,
-                selected_option: answers[q.id]?.label || '',
-            }));
 
-            const submission = {
-                project_name: projectName,
-                answers: formattedAnswers.map((a) => ({
-                    question_id: a.question_id,
-                    score: a.score,
-                    selected_option: a.selected_option,
-                })),
-            };
+        const formattedAnswers = questions.map((q) => ({
+            question_id: q.id,
+            question: q.question,
+            dimension: q.dimension,
+            score: answers[q.id]?.score ?? 0,
+            selected_option: answers[q.id]?.label || '',
+        }));
 
-            const token = localStorage.getItem('token');
-            const res = await fetch(API_ENDPOINTS.GOVERNANCE_SUBMIT, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                body: JSON.stringify(submission),
-            });
-            if (!res.ok) {
-                const e = await res.json();
-                throw new Error(e.detail || 'Submission failed');
+        const submission = {
+            project_name: projectName,
+            answers: formattedAnswers.map((a) => ({
+                question_id: a.question_id,
+                score: a.score,
+                selected_option: a.selected_option,
+            })),
+        };
+
+        submitGovernance(submission, {
+            onSuccess: (resultData) => {
+                try {
+                    const normalizedDS = normalizeDimensionScores(resultData.dimension_scores);
+                    const normalizedResultData = { ...resultData, dimension_scores: normalizedDS };
+                    const ctx = {
+                        project_name: projectName,
+                        result_id: resultData.id,
+                        submission_date: resultData.submission_date,
+                        classification: resultData.classification,
+                        classification_description: resultData.classification_description,
+                        weighted_score: resultData.weighted_score,
+                        recommendation: resultData.recommendation,
+                        hard_stops: resultData.hard_stops || [],
+                        answers: formattedAnswers,
+                        dimension_scores: normalizedDS,
+                    };
+                    persistGovernanceData(ctx, normalizedResultData);
+                    setResult(normalizedResultData);
+
+                    // Auto-refresh roadmap stepper after governance submission
+                    if (fetchRoadmapData) {
+                        const tokenToUse = resultData.project_token || selectedProjectKey;
+                        if (tokenToUse) fetchRoadmapData(tokenToUse);
+                    }
+                } catch (err) {
+                    setError('Submission data processing error: ' + err.message);
+                }
+            },
+            onError: (err) => {
+                setError('Submission error: ' + err.message);
             }
-            const resultData = await res.json();
-            const normalizedDS = normalizeDimensionScores(resultData.dimension_scores);
-            const normalizedResultData = { ...resultData, dimension_scores: normalizedDS };
-            const ctx = {
-                project_name: projectName,
-                result_id: resultData.id,
-                submission_date: resultData.submission_date,
-                classification: resultData.classification,
-                classification_description: resultData.classification_description,
-                weighted_score: resultData.weighted_score,
-                recommendation: resultData.recommendation,
-                hard_stops: resultData.hard_stops || [],
-                answers: formattedAnswers,
-                dimension_scores: normalizedDS,
-            };
-            persistGovernanceData(ctx, normalizedResultData);
-
-            setResult(normalizedResultData);
-        } catch (err) {
-            setError('Submission error: ' + err.message);
-        } finally {
-            setSubmitting(false);
-        }
+        });
     };
 
     /* ── loading / result screens ── */
@@ -252,10 +242,10 @@ const GovernanceForm = () => {
             <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
                 <div className="flex flex-col items-center gap-5">
                     <div className="relative">
-                        <div className="w-14 h-14 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin" />
+                        <div className="w-14 h-14 border-4 border-app-primary-light border-t-blue-600 rounded-full animate-spin" />
                         <div className="absolute inset-0 w-14 h-14 border-4 border-transparent border-b-indigo-400 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
                     </div>
-                    <p className="text-gray-500 font-semibold text-sm tracking-wide">Loading governance questionnaire…</p>
+                    <p className="text-app-text-muted font-semibold text-sm tracking-wide">Loading governance questionnaire…</p>
                 </div>
             </div>
         );
@@ -321,7 +311,7 @@ const GovernanceForm = () => {
                                 Governance Questionnaire
                             </h1>
                         </div> */}
-                    {/* <p className="text-gray-400 text-sm mt-0.5 ml-4">
+                    {/* <p className="text-app-text-light text-sm mt-0.5 ml-4">
                             <span className="inline-flex items-center gap-1.5">
                                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                                 {questions.length} questions · {dimensions.length} dimensions
@@ -336,10 +326,10 @@ const GovernanceForm = () => {
 
                     {/* ── DESKTOP SIDEBAR (≥1024px) ── */}
                     <aside className="hidden lg:block w-64 xl:w-72 flex-shrink-0 sticky top-6 self-start">
-                        <div className="bg-white/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
+                        <div className="bg-app-bg-card/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
                             {/* Decorative gradient accent */}
                             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl" />
-                            <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-gray-400 mb-5 mt-1 flex items-center gap-2">
+                            <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-app-text-light mb-5 mt-1 flex items-center gap-2">
                                 <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
                                 Progress
                             </h2>
@@ -351,9 +341,9 @@ const GovernanceForm = () => {
                     <div className="flex-1 min-w-0 max-w-4xl">
                         {/* Error banner */}
                         {error && (
-                            <div className="rounded-xl bg-red-50/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
+                            <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
                                 <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center flex-shrink-0">
-                                    <AlertCircle className="w-4 h-4 text-red-500" />
+                                    <AlertCircle className="w-4 h-4 text-app-status-error" />
                                 </div>
                                 <div className="text-sm font-medium pt-1">{error}</div>
                             </div>
@@ -367,7 +357,7 @@ const GovernanceForm = () => {
                         {/* Wrapper: fixed min-height so nav buttons stay at a consistent position */}
                         <div className="flex flex-col min-h-[calc(100vh-14rem)]">
                             {/* Step card */}
-                            <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/40 border border-white/60 overflow-hidden relative">
+                            <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/40 border border-white/60 overflow-hidden relative">
                                 {/* Top gradient accent line */}
                                 <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500" />
 
@@ -375,10 +365,10 @@ const GovernanceForm = () => {
                                 {currentStep === 0 && (
                                     <div className="p-6 sm:p-8">
                                         <div className="mb-6">
-                                            <h2 className="text-xl font-bold text-gray-900 mb-1.5 tracking-tight">Project Details</h2>
-                                            <p className="text-gray-400 text-sm leading-relaxed">Give your project a descriptive name to get started.</p>
+                                            <h2 className="text-xl font-bold text-app-text-main mb-1.5 tracking-tight">Project Details</h2>
+                                            <p className="text-app-text-light text-sm leading-relaxed">Give your project a descriptive name to get started.</p>
                                         </div>
-                                        <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">
                                             Project Name <span className="text-red-400">*</span>
                                         </label>
                                         <div className="relative group">
@@ -388,13 +378,13 @@ const GovernanceForm = () => {
                                                 onChange={(e) => setProjectName(e.target.value)}
                                                 onKeyDown={(e) => e.key === 'Enter' && goNext()}
                                                 placeholder="e.g. Customer Analytics Platform"
-                                                className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 hover:border-gray-300 font-medium"
+                                                className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border hover:border-app-border font-medium"
                                             />
                                             <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none opacity-0 group-focus-within:opacity-100 transition-opacity">
                                                 <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
                                             </div>
                                         </div>
-                                        <p className="text-[11px] text-gray-400 mt-2 ml-1">This name will be used to identify your governance assessment.</p>
+                                        <p className="text-[11px] text-app-text-light mt-2 ml-1">This name will be used to identify your governance assessment.</p>
                                     </div>
                                 )}
 
@@ -404,13 +394,13 @@ const GovernanceForm = () => {
                                         {/* Dimension header */}
                                         <div className="mb-6">
                                             <div className="flex items-center gap-3 mb-1.5">
-                                                <h2 className="text-xl font-bold text-gray-900 tracking-tight">{activeDimension}</h2>
-                                                <span className="text-[11px] text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full font-bold border border-blue-100">
+                                                <h2 className="text-xl font-bold text-app-text-main tracking-tight">{activeDimension}</h2>
+                                                <span className="text-[11px] text-app-primary bg-app-primary-light px-2.5 py-1 rounded-full font-bold border border-app-primary-light">
                                                     {activeQuestions.filter((q) => answers[q.id] !== undefined).length}/{activeQuestions.length}
                                                 </span>
                                             </div>
                                             {/* mini progress bar */}
-                                            <div className="w-full bg-gray-100 rounded-full h-1.5 mt-2 overflow-hidden">
+                                            <div className="w-full bg-app-bg-muted rounded-full h-1.5 mt-2 overflow-hidden">
                                                 <div
                                                     className="bg-gradient-to-r from-blue-500 to-indigo-500 h-1.5 rounded-full transition-all duration-500 ease-out"
                                                     style={{ width: `${(activeQuestions.filter((q) => answers[q.id] !== undefined).length / activeQuestions.length) * 100}%` }}
@@ -426,13 +416,13 @@ const GovernanceForm = () => {
                                                     <div
                                                         key={question.id}
                                                         className={`rounded-xl border-2 p-5 transition-all duration-300 hover:shadow-md ${answered
-                                                            ? 'border-blue-200/80 bg-gradient-to-br from-blue-50/40 to-indigo-50/30 shadow-sm'
-                                                            : 'border-gray-200/80 bg-white hover:border-gray-300'}`}
+                                                            ? 'border-app-primary-ring/80 bg-gradient-to-br from-blue-50/40 to-indigo-50/30 shadow-sm'
+                                                            : 'border-app-border/80 bg-app-bg-card hover:border-app-border'}`}
                                                     >
                                                         <div className="flex items-start gap-3 mb-4">
                                                             <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
                                                                 ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
-                                                                : 'bg-gray-100 text-gray-500 border border-gray-200'}`}
+                                                                : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
                                                             >
                                                                 {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
                                                             </span>
@@ -447,8 +437,8 @@ const GovernanceForm = () => {
                                                                     <label
                                                                         key={option.label}
                                                                         className={`flex items-center gap-2.5 cursor-pointer rounded-xl px-3.5 py-2.5 border-2 text-sm transition-all duration-200 group ${selected
-                                                                            ? 'border-blue-400 bg-blue-50/70 text-blue-900 font-semibold shadow-sm shadow-blue-100'
-                                                                            : 'border-gray-150 bg-gray-50/50 text-gray-600 hover:border-blue-200 hover:bg-blue-50/30 hover:text-gray-800'}`}
+                                                                            ? 'border-blue-400 bg-app-primary-light/70 text-blue-900 font-semibold shadow-sm shadow-blue-100'
+                                                                            : 'border-gray-150 bg-app-bg-page/50 text-app-text-label hover:border-app-primary-ring hover:bg-app-primary-light/30 hover:text-gray-800'}`}
                                                                     >
                                                                         <input
                                                                             type="radio"
@@ -460,9 +450,9 @@ const GovernanceForm = () => {
                                                                         />
                                                                         {/* Custom radio indicator */}
                                                                         <span className={`flex-shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all duration-200 ${selected
-                                                                            ? 'border-blue-500 bg-blue-500' : 'border-gray-300 bg-white group-hover:border-blue-300'}`}
+                                                                            ? 'border-app-primary bg-blue-500' : 'border-app-border bg-app-bg-card group-hover:border-blue-300'}`}
                                                                         >
-                                                                            {selected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                                                            {selected && <span className="w-1.5 h-1.5 rounded-full bg-app-bg-card" />}
                                                                         </span>
                                                                         <span>{option.label}</span>
                                                                     </label>
@@ -480,15 +470,15 @@ const GovernanceForm = () => {
                                 {isReviewStep && (
                                     <div className="p-6 sm:p-8">
                                         <div className="mb-6">
-                                            <h2 className="text-xl font-bold text-gray-900 mb-1.5 tracking-tight">Review & Submit</h2>
-                                            <p className="text-gray-400 text-sm leading-relaxed">Verify your answers, then submit for scoring.</p>
+                                            <h2 className="text-xl font-bold text-app-text-main mb-1.5 tracking-tight">Review & Submit</h2>
+                                            <p className="text-app-text-light text-sm leading-relaxed">Verify your answers, then submit for scoring.</p>
                                         </div>
 
                                         {/* Summary grid */}
                                         <div className="space-y-2 mb-6">
-                                            <div className="rounded-xl border-2 border-gray-200/60 bg-gradient-to-r from-gray-50 to-slate-50 px-5 py-3.5">
-                                                <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-0.5">Project</p>
-                                                <p className="text-gray-900 font-bold text-sm">{projectName}</p>
+                                            <div className="rounded-xl border-2 border-app-border/60 bg-gradient-to-r from-gray-50 to-slate-50 px-5 py-3.5">
+                                                <p className="text-[10px] font-bold uppercase tracking-widest text-app-text-light mb-0.5">Project</p>
+                                                <p className="text-app-text-main font-bold text-sm">{projectName}</p>
                                             </div>
 
                                             {dimensions.map((dim, idx) => {
@@ -510,11 +500,11 @@ const GovernanceForm = () => {
                                                         </div>
                                                         <div className="flex-1 min-w-0">
                                                             <p className="text-sm font-semibold text-gray-800 truncate">{dim}</p>
-                                                            <p className="text-[11px] text-gray-500 font-medium">{answered}/{qs.length} answered</p>
+                                                            <p className="text-[11px] text-app-text-muted font-medium">{answered}/{qs.length} answered</p>
                                                         </div>
                                                         {!allDone && (
                                                             <button type="button" onClick={() => { setError(''); setCurrentStep(idx + 1); }}
-                                                                className="text-[11px] text-blue-600 font-bold hover:text-blue-700 flex-shrink-0 bg-blue-50 px-3 py-1 rounded-lg border border-blue-100 hover:border-blue-200 transition-all"
+                                                                className="text-[11px] text-app-primary font-bold hover:text-app-primary-hover flex-shrink-0 bg-app-primary-light px-3 py-1 rounded-lg border border-app-primary-light hover:border-app-primary-ring transition-all"
                                                             >Fix →</button>
                                                         )}
                                                     </div>
@@ -540,13 +530,13 @@ const GovernanceForm = () => {
                             <div className="flex items-center justify-end gap-3 mt-auto pt-5 px-1">
                                 {currentStep === 0 ? (
                                     <button type="button" onClick={() => navigate('/dashboard')}
-                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-gray-500 bg-white/80 backdrop-blur-sm border border-gray-200/60 hover:bg-white hover:border-gray-300 transition-all shadow-sm"
+                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
                                     >
                                         <ChevronLeft className="w-4 h-4" /> Dashboard
                                     </button>
                                 ) : (
                                     <button type="button" onClick={goPrev}
-                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-gray-500 bg-white/80 backdrop-blur-sm border border-gray-200/60 hover:bg-white hover:border-gray-300 transition-all shadow-sm"
+                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
                                     >
                                         <ChevronLeft className="w-4 h-4" /> Back
                                     </button>
@@ -588,13 +578,13 @@ const CLASSIFICATION_THEME = {
     },
     CONTROLLED_SANDBOX: {
         gradient: 'from-slate-500 to-indigo-600',
-        bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-700',
-        badge: 'bg-slate-100 text-slate-800',
+        bg: 'bg-app-bg-page', border: 'border-app-border', text: 'text-app-text-label',
+        badge: 'bg-app-bg-muted text-slate-800',
         label: 'Controlled Sandbox', emoji: '⚠️',
     },
     ENTERPRISE: {
         gradient: 'from-rose-600 to-rose-800',
-        bg: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-700',
+        bg: 'bg-app-status-errorBg', border: 'border-rose-200', text: 'text-rose-700',
         badge: 'bg-rose-100 text-rose-800',
         label: 'Enterprise Build', emoji: '🔴',
     },
@@ -605,18 +595,18 @@ const ScoreRing = ({ score, max = 10, size = 120, stroke = 10 }) => {
     const circumference = 2 * Math.PI * radius;
     const pct = Math.min(score / max, 1);
     const offset = circumference * (1 - pct);
-    const color = score <= 3.5 ? '#0d9488' : score <= 6.5 ? '#6366f1' : '#e11d48';
+    const color = score <= 3.5 ? colors.status.lowRisk : score <= 6.5 ? colors.status.mediumRisk : colors.status.highRisk;
     return (
         <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
             <svg width={size} height={size} className="-rotate-90">
-                <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#e5e7eb" strokeWidth={stroke} />
+                <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={colors.border.DEFAULT} strokeWidth={stroke} />
                 <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={color} strokeWidth={stroke}
                     strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset}
                     style={{ transition: 'stroke-dashoffset 1s ease-out' }} />
             </svg>
             <div className="absolute flex flex-col items-center">
-                <span className="text-2xl font-extrabold text-gray-900">{score}</span>
-                <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">/ {max}</span>
+                <span className="text-2xl font-extrabold text-app-text-main">{score}</span>
+                <span className="text-[10px] font-semibold text-app-text-light uppercase tracking-wide">/ {max}</span>
             </div>
         </div>
     );
@@ -638,17 +628,17 @@ const GovernanceResult = ({ result, onBack }) => {
     } = result;
 
     const theme = CLASSIFICATION_THEME[classification] || {
-        gradient: 'from-gray-400 to-gray-500', bg: 'bg-gray-50', border: 'border-gray-200',
-        text: 'text-gray-700', badge: 'bg-gray-100 text-gray-800', label: classification, emoji: '📋',
+        gradient: 'from-gray-400 to-gray-500', bg: 'bg-app-bg-page', border: 'border-app-border',
+        text: 'text-app-text-label', badge: 'bg-app-bg-muted text-gray-800', label: classification, emoji: '📋',
     };
 
 
     return (
-        <div className="h-full overflow-y-auto min-h-screen bg-gray-50 p-3 sm:p-4 md:p-8 pb-24 md:pb-32">
+        <div className="h-full overflow-y-auto min-h-screen bg-app-bg-page p-3 sm:p-4 md:p-8 pb-24 md:pb-32">
             <div className="max-w-5xl mx-auto">
 
                 {/* ── Back link ── */}
-                <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm font-semibold text-gray-500 hover:text-gray-800 mb-6 transition-colors group">
+                <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm font-semibold text-app-text-muted hover:text-gray-800 mb-6 transition-colors group">
                     <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back to Form
                 </button>
 
@@ -660,7 +650,7 @@ const GovernanceResult = ({ result, onBack }) => {
                     <div className={`relative rounded-2xl overflow-hidden bg-gradient-to-br ${theme.gradient} text-white p-6 sm:p-8 shadow-lg flex-1`}>
                         <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center gap-5">
                             {/* Score ring */}
-                            <div className="bg-white/20 backdrop-blur-sm rounded-2xl p-3 flex-shrink-0">
+                            <div className="bg-app-bg-card/20 backdrop-blur-sm rounded-2xl p-3 flex-shrink-0">
                                 <ScoreRing score={weighted_score} />
                             </div>
 
@@ -671,26 +661,26 @@ const GovernanceResult = ({ result, onBack }) => {
                                 </h1>
                                 <p className="text-white/80 text-sm mb-3 line-clamp-2">{classification_description}</p>
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <span className="bg-white/20 backdrop-blur-sm text-white text-xs font-bold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-bold px-3 py-1 rounded-full">
                                         {project_name}
                                     </span>
-                                    <span className="bg-white/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
                                         Score: {weighted_score}/10
                                     </span>
-                                    <span className="bg-white/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
                                         {weighted_score <= 3.5 ? 'Low Governance' : weighted_score <= 6.5 ? 'Moderate Governance' : 'High Governance'}
                                     </span>
                                 </div>
                             </div>
                         </div>
                         {/* decorative circles */}
-                        <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/5 rounded-full" />
-                        <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-white/5 rounded-full" />
+                        <div className="absolute -top-10 -right-10 w-40 h-40 bg-app-bg-card/5 rounded-full" />
+                        <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-app-bg-card/5 rounded-full" />
                     </div>
 
                     {/* RIGHT: Dimension Pie Charts — vertical 2×3 */}
-                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 sm:p-5 lg:w-[340px] xl:w-[380px] flex-shrink-0">
-                        <h3 className="text-gray-900 font-bold text-sm mb-3 flex items-center gap-2">
+                    <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:w-[340px] xl:w-[380px] flex-shrink-0">
+                        <h3 className="text-app-text-main font-bold text-sm mb-3 flex items-center gap-2">
                             📊 Dimensions
                         </h3>
                         <div className="grid grid-cols-3 gap-x-3 gap-y-4">
@@ -712,11 +702,11 @@ const GovernanceResult = ({ result, onBack }) => {
                                                     className="drop-shadow-sm" />
                                             </svg>
                                             <div className="absolute inset-0 flex flex-col items-center justify-center">
-                                                <span className="text-sm font-extrabold text-gray-900">{score}</span>
-                                                <span className="text-[8px] font-semibold text-gray-400">/10</span>
+                                                <span className="text-sm font-extrabold text-app-text-main">{score}</span>
+                                                <span className="text-[8px] font-semibold text-app-text-light">/10</span>
                                             </div>
                                         </div>
-                                        <span className="text-[10px] font-semibold text-gray-500 text-center capitalize leading-tight group-hover:text-blue-600 transition-colors max-w-[90px]">
+                                        <span className="text-[10px] font-semibold text-app-text-muted text-center capitalize leading-tight group-hover:text-app-primary transition-colors max-w-[90px]">
                                             {dimension.replace(/_/g, ' ')}
                                         </span>
                                     </div>
@@ -728,7 +718,7 @@ const GovernanceResult = ({ result, onBack }) => {
 
                 {/* ── Hard Stops ── */}
                 {hard_stops?.length > 0 && (
-                    <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+                    <div className="bg-app-status-errorBg border border-red-200 rounded-xl p-4 mb-6">
                         <h3 className="text-red-800 font-bold text-sm mb-2 flex items-center gap-2">
                             <AlertCircle className="w-4 h-4" /> Hard Stops Triggered
                         </h3>
@@ -741,11 +731,11 @@ const GovernanceResult = ({ result, onBack }) => {
                 {/* ══════════════════════════════════════════════
                    RECOMMENDATION
                 ══════════════════════════════════════════════ */}
-                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 sm:p-6 mb-6">
-                    <h3 className="text-gray-900 font-bold text-base mb-3 flex items-center gap-2">
+                <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light p-5 sm:p-6 mb-6">
+                    <h3 className="text-app-text-main font-bold text-base mb-3 flex items-center gap-2">
                         💡 Recommendation
                     </h3>
-                    <div className="text-gray-600 space-y-2 text-sm leading-relaxed">
+                    <div className="text-app-text-label space-y-2 text-sm leading-relaxed">
                         {recommendation
                             ? recommendation.split('\n').map((line, idx) => {
                                 if (line.includes('**')) {
@@ -753,7 +743,7 @@ const GovernanceResult = ({ result, onBack }) => {
                                     return (
                                         <div key={idx} className="whitespace-pre-wrap">
                                             {parts.map((part, i) =>
-                                                i % 2 === 1 ? <strong key={i} className="font-bold text-gray-900">{part}</strong> : part
+                                                i % 2 === 1 ? <strong key={i} className="font-bold text-app-text-main">{part}</strong> : part
                                             )}
                                         </div>
                                     );
@@ -768,7 +758,7 @@ const GovernanceResult = ({ result, onBack }) => {
                                 if (!line.trim()) return <div key={idx} className="h-1.5" />;
                                 return <div key={idx}>{line}</div>;
                             })
-                            : <p className="text-gray-400 italic">No recommendation available.</p>
+                            : <p className="text-app-text-light italic">No recommendation available.</p>
                         }
                     </div>
                 </div>
@@ -779,78 +769,78 @@ const GovernanceResult = ({ result, onBack }) => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                     {classification === 'SANDBOX' && (
                         <>
-                            <div className="bg-green-50 rounded-2xl p-5 border border-green-200">
+                            <div className="bg-app-status-successBg rounded-2xl p-5 border border-green-200">
                                 <h3 className="text-green-800 font-bold text-sm mb-3 flex items-center gap-2">
                                     <CheckCircle2 className="w-4 h-4" /> Auto-Provisioned Resources
                                 </h3>
-                                <ul className="text-gray-700 space-y-2 text-sm">
-                                    <li className="flex gap-2"><span className="text-green-500">✓</span> Azure Dev Subscription</li>
-                                    <li className="flex gap-2"><span className="text-green-500">✓</span> Git Repository (Ready)</li>
-                                    <li className="flex gap-2"><span className="text-green-500">✓</span> App Service Template</li>
-                                    <li className="flex gap-2"><span className="text-green-500">✓</span> 90-Day Auto-Review</li>
+                                <ul className="text-app-text-label space-y-2 text-sm">
+                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> Azure Dev Subscription</li>
+                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> Git Repository (Ready)</li>
+                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> App Service Template</li>
+                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> 90-Day Auto-Review</li>
                                 </ul>
                             </div>
-                            <div className="bg-blue-50 rounded-2xl p-5 border border-blue-200">
-                                <h3 className="text-blue-800 font-bold text-sm mb-3 flex items-center gap-2">
+                            <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
+                                <h3 className="text-app-primary-dark font-bold text-sm mb-3 flex items-center gap-2">
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
-                                <ol className="text-gray-700 space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Get credentials from email</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Clone your repository</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Start development immediately</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Submit review at 90 days</li>
+                                <ol className="text-app-text-label space-y-2 text-sm list-none">
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Get credentials from email</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Clone your repository</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Start development immediately</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Submit review at 90 days</li>
                                 </ol>
                             </div>
                         </>
                     )}
                     {classification === 'CONTROLLED_SANDBOX' && (
                         <>
-                            <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200">
+                            <div className="bg-app-status-warningBg rounded-2xl p-5 border border-amber-200">
                                 <h3 className="text-amber-800 font-bold text-sm mb-3 flex items-center gap-2">
                                     <AlertTriangle className="w-4 h-4" /> Requirements
                                 </h3>
-                                <ul className="text-gray-700 space-y-2 text-sm">
-                                    <li className="flex gap-2"><span className="text-amber-500">•</span> Use Azure DevOps template</li>
-                                    <li className="flex gap-2"><span className="text-amber-500">•</span> Use .NET scaffold</li>
-                                    <li className="flex gap-2"><span className="text-amber-500">•</span> Submit for IT check</li>
-                                    <li className="flex gap-2"><span className="text-amber-500">•</span> Follow CI/CD pipeline</li>
+                                <ul className="text-app-text-label space-y-2 text-sm">
+                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Use Azure DevOps template</li>
+                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Use .NET scaffold</li>
+                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Submit for IT check</li>
+                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Follow CI/CD pipeline</li>
                                 </ul>
                             </div>
-                            <div className="bg-blue-50 rounded-2xl p-5 border border-blue-200">
-                                <h3 className="text-blue-800 font-bold text-sm mb-3 flex items-center gap-2">
+                            <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
+                                <h3 className="text-app-primary-dark font-bold text-sm mb-3 flex items-center gap-2">
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
-                                <ol className="text-gray-700 space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Request Azure DevOps project</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Set up standard repository</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Submit for architecture review</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Proceed after approval</li>
+                                <ol className="text-app-text-label space-y-2 text-sm list-none">
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Request Azure DevOps project</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Set up standard repository</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Submit for architecture review</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Proceed after approval</li>
                                 </ol>
                             </div>
                         </>
                     )}
                     {classification === 'ENTERPRISE' && (
                         <>
-                            <div className="bg-red-50 rounded-2xl p-5 border border-red-200">
+                            <div className="bg-app-status-errorBg rounded-2xl p-5 border border-red-200">
                                 <h3 className="text-red-800 font-bold text-sm mb-3 flex items-center gap-2">
                                     <AlertCircle className="w-4 h-4" /> Required Processes
                                 </h3>
-                                <ul className="text-gray-700 space-y-2 text-sm">
+                                <ul className="text-app-text-label space-y-2 text-sm">
                                     <li className="flex gap-2"><span className="text-red-400">•</span> Architecture board review</li>
                                     <li className="flex gap-2"><span className="text-red-400">•</span> Threat modeling</li>
                                     <li className="flex gap-2"><span className="text-red-400">•</span> Full security assessment</li>
                                     <li className="flex gap-2"><span className="text-red-400">•</span> SDLC compliance</li>
                                 </ul>
                             </div>
-                            <div className="bg-blue-50 rounded-2xl p-5 border border-blue-200">
-                                <h3 className="text-blue-800 font-bold text-sm mb-3 flex items-center gap-2">
+                            <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
+                                <h3 className="text-app-primary-dark font-bold text-sm mb-3 flex items-center gap-2">
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
-                                <ol className="text-gray-700 space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-blue-800 rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
+                                <ol className="text-app-text-label space-y-2 text-sm list-none">
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
                                 </ol>
                             </div>
                         </>
@@ -863,7 +853,7 @@ const GovernanceResult = ({ result, onBack }) => {
                 <div className="flex flex-col sm:flex-row gap-3 pb-12 md:pb-24">
                     <button
                         onClick={onBack}
-                        className="inline-flex items-center justify-center gap-2 py-3 px-6 text-sm font-semibold rounded-xl text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 transition-all active:scale-[0.97] shadow-sm"
+                        className="inline-flex items-center justify-center gap-2 py-3 px-6 text-sm font-semibold rounded-xl text-app-text-label bg-app-bg-card border border-app-border hover:bg-app-bg-page transition-all active:scale-[0.97] shadow-sm"
                     >
                         <ChevronLeft className="w-4 h-4" /> Back to Form
                     </button>
@@ -873,7 +863,7 @@ const GovernanceResult = ({ result, onBack }) => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
                                 window.location.href = `/a/${result.project_token}`;
                             }}
-                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 transition-all active:scale-[0.97] shadow-md"
+                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
                         >
                             <ArrowRight className="w-4 h-4" /> Proceed to Upload BRD
                         </button>

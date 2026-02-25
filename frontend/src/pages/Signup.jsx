@@ -40,13 +40,13 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
     };
 
     const formContent = (
-        <div className={`w-full max-w-md bg-white rounded-2xl overflow-hidden ${isModal ? 'shadow-none border-0' : 'shadow-xl border border-slate-100'}`}>
+        <div className={`w-full max-w-md bg-app-bg-card rounded-2xl overflow-hidden ${isModal ? 'shadow-none border-0' : 'shadow-xl border border-app-border-light'}`}>
             {/* Header Section */}
-            <div className="bg-white p-8 pb-0 text-center relative">
+            <div className="bg-app-bg-card p-8 pb-0 text-center relative">
                 {isModal && onClose && (
                     <button
                         onClick={onClose}
-                        className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-full hover:bg-slate-100"
+                        className="absolute top-4 right-4 text-app-text-light hover:text-app-text-label transition-colors p-1 rounded-full hover:bg-app-bg-muted"
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -54,13 +54,13 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                     </button>
                 )}
                 <h2 className="text-2xl font-bold text-slate-800 tracking-tight mb-2">Create Account</h2>
-                <p className="text-slate-500 text-sm">Join to start processing documents</p>
+                <p className="text-app-text-muted text-sm">Join to start processing documents</p>
             </div>
 
             {/* Form Section */}
             <div className="p-8">
                 {error && (
-                    <div className="mb-6 p-4 bg-red-50 border border-red-100 text-red-600 text-sm rounded-lg flex items-center">
+                    <div className="mb-6 p-4 bg-app-status-errorBg border border-red-100 text-app-status-error text-sm rounded-lg flex items-center">
                         <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
@@ -70,12 +70,12 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
 
                 <form onSubmit={handleSubmit} className="space-y-5">
                     <div className="space-y-1">
-                        <label className="block text-sm font-semibold text-slate-700 ml-1" htmlFor="email">
+                        <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="email">
                             Email Address
                         </label>
                         <div className="relative group">
                             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <Mail className="h-5 w-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+                                <Mail className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
                             </div>
                             <input
                                 id="email"
@@ -83,19 +83,19 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                                 placeholder="name@company.com"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
-                                className="block w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl leading-5 bg-slate-50 placeholder-slate-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all duration-200 sm:text-sm"
+                                className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
                                 required
                             />
                         </div>
                     </div>
 
                     <div className="space-y-1">
-                        <label className="block text-sm font-semibold text-slate-700 ml-1" htmlFor="password">
+                        <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="password">
                             Password
                         </label>
                         <div className="relative group">
                             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <Lock className="h-5 w-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+                                <Lock className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
                             </div>
                             <input
                                 id="password"
@@ -103,7 +103,7 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                                 placeholder="••••••••"
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
-                                className="block w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl leading-5 bg-slate-50 placeholder-slate-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all duration-200 sm:text-sm"
+                                className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
                                 required
                             />
                         </div>
@@ -112,7 +112,7 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                     <button
                         type="submit"
                         disabled={isLoading}
-                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
+                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-white bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
                     >
                         {isLoading ? (
                             <>
@@ -128,15 +128,15 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                     </button>
                 </form>
 
-                <div className="mt-8 pt-6 border-t border-slate-100 text-center">
-                    <p className="text-sm text-slate-500">
+                <div className="mt-8 pt-6 border-t border-app-border-light text-center">
+                    <p className="text-sm text-app-text-muted">
                         Already have an account?{' '}
                         {isModal && onSwitch ? (
-                            <button onClick={onSwitch} className="font-semibold text-blue-600 hover:text-blue-500 hover:underline transition-colors bg-transparent border-0 p-0 inline cursor-pointer">
+                            <button onClick={onSwitch} className="font-semibold text-app-primary hover:text-blue-500 hover:underline transition-colors bg-transparent border-0 p-0 inline cursor-pointer">
                                 Sign in instead
                             </button>
                         ) : (
-                            <Link to="/login" className="font-semibold text-blue-600 hover:text-blue-500 hover:underline transition-colors">
+                            <Link to="/login" className="font-semibold text-app-primary hover:text-blue-500 hover:underline transition-colors">
                                 Sign in instead
                             </Link>
                         )}
