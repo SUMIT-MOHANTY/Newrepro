@@ -59,7 +59,7 @@ export default function ProjectDropdown({ projects = [], selectedKey, onSelect, 
                 className={`
                     w-full flex items-center justify-between gap-2.5
                     ${theme === 'dark'
-                        ? 'bg-transparent border border-white/20 hover:bg-white/5 rounded-md px-3 py-1.5'
+                        ? 'bg-transparent hover:bg-white/5 rounded-md px-3 py-1.5'
                         : 'bg-app-bg-card border-2 border-app-border hover:border-app-border rounded-xl px-4 py-2.5'
                     }
                     text-sm font-semibold

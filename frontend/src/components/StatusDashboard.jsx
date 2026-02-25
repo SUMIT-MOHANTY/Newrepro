@@ -13,9 +13,8 @@ const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
 const DASHBOARD_ROLES = [
-    { value: 'cxo', label: 'CXO Dashboard', description: 'Executive snapshot' },
+    { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
     { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
-    { value: 'sales', label: 'Sales Dashboard', description: 'Commercial and commitments' },
 ];
 
 function decodeJwtExpiry(token) {
@@ -1040,13 +1039,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                     {selectedRole === 'cxo' && (
                         <>
-                            <div className="rounded-2xl bg-gradient-to-r from-slate-900 to-slate-700 text-white p-6 shadow-lg">
-                                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-200 font-bold mb-2">Executive Overview</p>
-                                <h3 className="text-2xl font-bold">Portfolio Decision Dashboard</h3>
-                                <p className="text-sm text-slate-200 mt-2">
-                                    Strategic snapshot with health, launch readiness, milestone movement, and delivery risk.
-                                </p>
-                            </div>
+
 
                             <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                                 <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">

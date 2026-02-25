@@ -11,9 +11,8 @@ import ProjectDropdown from './ProjectDropdown';
 import RoleDropdown from './RoleDropdown';
 
 const DASHBOARD_ROLES = [
-    { value: 'cxo', label: 'CXO Dashboard', description: 'Executive snapshot' },
+    { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
     { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
-    { value: 'sales', label: 'Sales Dashboard', description: 'Commercial and commitments' },
 ];
 const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 
