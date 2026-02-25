@@ -4,13 +4,19 @@ import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bo
 import { useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
-import ProjectDropdown from './ProjectDropdown';
+
 import { API_ENDPOINTS } from '../config';
 
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
+const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
+const DASHBOARD_ROLES = [
+    { value: 'cxo', label: 'CXO Dashboard', description: 'Executive snapshot' },
+    { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
+    { value: 'sales', label: 'Sales Dashboard', description: 'Commercial and commitments' },
+];
 
 function decodeJwtExpiry(token) {
     try {
@@ -71,18 +77,14 @@ function cacheTaskToken(projectKey, token) {
     writeTaskTokenCache(cache);
 }
 
-export default function StatusDashboard({ projects = [], projectsLoading = false }) {
+export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, setSelectedProjectKey, selectedRole, setSelectedRole }) {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
-    const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
-        try {
-            return localStorage.getItem(PROJECT_STORAGE_KEY);
-        } catch {
-            return null;
-        }
-    });
+    // Props for selectedProjectKey and selectedRole are now passed in, so we no longer
+    // keep local state for them.
+    // However, Dashboard.jsx might not be passing default if not given, so we rely on AppLayout as the source of truth.
 
     const token = localStorage.getItem('token');
 
@@ -203,38 +205,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         setTaskTokenProjectKey(cached?.token ? selectedProjectKey : null);
     }, [selectedProjectKey]);
 
-    useEffect(() => {
-        if (!projects.length) return;
+    // Role logic is handled centrally by AppLayout
 
-        const projectKeys = new Set(projects.map((p) => p.key));
-        if (selectedProjectKey && projectKeys.has(selectedProjectKey)) return;
-
-        let storedProjectKey = null;
-        try {
-            storedProjectKey = localStorage.getItem(PROJECT_STORAGE_KEY);
-        } catch {
-            storedProjectKey = null;
-        }
-
-        if (storedProjectKey && projectKeys.has(storedProjectKey)) {
-            setSelectedProjectKey(storedProjectKey);
-            return;
-        }
-
-        setSelectedProjectKey(projects[0]?.key || null);
-    }, [projects, selectedProjectKey]);
-
-    useEffect(() => {
-        try {
-            if (selectedProjectKey) {
-                localStorage.setItem(PROJECT_STORAGE_KEY, selectedProjectKey);
-            } else {
-                localStorage.removeItem(PROJECT_STORAGE_KEY);
-            }
-        } catch {
-            // Ignore storage access errors in restricted browser contexts.
-        }
-    }, [selectedProjectKey]);
 
     useEffect(() => {
         let isMounted = true;
@@ -973,6 +945,41 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         </SkeletonTheme>
     );
 
+    const selectedRoleMeta = DASHBOARD_ROLES.find((role) => role.value === selectedRole) || DASHBOARD_ROLES[1];
+    const overallHealth = dashboardData?.project_status?.overall_health || 'Unknown';
+    const lateTaskCount = dashboardData?.tasks?.late_tasks?.length || 0;
+    const upcomingTaskCount = dashboardData?.tasks?.upcoming_tasks_next_period?.length || 0;
+    const dueThisWeekCount = dashboardData?.tasks?.due_this_week?.length || 0;
+    const inProgressTaskCount = dashboardData?.tasks?.in_progress?.length || 0;
+    const completedTaskCount = dashboardData?.tasks?.recently_completed?.length || 0;
+    const projectWallet = Number(projectInfo?.project?.project_wallet || 0) || 0;
+    const usedWallet = (taskList || []).reduce((total, task) => total + (Number(task?.task_wallet) || 0), 0);
+    const remainingWallet = Math.max(projectWallet - usedWallet, 0);
+    const launchConfidence = overallHealth === 'Good' ? 'High'
+        : overallHealth === 'At Risk' ? 'Medium'
+            : 'Low';
+    const cxoRiskLabel = lateTaskCount > 0 || overallHealth === 'Critical' ? 'High'
+        : overallHealth === 'At Risk' ? 'Medium'
+            : 'Low';
+    const salesSignals = [
+        {
+            label: 'Pipeline Stage',
+            value: dashboardData?.sales?.pipeline_stage || dashboardData?.project?.status || 'Backend field needed',
+        },
+        {
+            label: 'Deal Owner',
+            value: dashboardData?.sales?.deal_owner || 'Backend field needed',
+        },
+        {
+            label: 'Win Probability',
+            value: dashboardData?.sales?.win_probability || 'Backend field needed',
+        },
+        {
+            label: 'Booked Revenue',
+            value: dashboardData?.sales?.booked_revenue || 'Backend field needed',
+        },
+    ];
+
     return (
         <div className="w-full min-h-full bg-app-bg-page flex flex-col font-sans overflow-y-auto relative">
             {/* Top Graphic Header Area */}
@@ -992,17 +999,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </>
                         )}
                     </div>
-                    <ProjectDropdown
-                        projects={projects}
-                        selectedKey={selectedProjectKey}
-                        onSelect={(proj) => {
-                            if (!proj?.key || proj.key === selectedProjectKey) return;
-                            setTaskToken(null);
-                            setTaskTokenProjectKey(null);
-                            setSelectedProjectKey(proj.key);
-                        }}
-                        className="w-full sm:w-72"
-                    />
+                    {/* Dropdowns have been moved to AppLayout global navbar */}
                 </div>
             </div>
 
@@ -1033,477 +1030,693 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 renderDashboardSkeleton()
             ) : (
                 <div className="flex-1 p-4 md:p-6 flex flex-col gap-6">
-
-                    {/* Top Metric Cards - Full Width */}
-                    <div className="w-full flex flex-col gap-3 md:gap-4">
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-app-text-label mb-1">Project</p>
-                                <h3 className="text-xl font-bold text-gray-800 mb-0 truncate max-w-full px-1">{dashboardData?.project?.name ?? '—'}</h3>
-                                <p className="text-[10px] text-app-text-muted uppercase tracking-widest">{dashboardData?.project?.status ?? '—'}</p>
-                            </div>
-                            <div className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-app-text-label mb-1">Project Duration</p>
-                                <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.duration_days ?? 0}</h3>
-                                <p className="text-[10px] text-app-text-muted uppercase tracking-widest">Days</p>
-                            </div>
-                            <div className="bg-app-bg-card col-span-2 md:col-span-2 p-4 rounded-xl shadow border border-app-border-light flex flex-row items-center justify-around relative">
-                                <div className="flex flex-col items-center">
-                                    <p className="text-xs font-bold text-app-text-label mb-1">Total Sprints</p>
-                                    <div className="flex items-center relative">
-                                        <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.summary_statistics?.total_sprints ?? 0}</h3>
-                                    </div>
-                                </div>
-                                <div className="w-px h-12 bg-app-bg-hover"></div>
-                                <div className="flex flex-col items-center w-40">
-                                    <p className="text-xs font-bold text-app-text-label mb-1">Hours Logged</p>
-                                    <div className="flex items-center relative mb-2 w-full justify-center">
-                                        <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.total_hours_logged ?? 0}</h3>
-                                    </div>
-                                    <div className="w-full bg-app-bg-hover rounded-full h-2.5">
-                                        <div className="bg-app-text-label h-2.5 rounded-full" style={{ width: `${dashboardData?.kpi?.work_complete_percentage ?? 0}%` }}></div>
-                                    </div>
-                                </div>
-                            </div>
+                    <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                            <p className="text-[10px] uppercase tracking-widest font-bold text-gray-400">Active Role View</p>
+                            <p className="text-sm font-bold text-gray-900">{selectedRoleMeta.label}</p>
                         </div>
-
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
-                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-app-text-label mb-1">Active Sprints</p>
-                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.active_sprints ?? 0}</h3>
-                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Running</p>
-                            </div>
-                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-app-text-label mb-1 text-center leading-tight">In Progress</p>
-                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.in_progress_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Tasks</p>
-                            </div>
-                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-app-text-label mb-1">Pending Tasks</p>
-                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.pending_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Awaiting</p>
-                            </div>
-                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-app-text-label mb-1">Completed</p>
-                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.completed_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Done</p>
-                            </div>
-                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-app-text-label mb-1">Total Tasks</p>
-                                <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.total_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Tracked</p>
-                            </div>
-                        </div>
+                        <p className="text-xs text-gray-500">{selectedRoleMeta.description}</p>
                     </div>
 
-                    {/* Bottom Section: 2 Columns */}
-                    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 w-full items-start">
+                    {selectedRole === 'cxo' && (
+                        <>
+                            <div className="rounded-2xl bg-gradient-to-r from-slate-900 to-slate-700 text-white p-6 shadow-lg">
+                                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-200 font-bold mb-2">Executive Overview</p>
+                                <h3 className="text-2xl font-bold">Portfolio Decision Dashboard</h3>
+                                <p className="text-sm text-slate-200 mt-2">
+                                    Strategic snapshot with health, launch readiness, milestone movement, and delivery risk.
+                                </p>
+                            </div>
 
-                        {/* Left Column (Main Content) */}
-                        <div className="space-y-6 lg:col-start-1 w-full min-w-0">
-
-                            {/* KEY MILESTONES & DATES */}
-                            <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6 relative">
-                                <div className="flex items-center mb-6">
-                                    <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
-                                        <Flag className="w-5 h-5" />
-                                    </div>
-                                    <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">KEY MILESTONES & DATES</h3>
+                            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Overall Health</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{overallHealth}</p>
                                 </div>
-                                <div className="overflow-auto rounded-lg border border-app-border-light" style={{ maxHeight: '320px' }}>
-                                    <table className="min-w-full text-sm">
-                                        <colgroup><col style={{ width: '30%' }} /><col style={{ width: '35%' }} /><col style={{ width: '35%' }} /></colgroup>
-                                        <thead className="bg-[#fdf4e6] sticky top-0 z-10">
-                                            <tr>
-                                                <th className="px-4 py-3 text-left font-bold text-gray-800">Milestone</th>
-                                                <th className="px-4 py-3 text-left font-bold text-gray-800">Status</th>
-                                                <th className="px-4 py-3 text-left font-bold text-gray-800">Date</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-100 text-app-text-label font-medium">
-                                            {dashboardData?.milestones?.completed?.map(ms => (
-                                                <tr key={ms.id}>
-                                                    <td className="px-4 py-3">{ms.name}</td>
-                                                    <td className="px-4 py-3 text-app-status-success">Completed</td>
-                                                    <td className="px-4 py-3">{ms.deadline}</td>
-                                                </tr>
-                                            ))}
-                                            {dashboardData?.milestones?.key_milestones_and_dates?.map(ms => (
-                                                <tr key={ms.id}>
-                                                    <td className="px-4 py-3 break-words pr-8">{ms.name}</td>
-                                                    <td className="px-4 py-3 text-orange-500">In Progress</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap">{ms.deadline}</td>
-                                                </tr>
-                                            ))}
-                                            {(!dashboardData?.milestones?.completed?.length && !dashboardData?.milestones?.key_milestones_and_dates?.length) && (
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Launch Confidence</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{launchConfidence}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Completion</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{dashboardData?.kpi?.completion_percentage ?? 0}%</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Launch In</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{dashboardData?.project_status?.days_until_launch ?? 0} days</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Project Budget</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-2">{projectInfo?.project?.project_wallet ?? '-'}</p>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                <div className="lg:col-span-2 bg-white rounded-xl shadow border border-gray-100 p-6">
+                                    <div className="flex items-center mb-5">
+                                        <Flag className="w-4 h-4 text-orange-500 mr-2" />
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Milestone Visibility</h3>
+                                    </div>
+                                    <div className="overflow-auto rounded-lg border border-gray-100" style={{ maxHeight: '320px' }}>
+                                        <table className="min-w-full text-sm">
+                                            <thead className="bg-orange-50 sticky top-0 z-10">
                                                 <tr>
-                                                    <td className="px-4 py-3" colSpan="3">No milestones available</td>
+                                                    <th className="px-4 py-3 text-left font-bold text-gray-700">Milestone</th>
+                                                    <th className="px-4 py-3 text-left font-bold text-gray-700">Status</th>
+                                                    <th className="px-4 py-3 text-left font-bold text-gray-700">Date</th>
                                                 </tr>
-                                            )}
-                                        </tbody>
-                                    </table>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 text-gray-700">
+                                                {(dashboardData?.milestones?.completed || []).map((milestone) => (
+                                                    <tr key={`done-${milestone.id}`}>
+                                                        <td className="px-4 py-3">{milestone.name}</td>
+                                                        <td className="px-4 py-3 text-emerald-600 font-semibold">Completed</td>
+                                                        <td className="px-4 py-3">{milestone.deadline || '-'}</td>
+                                                    </tr>
+                                                ))}
+                                                {(dashboardData?.milestones?.key_milestones_and_dates || []).map((milestone) => (
+                                                    <tr key={`open-${milestone.id}`}>
+                                                        <td className="px-4 py-3">{milestone.name}</td>
+                                                        <td className="px-4 py-3 text-amber-600 font-semibold">In Progress</td>
+                                                        <td className="px-4 py-3">{milestone.deadline || '-'}</td>
+                                                    </tr>
+                                                ))}
+                                                {!(dashboardData?.milestones?.completed?.length || dashboardData?.milestones?.key_milestones_and_dates?.length) && (
+                                                    <tr>
+                                                        <td className="px-4 py-6 text-center text-gray-400 italic" colSpan="3">No milestone records available</td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                                        <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Risk Exposure</p>
+                                        <p className="text-3xl font-bold text-gray-900 mt-2">{cxoRiskLabel}</p>
+                                        <p className="text-xs text-gray-500 mt-1">{lateTaskCount} late task(s) currently flagged</p>
+                                    </div>
+                                    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                                        <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Workload Split</p>
+                                        <p className="text-2xl font-bold text-gray-900 mt-2">
+                                            {dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0}% complete
+                                        </p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}% remaining effort
+                                        </p>
+                                    </div>
+                                    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                                        <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Task Distribution</p>
+                                        <p className="text-2xl font-bold text-gray-900 mt-2">{dashboardData?.summary_statistics?.total_tasks ?? 0}</p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {dashboardData?.summary_statistics?.in_progress_tasks ?? 0} in progress, {dashboardData?.summary_statistics?.completed_tasks ?? 0} completed
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {selectedRole === 'sales' && (
+                        <>
+                            <div className="rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 text-white p-6 shadow-lg">
+                                <p className="text-[11px] uppercase tracking-[0.2em] text-orange-100 font-bold mb-2">Commercial Snapshot</p>
+                                <h3 className="text-2xl font-bold">Sales Commitment Dashboard</h3>
+                                <p className="text-sm text-orange-100 mt-2">
+                                    Delivery commitments, budget posture, and deal-facing metrics for customer communication.
+                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Project Status</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{dashboardData?.project?.status || '-'}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Total Wallet</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{projectInfo?.project?.project_wallet ?? '-'}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Consumed Wallet</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{usedWallet}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Remaining Wallet</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{remainingWallet}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                                    <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Delivery Team</p>
+                                    <p className="text-xl font-bold text-gray-900 mt-2">{projectInfo?.team_members?.length ?? 0}</p>
                                 </div>
                             </div>
 
-                            {/* ACTUAL VS REMAINING WORK */}
-                            <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6 flex flex-col relative">
-                                <div className="flex items-center mb-8">
-                                    <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
-                                        <Activity className="w-5 h-5" />
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                                    <div className="flex items-center mb-5">
+                                        <Calendar className="w-4 h-4 text-orange-500 mr-2" />
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Client-Facing Delivery Commitments</h3>
                                     </div>
-                                    <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">ACTUAL VS REMAINING WORK</h3>
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-orange-50">
+                                            <span className="text-sm font-semibold text-gray-700">Due This Week</span>
+                                            <span className="text-lg font-bold text-orange-600">{dueThisWeekCount}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-gray-50">
+                                            <span className="text-sm font-semibold text-gray-700">Upcoming Next Period</span>
+                                            <span className="text-lg font-bold text-gray-900">{upcomingTaskCount}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-red-50">
+                                            <span className="text-sm font-semibold text-gray-700">Late Tasks</span>
+                                            <span className="text-lg font-bold text-red-600">{lateTaskCount}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50">
+                                            <span className="text-sm font-semibold text-gray-700">In Progress</span>
+                                            <span className="text-lg font-bold text-blue-600">{inProgressTaskCount}</span>
+                                        </div>
+                                    </div>
                                 </div>
 
-                                <div className="flex-1 flex items-end justify-center px-12 mb-8 relative">
-                                    <div className="absolute left-10 flex flex-col justify-between h-[200px] bottom-0 text-xs font-bold text-app-text-muted w-10 text-right pr-2">
-                                        <span className="relative -top-2">100%</span>
-                                        <span className="relative">50%</span>
-                                        <span className="relative top-2">0%</span>
+                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                                    <div className="flex items-center mb-5">
+                                        <Tag className="w-4 h-4 text-orange-500 mr-2" />
+                                        <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Delivery Readiness</h3>
                                     </div>
-
-                                    {/* Grid lines */}
-                                    <div className="absolute left-20 right-40 flex flex-col justify-between h-[200px] bottom-0 pointer-events-none">
-                                        <div className="w-full border-t border-app-border"></div>
-                                        <div className="w-full border-t border-app-border"></div>
-                                        <div className="w-full border-t border-gray-500"></div>
-                                    </div>
-
-                                    {/* The Stacked Bar */}
-                                    <div className="w-[30%] min-w-[150px] relative z-10 flex flex-col justify-end h-[200px]">
-                                        {/* Remaining Work */}
-                                        <div className="bg-[#feebad] w-full relative flex items-center justify-center" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
-                                            <span className="text-orange-500 font-bold text-sm">{dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}%</span>
+                                    <div className="space-y-4">
+                                        <div className="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Expected Launch Date</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-1">
+                                                {dashboardData?.project_status?.expected_launch_date
+                                                    ? new Date(dashboardData.project_status.expected_launch_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: '2-digit' })
+                                                    : '-'}
+                                            </p>
                                         </div>
-                                        {/* Completed Work */}
-                                        <div className="bg-[#424242] w-full relative flex items-center justify-center" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
-                                            <span className="text-white font-bold text-sm">{dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0}%</span>
+                                        <div className="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Completion Status</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-1">
+                                                {dashboardData?.kpi?.completion_percentage ?? 0}% complete, {completedTaskCount} recently completed
+                                            </p>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">Overall Health Signal</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-1">{overallHealth}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                                <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">Sales Signals</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                    {salesSignals.map((signal) => (
+                                        <div key={signal.label} className="rounded-lg border border-gray-100 bg-gray-50 p-4">
+                                            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">{signal.label}</p>
+                                            <p className="text-sm font-bold text-gray-900 mt-2">{signal.value}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                                <p className="text-xs text-gray-500 mt-4">
+                                    Fields showing "Backend field needed" can be connected once sales data APIs are available.
+                                </p>
+                            </div>
+                        </>
+                    )}
+
+                    {selectedRole === 'project' && (
+                        <>
+
+                            {/* Top Metric Cards - Full Width */}
+                            <div className="w-full flex flex-col gap-3 md:gap-4">
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center relative">
+                                        <p className="text-xs font-bold text-app-text-label mb-1">Project</p>
+                                        <h3 className="text-xl font-bold text-gray-800 mb-0 truncate max-w-full px-1">{dashboardData?.project?.name ?? '—'}</h3>
+                                        <p className="text-[10px] text-app-text-muted uppercase tracking-widest">{dashboardData?.project?.status ?? '—'}</p>
+                                    </div>
+                                    <div className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center relative">
+                                        <p className="text-xs font-bold text-app-text-label mb-1">Project Duration</p>
+                                        <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.duration_days ?? 0}</h3>
+                                        <p className="text-[10px] text-app-text-muted uppercase tracking-widest">Days</p>
+                                    </div>
+                                    <div className="bg-app-bg-card col-span-2 md:col-span-2 p-4 rounded-xl shadow border border-app-border-light flex flex-row items-center justify-around relative">
+                                        <div className="flex flex-col items-center">
+                                            <p className="text-xs font-bold text-app-text-label mb-1">Total Sprints</p>
+                                            <div className="flex items-center relative">
+                                                <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.summary_statistics?.total_sprints ?? 0}</h3>
+                                            </div>
+                                        </div>
+                                        <div className="w-px h-12 bg-app-bg-hover"></div>
+                                        <div className="flex flex-col items-center w-40">
+                                            <p className="text-xs font-bold text-app-text-label mb-1">Hours Logged</p>
+                                            <div className="flex items-center relative mb-2 w-full justify-center">
+                                                <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.total_hours_logged ?? 0}</h3>
+                                            </div>
+                                            <div className="w-full bg-app-bg-hover rounded-full h-2.5">
+                                                <div className="bg-app-text-label h-2.5 rounded-full" style={{ width: `${dashboardData?.kpi?.work_complete_percentage ?? 0}%` }}></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
+                                    <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                        <p className="text-[11px] font-bold text-app-text-label mb-1">Active Sprints</p>
+                                        <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.active_sprints ?? 0}</h3>
+                                        <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Running</p>
+                                    </div>
+                                    <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                        <p className="text-[11px] font-bold text-app-text-label mb-1 text-center leading-tight">In Progress</p>
+                                        <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.in_progress_tasks ?? 0}</h3>
+                                        <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Tasks</p>
+                                    </div>
+                                    <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                        <p className="text-[11px] font-bold text-app-text-label mb-1">Pending Tasks</p>
+                                        <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.pending_tasks ?? 0}</h3>
+                                        <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Awaiting</p>
+                                    </div>
+                                    <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                        <p className="text-[11px] font-bold text-app-text-label mb-1">Completed</p>
+                                        <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.completed_tasks ?? 0}</h3>
+                                        <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Done</p>
+                                    </div>
+                                    <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                        <p className="text-[11px] font-bold text-app-text-label mb-1">Total Tasks</p>
+                                        <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.total_tasks ?? 0}</h3>
+                                        <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Tracked</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Bottom Section: 2 Columns */}
+                            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 w-full items-start">
+
+                                {/* Left Column (Main Content) */}
+                                <div className="space-y-6 lg:col-start-1 w-full min-w-0">
+
+                                    {/* KEY MILESTONES & DATES */}
+                                    <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6 relative">
+                                        <div className="flex items-center mb-6">
+                                            <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
+                                                <Flag className="w-5 h-5" />
+                                            </div>
+                                            <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">KEY MILESTONES & DATES</h3>
+                                        </div>
+                                        <div className="overflow-auto rounded-lg border border-app-border-light" style={{ maxHeight: '320px' }}>
+                                            <table className="min-w-full text-sm">
+                                                <colgroup><col style={{ width: '30%' }} /><col style={{ width: '35%' }} /><col style={{ width: '35%' }} /></colgroup>
+                                                <thead className="bg-[#fdf4e6] sticky top-0 z-10">
+                                                    <tr>
+                                                        <th className="px-4 py-3 text-left font-bold text-gray-800">Milestone</th>
+                                                        <th className="px-4 py-3 text-left font-bold text-gray-800">Status</th>
+                                                        <th className="px-4 py-3 text-left font-bold text-gray-800">Date</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-100 text-app-text-label font-medium">
+                                                    {dashboardData?.milestones?.completed?.map(ms => (
+                                                        <tr key={ms.id}>
+                                                            <td className="px-4 py-3">{ms.name}</td>
+                                                            <td className="px-4 py-3 text-app-status-success">Completed</td>
+                                                            <td className="px-4 py-3">{ms.deadline}</td>
+                                                        </tr>
+                                                    ))}
+                                                    {dashboardData?.milestones?.key_milestones_and_dates?.map(ms => (
+                                                        <tr key={ms.id}>
+                                                            <td className="px-4 py-3 break-words pr-8">{ms.name}</td>
+                                                            <td className="px-4 py-3 text-orange-500">In Progress</td>
+                                                            <td className="px-4 py-3 whitespace-nowrap">{ms.deadline}</td>
+                                                        </tr>
+                                                    ))}
+                                                    {(!dashboardData?.milestones?.completed?.length && !dashboardData?.milestones?.key_milestones_and_dates?.length) && (
+                                                        <tr>
+                                                            <td className="px-4 py-3" colSpan="3">No milestones available</td>
+                                                        </tr>
+                                                    )}
+                                                </tbody>
+                                            </table>
                                         </div>
                                     </div>
 
-                                    <div className="absolute bottom-[-25px] w-full text-center text-[10px] font-bold text-app-text-muted">
-                                        Overall Assessment Progress
+                                    {/* ACTUAL VS REMAINING WORK */}
+                                    <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6 flex flex-col relative">
+                                        <div className="flex items-center mb-8">
+                                            <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
+                                                <Activity className="w-5 h-5" />
+                                            </div>
+                                            <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">ACTUAL VS REMAINING WORK</h3>
+                                        </div>
+
+                                        <div className="flex-1 flex items-end justify-center px-12 mb-8 relative">
+                                            <div className="absolute left-10 flex flex-col justify-between h-[200px] bottom-0 text-xs font-bold text-app-text-muted w-10 text-right pr-2">
+                                                <span className="relative -top-2">100%</span>
+                                                <span className="relative">50%</span>
+                                                <span className="relative top-2">0%</span>
+                                            </div>
+
+                                            {/* Grid lines */}
+                                            <div className="absolute left-20 right-40 flex flex-col justify-between h-[200px] bottom-0 pointer-events-none">
+                                                <div className="w-full border-t border-app-border"></div>
+                                                <div className="w-full border-t border-app-border"></div>
+                                                <div className="w-full border-t border-gray-500"></div>
+                                            </div>
+
+                                            {/* The Stacked Bar */}
+                                            <div className="w-[30%] min-w-[150px] relative z-10 flex flex-col justify-end h-[200px]">
+                                                {/* Remaining Work */}
+                                                <div className="bg-[#feebad] w-full relative flex items-center justify-center" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
+                                                    <span className="text-orange-500 font-bold text-sm">{dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}%</span>
+                                                </div>
+                                                {/* Completed Work */}
+                                                <div className="bg-[#424242] w-full relative flex items-center justify-center" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
+                                                    <span className="text-white font-bold text-sm">{dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0}%</span>
+                                                </div>
+                                            </div>
+
+                                            <div className="absolute bottom-[-25px] w-full text-center text-[10px] font-bold text-app-text-muted">
+                                                Overall Assessment Progress
+                                            </div>
+
+                                            {/* Legend */}
+                                            <div className="absolute right-10 bottom-20 flex flex-col gap-3">
+                                                <div className="flex items-center">
+                                                    <div className="w-6 h-4 bg-[#feebad] mr-3"></div>
+                                                    <span className="text-sm text-app-text-label font-medium">Remaining Work</span>
+                                                </div>
+                                                <div className="flex items-center">
+                                                    <div className="w-6 h-4 bg-[#424242] mr-3"></div>
+                                                    <span className="text-sm text-app-text-label font-medium">Completed Work</span>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
 
-                                    {/* Legend */}
-                                    <div className="absolute right-10 bottom-20 flex flex-col gap-3">
+
+                                </div>
+
+                                {/* Right Column (Sidebar Summary) */}
+                                <div className="w-full bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
+                                    <h2 className="text-[22px] font-bold text-[#f27a24] mb-4">Project Status</h2>
+                                    <div className="w-full border-t-2 border-[#f27a24] mb-8 opacity-50"></div>
+
+                                    <div className="w-full mb-10 flex flex-col items-center relative">
+                                        <div className="absolute left-[-5px] top-0 text-app-status-success">
+                                            <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path></svg>
+                                        </div>
+                                        <div className="bg-app-bg-card border rounded p-4 text-center w-5/6 mx-auto shadow-sm relative z-10">
+                                            <p className="text-[10px] font-bold text-gray-800 uppercase mb-2">EXPECTED LAUNCH DATE</p>
+                                            <h3 className="text-2xl font-black text-app-text-main mb-2">{dashboardData?.project_status?.days_until_launch ?? 0} <span className="text-sm font-medium">Days</span></h3>
+                                            <div className="flex items-center justify-center w-full mb-2">
+                                                <div className="h-px bg-gray-300 w-full relative">
+                                                    <div className="absolute left-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
+                                                    <div className="absolute right-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
+                                                </div>
+                                            </div>
+                                            <p className="text-xs italic text-app-text-muted">{dashboardData?.project_status?.expected_launch_date ? new Date(dashboardData.project_status.expected_launch_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="w-full mb-10 flex flex-col items-center">
+                                        <div className="flex justify-center items-center w-full relative mb-1">
+                                            <div className={`absolute left-8 ${dashboardData?.project_status?.overall_health === 'Good' ? 'text-app-status-success' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'text-app-status-warning' : 'text-app-status-error'}`}>
+                                                <Activity className="w-8 h-8" />
+                                            </div>
+                                            <div className={`w-10 h-10 rounded-full shadow-lg ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-gradient-to-br from-green-400 to-green-600 shadow-green-500/30' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-gradient-to-br from-amber-400 to-amber-600 shadow-amber-500/30' : 'bg-gradient-to-br from-red-400 to-red-600 shadow-red-500/30'}`}></div>
+                                        </div>
+                                        <p className="text-sm font-bold text-gray-800 mt-2">Overall Health: {dashboardData?.project_status?.overall_health ?? '—'}</p>
+                                    </div>
+
+                                    <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
+
+                                    {/* Circular Gauge 1 */}
+                                    <div className="mb-10 flex flex-col items-center relative w-full">
+                                        <div className="absolute left-8 text-orange-200">
+                                            <svg className="w-8 h-8 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                                        </div>
+                                        <div className="relative w-24 h-24 mb-4">
+                                            <svg className="w-24 h-24 transform -rotate-90">
+                                                <circle cx="48" cy="48" r="40" stroke="#fdf4e6" strokeWidth="12" fill="none" />
+                                                <circle cx="48" cy="48" r="40" stroke="#f27a24" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * (dashboardData?.kpi?.completion_percentage ?? 0)) / 100} strokeLinecap="round" />
+                                            </svg>
+                                            <div className="absolute inset-0 flex items-center justify-center">
+                                                <span className="text-xl font-bold text-gray-800">{dashboardData?.kpi?.completion_percentage ?? 0}%</span>
+                                            </div>
+                                        </div>
+                                        <p className="text-[13px] font-bold text-app-text-label">Completion Rate</p>
+                                    </div>
+
+                                    <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
+
+                                    {/* Circular Gauge 2 */}
+                                    <div className="mb-10 flex flex-col items-center relative w-full">
+                                        <div className="absolute left-8 text-app-border">
+                                            <svg className="w-6 h-6 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+                                        </div>
+                                        <div className="relative w-24 h-24 mb-4">
+                                            <svg className="w-24 h-24 transform -rotate-90">
+                                                <circle cx="48" cy="48" r="40" stroke="#f3f4f6" strokeWidth="12" fill="none" />
+                                                <circle cx="48" cy="48" r="40" stroke="#9ca3af" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * (dashboardData?.project_status?.project_progress ?? 0)) / 100} strokeLinecap="round" />
+                                            </svg>
+                                            <div className="absolute inset-0 flex items-center justify-center">
+                                                <span className="text-xl font-bold text-gray-800">{dashboardData?.project_status?.project_progress ?? 0}%</span>
+                                            </div>
+                                        </div>
+                                        <p className="text-[13px] font-bold text-app-text-label">Project Progress</p>
+                                    </div>
+
+                                    <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
+
+                                    {/* Circular Gauge 3 */}
+                                    <div className="mb-6 flex flex-col items-center relative w-full">
+                                        <div className="absolute left-6 text-app-text-label">
+                                            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
+                                        </div>
+                                        <div className="relative w-24 h-24 mb-4">
+                                            <svg className="w-24 h-24 transform -rotate-90">
+                                                <circle cx="48" cy="48" r="40" stroke="#f3f4f6" strokeWidth="12" fill="none" />
+                                                {(() => {
+                                                    const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
+                                                    let sprintProgress = 0;
+                                                    if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
+                                                        sprintProgress = Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100);
+                                                    }
+                                                    return (
+                                                        <circle cx="48" cy="48" r="40" stroke="#1f2937" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * sprintProgress) / 100} strokeLinecap="round" />
+                                                    );
+                                                })()}
+                                            </svg>
+                                            <div className="absolute inset-0 flex items-center justify-center">
+                                                <span className="text-xl font-bold text-gray-800">
+                                                    {(() => {
+                                                        const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
+                                                        if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
+                                                            return Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100) + '%';
+                                                        }
+                                                        return '0%';
+                                                    })()}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <p className="text-[13px] font-bold text-app-text-label">Sprint Progress</p>
+                                    </div>
+                                </div>
+
+                                {/* Task Tables Section - matching screenshot layout */}
+                                {dashboardData?.tasks && (
+                                    <div className="mt-8 space-y-6 lg:col-start-1 w-full min-w-0">
+                                        {/* Row 1: Late Tasks + Upcoming Tasks (Next Period) */}
+                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                            {/* Late Tasks Table */}
+                                            <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
+                                                <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Late Tasks</h3>
+                                                <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                                    <table className="min-w-full text-sm">
+                                                        <thead className="sticky top-0 z-10">
+                                                            <tr className="bg-[#f27a24] text-white">
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                                <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100 bg-app-bg-card">
+                                                            {(dashboardData.tasks.late_tasks || []).map((task, idx) => (
+                                                                <tr key={task.id} className="hover:bg-app-status-errorBg/50">
+                                                                    <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
+                                                                    <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                                    <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                                </tr>
+                                                            ))}
+                                                            {(!dashboardData.tasks.late_tasks || dashboardData.tasks.late_tasks.length === 0) && (
+                                                                <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No late tasks</td></tr>
+                                                            )}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            {/* Upcoming Tasks (Next Period) Table */}
+                                            <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
+                                                <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Upcoming Tasks (Next Period)</h3>
+                                                <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                                    <table className="min-w-full text-sm">
+                                                        <thead className="sticky top-0 z-10">
+                                                            <tr className="bg-[#f27a24] text-white">
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                                <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100 bg-app-bg-card">
+                                                            {(dashboardData.tasks.upcoming_tasks_next_period || []).map((task, idx) => (
+                                                                <tr key={task.id} className="hover:bg-app-bg-page">
+                                                                    <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
+                                                                    <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                                    <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.target_date ? new Date(task.target_date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                                </tr>
+                                                            ))}
+                                                            {(!dashboardData.tasks.upcoming_tasks_next_period || dashboardData.tasks.upcoming_tasks_next_period.length === 0) && (
+                                                                <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No upcoming tasks</td></tr>
+                                                            )}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Row 2: Due This Week + In Progress / Recently Completed */}
+                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                            {/* Due This Week Table */}
+                                            <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
+                                                <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Due This Week</h3>
+                                                <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                                    <table className="min-w-full text-sm">
+                                                        <thead className="sticky top-0 z-10">
+                                                            <tr className="bg-[#f27a24] text-white">
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                                <th className="px-4 py-2.5 text-center font-bold text-xs w-20">Progress</th>
+                                                                <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Deadline</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100 bg-app-bg-card">
+                                                            {(dashboardData.tasks.due_this_week || []).map((task, idx) => (
+                                                                <tr key={task.id} className="hover:bg-orange-50/50">
+                                                                    <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
+                                                                    <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                                    <td className="px-4 py-3 text-center text-app-text-label font-bold">{task.progress ?? 0}%</td>
+                                                                    <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                                </tr>
+                                                            ))}
+                                                            {(!dashboardData.tasks.due_this_week || dashboardData.tasks.due_this_week.length === 0) && (
+                                                                <tr><td colSpan="4" className="px-4 py-6 text-center text-app-text-light italic">No tasks due this week</td></tr>
+                                                            )}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            {/* In Progress + Recently Completed Table */}
+                                            <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
+                                                <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">In Progress & Recently Completed</h3>
+                                                <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                                    <table className="min-w-full text-sm">
+                                                        <thead className="sticky top-0 z-10">
+                                                            <tr className="bg-[#f27a24] text-white">
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
+                                                                <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
+                                                                <th className="px-4 py-2.5 text-right font-bold text-xs w-24">Status</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100 bg-app-bg-card">
+                                                            {(dashboardData.tasks.in_progress || []).map((task, idx) => (
+                                                                <tr key={task.id} className="hover:bg-app-primary-light/50">
+                                                                    <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
+                                                                    <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
+                                                                    <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-app-primary-light text-app-primary-hover text-xs font-bold rounded">{task.progress ?? 0}%</span></td>
+                                                                </tr>
+                                                            ))}
+                                                            {(dashboardData.tasks.recently_completed || []).map((task, idx) => (
+                                                                <tr key={task.id} className="hover:bg-app-status-successBg/50">
+                                                                    <td className="px-4 py-3 text-app-text-light font-semibold">{(dashboardData.tasks.in_progress?.length || 0) + idx + 1}</td>
+                                                                    <td className="px-4 py-3 text-app-text-light font-medium line-through">{task.name || task.description || 'Untitled'}</td>
+                                                                    <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded">Done</span></td>
+                                                                </tr>
+                                                            ))}
+                                                            {(!dashboardData.tasks.in_progress?.length && !dashboardData.tasks.recently_completed?.length) && (
+                                                                <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No tasks in progress or recently completed</td></tr>
+                                                            )}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* ── AI AGENTS SECTION ── */}
+                                <div className="w-full mt-6 lg:col-start-1 min-w-0">
+                                    <div className="flex items-center justify-between mb-6">
                                         <div className="flex items-center">
-                                            <div className="w-6 h-4 bg-[#feebad] mr-3"></div>
-                                            <span className="text-sm text-app-text-label font-medium">Remaining Work</span>
+                                            <div className="p-2 mr-3 bg-app-primary-light rounded text-indigo-500">
+                                                <Bot className="w-5 h-5" />
+                                            </div>
+                                            <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
+                                            <span className="ml-3 text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-app-bg-muted px-2 py-0.5 rounded-full">
+                                                {agents.filter(a => a.status === 'running').length} Running
+                                            </span>
                                         </div>
-                                        <div className="flex items-center">
-                                            <div className="w-6 h-4 bg-[#424242] mr-3"></div>
-                                            <span className="text-sm text-app-text-label font-medium">Completed Work</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-
-                        </div>
-
-                        {/* Right Column (Sidebar Summary) */}
-                        <div className="w-full bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
-                            <h2 className="text-[22px] font-bold text-[#f27a24] mb-4">Project Status</h2>
-                            <div className="w-full border-t-2 border-[#f27a24] mb-8 opacity-50"></div>
-
-                            <div className="w-full mb-10 flex flex-col items-center relative">
-                                <div className="absolute left-[-5px] top-0 text-app-status-success">
-                                    <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path></svg>
-                                </div>
-                                <div className="bg-app-bg-card border rounded p-4 text-center w-5/6 mx-auto shadow-sm relative z-10">
-                                    <p className="text-[10px] font-bold text-gray-800 uppercase mb-2">EXPECTED LAUNCH DATE</p>
-                                    <h3 className="text-2xl font-black text-app-text-main mb-2">{dashboardData?.project_status?.days_until_launch ?? 0} <span className="text-sm font-medium">Days</span></h3>
-                                    <div className="flex items-center justify-center w-full mb-2">
-                                        <div className="h-px bg-gray-300 w-full relative">
-                                            <div className="absolute left-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
-                                            <div className="absolute right-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
-                                        </div>
-                                    </div>
-                                    <p className="text-xs italic text-app-text-muted">{dashboardData?.project_status?.expected_launch_date ? new Date(dashboardData.project_status.expected_launch_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</p>
-                                </div>
-                            </div>
-
-                            <div className="w-full mb-10 flex flex-col items-center">
-                                <div className="flex justify-center items-center w-full relative mb-1">
-                                    <div className={`absolute left-8 ${dashboardData?.project_status?.overall_health === 'Good' ? 'text-app-status-success' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'text-app-status-warning' : 'text-app-status-error'}`}>
-                                        <Activity className="w-8 h-8" />
-                                    </div>
-                                    <div className={`w-10 h-10 rounded-full shadow-lg ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-gradient-to-br from-green-400 to-green-600 shadow-green-500/30' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-gradient-to-br from-amber-400 to-amber-600 shadow-amber-500/30' : 'bg-gradient-to-br from-red-400 to-red-600 shadow-red-500/30'}`}></div>
-                                </div>
-                                <p className="text-sm font-bold text-gray-800 mt-2">Overall Health: {dashboardData?.project_status?.overall_health ?? '—'}</p>
-                            </div>
-
-                            <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
-
-                            {/* Circular Gauge 1 */}
-                            <div className="mb-10 flex flex-col items-center relative w-full">
-                                <div className="absolute left-8 text-orange-200">
-                                    <svg className="w-8 h-8 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
-                                </div>
-                                <div className="relative w-24 h-24 mb-4">
-                                    <svg className="w-24 h-24 transform -rotate-90">
-                                        <circle cx="48" cy="48" r="40" stroke="#fdf4e6" strokeWidth="12" fill="none" />
-                                        <circle cx="48" cy="48" r="40" stroke="#f27a24" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * (dashboardData?.kpi?.completion_percentage ?? 0)) / 100} strokeLinecap="round" />
-                                    </svg>
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-xl font-bold text-gray-800">{dashboardData?.kpi?.completion_percentage ?? 0}%</span>
-                                    </div>
-                                </div>
-                                <p className="text-[13px] font-bold text-app-text-label">Completion Rate</p>
-                            </div>
-
-                            <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
-
-                            {/* Circular Gauge 2 */}
-                            <div className="mb-10 flex flex-col items-center relative w-full">
-                                <div className="absolute left-8 text-app-border">
-                                    <svg className="w-6 h-6 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-                                </div>
-                                <div className="relative w-24 h-24 mb-4">
-                                    <svg className="w-24 h-24 transform -rotate-90">
-                                        <circle cx="48" cy="48" r="40" stroke="#f3f4f6" strokeWidth="12" fill="none" />
-                                        <circle cx="48" cy="48" r="40" stroke="#9ca3af" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * (dashboardData?.project_status?.project_progress ?? 0)) / 100} strokeLinecap="round" />
-                                    </svg>
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-xl font-bold text-gray-800">{dashboardData?.project_status?.project_progress ?? 0}%</span>
-                                    </div>
-                                </div>
-                                <p className="text-[13px] font-bold text-app-text-label">Project Progress</p>
-                            </div>
-
-                            <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
-
-                            {/* Circular Gauge 3 */}
-                            <div className="mb-6 flex flex-col items-center relative w-full">
-                                <div className="absolute left-6 text-app-text-label">
-                                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
-                                </div>
-                                <div className="relative w-24 h-24 mb-4">
-                                    <svg className="w-24 h-24 transform -rotate-90">
-                                        <circle cx="48" cy="48" r="40" stroke="#f3f4f6" strokeWidth="12" fill="none" />
-                                        {(() => {
-                                            const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
-                                            let sprintProgress = 0;
-                                            if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
-                                                sprintProgress = Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100);
-                                            }
-                                            return (
-                                                <circle cx="48" cy="48" r="40" stroke="#1f2937" strokeWidth="12" fill="none" strokeDasharray="251" strokeDashoffset={251 - (251 * sprintProgress) / 100} strokeLinecap="round" />
-                                            );
-                                        })()}
-                                    </svg>
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-xl font-bold text-gray-800">
-                                            {(() => {
-                                                const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
-                                                if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
-                                                    return Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100) + '%';
-                                                }
-                                                return '0%';
-                                            })()}
-                                        </span>
-                                    </div>
-                                </div>
-                                <p className="text-[13px] font-bold text-app-text-label">Sprint Progress</p>
-                            </div>
-                        </div>
-
-                        {/* Task Tables Section - matching screenshot layout */}
-                        {dashboardData?.tasks && (
-                            <div className="mt-8 space-y-6 lg:col-start-1 w-full min-w-0">
-                                {/* Row 1: Late Tasks + Upcoming Tasks (Next Period) */}
-                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                    {/* Late Tasks Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
-                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Late Tasks</h3>
-                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                            <table className="min-w-full text-sm">
-                                                <thead className="sticky top-0 z-10">
-                                                    <tr className="bg-[#f27a24] text-white">
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
-                                                    {(dashboardData.tasks.late_tasks || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-app-status-errorBg/50">
-                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
-                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
-                                                        </tr>
-                                                    ))}
-                                                    {(!dashboardData.tasks.late_tasks || dashboardData.tasks.late_tasks.length === 0) && (
-                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No late tasks</td></tr>
-                                                    )}
-                                                </tbody>
-                                            </table>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
+                                                {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
+                                            </span>
+                                            <button
+                                                onClick={handleRunAll}
+                                                disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
+                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
+                                                    ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
+                                                    : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                                    }`}
+                                                title="Run all idle agents simultaneously"
+                                            >
+                                                {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                                {runningAll ? 'Starting...' : 'Run All'}
+                                            </button>
+                                            <button
+                                                onClick={handleGenerateTasks}
+                                                disabled={isGeneratingTasks || !selectedProjectKey}
+                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
+                                                    ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
+                                                    : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                                    }`}
+                                                title="Generate tasks from selected project"
+                                            >
+                                                {isGeneratingTasks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                                {isGeneratingTasks ? 'Mapping...' : 'Create Tasks'}
+                                            </button>
+                                            <button
+                                                onClick={() => handleAddAgent()}
+                                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-app-primary bg-app-primary-light hover:bg-indigo-100 transition-colors"
+                                                title="Add a new agent"
+                                            >
+                                                <PlusCircle className="w-3.5 h-3.5" />
+                                                Add Agent
+                                            </button>
+                                            <button
+                                                onClick={() => { fetchAgents(); fetchTasks(); }}
+                                                className="text-app-text-light hover:text-app-text-label p-1 rounded hover:bg-app-bg-muted transition-colors"
+                                                title="Refresh"
+                                            >
+                                                <RefreshCw className="w-4 h-4" />
+                                            </button>
                                         </div>
                                     </div>
 
-                                    {/* Upcoming Tasks (Next Period) Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
-                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Upcoming Tasks (Next Period)</h3>
-                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                            <table className="min-w-full text-sm">
-                                                <thead className="sticky top-0 z-10">
-                                                    <tr className="bg-[#f27a24] text-white">
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
-                                                    {(dashboardData.tasks.upcoming_tasks_next_period || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-app-bg-page">
-                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
-                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.target_date ? new Date(task.target_date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
-                                                        </tr>
-                                                    ))}
-                                                    {(!dashboardData.tasks.upcoming_tasks_next_period || dashboardData.tasks.upcoming_tasks_next_period.length === 0) && (
-                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No upcoming tasks</td></tr>
-                                                    )}
-                                                </tbody>
-                                            </table>
-                                        </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                        {agents.map(agent => renderAgentCard(agent))}
                                     </div>
                                 </div>
-
-                                {/* Row 2: Due This Week + In Progress / Recently Completed */}
-                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                    {/* Due This Week Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
-                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Due This Week</h3>
-                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                            <table className="min-w-full text-sm">
-                                                <thead className="sticky top-0 z-10">
-                                                    <tr className="bg-[#f27a24] text-white">
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                        <th className="px-4 py-2.5 text-center font-bold text-xs w-20">Progress</th>
-                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Deadline</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
-                                                    {(dashboardData.tasks.due_this_week || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-orange-50/50">
-                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
-                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-center text-app-text-label font-bold">{task.progress ?? 0}%</td>
-                                                            <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
-                                                        </tr>
-                                                    ))}
-                                                    {(!dashboardData.tasks.due_this_week || dashboardData.tasks.due_this_week.length === 0) && (
-                                                        <tr><td colSpan="4" className="px-4 py-6 text-center text-app-text-light italic">No tasks due this week</td></tr>
-                                                    )}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-
-                                    {/* In Progress + Recently Completed Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
-                                        <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">In Progress & Recently Completed</h3>
-                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
-                                            <table className="min-w-full text-sm">
-                                                <thead className="sticky top-0 z-10">
-                                                    <tr className="bg-[#f27a24] text-white">
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs w-12">#</th>
-                                                        <th className="px-4 py-2.5 text-left font-bold text-xs">Task Description</th>
-                                                        <th className="px-4 py-2.5 text-right font-bold text-xs w-24">Status</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
-                                                    {(dashboardData.tasks.in_progress || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-app-primary-light/50">
-                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
-                                                            <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-app-primary-light text-app-primary-hover text-xs font-bold rounded">{task.progress ?? 0}%</span></td>
-                                                        </tr>
-                                                    ))}
-                                                    {(dashboardData.tasks.recently_completed || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-app-status-successBg/50">
-                                                            <td className="px-4 py-3 text-app-text-light font-semibold">{(dashboardData.tasks.in_progress?.length || 0) + idx + 1}</td>
-                                                            <td className="px-4 py-3 text-app-text-light font-medium line-through">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded">Done</span></td>
-                                                        </tr>
-                                                    ))}
-                                                    {(!dashboardData.tasks.in_progress?.length && !dashboardData.tasks.recently_completed?.length) && (
-                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No tasks in progress or recently completed</td></tr>
-                                                    )}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                </div>
+                                {/* Closes CSS grid layout */}
                             </div>
-                        )}
-
-                        {/* ── AI AGENTS SECTION ── */}
-                        <div className="w-full mt-6 lg:col-start-1 min-w-0">
-                            <div className="flex items-center justify-between mb-6">
-                                <div className="flex items-center">
-                                    <div className="p-2 mr-3 bg-app-primary-light rounded text-indigo-500">
-                                        <Bot className="w-5 h-5" />
-                                    </div>
-                                    <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
-                                    <span className="ml-3 text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-app-bg-muted px-2 py-0.5 rounded-full">
-                                        {agents.filter(a => a.status === 'running').length} Running
-                                    </span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
-                                        {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
-                                    </span>
-                                    <button
-                                        onClick={handleRunAll}
-                                        disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
-                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
-                                            ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
-                                            : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
-                                            }`}
-                                        title="Run all idle agents simultaneously"
-                                    >
-                                        {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                        {runningAll ? 'Starting...' : 'Run All'}
-                                    </button>
-                                    <button
-                                        onClick={handleGenerateTasks}
-                                        disabled={isGeneratingTasks || !selectedProjectKey}
-                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
-                                            ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
-                                            : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
-                                            }`}
-                                        title="Generate tasks from selected project"
-                                    >
-                                        {isGeneratingTasks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                        {isGeneratingTasks ? 'Mapping...' : 'Create Tasks'}
-                                    </button>
-                                    <button
-                                        onClick={() => handleAddAgent()}
-                                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-app-primary bg-app-primary-light hover:bg-indigo-100 transition-colors"
-                                        title="Add a new agent"
-                                    >
-                                        <PlusCircle className="w-3.5 h-3.5" />
-                                        Add Agent
-                                    </button>
-                                    <button
-                                        onClick={() => { fetchAgents(); fetchTasks(); }}
-                                        className="text-app-text-light hover:text-app-text-label p-1 rounded hover:bg-app-bg-muted transition-colors"
-                                        title="Refresh"
-                                    >
-                                        <RefreshCw className="w-4 h-4" />
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                                {agents.map(agent => renderAgentCard(agent))}
-                            </div>
-                        </div>
-                        {/* Closes CSS grid layout */}
-                    </div>
+                        </>
+                    )}
                 </div>
 
             )
@@ -1568,7 +1781,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             }
             {/* Generated Tasks Section */}
             {
-                projects.length > 0 && (
+                projects.length > 0 && selectedRole === 'project' && (
                     isDashboardSkeletonVisible && taskList.length === 0 ? (
                         renderGeneratedTasksSkeleton()
                     ) : (

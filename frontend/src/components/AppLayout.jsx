@@ -7,6 +7,15 @@ import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
+import ProjectDropdown from './ProjectDropdown';
+import RoleDropdown from './RoleDropdown';
+
+const DASHBOARD_ROLES = [
+    { value: 'cxo', label: 'CXO Dashboard', description: 'Executive snapshot' },
+    { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
+    { value: 'sales', label: 'Sales Dashboard', description: 'Commercial and commitments' },
+];
+const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 
 const DEFAULT_ROADMAP = {
     steps: ['Project Setup', 'Governance', 'AI Analysis', 'Task Creation', 'Agent Execution', 'Complete'],
@@ -32,6 +41,27 @@ export default function AppLayout({ children }) {
     const [selectedProjectKey, setSelectedProjectKey] = useState('');
     const [showSettings, setShowSettings] = useState(false);
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
+
+    const [selectedRole, setSelectedRole] = useState(() => {
+        try {
+            const storedRole = localStorage.getItem(ROLE_STORAGE_KEY);
+            return DASHBOARD_ROLES.some((role) => role.value === storedRole) ? storedRole : 'project';
+        } catch {
+            return 'project';
+        }
+    });
+
+    useEffect(() => {
+        if (!DASHBOARD_ROLES.some((role) => role.value === selectedRole)) {
+            setSelectedRole('project');
+            return;
+        }
+        try {
+            localStorage.setItem(ROLE_STORAGE_KEY, selectedRole);
+        } catch {
+            // Ignore storage access errors in restricted browser contexts.
+        }
+    }, [selectedRole]);
 
     const invalidateProjects = useInvalidateProjects();
 
@@ -153,6 +183,7 @@ export default function AppLayout({ children }) {
         getProjectSidebarSubtitle,
         roadmapData, fetchRoadmapData,
         isNewProjectMode, setIsNewProjectMode,
+        selectedRole, setSelectedRole,
     };
 
     return (
@@ -199,6 +230,31 @@ export default function AppLayout({ children }) {
                                             'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
+
+                            {currentView === 'statusDashboard' && (
+                                <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
+                                    <div className="w-48">
+                                        <RoleDropdown
+                                            roles={DASHBOARD_ROLES}
+                                            selectedRole={selectedRole}
+                                            onSelect={(roleValue) => setSelectedRole(roleValue)}
+                                            theme="dark"
+                                        />
+                                    </div>
+                                    <div className="w-px h-5 bg-white/20"></div>
+                                    <div className="w-48 sm:w-56">
+                                        <ProjectDropdown
+                                            projects={projects}
+                                            selectedKey={selectedProjectKey}
+                                            onSelect={(proj) => {
+                                                if (!proj?.key || proj.key === selectedProjectKey) return;
+                                                setSelectedProjectKey(proj.key);
+                                            }}
+                                            theme="dark"
+                                        />
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Status Pipeline graphic top right - ONLY shown on statusDashboard */}
                             {/* {currentView === 'statusDashboard' && (
