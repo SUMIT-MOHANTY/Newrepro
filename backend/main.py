@@ -1709,7 +1709,9 @@ async def get_external_agent_tasks(
         tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
         return tasks
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {repr(e)}")
 
 @app.get("/api/agent/project-info/")
 async def get_agent_project_info(
@@ -1721,7 +1723,9 @@ async def get_agent_project_info(
         info = await task_service.get_project_info(task_token=x_task_token)
         return info
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {repr(e)}")
 
 @app.get("/api/agent/dashboard/")
 async def get_agent_dashboard(

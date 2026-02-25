@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
@@ -72,6 +73,7 @@ function cacheTaskToken(projectKey, token) {
 
 export default function StatusDashboard({ projects = [], projectsLoading = false }) {
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
     const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
@@ -82,8 +84,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         }
     });
 
+    const token = localStorage.getItem('token');
+
     // ── Agent State (Docker Agents) ──────────────────────────────────
-    const [agents, setAgents] = useState([]);
     const [runningAgent, setRunningAgent] = useState(null);
     const [showLogModal, setShowLogModal] = useState(null);
 
@@ -99,14 +102,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [isSavingAgentName, setIsSavingAgentName] = useState(false);
     const [showAddAgentModal, setShowAddAgentModal] = useState(false);
     const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
-    const [isLoadingAgents, setIsLoadingAgents] = useState(false);
-    const [isLoadingProjectInfo, setIsLoadingProjectInfo] = useState(false);
-    const [isLoadingDashboardData, setIsLoadingDashboardData] = useState(false);
 
     // ── External Task API State ──────────────────────────────────────
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
-    const [generatedTasksCount, setGeneratedTasksCount] = useState(0);
-    const [generationError, setGenerationError] = useState(null);
     const [taskList, setTaskList] = useState([]);
     const [isLoadingTasks, setIsLoadingTasks] = useState(false);
     const [taskListError, setTaskListError] = useState(null);
@@ -114,17 +112,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [nextPageUrl, setNextPageUrl] = useState(null);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
 
-    // ── Project Info State ───────────────────────────────────────────
-    const [projectInfo, setProjectInfo] = useState(null);
-
-    // ── Dashboard Data State ─────────────────────────────────────────
-    const [dashboardData, setDashboardData] = useState(null);
     const selectedProjectKeyRef = useRef(selectedProjectKey);
     const dashboardRequestIdRef = useRef(0);
 
-    const token = localStorage.getItem('token');
     const isInitialProjectsLoading = projectsLoading && projects.length === 0;
-    const isDashboardSkeletonVisible = projects.length > 0 && !dashboardData && (isLoadingAgents || isLoadingProjectInfo || isLoadingDashboardData);
+
     const withProjectToken = useCallback((url) => {
         if (!selectedProjectKey) return url;
         const parsed = new URL(url);
@@ -150,6 +142,51 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         }
     });
     const hasValidTaskToken = Boolean(taskToken) && taskTokenProjectKey === selectedProjectKey;
+
+    const { data: agents = [], isFetching: isLoadingAgents } = useQuery({
+        queryKey: ['agents', selectedProjectKey],
+        queryFn: async () => {
+            const url = new URL(API_ENDPOINTS.AGENTS);
+            if (selectedProjectKey) url.searchParams.set('project_token', selectedProjectKey);
+            const res = await fetch(url.toString(), {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!res.ok) throw new Error('Failed to fetch agents');
+            const data = await res.json();
+            return data.agents || [];
+        },
+        enabled: !!token,
+    });
+
+    const setAgents = useCallback((updater) => {
+        queryClient.setQueryData(['agents', selectedProjectKey], updater);
+    }, [queryClient, selectedProjectKey]);
+
+    const { isFetching: isLoadingProjectInfo } = useQuery({
+        queryKey: ['projectInfo', selectedProjectKey, taskToken],
+        queryFn: async () => {
+            const headers = { 'Authorization': `Bearer ${token}` };
+            if (taskToken) headers['x-task-token'] = taskToken;
+            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
+            if (!res.ok) throw new Error('Failed to fetch project info');
+            return await res.json();
+        },
+        enabled: !!token && hasValidTaskToken,
+    });
+
+    const { data: dashboardData = null, isFetching: isLoadingDashboardData } = useQuery({
+        queryKey: ['dashboardData', selectedProjectKey, taskToken],
+        queryFn: async () => {
+            const headers = { 'Authorization': `Bearer ${token}` };
+            if (taskToken) headers['x-task-token'] = taskToken;
+            const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, { headers });
+            if (!res.ok) throw new Error('Failed to fetch dashboard data');
+            return await res.json();
+        },
+        enabled: !!token && hasValidTaskToken,
+    });
+
+    const isDashboardSkeletonVisible = projects.length > 0 && !dashboardData && (isLoadingAgents || isLoadingProjectInfo || isLoadingDashboardData);
 
     useEffect(() => {
         selectedProjectKeyRef.current = selectedProjectKey;
@@ -269,29 +306,16 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     }, [selectedProjectKey, projects]);
 
     // ── Fetch agents (Docker agent backend) ──────────────────────────
-    const fetchAgents = useCallback(async (silent = false) => {
-        if (!silent) setIsLoadingAgents(true);
-        try {
-            const res = await fetch(withProjectToken(API_ENDPOINTS.AGENTS), {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (res.ok) {
-                const data = await res.json();
-                setAgents(data.agents || []);
-            }
-        } catch (e) {
-            console.error('Failed to fetch agents', e);
-        } finally {
-            if (!silent) setIsLoadingAgents(false);
-        }
-    }, [token, withProjectToken]);
+    const fetchAgents = useCallback(() => {
+        queryClient.invalidateQueries({ queryKey: ['agents', selectedProjectKey] });
+    }, [queryClient, selectedProjectKey]);
 
     // ── Fetch tasks (External API) ───────────────────────────────────
     const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
         if (!hasValidTaskToken) {
             setTaskList([]);
             setTotalTaskCount(0);
-            setGeneratedTasksCount(0);
+
             return;
         }
 
@@ -313,7 +337,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 if (Array.isArray(data)) {
                     setTaskList(data);
                     setTotalTaskCount(data.length);
-                    setGeneratedTasksCount(data.length);
+
                 } else if (data && Array.isArray(data.results)) {
                     if (append) {
                         setTaskList(prev => [...prev, ...data.results]);
@@ -321,11 +345,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         setTaskList(data.results);
                     }
                     setTotalTaskCount(data.count || data.results.length);
-                    setGeneratedTasksCount(data.count || data.results.length);
+
                     setNextPageUrl(data.next);
                 } else if (data && typeof data.count === 'number') {
                     setTotalTaskCount(data.count);
-                    setGeneratedTasksCount(data.count);
+
                 }
             } else {
                 const errData = await res.json().catch(() => ({}));
@@ -340,63 +364,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         }
     }, [token, taskToken, hasValidTaskToken]);
 
-    // ── Fetch project info ───────────────────────────────────────────
-    const fetchProjectInfo = useCallback(async (silent = false) => {
-        if (!hasValidTaskToken) {
-            setProjectInfo(null);
-            return;
-        }
-        if (!silent) setIsLoadingProjectInfo(true);
-        try {
-            const headers = { 'Authorization': `Bearer ${token}` };
-            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
-            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setProjectInfo(data);
-            }
-        } catch (e) {
-            console.error("Failed to load project info:", e);
-        } finally {
-            if (!silent) setIsLoadingProjectInfo(false);
-        }
-    }, [token, taskToken, hasValidTaskToken]);
-
-    // ── Fetch dashboard data ─────────────────────────────────────────
-    const fetchDashboardData = useCallback(async (silent = false) => {
-        if (!hasValidTaskToken) {
-            setDashboardData(null);
-            return;
-        }
-        const requestProjectKey = selectedProjectKey;
-        const requestId = ++dashboardRequestIdRef.current;
-        if (!silent) setIsLoadingDashboardData(true);
-        try {
-            const headers = { 'Authorization': `Bearer ${token}` };
-            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
-            const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                if (requestId !== dashboardRequestIdRef.current || selectedProjectKeyRef.current !== requestProjectKey) {
-                    return;
-                }
-                setDashboardData(data);
-            }
-        } catch (e) {
-            console.error("Failed to load dashboard data:", e);
-        } finally {
-            if (!silent && requestId === dashboardRequestIdRef.current && selectedProjectKeyRef.current === requestProjectKey) {
-                setIsLoadingDashboardData(false);
-            }
-        }
-    }, [token, taskToken, hasValidTaskToken, selectedProjectKey]);
-
     useEffect(() => {
         dashboardRequestIdRef.current += 1;
-        setIsLoadingProjectInfo(false);
-        setIsLoadingDashboardData(false);
-        setProjectInfo(null);
-        setDashboardData(null);
     }, [selectedProjectKey]);
 
     const getPageFromUrl = (url) => {
@@ -407,13 +376,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     useEffect(() => {
         const load = async () => {
-            await fetchAgents();
-            // task endpoints need x-task-token; wait until it is available.
             if (selectedProjectKey && !hasValidTaskToken) return;
-            await Promise.all([fetchTasks(), fetchProjectInfo(), fetchDashboardData()]);
+            await fetchTasks();
         };
         load();
-    }, [fetchAgents, fetchTasks, fetchProjectInfo, fetchDashboardData, selectedProjectKey, hasValidTaskToken]);
+    }, [fetchTasks, selectedProjectKey, hasValidTaskToken]);
 
     // Poll while agents are running
     useEffect(() => {
@@ -803,8 +770,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const handleGenerateTasks = async () => {
         if (!selectedProjectKey) return;
         setIsGeneratingTasks(true);
-        setGenerationError(null);
-        setGeneratedTasksCount(0);
+
 
         try {
             const token = localStorage.getItem('token');
@@ -828,86 +794,19 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 throw new Error(errorData.detail || 'Failed to generate tasks');
             }
 
-            const data = await response.json();
-            setGeneratedTasksCount(data.tasks_created || 0);
+            await response.json();
+
             // Refresh the task list and project info to show newly created tasks
             await fetchTasks();
-            await fetchProjectInfo();
+            await queryClient.invalidateQueries({ queryKey: ['projectInfo', selectedProjectKey, taskToken] });
         } catch (err) {
-            setGenerationError(err.message);
+            console.error(err.message);
         } finally {
             setIsGeneratingTasks(false);
         }
     };
 
-    const renderTaskGeneratorCard = () => (
-        <div key="task-generator" className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
-            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-400 to-indigo-500"></div>
 
-            <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-200">
-                        <Cpu className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                        <h4 className="text-sm font-bold text-app-text-main">Task Auto-Generator</h4>
-                    </div>
-                </div>
-                <div className="flex items-center gap-1.5">
-                    <span className="relative flex h-2.5 w-2.5">
-                        <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isGeneratingTasks ? 'bg-blue-400 opacity-75' : 'hidden'}`}></span>
-                        <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isGeneratingTasks ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
-                    </span>
-                    <span className={`text-[10px] font-bold ${isGeneratingTasks ? 'text-app-primary' : 'text-app-text-muted'}`}>
-                        {isGeneratingTasks ? 'RUNNING' : 'IDLE'}
-                    </span>
-                </div>
-            </div>
-
-            <p className="text-xs text-app-text-muted mb-4 leading-relaxed">
-                Analyzes the BRD Report to automatically generate external Projects, Tasks, Epics, Features, and User Stories via AI.
-            </p>
-
-            <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-app-bg-page rounded-lg">
-                <div className="text-center">
-                    <p className="text-lg font-bold text-gray-800">{generatedTasksCount || '-'}</p>
-                    <p className="text-[9px] text-app-text-light uppercase font-semibold">Generated</p>
-                </div>
-                <div className="w-px h-8 bg-app-bg-hover"></div>
-                <div className="text-center">
-                    <p className="text-lg font-bold text-app-primary">{projectInfo?.project?.project_wallet ?? '-'}</p>
-                    <p className="text-[9px] text-app-text-light uppercase font-semibold">Budget</p>
-                </div>
-                <div className="w-px h-8 bg-app-bg-hover"></div>
-                <div className="text-center">
-                    <p className="text-sm font-bold text-gray-800">{projectInfo?.project?.deadline || '-'}</p>
-                    <p className="text-[9px] text-app-text-light uppercase font-semibold">Deadline</p>
-                </div>
-            </div>
-
-            {isGeneratingTasks ? (
-                <div className="mb-4">
-                    <div className="flex justify-between text-[10px] text-app-text-light mb-1">
-                        <span>Building tasks from context...</span>
-                        <span className="font-bold text-app-primary">Working</span>
-                    </div>
-                    <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
-                        <div className="bg-gradient-to-r from-blue-400 to-indigo-500 h-full w-full animate-pulse rounded-full"></div>
-                    </div>
-                </div>
-            ) : (
-                <div className="flex items-center justify-between text-[10px] text-app-text-light mb-4">
-                    <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        Last run: {generatedTasksCount > 0 ? 'Just now' : 'Awaiting trigger'}
-                    </span>
-                    <span className="font-semibold text-app-text-light">
-                        {generationError ? <span className="text-app-status-error truncate max-w-[100px]" title={generationError}>Failed</span> : generatedTasksCount > 0 ? <span className="text-app-status-success">Success</span> : 'Ready'}
-                    </span>
-                </div>
-            )}
-        </div>
-    );
 
     const renderDashboardSkeleton = () => (
         <SkeletonTheme baseColor="#e5e7eb" highlightColor="#f3f4f6">
@@ -1673,195 +1572,195 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     isDashboardSkeletonVisible && taskList.length === 0 ? (
                         renderGeneratedTasksSkeleton()
                     ) : (
-                    <div className="px-4 md:px-6 pb-6">
-                        <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light overflow-hidden">
-                            <div className="px-6 py-4 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
-                                        <ListTodo className="w-4 h-4 text-white" />
-                                    </div>
-                                    <div>
-                                        <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
-                                        <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
-                                            {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
-                                        </p>
-                                    </div>
-                                </div>
-                                <button onClick={() => fetchTasks(false, 1, false)} disabled={isLoadingTasks} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-app-text-muted bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-muted hover:text-app-text-label transition-all disabled:opacity-50">
-                                    <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} /> Refresh
-                                </button>
-                            </div>
-
-
-                            <div className="hidden md:block bg-app-bg-page/50 border-b border-app-border-light px-6 py-2.5">
-                                <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">#</div>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Task Information</div>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Status</div>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Priority</div>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Assignees</div>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Wallet</div>
-                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Deadline</div>
-                                </div>
-                            </div>
-
-                            <div className="divide-y divide-gray-50">
-                                {isLoadingTasks && taskList.length === 0 && (
-                                    <div className="p-6 space-y-4">
-                                        {[0, 1, 2, 3].map((row) => (
-                                            <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_140px_90px_80px_120px_60px_130px] gap-2 items-center">
-                                                <Skeleton height={10} width={18} />
-                                                <div>
-                                                    <Skeleton height={13} width="52%" />
-                                                    <div className="mt-1">
-                                                        <Skeleton height={10} width="70%" />
-                                                    </div>
-                                                </div>
-                                                <Skeleton height={10} width={108} />
-                                                <Skeleton height={18} width={72} />
-                                                <Skeleton height={18} width={64} />
-                                                <Skeleton height={12} width={90} />
-                                                <Skeleton height={10} width={42} />
-                                                <Skeleton height={10} width={90} />
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                                {taskListError && !isLoadingTasks && (
-                                    <div className="p-6 flex items-center gap-3 bg-app-status-errorBg/50">
-                                        <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
-                                        <p className="text-sm text-app-status-error font-medium">{taskListError}</p>
-                                    </div>
-                                )}
-                                {!isLoadingTasks && !taskListError && taskList.length === 0 && (
-                                    <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
-                                        <div className="w-14 h-14 bg-app-bg-page rounded-full flex items-center justify-center mb-2">
-                                            <ListTodo className="w-7 h-7 text-app-border" />
+                        <div className="px-4 md:px-6 pb-6">
+                            <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light overflow-hidden">
+                                <div className="px-6 py-4 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
+                                            <ListTodo className="w-4 h-4 text-white" />
                                         </div>
-                                        <p className="text-sm font-bold text-app-text-muted">No tasks generated yet</p>
-                                        <p className="text-xs text-app-text-light max-w-xs">Select a project and click "Create Tasks" above to get started.</p>
+                                        <div>
+                                            <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
+                                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
+                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
+                                            </p>
+                                        </div>
                                     </div>
-                                )}
-                                {!isLoadingTasks && taskList.length > 0 && (
-                                    <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
-                                        {taskList.map((task, index) => {
-                                            const priorityStyles = { high: 'bg-app-status-errorBg text-red-700 border-red-200', medium: 'bg-app-status-warningBg text-amber-700 border-amber-200', low: 'bg-app-status-successBg text-green-700 border-green-200' };
-                                            const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-app-primary-light text-app-primary-hover', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-app-bg-muted text-app-text-label', BUG: 'bg-red-100 text-red-700' };
-                                            const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-green-700', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-amber-700', 'Blocked': 'bg-app-status-errorBg text-red-700' };
-                                            const priority = (task.priority || 'medium').toLowerCase();
-                                            const taskType = (task.task_type || 'TASK').toUpperCase();
-                                            const progress = task.task_progress || 0;
-                                            const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
+                                    <button onClick={() => fetchTasks(false, 1, false)} disabled={isLoadingTasks} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-app-text-muted bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-muted hover:text-app-text-label transition-all disabled:opacity-50">
+                                        <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} /> Refresh
+                                    </button>
+                                </div>
 
-                                            return (
-                                                <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
-                                                    <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
-                                                        {/* # */}
-                                                        <div className="flex items-center gap-1.5">
-                                                            <span className="text-[10px] font-bold text-app-text-light">{(index + 1).toString().padStart(2, '0')}</span>
-                                                            {task.is_flaged && <Flag className="w-3 h-3 text-orange-400 fill-orange-400" />}
-                                                        </div>
 
-                                                        {/* Task Name & Desc */}
-                                                        <div className="min-w-0 pr-4">
-                                                            <div className="flex items-center gap-2 mb-0.5">
-                                                                <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
-                                                                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
-                                                            </div>
-                                                            <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
-                                                        </div>
+                                <div className="hidden md:block bg-app-bg-page/50 border-b border-app-border-light px-6 py-2.5">
+                                    <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">#</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Task Information</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Status</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Priority</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Assignees</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Wallet</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Deadline</div>
+                                    </div>
+                                </div>
 
-                                                        {/* Progress */}
-                                                        <div className="flex items-center gap-3 justify-center">
-                                                            <div className="flex-1 bg-app-bg-muted rounded-full h-1.5 overflow-hidden max-w-[80px]">
-                                                                <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
-                                                            </div>
-                                                            <span className="text-[10px] font-bold text-app-text-label w-6">{progress}%</span>
-                                                        </div>
-
-                                                        {/* Status */}
-                                                        <div>
-                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-app-bg-page text-app-text-label'}`}>{task.taskStatus || 'Unknown'}</span>
-                                                        </div>
-
-                                                        {/* Priority */}
-                                                        <div>
-                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border capitalize ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
-                                                        </div>
-
-                                                        {/* Assignees */}
-                                                        <div className="flex items-center gap-1 overflow-hidden">
-                                                            <Users className="w-3 h-3 text-app-border flex-shrink-0" />
-                                                            <div className="flex flex-wrap gap-0.5 max-h-8 overflow-hidden">
-                                                                {(task.assignedTo || []).slice(0, 2).map((name, i) => (
-                                                                    <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
-                                                                ))}
-                                                                {(task.assignedTo || []).length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{(task.assignedTo || []).length - 2}</span>}
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Wallet */}
-                                                        <div className="flex items-center gap-1">
-                                                            <Wallet className="w-3 h-3 text-app-border" />
-                                                            <span className="text-[10px] font-bold text-app-text-muted">{task.task_wallet || 0}</span>
-                                                        </div>
-
-                                                        {/* Deadline */}
-                                                        <div className="flex flex-col gap-0.5">
-                                                            <div className="flex items-center gap-1 text-[10px] font-bold text-app-text-muted">
-                                                                <Calendar className="w-3 h-3 text-app-border" />
-                                                                <span>{task.deadline || '-'}</span>
-                                                            </div>
-                                                            {task.days_left != null && (
-                                                                <span className={`text-[9px] font-black uppercase tracking-tighter ${task.days_left <= 3 ? 'text-app-status-error' : task.days_left <= 7 ? 'text-app-status-warning' : 'text-app-status-success'}`}>{task.days_left}d remaining</span>
-                                                            )}
+                                <div className="divide-y divide-gray-50">
+                                    {isLoadingTasks && taskList.length === 0 && (
+                                        <div className="p-6 space-y-4">
+                                            {[0, 1, 2, 3].map((row) => (
+                                                <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_140px_90px_80px_120px_60px_130px] gap-2 items-center">
+                                                    <Skeleton height={10} width={18} />
+                                                    <div>
+                                                        <Skeleton height={13} width="52%" />
+                                                        <div className="mt-1">
+                                                            <Skeleton height={10} width="70%" />
                                                         </div>
                                                     </div>
-
-                                                    {/* Mobile View */}
-                                                    <div className="md:hidden space-y-2">
-                                                        <div className="flex justify-between items-start">
-                                                            <h4 className="text-sm font-bold text-app-text-main line-clamp-1">{task.taskName}</h4>
-                                                            <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
-                                                        </div>
-                                                        <div className="flex justify-between items-center text-[10px]">
-                                                            <div className="flex items-center gap-2">
-                                                                <span className={`px-2 py-0.5 rounded font-bold ${statusStyles[task.taskStatus]}`}>{task.taskStatus}</span>
-                                                                <span className="font-bold text-app-text-muted">{progress}%</span>
-                                                            </div>
-                                                            <span className="font-bold text-app-primary">${task.task_wallet || 0}</span>
-                                                        </div>
-                                                    </div>
+                                                    <Skeleton height={10} width={108} />
+                                                    <Skeleton height={18} width={72} />
+                                                    <Skeleton height={18} width={64} />
+                                                    <Skeleton height={12} width={90} />
+                                                    <Skeleton height={10} width={42} />
+                                                    <Skeleton height={10} width={90} />
                                                 </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
+                                            ))}
+                                        </div>
+                                    )}
+                                    {taskListError && !isLoadingTasks && (
+                                        <div className="p-6 flex items-center gap-3 bg-app-status-errorBg/50">
+                                            <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                                            <p className="text-sm text-app-status-error font-medium">{taskListError}</p>
+                                        </div>
+                                    )}
+                                    {!isLoadingTasks && !taskListError && taskList.length === 0 && (
+                                        <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
+                                            <div className="w-14 h-14 bg-app-bg-page rounded-full flex items-center justify-center mb-2">
+                                                <ListTodo className="w-7 h-7 text-app-border" />
+                                            </div>
+                                            <p className="text-sm font-bold text-app-text-muted">No tasks generated yet</p>
+                                            <p className="text-xs text-app-text-light max-w-xs">Select a project and click "Create Tasks" above to get started.</p>
+                                        </div>
+                                    )}
+                                    {!isLoadingTasks && taskList.length > 0 && (
+                                        <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
+                                            {taskList.map((task, index) => {
+                                                const priorityStyles = { high: 'bg-app-status-errorBg text-red-700 border-red-200', medium: 'bg-app-status-warningBg text-amber-700 border-amber-200', low: 'bg-app-status-successBg text-green-700 border-green-200' };
+                                                const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-app-primary-light text-app-primary-hover', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-app-bg-muted text-app-text-label', BUG: 'bg-red-100 text-red-700' };
+                                                const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-green-700', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-amber-700', 'Blocked': 'bg-app-status-errorBg text-red-700' };
+                                                const priority = (task.priority || 'medium').toLowerCase();
+                                                const taskType = (task.task_type || 'TASK').toUpperCase();
+                                                const progress = task.task_progress || 0;
+                                                const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
+
+                                                return (
+                                                    <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
+                                                        <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                                            {/* # */}
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="text-[10px] font-bold text-app-text-light">{(index + 1).toString().padStart(2, '0')}</span>
+                                                                {task.is_flaged && <Flag className="w-3 h-3 text-orange-400 fill-orange-400" />}
+                                                            </div>
+
+                                                            {/* Task Name & Desc */}
+                                                            <div className="min-w-0 pr-4">
+                                                                <div className="flex items-center gap-2 mb-0.5">
+                                                                    <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
+                                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
+                                                                </div>
+                                                                <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
+                                                            </div>
+
+                                                            {/* Progress */}
+                                                            <div className="flex items-center gap-3 justify-center">
+                                                                <div className="flex-1 bg-app-bg-muted rounded-full h-1.5 overflow-hidden max-w-[80px]">
+                                                                    <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
+                                                                </div>
+                                                                <span className="text-[10px] font-bold text-app-text-label w-6">{progress}%</span>
+                                                            </div>
+
+                                                            {/* Status */}
+                                                            <div>
+                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-app-bg-page text-app-text-label'}`}>{task.taskStatus || 'Unknown'}</span>
+                                                            </div>
+
+                                                            {/* Priority */}
+                                                            <div>
+                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border capitalize ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
+                                                            </div>
+
+                                                            {/* Assignees */}
+                                                            <div className="flex items-center gap-1 overflow-hidden">
+                                                                <Users className="w-3 h-3 text-app-border flex-shrink-0" />
+                                                                <div className="flex flex-wrap gap-0.5 max-h-8 overflow-hidden">
+                                                                    {(task.assignedTo || []).slice(0, 2).map((name, i) => (
+                                                                        <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
+                                                                    ))}
+                                                                    {(task.assignedTo || []).length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{(task.assignedTo || []).length - 2}</span>}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Wallet */}
+                                                            <div className="flex items-center gap-1">
+                                                                <Wallet className="w-3 h-3 text-app-border" />
+                                                                <span className="text-[10px] font-bold text-app-text-muted">{task.task_wallet || 0}</span>
+                                                            </div>
+
+                                                            {/* Deadline */}
+                                                            <div className="flex flex-col gap-0.5">
+                                                                <div className="flex items-center gap-1 text-[10px] font-bold text-app-text-muted">
+                                                                    <Calendar className="w-3 h-3 text-app-border" />
+                                                                    <span>{task.deadline || '-'}</span>
+                                                                </div>
+                                                                {task.days_left != null && (
+                                                                    <span className={`text-[9px] font-black uppercase tracking-tighter ${task.days_left <= 3 ? 'text-app-status-error' : task.days_left <= 7 ? 'text-app-status-warning' : 'text-app-status-success'}`}>{task.days_left}d remaining</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Mobile View */}
+                                                        <div className="md:hidden space-y-2">
+                                                            <div className="flex justify-between items-start">
+                                                                <h4 className="text-sm font-bold text-app-text-main line-clamp-1">{task.taskName}</h4>
+                                                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
+                                                            </div>
+                                                            <div className="flex justify-between items-center text-[10px]">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className={`px-2 py-0.5 rounded font-bold ${statusStyles[task.taskStatus]}`}>{task.taskStatus}</span>
+                                                                    <span className="font-bold text-app-text-muted">{progress}%</span>
+                                                                </div>
+                                                                <span className="font-bold text-app-primary">${task.task_wallet || 0}</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
 
 
-                                {/* Load More Button */}
-                                {nextPageUrl && (
-                                    <div className="px-6 py-4 flex justify-center border-t border-app-border-light">
-                                        <button
-                                            onClick={() => {
-                                                const page = getPageFromUrl(nextPageUrl);
-                                                if (page) fetchTasks(true, page);
-                                            }}
-                                            disabled={isLoadingMore}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-app-primary bg-app-primary-light border border-indigo-200 rounded-xl hover:bg-indigo-100 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                        >
-                                            {isLoadingMore ? (
-                                                <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
-                                            ) : (
-                                                <><ChevronRight className="w-4 h-4" /> Load More ({taskList.length} of {totalTaskCount})</>
-                                            )}
-                                        </button>
-                                    </div>
-                                )}
+                                    {/* Load More Button */}
+                                    {nextPageUrl && (
+                                        <div className="px-6 py-4 flex justify-center border-t border-app-border-light">
+                                            <button
+                                                onClick={() => {
+                                                    const page = getPageFromUrl(nextPageUrl);
+                                                    if (page) fetchTasks(true, page);
+                                                }}
+                                                disabled={isLoadingMore}
+                                                className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-app-primary bg-app-primary-light border border-indigo-200 rounded-xl hover:bg-indigo-100 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                {isLoadingMore ? (
+                                                    <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
+                                                ) : (
+                                                    <><ChevronRight className="w-4 h-4" /> Load More ({taskList.length} of {totalTaskCount})</>
+                                                )}
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
-                    </div>
                     )
                 )}
 

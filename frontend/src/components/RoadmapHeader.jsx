@@ -20,7 +20,7 @@ const STEP_ICONS = {
 const styles = {
     wrapper: {
         width: '100%',
-        padding: '32px 0 24px',
+        padding: '16px 0 16px',
         overflowX: 'auto',
     },
     inner: {
@@ -71,7 +71,7 @@ const styles = {
         position: 'relative',
         zIndex: 2,
         /* this is the reference line for vertical centering of the dots */
-        height: '120px',
+        height: '90px',
     },
 };
 
@@ -117,7 +117,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                                 index={index}
                                 label={step}
                                 status={status}
-                                Icon={StepIcon}
+                                icon={StepIcon}
                                 labelPosition={labelPosition}
                             />
                         );
@@ -131,7 +131,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
 /**
  * StepNode — A single "station" dot on the railway track.
  */
-const StepNode = ({ index, label, status, Icon, labelPosition }) => {
+const StepNode = ({ index, label, status, icon, labelPosition }) => {
     /**
      * Style map per status.
      */
@@ -234,20 +234,20 @@ const StepNode = ({ index, label, status, Icon, labelPosition }) => {
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            gap: '6px',
+            gap: '4px',
             position: 'relative',
             flex: '0 0 auto',
         }}>
             {/* Label on TOP if even index */}
             {labelPosition === 'top' && (
-                <div style={{ marginBottom: '4px', minHeight: '36px', display: 'flex', alignItems: 'flex-end' }}>
+                <div style={{ marginBottom: '2px', minHeight: '28px', display: 'flex', alignItems: 'flex-end' }}>
                     {labelBlock}
                 </div>
             )}
 
             {/* Spacer when label is at bottom — keeps the dot vertically centered */}
             {labelPosition === 'bottom' && (
-                <div style={{ minHeight: '36px' }} />
+                <div style={{ minHeight: '28px' }} />
             )}
 
             {/* The dot / station marker */}
@@ -273,20 +273,20 @@ const StepNode = ({ index, label, status, Icon, labelPosition }) => {
                     }} />
                 )}
                 <div style={dotStyle}>
-                    <Icon style={{ width: c.dotSize * 0.45, height: c.dotSize * 0.45, color: c.iconColor }} />
+                    {React.createElement(icon, { style: { width: c.dotSize * 0.45, height: c.dotSize * 0.45, color: c.iconColor } })}
                 </div>
             </div>
 
             {/* Label on BOTTOM if odd index */}
             {labelPosition === 'bottom' && (
-                <div style={{ marginTop: '4px', minHeight: '36px', display: 'flex', alignItems: 'flex-start' }}>
+                <div style={{ marginTop: '2px', minHeight: '28px', display: 'flex', alignItems: 'flex-start' }}>
                     {labelBlock}
                 </div>
             )}
 
             {/* Spacer when label is at top — keeps layout balanced */}
             {labelPosition === 'top' && (
-                <div style={{ minHeight: '36px' }} />
+                <div style={{ minHeight: '28px' }} />
             )}
         </div>
     );
