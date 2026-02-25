@@ -678,7 +678,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
 
         return (
-            <div key={agent.id} className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+            <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
                 <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${cfg.accent}`}></div>
 
                 <div className="flex items-start justify-between mb-4">
@@ -688,23 +688,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </div>
                         <div>
                             <div className="flex items-center gap-2">
-                                <h4 className="text-sm font-bold text-gray-900">
+                                <h4 className="text-sm font-bold text-app-text-main">
                                     {isGitManager ? 'Git Manager' : agent.name}
                                 </h4>
                                 {!isGitManager && (
                                     <button
                                         type="button"
                                         onClick={() => startEditingAgentName(agent)}
-                                        className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                                        className="p-1 rounded-md text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted"
                                         title="Edit agent settings"
                                     >
                                         <Pencil className="w-3.5 h-3.5" />
                                     </button>
                                 )}
                             </div>
-                            <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
+                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
                             {!isGitManager && (
-                                <p className="text-[10px] text-gray-400">
+                                <p className="text-[10px] text-app-text-light">
                                     Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
                                 </p>
                             )}
@@ -724,13 +724,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 </div>
 
                 {/* Stats */}
-                <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-gray-50 rounded-lg">
+                <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-app-bg-page rounded-lg">
                     {cfg.stats.map((key, idx) => (
                         <React.Fragment key={key}>
-                            {idx > 0 && <div className="w-px h-8 bg-gray-200"></div>}
+                            {idx > 0 && <div className="w-px h-8 bg-app-bg-hover"></div>}
                             <div className="text-center">
                                 <p className="text-lg font-bold text-gray-800">{agent.stats?.[key] ?? '—'}</p>
-                                <p className="text-[9px] text-gray-400 uppercase font-semibold">{cfg.statLabels[key]}</p>
+                                <p className="text-[9px] text-app-text-light uppercase font-semibold">{cfg.statLabels[key]}</p>
                             </div>
                         </React.Fragment>
                     ))}
@@ -739,24 +739,24 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 {/* Progress bar when running */}
                 {isRunning && (
                     <div className="mb-4">
-                        <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                        <div className="flex justify-between text-[10px] text-app-text-light mb-1">
                             <span className="truncate max-w-[180px]">{agent.progress_message || 'Processing...'}</span>
                             <span className={`font-bold text-${cfg.color}-600`}>{agent.progress}%</span>
                         </div>
-                        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                        <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
                             <div className={`bg-gradient-to-r ${cfg.accent} h-1.5 rounded-full transition-all duration-1000 ease-out`} style={{ width: `${agent.progress}%` }}></div>
                         </div>
                     </div>
                 )}
 
                 {/* Last run info */}
-                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-4">
+                <div className="flex items-center justify-between text-[10px] text-app-text-light mb-4">
                     <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
                         {agent.last_run ? `Last: ${new Date(agent.last_run).toLocaleTimeString()}` : 'Not run yet'}
                     </span>
-                    {isCompleted && <span className="font-semibold text-emerald-500">✓ Completed</span>}
-                    {isError && <span className="font-semibold text-red-500">✗ Error</span>}
+                    {isCompleted && <span className="font-semibold text-app-status-success">✓ Completed</span>}
+                    {isError && <span className="font-semibold text-app-status-error">✗ Error</span>}
                 </div>
 
                 {/* Actions */}
@@ -775,21 +775,21 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 {runningAgent === agent.id ? (<><Loader2 className="w-3 h-3 animate-spin" /> Starting...</>) : (<><Play className="w-3 h-3" /> Run Agent</>)}
                             </button>
                         ) : (
-                            <button disabled className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
+                            <button disabled className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-app-text-light bg-app-bg-muted rounded-lg cursor-not-allowed">
                                 <RefreshCw className="w-3 h-3 animate-spin" /> Running...
                             </button>
                         )
                     )}
                     <button
                         onClick={() => setShowLogModal(agent.id)}
-                        className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                        className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-app-text-label bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-colors"
                     >
                         <Terminal className="w-3 h-3" /> Log
                     </button>
                     {!isGitManager && (isCompleted || isError) && (
                         <button
                             onClick={() => handleResetAgent(agent.id)}
-                            className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                            className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-app-text-label bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-colors"
                             title="Reset agent to idle"
                         >
                             <RefreshCw className="w-3 h-3" />
@@ -841,7 +841,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     };
 
     const renderTaskGeneratorCard = () => (
-        <div key="task-generator" className="bg-white rounded-xl shadow border border-gray-100 p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+        <div key="task-generator" className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-400 to-indigo-500"></div>
 
             <div className="flex items-start justify-between mb-4">
@@ -850,7 +850,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <Cpu className="w-5 h-5 text-white" />
                     </div>
                     <div>
-                        <h4 className="text-sm font-bold text-gray-900">Task Auto-Generator</h4>
+                        <h4 className="text-sm font-bold text-app-text-main">Task Auto-Generator</h4>
                     </div>
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -858,51 +858,51 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isGeneratingTasks ? 'bg-blue-400 opacity-75' : 'hidden'}`}></span>
                         <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isGeneratingTasks ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
                     </span>
-                    <span className={`text-[10px] font-bold ${isGeneratingTasks ? 'text-blue-600' : 'text-gray-500'}`}>
+                    <span className={`text-[10px] font-bold ${isGeneratingTasks ? 'text-app-primary' : 'text-app-text-muted'}`}>
                         {isGeneratingTasks ? 'RUNNING' : 'IDLE'}
                     </span>
                 </div>
             </div>
 
-            <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+            <p className="text-xs text-app-text-muted mb-4 leading-relaxed">
                 Analyzes the BRD Report to automatically generate external Projects, Tasks, Epics, Features, and User Stories via AI.
             </p>
 
-            <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-gray-50 rounded-lg">
+            <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-app-bg-page rounded-lg">
                 <div className="text-center">
                     <p className="text-lg font-bold text-gray-800">{generatedTasksCount || '-'}</p>
-                    <p className="text-[9px] text-gray-400 uppercase font-semibold">Generated</p>
+                    <p className="text-[9px] text-app-text-light uppercase font-semibold">Generated</p>
                 </div>
-                <div className="w-px h-8 bg-gray-200"></div>
+                <div className="w-px h-8 bg-app-bg-hover"></div>
                 <div className="text-center">
-                    <p className="text-lg font-bold text-blue-600">{projectInfo?.project?.project_wallet ?? '-'}</p>
-                    <p className="text-[9px] text-gray-400 uppercase font-semibold">Budget</p>
+                    <p className="text-lg font-bold text-app-primary">{projectInfo?.project?.project_wallet ?? '-'}</p>
+                    <p className="text-[9px] text-app-text-light uppercase font-semibold">Budget</p>
                 </div>
-                <div className="w-px h-8 bg-gray-200"></div>
+                <div className="w-px h-8 bg-app-bg-hover"></div>
                 <div className="text-center">
                     <p className="text-sm font-bold text-gray-800">{projectInfo?.project?.deadline || '-'}</p>
-                    <p className="text-[9px] text-gray-400 uppercase font-semibold">Deadline</p>
+                    <p className="text-[9px] text-app-text-light uppercase font-semibold">Deadline</p>
                 </div>
             </div>
 
             {isGeneratingTasks ? (
                 <div className="mb-4">
-                    <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                    <div className="flex justify-between text-[10px] text-app-text-light mb-1">
                         <span>Building tasks from context...</span>
-                        <span className="font-bold text-blue-600">Working</span>
+                        <span className="font-bold text-app-primary">Working</span>
                     </div>
-                    <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                    <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
                         <div className="bg-gradient-to-r from-blue-400 to-indigo-500 h-full w-full animate-pulse rounded-full"></div>
                     </div>
                 </div>
             ) : (
-                <div className="flex items-center justify-between text-[10px] text-gray-400 mb-4">
+                <div className="flex items-center justify-between text-[10px] text-app-text-light mb-4">
                     <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
                         Last run: {generatedTasksCount > 0 ? 'Just now' : 'Awaiting trigger'}
                     </span>
-                    <span className="font-semibold text-gray-400">
-                        {generationError ? <span className="text-red-500 truncate max-w-[100px]" title={generationError}>Failed</span> : generatedTasksCount > 0 ? <span className="text-green-500">Success</span> : 'Ready'}
+                    <span className="font-semibold text-app-text-light">
+                        {generationError ? <span className="text-app-status-error truncate max-w-[100px]" title={generationError}>Failed</span> : generatedTasksCount > 0 ? <span className="text-app-status-success">Success</span> : 'Ready'}
                     </span>
                 </div>
             )}
@@ -914,7 +914,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             <div className="flex-1 p-4 md:p-6 flex flex-col gap-6">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {[0, 1, 2, 3].map((idx) => (
-                        <div key={idx} className="bg-white p-4 rounded-xl shadow border border-gray-100">
+                        <div key={idx} className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light">
                             <Skeleton height={12} width="45%" />
                             <div className="mt-2">
                                 <Skeleton height={30} width="70%" />
@@ -928,7 +928,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                 <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 w-full items-start">
                     <div className="space-y-6 lg:col-start-1 w-full min-w-0">
-                        <div className="bg-white rounded-xl shadow border border-gray-100 p-6">
+                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6">
                             <Skeleton height={20} width={220} />
                             <div className="mt-5 space-y-3">
                                 {[0, 1, 2, 3].map((i) => (
@@ -941,7 +941,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </div>
                         </div>
 
-                        <div className="bg-white rounded-xl shadow border border-gray-100 p-6">
+                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6">
                             <Skeleton height={20} width={260} />
                             <div className="mt-6 flex items-end justify-center gap-6">
                                 <Skeleton height={160} width={120} />
@@ -959,7 +959,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </div>
                     </div>
 
-                    <div className="w-full bg-white rounded-xl shadow border border-gray-100 p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
+                    <div className="w-full bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
                         <Skeleton height={28} width={170} />
                         <div className="w-full mt-4 mb-6">
                             <Skeleton height={2} />
@@ -992,7 +992,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                         {[0, 1, 2].map((idx) => (
-                            <div key={idx} className="bg-white rounded-xl shadow border border-gray-100 p-5">
+                            <div key={idx} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5">
                                 <div className="flex items-center justify-between">
                                     <Skeleton circle width={40} height={40} />
                                     <Skeleton height={12} width={56} />
@@ -1022,8 +1022,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const renderGeneratedTasksSkeleton = () => (
         <SkeletonTheme baseColor="#e5e7eb" highlightColor="#f3f4f6">
             <div className="px-4 md:px-6 pb-6">
-                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                    <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
+                <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light overflow-hidden">
+                    <div className="px-6 py-4 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
                         <div className="flex items-center gap-3">
                             <Skeleton circle width={36} height={36} />
                             <div>
@@ -1036,7 +1036,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <Skeleton height={28} width={86} />
                     </div>
 
-                    <div className="hidden md:block bg-gray-50/50 border-b border-gray-100 px-6 py-2.5">
+                    <div className="hidden md:block bg-app-bg-page/50 border-b border-app-border-light px-6 py-2.5">
                         <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
                             {[0, 1, 2, 3, 4, 5, 6, 7].map((idx) => (
                                 <Skeleton key={idx} height={10} />
@@ -1075,9 +1075,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     );
 
     return (
-        <div className="w-full min-h-full bg-gray-50 flex flex-col font-sans overflow-y-auto relative">
+        <div className="w-full min-h-full bg-app-bg-page flex flex-col font-sans overflow-y-auto relative">
             {/* Top Graphic Header Area */}
-            <div className="bg-white shadow">
+            <div className="bg-app-bg-card shadow">
 
                 {/* Top spacer since title is now in global navbar */}
                 <div className="pt-4"></div>
@@ -1112,12 +1112,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 renderDashboardSkeleton()
             ) : projects.length === 0 ? (
                 <div className="flex-1 p-4 md:p-6 flex flex-col items-center justify-center min-h-[500px]">
-                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-10 max-w-md w-full text-center flex flex-col items-center">
-                        <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6 shadow-inner">
+                    <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light p-10 max-w-md w-full text-center flex flex-col items-center">
+                        <div className="w-20 h-20 bg-app-primary-light rounded-full flex items-center justify-center mb-6 shadow-inner">
                             <PlusCircle className="w-10 h-10 text-blue-500" />
                         </div>
                         <h2 className="text-2xl font-extrabold text-gray-800 mb-2">No Projects Found</h2>
-                        <p className="text-gray-500 mb-8 text-sm leading-relaxed">
+                        <p className="text-app-text-muted mb-8 text-sm leading-relaxed">
                             It looks like you haven't created any governance assessments yet. Add a new project to start tracking your progress and metrics.
                         </p>
                         <button
@@ -1138,61 +1138,61 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     {/* Top Metric Cards - Full Width */}
                     <div className="w-full flex flex-col gap-3 md:gap-4">
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-gray-600 mb-1">Project</p>
+                            <div className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center relative">
+                                <p className="text-xs font-bold text-app-text-label mb-1">Project</p>
                                 <h3 className="text-xl font-bold text-gray-800 mb-0 truncate max-w-full px-1">{dashboardData?.project?.name ?? '—'}</h3>
-                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">{dashboardData?.project?.status ?? '—'}</p>
+                                <p className="text-[10px] text-app-text-muted uppercase tracking-widest">{dashboardData?.project?.status ?? '—'}</p>
                             </div>
-                            <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center relative">
-                                <p className="text-xs font-bold text-gray-600 mb-1">Project Duration</p>
+                            <div className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center relative">
+                                <p className="text-xs font-bold text-app-text-label mb-1">Project Duration</p>
                                 <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.duration_days ?? 0}</h3>
-                                <p className="text-[10px] text-gray-500 uppercase tracking-widest">Days</p>
+                                <p className="text-[10px] text-app-text-muted uppercase tracking-widest">Days</p>
                             </div>
-                            <div className="bg-white col-span-2 md:col-span-2 p-4 rounded-xl shadow border border-gray-100 flex flex-row items-center justify-around relative">
+                            <div className="bg-app-bg-card col-span-2 md:col-span-2 p-4 rounded-xl shadow border border-app-border-light flex flex-row items-center justify-around relative">
                                 <div className="flex flex-col items-center">
-                                    <p className="text-xs font-bold text-gray-600 mb-1">Total Sprints</p>
+                                    <p className="text-xs font-bold text-app-text-label mb-1">Total Sprints</p>
                                     <div className="flex items-center relative">
                                         <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.summary_statistics?.total_sprints ?? 0}</h3>
                                     </div>
                                 </div>
-                                <div className="w-px h-12 bg-gray-200"></div>
+                                <div className="w-px h-12 bg-app-bg-hover"></div>
                                 <div className="flex flex-col items-center w-40">
-                                    <p className="text-xs font-bold text-gray-600 mb-1">Hours Logged</p>
+                                    <p className="text-xs font-bold text-app-text-label mb-1">Hours Logged</p>
                                     <div className="flex items-center relative mb-2 w-full justify-center">
                                         <h3 className="text-3xl font-bold text-gray-800 mb-0">{dashboardData?.kpi?.total_hours_logged ?? 0}</h3>
                                     </div>
-                                    <div className="w-full bg-gray-200 rounded-full h-2.5">
-                                        <div className="bg-gray-800 h-2.5 rounded-full" style={{ width: `${dashboardData?.kpi?.work_complete_percentage ?? 0}%` }}></div>
+                                    <div className="w-full bg-app-bg-hover rounded-full h-2.5">
+                                        <div className="bg-app-text-label h-2.5 rounded-full" style={{ width: `${dashboardData?.kpi?.work_complete_percentage ?? 0}%` }}></div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-4">
-                            <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Active Sprints</p>
+                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                <p className="text-[11px] font-bold text-app-text-label mb-1">Active Sprints</p>
                                 <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.active_sprints ?? 0}</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Running</p>
+                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Running</p>
                             </div>
-                            <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1 text-center leading-tight">In Progress</p>
+                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                <p className="text-[11px] font-bold text-app-text-label mb-1 text-center leading-tight">In Progress</p>
                                 <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.in_progress_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Tasks</p>
+                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Tasks</p>
                             </div>
-                            <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Pending Tasks</p>
+                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                <p className="text-[11px] font-bold text-app-text-label mb-1">Pending Tasks</p>
                                 <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.pending_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Awaiting</p>
+                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Awaiting</p>
                             </div>
-                            <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Completed</p>
+                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                <p className="text-[11px] font-bold text-app-text-label mb-1">Completed</p>
                                 <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.completed_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Done</p>
+                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Done</p>
                             </div>
-                            <div className="bg-white p-3 rounded-xl shadow border border-gray-100 flex flex-col items-center justify-center">
-                                <p className="text-[11px] font-bold text-gray-600 mb-1">Total Tasks</p>
+                            <div className="bg-app-bg-card p-3 rounded-xl shadow border border-app-border-light flex flex-col items-center justify-center">
+                                <p className="text-[11px] font-bold text-app-text-label mb-1">Total Tasks</p>
                                 <h3 className="text-2xl font-bold text-gray-800">{dashboardData?.summary_statistics?.total_tasks ?? 0}</h3>
-                                <p className="text-[9px] text-gray-500 uppercase tracking-wide">Tracked</p>
+                                <p className="text-[9px] text-app-text-muted uppercase tracking-wide">Tracked</p>
                             </div>
                         </div>
                     </div>
@@ -1204,14 +1204,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <div className="space-y-6 lg:col-start-1 w-full min-w-0">
 
                             {/* KEY MILESTONES & DATES */}
-                            <div className="bg-white rounded-xl shadow border border-gray-100 p-6 relative">
+                            <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6 relative">
                                 <div className="flex items-center mb-6">
                                     <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
                                         <Flag className="w-5 h-5" />
                                     </div>
                                     <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">KEY MILESTONES & DATES</h3>
                                 </div>
-                                <div className="overflow-auto rounded-lg border border-gray-100" style={{ maxHeight: '320px' }}>
+                                <div className="overflow-auto rounded-lg border border-app-border-light" style={{ maxHeight: '320px' }}>
                                     <table className="min-w-full text-sm">
                                         <colgroup><col style={{ width: '30%' }} /><col style={{ width: '35%' }} /><col style={{ width: '35%' }} /></colgroup>
                                         <thead className="bg-[#fdf4e6] sticky top-0 z-10">
@@ -1221,11 +1221,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 <th className="px-4 py-3 text-left font-bold text-gray-800">Date</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-gray-100 text-gray-600 font-medium">
+                                        <tbody className="divide-y divide-gray-100 text-app-text-label font-medium">
                                             {dashboardData?.milestones?.completed?.map(ms => (
                                                 <tr key={ms.id}>
                                                     <td className="px-4 py-3">{ms.name}</td>
-                                                    <td className="px-4 py-3 text-green-600">Completed</td>
+                                                    <td className="px-4 py-3 text-app-status-success">Completed</td>
                                                     <td className="px-4 py-3">{ms.deadline}</td>
                                                 </tr>
                                             ))}
@@ -1247,7 +1247,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </div>
 
                             {/* ACTUAL VS REMAINING WORK */}
-                            <div className="bg-white rounded-xl shadow border border-gray-100 p-6 flex flex-col relative">
+                            <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6 flex flex-col relative">
                                 <div className="flex items-center mb-8">
                                     <div className="p-2 mr-3 bg-orange-50 rounded text-orange-500">
                                         <Activity className="w-5 h-5" />
@@ -1256,7 +1256,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </div>
 
                                 <div className="flex-1 flex items-end justify-center px-12 mb-8 relative">
-                                    <div className="absolute left-10 flex flex-col justify-between h-[200px] bottom-0 text-xs font-bold text-gray-500 w-10 text-right pr-2">
+                                    <div className="absolute left-10 flex flex-col justify-between h-[200px] bottom-0 text-xs font-bold text-app-text-muted w-10 text-right pr-2">
                                         <span className="relative -top-2">100%</span>
                                         <span className="relative">50%</span>
                                         <span className="relative top-2">0%</span>
@@ -1264,8 +1264,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                     {/* Grid lines */}
                                     <div className="absolute left-20 right-40 flex flex-col justify-between h-[200px] bottom-0 pointer-events-none">
-                                        <div className="w-full border-t border-gray-300"></div>
-                                        <div className="w-full border-t border-gray-300"></div>
+                                        <div className="w-full border-t border-app-border"></div>
+                                        <div className="w-full border-t border-app-border"></div>
                                         <div className="w-full border-t border-gray-500"></div>
                                     </div>
 
@@ -1281,7 +1281,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         </div>
                                     </div>
 
-                                    <div className="absolute bottom-[-25px] w-full text-center text-[10px] font-bold text-gray-500">
+                                    <div className="absolute bottom-[-25px] w-full text-center text-[10px] font-bold text-app-text-muted">
                                         Overall Assessment Progress
                                     </div>
 
@@ -1289,11 +1289,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <div className="absolute right-10 bottom-20 flex flex-col gap-3">
                                         <div className="flex items-center">
                                             <div className="w-6 h-4 bg-[#feebad] mr-3"></div>
-                                            <span className="text-sm text-gray-700 font-medium">Remaining Work</span>
+                                            <span className="text-sm text-app-text-label font-medium">Remaining Work</span>
                                         </div>
                                         <div className="flex items-center">
                                             <div className="w-6 h-4 bg-[#424242] mr-3"></div>
-                                            <span className="text-sm text-gray-700 font-medium">Completed Work</span>
+                                            <span className="text-sm text-app-text-label font-medium">Completed Work</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1303,30 +1303,30 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </div>
 
                         {/* Right Column (Sidebar Summary) */}
-                        <div className="w-full bg-white rounded-xl shadow border border-gray-100 p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
+                        <div className="w-full bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
                             <h2 className="text-[22px] font-bold text-[#f27a24] mb-4">Project Status</h2>
                             <div className="w-full border-t-2 border-[#f27a24] mb-8 opacity-50"></div>
 
                             <div className="w-full mb-10 flex flex-col items-center relative">
-                                <div className="absolute left-[-5px] top-0 text-green-500">
+                                <div className="absolute left-[-5px] top-0 text-app-status-success">
                                     <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path></svg>
                                 </div>
-                                <div className="bg-white border rounded p-4 text-center w-5/6 mx-auto shadow-sm relative z-10">
+                                <div className="bg-app-bg-card border rounded p-4 text-center w-5/6 mx-auto shadow-sm relative z-10">
                                     <p className="text-[10px] font-bold text-gray-800 uppercase mb-2">EXPECTED LAUNCH DATE</p>
-                                    <h3 className="text-2xl font-black text-gray-900 mb-2">{dashboardData?.project_status?.days_until_launch ?? 0} <span className="text-sm font-medium">Days</span></h3>
+                                    <h3 className="text-2xl font-black text-app-text-main mb-2">{dashboardData?.project_status?.days_until_launch ?? 0} <span className="text-sm font-medium">Days</span></h3>
                                     <div className="flex items-center justify-center w-full mb-2">
                                         <div className="h-px bg-gray-300 w-full relative">
                                             <div className="absolute left-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
                                             <div className="absolute right-0 top-[-3px] w-2 h-2 bg-gray-400 rounded-full"></div>
                                         </div>
                                     </div>
-                                    <p className="text-xs italic text-gray-500">{dashboardData?.project_status?.expected_launch_date ? new Date(dashboardData.project_status.expected_launch_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</p>
+                                    <p className="text-xs italic text-app-text-muted">{dashboardData?.project_status?.expected_launch_date ? new Date(dashboardData.project_status.expected_launch_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '—'}</p>
                                 </div>
                             </div>
 
                             <div className="w-full mb-10 flex flex-col items-center">
                                 <div className="flex justify-center items-center w-full relative mb-1">
-                                    <div className={`absolute left-8 ${dashboardData?.project_status?.overall_health === 'Good' ? 'text-green-500' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'text-amber-500' : 'text-red-500'}`}>
+                                    <div className={`absolute left-8 ${dashboardData?.project_status?.overall_health === 'Good' ? 'text-app-status-success' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'text-app-status-warning' : 'text-app-status-error'}`}>
                                         <Activity className="w-8 h-8" />
                                     </div>
                                     <div className={`w-10 h-10 rounded-full shadow-lg ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-gradient-to-br from-green-400 to-green-600 shadow-green-500/30' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-gradient-to-br from-amber-400 to-amber-600 shadow-amber-500/30' : 'bg-gradient-to-br from-red-400 to-red-600 shadow-red-500/30'}`}></div>
@@ -1334,7 +1334,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <p className="text-sm font-bold text-gray-800 mt-2">Overall Health: {dashboardData?.project_status?.overall_health ?? '—'}</p>
                             </div>
 
-                            <div className="w-full border-t border-gray-100 mb-8 w-4/5 mx-auto"></div>
+                            <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
 
                             {/* Circular Gauge 1 */}
                             <div className="mb-10 flex flex-col items-center relative w-full">
@@ -1350,14 +1350,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <span className="text-xl font-bold text-gray-800">{dashboardData?.kpi?.completion_percentage ?? 0}%</span>
                                     </div>
                                 </div>
-                                <p className="text-[13px] font-bold text-gray-600">Completion Rate</p>
+                                <p className="text-[13px] font-bold text-app-text-label">Completion Rate</p>
                             </div>
 
-                            <div className="w-full border-t border-gray-100 mb-8 w-4/5 mx-auto"></div>
+                            <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
 
                             {/* Circular Gauge 2 */}
                             <div className="mb-10 flex flex-col items-center relative w-full">
-                                <div className="absolute left-8 text-gray-300">
+                                <div className="absolute left-8 text-app-border">
                                     <svg className="w-6 h-6 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
                                 </div>
                                 <div className="relative w-24 h-24 mb-4">
@@ -1369,14 +1369,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <span className="text-xl font-bold text-gray-800">{dashboardData?.project_status?.project_progress ?? 0}%</span>
                                     </div>
                                 </div>
-                                <p className="text-[13px] font-bold text-gray-600">Project Progress</p>
+                                <p className="text-[13px] font-bold text-app-text-label">Project Progress</p>
                             </div>
 
-                            <div className="w-full border-t border-gray-100 mb-8 w-4/5 mx-auto"></div>
+                            <div className="w-full border-t border-app-border-light mb-8 w-4/5 mx-auto"></div>
 
                             {/* Circular Gauge 3 */}
                             <div className="mb-6 flex flex-col items-center relative w-full">
-                                <div className="absolute left-6 text-gray-700">
+                                <div className="absolute left-6 text-app-text-label">
                                     <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"></path></svg>
                                 </div>
                                 <div className="relative w-24 h-24 mb-4">
@@ -1405,7 +1405,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         </span>
                                     </div>
                                 </div>
-                                <p className="text-[13px] font-bold text-gray-600">Sprint Progress</p>
+                                <p className="text-[13px] font-bold text-app-text-label">Sprint Progress</p>
                             </div>
                         </div>
 
@@ -1415,9 +1415,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 {/* Row 1: Late Tasks + Upcoming Tasks (Next Period) */}
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                                     {/* Late Tasks Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
                                         <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Late Tasks</h3>
-                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
                                             <table className="min-w-full text-sm">
                                                 <thead className="sticky top-0 z-10">
                                                     <tr className="bg-[#f27a24] text-white">
@@ -1426,16 +1426,16 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                         <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
                                                     {(dashboardData.tasks.late_tasks || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-red-50/50">
-                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                        <tr key={task.id} className="hover:bg-app-status-errorBg/50">
+                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
                                                             <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                            <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
                                                         </tr>
                                                     ))}
                                                     {(!dashboardData.tasks.late_tasks || dashboardData.tasks.late_tasks.length === 0) && (
-                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No late tasks</td></tr>
+                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No late tasks</td></tr>
                                                     )}
                                                 </tbody>
                                             </table>
@@ -1443,9 +1443,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </div>
 
                                     {/* Upcoming Tasks (Next Period) Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
                                         <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Upcoming Tasks (Next Period)</h3>
-                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
                                             <table className="min-w-full text-sm">
                                                 <thead className="sticky top-0 z-10">
                                                     <tr className="bg-[#f27a24] text-white">
@@ -1454,16 +1454,16 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                         <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Target</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
                                                     {(dashboardData.tasks.upcoming_tasks_next_period || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-gray-50">
-                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                        <tr key={task.id} className="hover:bg-app-bg-page">
+                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
                                                             <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.target_date ? new Date(task.target_date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                            <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.target_date ? new Date(task.target_date).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
                                                         </tr>
                                                     ))}
                                                     {(!dashboardData.tasks.upcoming_tasks_next_period || dashboardData.tasks.upcoming_tasks_next_period.length === 0) && (
-                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No upcoming tasks</td></tr>
+                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No upcoming tasks</td></tr>
                                                     )}
                                                 </tbody>
                                             </table>
@@ -1474,9 +1474,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 {/* Row 2: Due This Week + In Progress / Recently Completed */}
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                                     {/* Due This Week Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
                                         <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">Due This Week</h3>
-                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
                                             <table className="min-w-full text-sm">
                                                 <thead className="sticky top-0 z-10">
                                                     <tr className="bg-[#f27a24] text-white">
@@ -1486,17 +1486,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                         <th className="px-4 py-2.5 text-right font-bold text-xs w-28">Deadline</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
                                                     {(dashboardData.tasks.due_this_week || []).map((task, idx) => (
                                                         <tr key={task.id} className="hover:bg-orange-50/50">
-                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
                                                             <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-center text-gray-700 font-bold">{task.progress ?? 0}%</td>
-                                                            <td className="px-4 py-3 text-right text-gray-700 font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
+                                                            <td className="px-4 py-3 text-center text-app-text-label font-bold">{task.progress ?? 0}%</td>
+                                                            <td className="px-4 py-3 text-right text-app-text-label font-semibold whitespace-nowrap">{task.deadline ? new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}</td>
                                                         </tr>
                                                     ))}
                                                     {(!dashboardData.tasks.due_this_week || dashboardData.tasks.due_this_week.length === 0) && (
-                                                        <tr><td colSpan="4" className="px-4 py-6 text-center text-gray-400 italic">No tasks due this week</td></tr>
+                                                        <tr><td colSpan="4" className="px-4 py-6 text-center text-app-text-light italic">No tasks due this week</td></tr>
                                                     )}
                                                 </tbody>
                                             </table>
@@ -1504,9 +1504,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </div>
 
                                     {/* In Progress + Recently Completed Table */}
-                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-gray-200 p-6">
+                                    <div className="bg-[#f8f9fa] rounded-xl shadow border border-app-border p-6">
                                         <h3 className="text-[17px] font-bold text-[#f27a24] mb-4">In Progress & Recently Completed</h3>
-                                        <div className="overflow-auto rounded-lg border border-gray-200" style={{ minHeight: '150px', maxHeight: '320px' }}>
+                                        <div className="overflow-auto rounded-lg border border-app-border" style={{ minHeight: '150px', maxHeight: '320px' }}>
                                             <table className="min-w-full text-sm">
                                                 <thead className="sticky top-0 z-10">
                                                     <tr className="bg-[#f27a24] text-white">
@@ -1515,23 +1515,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                         <th className="px-4 py-2.5 text-right font-bold text-xs w-24">Status</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody className="divide-y divide-gray-100 bg-white">
+                                                <tbody className="divide-y divide-gray-100 bg-app-bg-card">
                                                     {(dashboardData.tasks.in_progress || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-blue-50/50">
-                                                            <td className="px-4 py-3 text-gray-600 font-semibold">{idx + 1}</td>
+                                                        <tr key={task.id} className="hover:bg-app-primary-light/50">
+                                                            <td className="px-4 py-3 text-app-text-label font-semibold">{idx + 1}</td>
                                                             <td className="px-4 py-3 text-gray-800 font-medium">{task.name || task.description || 'Untitled'}</td>
-                                                            <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-700 text-xs font-bold rounded">{task.progress ?? 0}%</span></td>
+                                                            <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-app-primary-light text-app-primary-hover text-xs font-bold rounded">{task.progress ?? 0}%</span></td>
                                                         </tr>
                                                     ))}
                                                     {(dashboardData.tasks.recently_completed || []).map((task, idx) => (
-                                                        <tr key={task.id} className="hover:bg-green-50/50">
-                                                            <td className="px-4 py-3 text-gray-400 font-semibold">{(dashboardData.tasks.in_progress?.length || 0) + idx + 1}</td>
-                                                            <td className="px-4 py-3 text-gray-400 font-medium line-through">{task.name || task.description || 'Untitled'}</td>
+                                                        <tr key={task.id} className="hover:bg-app-status-successBg/50">
+                                                            <td className="px-4 py-3 text-app-text-light font-semibold">{(dashboardData.tasks.in_progress?.length || 0) + idx + 1}</td>
+                                                            <td className="px-4 py-3 text-app-text-light font-medium line-through">{task.name || task.description || 'Untitled'}</td>
                                                             <td className="px-4 py-3 text-right"><span className="inline-block px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded">Done</span></td>
                                                         </tr>
                                                     ))}
                                                     {(!dashboardData.tasks.in_progress?.length && !dashboardData.tasks.recently_completed?.length) && (
-                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-gray-400 italic">No tasks in progress or recently completed</td></tr>
+                                                        <tr><td colSpan="3" className="px-4 py-6 text-center text-app-text-light italic">No tasks in progress or recently completed</td></tr>
                                                     )}
                                                 </tbody>
                                             </table>
@@ -1545,23 +1545,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <div className="w-full mt-6 lg:col-start-1 min-w-0">
                             <div className="flex items-center justify-between mb-6">
                                 <div className="flex items-center">
-                                    <div className="p-2 mr-3 bg-indigo-50 rounded text-indigo-500">
+                                    <div className="p-2 mr-3 bg-app-primary-light rounded text-indigo-500">
                                         <Bot className="w-5 h-5" />
                                     </div>
                                     <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
-                                    <span className="ml-3 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-100 px-2 py-0.5 rounded-full">
+                                    <span className="ml-3 text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-app-bg-muted px-2 py-0.5 rounded-full">
                                         {agents.filter(a => a.status === 'running').length} Running
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
+                                    <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
                                         {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
                                     </span>
                                     <button
                                         onClick={handleRunAll}
                                         disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
                                         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
-                                            ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                            ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
                                             : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
                                             }`}
                                         title="Run all idle agents simultaneously"
@@ -1573,7 +1573,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         onClick={handleGenerateTasks}
                                         disabled={isGeneratingTasks || !selectedProjectKey}
                                         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
-                                            ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                            ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
                                             : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
                                             }`}
                                         title="Generate tasks from selected project"
@@ -1583,7 +1583,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </button>
                                     <button
                                         onClick={() => handleAddAgent()}
-                                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+                                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-app-primary bg-app-primary-light hover:bg-indigo-100 transition-colors"
                                         title="Add a new agent"
                                     >
                                         <PlusCircle className="w-3.5 h-3.5" />
@@ -1591,7 +1591,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </button>
                                     <button
                                         onClick={() => { fetchAgents(); fetchTasks(); }}
-                                        className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100 transition-colors"
+                                        className="text-app-text-light hover:text-app-text-label p-1 rounded hover:bg-app-bg-muted transition-colors"
                                         title="Refresh"
                                     >
                                         <RefreshCw className="w-4 h-4" />
@@ -1615,23 +1615,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 const logs = agent.output_log || [];
                 const result = agent.last_result;
                 return (
-                    <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-gray-900 text-gray-100 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-                            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-gray-800">
+                    <div className="fixed inset-0 bg-app-text-main/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-app-text-main text-gray-100 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-app-text-label">
                                 <div className="flex items-center gap-3">
                                     <Terminal className="w-5 h-5 text-green-400" />
                                     <h3 className="font-bold text-white text-sm">{agent.name} — Execution Log</h3>
                                 </div>
-                                <button onClick={() => setShowLogModal(null)} className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-700 transition-colors">
+                                <button onClick={() => setShowLogModal(null)} className="text-app-text-light hover:text-white p-1 rounded hover:bg-gray-700 transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
                             <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5">
                                 {logs.length === 0 ? (
-                                    <p className="text-gray-500 text-center py-8">No logs yet. Run the agent to see output here.</p>
+                                    <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
                                 ) : logs.map((log, idx) => (
                                     <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
-                                        <span className="text-gray-600 flex-shrink-0 select-none">[{log.type}]</span>
+                                        <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
                                         <span className="break-all">{log.message}</span>
                                     </div>
                                 ))}
@@ -1656,7 +1656,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
                                             View Builder Scripts ({result.builder_scripts.split('\n').length} lines of AI-generated code)
                                         </summary>
-                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-blue-200 bg-gray-950 max-h-60 overflow-y-auto whitespace-pre-wrap">
+                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-app-primary-ring bg-gray-950 max-h-60 overflow-y-auto whitespace-pre-wrap">
                                             {result.builder_scripts}
                                         </pre>
                                     </details>
@@ -1674,35 +1674,35 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         renderGeneratedTasksSkeleton()
                     ) : (
                     <div className="px-4 md:px-6 pb-6">
-                        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
+                        <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light overflow-hidden">
+                            <div className="px-6 py-4 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50/80 to-white">
                                 <div className="flex items-center gap-3">
                                     <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
                                         <ListTodo className="w-4 h-4 text-white" />
                                     </div>
                                     <div>
-                                        <h3 className="text-sm font-bold text-gray-900">Generated Tasks</h3>
-                                        <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
+                                        <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
+                                        <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
                                             {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
                                         </p>
                                     </div>
                                 </div>
-                                <button onClick={() => fetchTasks(false, 1, false)} disabled={isLoadingTasks} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-700 transition-all disabled:opacity-50">
+                                <button onClick={() => fetchTasks(false, 1, false)} disabled={isLoadingTasks} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-app-text-muted bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-muted hover:text-app-text-label transition-all disabled:opacity-50">
                                     <RefreshCw className={`w-3 h-3 ${isLoadingTasks ? 'animate-spin' : ''}`} /> Refresh
                                 </button>
                             </div>
 
 
-                            <div className="hidden md:block bg-gray-50/50 border-b border-gray-100 px-6 py-2.5">
+                            <div className="hidden md:block bg-app-bg-page/50 border-b border-app-border-light px-6 py-2.5">
                                 <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">#</div>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Task Information</div>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider text-center">Completion</div>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</div>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Priority</div>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Assignees</div>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Wallet</div>
-                                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Deadline</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">#</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Task Information</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Status</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Priority</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Assignees</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Wallet</div>
+                                    <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Deadline</div>
                                 </div>
                             </div>
 
@@ -1729,60 +1729,60 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </div>
                                 )}
                                 {taskListError && !isLoadingTasks && (
-                                    <div className="p-6 flex items-center gap-3 bg-red-50/50">
+                                    <div className="p-6 flex items-center gap-3 bg-app-status-errorBg/50">
                                         <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
-                                        <p className="text-sm text-red-600 font-medium">{taskListError}</p>
+                                        <p className="text-sm text-app-status-error font-medium">{taskListError}</p>
                                     </div>
                                 )}
                                 {!isLoadingTasks && !taskListError && taskList.length === 0 && (
                                     <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
-                                        <div className="w-14 h-14 bg-gray-50 rounded-full flex items-center justify-center mb-2">
-                                            <ListTodo className="w-7 h-7 text-gray-300" />
+                                        <div className="w-14 h-14 bg-app-bg-page rounded-full flex items-center justify-center mb-2">
+                                            <ListTodo className="w-7 h-7 text-app-border" />
                                         </div>
-                                        <p className="text-sm font-bold text-gray-500">No tasks generated yet</p>
-                                        <p className="text-xs text-gray-400 max-w-xs">Select a project and click "Create Tasks" above to get started.</p>
+                                        <p className="text-sm font-bold text-app-text-muted">No tasks generated yet</p>
+                                        <p className="text-xs text-app-text-light max-w-xs">Select a project and click "Create Tasks" above to get started.</p>
                                     </div>
                                 )}
                                 {!isLoadingTasks && taskList.length > 0 && (
                                     <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
                                         {taskList.map((task, index) => {
-                                            const priorityStyles = { high: 'bg-red-50 text-red-700 border-red-200', medium: 'bg-amber-50 text-amber-700 border-amber-200', low: 'bg-green-50 text-green-700 border-green-200' };
-                                            const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-blue-100 text-blue-700', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-gray-100 text-gray-700', BUG: 'bg-red-100 text-red-700' };
-                                            const statusStyles = { 'On Going': 'bg-blue-50 text-blue-700', 'Completed': 'bg-green-50 text-green-700', 'To Do': 'bg-gray-50 text-gray-600', 'In Review': 'bg-amber-50 text-amber-700', 'Blocked': 'bg-red-50 text-red-700' };
+                                            const priorityStyles = { high: 'bg-app-status-errorBg text-red-700 border-red-200', medium: 'bg-app-status-warningBg text-amber-700 border-amber-200', low: 'bg-app-status-successBg text-green-700 border-green-200' };
+                                            const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-app-primary-light text-app-primary-hover', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-app-bg-muted text-app-text-label', BUG: 'bg-red-100 text-red-700' };
+                                            const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-green-700', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-amber-700', 'Blocked': 'bg-app-status-errorBg text-red-700' };
                                             const priority = (task.priority || 'medium').toLowerCase();
                                             const taskType = (task.task_type || 'TASK').toUpperCase();
                                             const progress = task.task_progress || 0;
                                             const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
 
                                             return (
-                                                <div key={task.id || index} className="px-6 py-3 hover:bg-gray-50/70 transition-colors group">
+                                                <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
                                                     <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
                                                         {/* # */}
                                                         <div className="flex items-center gap-1.5">
-                                                            <span className="text-[10px] font-bold text-gray-400">{(index + 1).toString().padStart(2, '0')}</span>
+                                                            <span className="text-[10px] font-bold text-app-text-light">{(index + 1).toString().padStart(2, '0')}</span>
                                                             {task.is_flaged && <Flag className="w-3 h-3 text-orange-400 fill-orange-400" />}
                                                         </div>
 
                                                         {/* Task Name & Desc */}
                                                         <div className="min-w-0 pr-4">
                                                             <div className="flex items-center gap-2 mb-0.5">
-                                                                <h4 className="text-sm font-bold text-gray-900 truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
+                                                                <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
                                                                 <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
                                                             </div>
-                                                            <p className="text-xs text-gray-400 truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
+                                                            <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
                                                         </div>
 
                                                         {/* Progress */}
                                                         <div className="flex items-center gap-3 justify-center">
-                                                            <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden max-w-[80px]">
+                                                            <div className="flex-1 bg-app-bg-muted rounded-full h-1.5 overflow-hidden max-w-[80px]">
                                                                 <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
                                                             </div>
-                                                            <span className="text-[10px] font-bold text-gray-600 w-6">{progress}%</span>
+                                                            <span className="text-[10px] font-bold text-app-text-label w-6">{progress}%</span>
                                                         </div>
 
                                                         {/* Status */}
                                                         <div>
-                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-gray-50 text-gray-600'}`}>{task.taskStatus || 'Unknown'}</span>
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-app-bg-page text-app-text-label'}`}>{task.taskStatus || 'Unknown'}</span>
                                                         </div>
 
                                                         {/* Priority */}
@@ -1792,29 +1792,29 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                                         {/* Assignees */}
                                                         <div className="flex items-center gap-1 overflow-hidden">
-                                                            <Users className="w-3 h-3 text-gray-300 flex-shrink-0" />
+                                                            <Users className="w-3 h-3 text-app-border flex-shrink-0" />
                                                             <div className="flex flex-wrap gap-0.5 max-h-8 overflow-hidden">
                                                                 {(task.assignedTo || []).slice(0, 2).map((name, i) => (
-                                                                    <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
+                                                                    <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
                                                                 ))}
-                                                                {(task.assignedTo || []).length > 2 && <span className="text-[9px] font-bold text-gray-400">+{(task.assignedTo || []).length - 2}</span>}
+                                                                {(task.assignedTo || []).length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{(task.assignedTo || []).length - 2}</span>}
                                                             </div>
                                                         </div>
 
                                                         {/* Wallet */}
                                                         <div className="flex items-center gap-1">
-                                                            <Wallet className="w-3 h-3 text-gray-300" />
-                                                            <span className="text-[10px] font-bold text-gray-500">{task.task_wallet || 0}</span>
+                                                            <Wallet className="w-3 h-3 text-app-border" />
+                                                            <span className="text-[10px] font-bold text-app-text-muted">{task.task_wallet || 0}</span>
                                                         </div>
 
                                                         {/* Deadline */}
                                                         <div className="flex flex-col gap-0.5">
-                                                            <div className="flex items-center gap-1 text-[10px] font-bold text-gray-500">
-                                                                <Calendar className="w-3 h-3 text-gray-300" />
+                                                            <div className="flex items-center gap-1 text-[10px] font-bold text-app-text-muted">
+                                                                <Calendar className="w-3 h-3 text-app-border" />
                                                                 <span>{task.deadline || '-'}</span>
                                                             </div>
                                                             {task.days_left != null && (
-                                                                <span className={`text-[9px] font-black uppercase tracking-tighter ${task.days_left <= 3 ? 'text-red-500' : task.days_left <= 7 ? 'text-amber-500' : 'text-green-500'}`}>{task.days_left}d remaining</span>
+                                                                <span className={`text-[9px] font-black uppercase tracking-tighter ${task.days_left <= 3 ? 'text-app-status-error' : task.days_left <= 7 ? 'text-app-status-warning' : 'text-app-status-success'}`}>{task.days_left}d remaining</span>
                                                             )}
                                                         </div>
                                                     </div>
@@ -1822,15 +1822,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     {/* Mobile View */}
                                                     <div className="md:hidden space-y-2">
                                                         <div className="flex justify-between items-start">
-                                                            <h4 className="text-sm font-bold text-gray-900 line-clamp-1">{task.taskName}</h4>
+                                                            <h4 className="text-sm font-bold text-app-text-main line-clamp-1">{task.taskName}</h4>
                                                             <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
                                                         </div>
                                                         <div className="flex justify-between items-center text-[10px]">
                                                             <div className="flex items-center gap-2">
                                                                 <span className={`px-2 py-0.5 rounded font-bold ${statusStyles[task.taskStatus]}`}>{task.taskStatus}</span>
-                                                                <span className="font-bold text-gray-500">{progress}%</span>
+                                                                <span className="font-bold text-app-text-muted">{progress}%</span>
                                                             </div>
-                                                            <span className="font-bold text-indigo-600">${task.task_wallet || 0}</span>
+                                                            <span className="font-bold text-app-primary">${task.task_wallet || 0}</span>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -1842,14 +1842,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                 {/* Load More Button */}
                                 {nextPageUrl && (
-                                    <div className="px-6 py-4 flex justify-center border-t border-gray-100">
+                                    <div className="px-6 py-4 flex justify-center border-t border-app-border-light">
                                         <button
                                             onClick={() => {
                                                 const page = getPageFromUrl(nextPageUrl);
                                                 if (page) fetchTasks(true, page);
                                             }}
                                             disabled={isLoadingMore}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-app-primary bg-app-primary-light border border-indigo-200 rounded-xl hover:bg-indigo-100 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
                                             {isLoadingMore ? (
                                                 <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
@@ -1868,22 +1868,22 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             {/* Add Project Modal */}
             {
                 showModal && (
-                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
-                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
                                     <PlusCircle className="w-5 h-5 text-blue-500" /> Create Project
                                 </h3>
-                                <button type="button" onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                <button type="button" onClick={() => setShowModal(false)} className="text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
                             <div className="p-6">
-                                <p className="text-sm text-gray-500 mb-4 font-medium">Step 1 of Governance Track: Give your project a descriptive name to get started.</p>
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Project Name <span className="text-red-400">*</span></label>
-                                <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()} placeholder="e.g. Customer Analytics Platform" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+                                <p className="text-sm text-app-text-muted mb-4 font-medium">Step 1 of Governance Track: Give your project a descriptive name to get started.</p>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Project Name <span className="text-red-400">*</span></label>
+                                <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()} placeholder="e.g. Customer Analytics Platform" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
                                 <div className="flex items-center gap-3">
-                                    <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                                    <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
                                     <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-xl transition-colors shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
                                         Start track <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                                     </button>
@@ -1897,48 +1897,48 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             {/* Edit Agent Modal */}
             {
                 editingAgentId && (
-                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
-                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
                                     <Pencil className="w-5 h-5 text-indigo-500" /> Edit Agent Settings
                                 </h3>
-                                <button type="button" onClick={cancelEditingAgentName} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                <button type="button" onClick={cancelEditingAgentName} className="text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
                             <div className="p-6">
-                                <p className="text-sm text-gray-500 mb-4 font-medium">Update agent name, Git repository URL, and Personal Access Token.</p>
+                                <p className="text-sm text-app-text-muted mb-4 font-medium">Update agent name, Git repository URL, and Personal Access Token.</p>
 
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Agent Name <span className="text-red-400">*</span></label>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Agent Name <span className="text-red-400">*</span></label>
                                 <input
                                     type="text"
                                     value={editingAgentName}
                                     onChange={(e) => setEditingAgentName(e.target.value)}
-                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4"
+                                    className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4"
                                 />
 
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL</label>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL</label>
                                 <input
                                     type="text"
                                     value={editingAgentRepoUrl}
                                     onChange={(e) => setEditingAgentRepoUrl(e.target.value)}
                                     placeholder="https://github.com/org/repo.git"
-                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4"
+                                    className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4"
                                 />
 
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token</label>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token</label>
                                 <input
                                     type="password"
                                     value={editingAgentToken}
                                     onChange={(e) => setEditingAgentToken(e.target.value)}
                                     placeholder="Leave blank to keep existing PAT"
-                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium"
+                                    className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium"
                                 />
-                                <p className="text-xs text-gray-400 mt-2 mb-6">Leave token blank if you do not want to change it.</p>
+                                <p className="text-xs text-app-text-light mt-2 mb-6">Leave token blank if you do not want to change it.</p>
 
                                 <div className="flex items-center gap-3">
-                                    <button type="button" onClick={cancelEditingAgentName} disabled={isSavingAgentName} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors disabled:opacity-50">Cancel</button>
+                                    <button type="button" onClick={cancelEditingAgentName} disabled={isSavingAgentName} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors disabled:opacity-50">Cancel</button>
                                     <button type="button" onClick={saveAgentName} disabled={isSavingAgentName || !editingAgentName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2">
                                         {isSavingAgentName ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : 'Save Changes'}
                                     </button>
@@ -1952,28 +1952,28 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             {/* Add Agent Modal */}
             {
                 showAddAgentModal && (
-                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
-                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
                                     <PlusCircle className="w-5 h-5 text-indigo-500" /> Add New Agent
                                 </h3>
-                                <button type="button" onClick={() => setShowAddAgentModal(false)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                <button type="button" onClick={() => setShowAddAgentModal(false)} className="text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
                             <div className="p-6">
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Agent Name (optional)</label>
-                                <input type="text" value={newAgentConfig.name} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, name: e.target.value })} placeholder="e.g. Code Reviewer" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Agent Name (optional)</label>
+                                <input type="text" value={newAgentConfig.name} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, name: e.target.value })} placeholder="e.g. Code Reviewer" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL</label>
-                                <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL</label>
+                                <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
-                                <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
 
                                 <div className="flex items-center gap-3">
-                                    <button type="button" onClick={() => setShowAddAgentModal(false)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                                    <button type="button" onClick={() => setShowAddAgentModal(false)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
                                     <button type="button" onClick={submitAddAgent} disabled={!newAgentConfig.git_token.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30">
                                         Add Agent
                                     </button>
@@ -1987,48 +1987,48 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             {/* Git Configuration Modal */}
             {
                 gitModalAgent && (
-                    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-                            <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
-                                <h3 className="font-bold text-gray-900 text-lg flex items-center gap-2">
+                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+                                <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
                                     <Bot className="w-5 h-5 text-indigo-500" /> {gitModalAgent.id === '__run_all_setup__' ? 'Configure Agents' : 'Git Configuration'}
                                 </h3>
-                                <button type="button" onClick={() => setGitModalAgent(null)} className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-full transition-colors">
+                                <button type="button" onClick={() => setGitModalAgent(null)} className="text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
                             <div className="p-6 overflow-y-auto">
                                 {gitModalAgent.id === '__run_all_setup__' ? (
                                     <>
-                                        <p className="text-sm text-gray-500 mb-6 font-medium">To run simultaneously, the following agents require Git configuration.</p>
+                                        <p className="text-sm text-app-text-muted mb-6 font-medium">To run simultaneously, the following agents require Git configuration.</p>
                                         <div className="space-y-6">
                                             {gitModalAgent.missingConfig.map(agent => (
-                                                <div key={agent.id} className="p-4 border border-indigo-100 bg-indigo-50/30 rounded-xl">
+                                                <div key={agent.id} className="p-4 border border-indigo-100 bg-app-primary-light/30 rounded-xl">
                                                     <h4 className="text-sm font-bold text-indigo-900 mb-3">{agent.name || agent.id}</h4>
 
-                                                    <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
-                                                    <input type="text" value={agentsGitConfig[agent.id]?.git_repo_url || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_repo_url: e.target.value } })} placeholder="https://github.com/org/repo.git" className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-white text-gray-900 mb-3" />
+                                                    <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                                                    <input type="text" value={agentsGitConfig[agent.id]?.git_repo_url || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_repo_url: e.target.value } })} placeholder="https://github.com/org/repo.git" className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main mb-3" />
 
-                                                    <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
-                                                    <input type="password" value={agentsGitConfig[agent.id]?.git_token || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_token: e.target.value } })} placeholder="ghp_..." className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-white text-gray-900" />
+                                                    <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                                    <input type="password" value={agentsGitConfig[agent.id]?.git_token || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_token: e.target.value } })} placeholder="ghp_..." className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main" />
                                                 </div>
                                             ))}
                                         </div>
                                     </>
                                 ) : (
                                     <>
-                                        <p className="text-sm text-gray-500 mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
+                                        <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
 
-                                        <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
-                                        <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-4" />
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                                        <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                        <label className="block text-[11px] font-bold text-gray-500 mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
-                                        <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-gray-50/50 text-gray-900 transition-all duration-200 placeholder:text-gray-300 font-medium mb-6" />
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                        <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
                                     </>
                                 )}
                             </div>
-                            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center gap-3">
-                                <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-gray-600 bg-white hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors">Cancel</button>
+                            <div className="px-6 py-4 border-t border-app-border-light bg-app-bg-page flex items-center gap-3">
+                                <button type="button" onClick={() => setGitModalAgent(null)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-card hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
                                 <button type="button" onClick={() => {
                                     if (gitModalAgent.id === '__run_all_setup__') {
                                         submitMultiAgentConfig();

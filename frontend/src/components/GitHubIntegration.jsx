@@ -153,7 +153,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                 <button
                     type="button"
                     onClick={handleConnect}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-all active:scale-95 border border-gray-200"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-app-text-label bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-all active:scale-95 border border-app-border"
                 >
                     <GitHubIcon className="w-3.5 h-3.5" />
                     Connect GitHub
@@ -170,23 +170,23 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                         <button
                             type="button"
                             onClick={() => { setSelectedRepo(null); if (onClearRepo) onClearRepo(); setShowRepoList(false); }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 rounded-lg border border-emerald-200 hover:bg-emerald-100 transition-all max-w-[200px]"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 bg-app-status-successBg rounded-lg border border-emerald-200 hover:bg-emerald-100 transition-all max-w-[200px]"
                             title={`${selectedRepo.full_name} — click to change`}
                         >
                             {fetchingContext ? (
                                 <span className="animate-spin inline-block w-3 h-3 border-2 border-emerald-600 border-t-transparent rounded-full"></span>
                             ) : (
-                                <GitHubIcon className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                                <GitHubIcon className="w-3.5 h-3.5 text-app-status-success flex-shrink-0" />
                             )}
                             <span className="truncate">{selectedRepo.name}</span>
-                            {repoContext && <span className="text-emerald-500 flex-shrink-0">✓</span>}
+                            {repoContext && <span className="text-app-status-success flex-shrink-0">✓</span>}
                         </button>
                     ) : (
                         <button
                             type="button"
                             onClick={showRepoList ? () => setShowRepoList(false) : loadRepos}
                             disabled={loadingRepos}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-gray-700 bg-gray-100 rounded-lg border border-gray-200 hover:bg-gray-200 transition-all disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-app-text-label bg-app-bg-muted rounded-lg border border-app-border hover:bg-app-bg-hover transition-all disabled:opacity-50"
                         >
                             {loadingRepos ? (
                                 <span className="animate-spin inline-block w-3 h-3 border-2 border-gray-500 border-t-transparent rounded-full"></span>
@@ -201,7 +201,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                     <button
                         type="button"
                         onClick={handleDisconnect}
-                        className="p-1 text-gray-400 hover:text-red-500 rounded hover:bg-red-50 transition-colors"
+                        className="p-1 text-app-text-light hover:text-app-status-error rounded hover:bg-app-status-errorBg transition-colors"
                         title="Disconnect GitHub"
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -210,44 +210,44 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
 
                 {/* Floating repo dropdown */}
                 {showRepoList && (
-                    <div className="absolute right-0 top-full mt-2 w-80 border border-gray-200 rounded-xl overflow-hidden bg-white shadow-xl z-50">
-                        <div className="p-2 border-b border-gray-100">
+                    <div className="absolute right-0 top-full mt-2 w-80 border border-app-border rounded-xl overflow-hidden bg-app-bg-card shadow-xl z-50">
+                        <div className="p-2 border-b border-app-border-light">
                             <input
                                 type="text"
                                 value={searchFilter}
                                 onChange={(e) => setSearchFilter(e.target.value)}
                                 placeholder="Search repositories..."
-                                className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                className="w-full px-3 py-1.5 text-xs border border-app-border rounded-md focus:ring-1 focus:ring-app-primary focus:border-app-primary bg-app-bg-card"
                                 autoFocus
                             />
                         </div>
                         <div className="max-h-56 overflow-y-auto">
                             {filteredRepos.length === 0 ? (
-                                <p className="text-xs text-gray-400 p-4 text-center">No repositories found.</p>
+                                <p className="text-xs text-app-text-light p-4 text-center">No repositories found.</p>
                             ) : (
                                 filteredRepos.map((repo) => (
                                     <button
                                         key={repo.id}
                                         type="button"
                                         onClick={() => handleSelectRepo(repo)}
-                                        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-blue-50 border-b border-gray-50 last:border-b-0 transition-colors"
+                                        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-app-primary-light border-b border-gray-50 last:border-b-0 transition-colors"
                                     >
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-app-text-light flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
                                         <div className="min-w-0 flex-1">
-                                            <p className="text-xs font-semibold text-gray-900 truncate">{repo.name}</p>
-                                            <p className="text-[11px] text-gray-500 truncate">
+                                            <p className="text-xs font-semibold text-app-text-main truncate">{repo.name}</p>
+                                            <p className="text-[11px] text-app-text-muted truncate">
                                                 {repo.description || 'No description'}
                                                 {repo.language && ` • ${repo.language}`}
                                                 {repo.private && ' • 🔒'}
                                             </p>
                                         </div>
-                                        <span className="text-[10px] text-gray-400 flex-shrink-0">⭐ {repo.stargazers_count}</span>
+                                        <span className="text-[10px] text-app-text-light flex-shrink-0">⭐ {repo.stargazers_count}</span>
                                     </button>
                                 ))
                             )}
                         </div>
-                        <div className="p-2 border-t border-gray-100 text-center">
-                            <button type="button" onClick={() => setShowRepoList(false)} className="text-xs text-gray-500 hover:text-gray-700 font-medium">Cancel</button>
+                        <div className="p-2 border-t border-app-border-light text-center">
+                            <button type="button" onClick={() => setShowRepoList(false)} className="text-xs text-app-text-muted hover:text-app-text-label font-medium">Cancel</button>
                         </div>
                     </div>
                 )}
@@ -262,20 +262,20 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
     // ─── Not Connected ───
     if (!connected) {
         return (
-            <div className="rounded-xl border border-gray-200 bg-white p-4 hover:shadow-md transition-shadow">
+            <div className="rounded-xl border border-app-border bg-app-bg-card p-4 hover:shadow-md transition-shadow">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                        <div className="p-2 bg-gray-900 rounded-lg">
+                        <div className="p-2 bg-app-text-main rounded-lg">
                             <GitHubIcon className="w-5 h-5 text-white" />
                         </div>
                         <div>
-                            <p className="text-sm font-semibold text-gray-900">GitHub Repository</p>
-                            <p className="text-xs text-gray-500">Connect to enhance AI analysis with your codebase</p>
+                            <p className="text-sm font-semibold text-app-text-main">GitHub Repository</p>
+                            <p className="text-xs text-app-text-muted">Connect to enhance AI analysis with your codebase</p>
                         </div>
                     </div>
                     <button
                         onClick={handleConnect}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gray-900 rounded-lg hover:bg-gray-800 transition-all active:scale-95 shadow-sm"
+                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-app-text-main rounded-lg hover:bg-app-text-label transition-all active:scale-95 shadow-sm"
                     >
                         <GitHubIcon className="w-4 h-4" />
                         Connect GitHub
@@ -287,17 +287,17 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
 
     // ─── Connected ───
     return (
-        <div className="rounded-xl border border-gray-200 bg-white p-4 hover:shadow-md transition-shadow">
+        <div className="rounded-xl border border-app-border bg-app-bg-card p-4 hover:shadow-md transition-shadow">
             {/* Header */}
             <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
-                    <div className="p-2 bg-gray-900 rounded-lg relative">
+                    <div className="p-2 bg-app-text-main rounded-lg relative">
                         <GitHubIcon className="w-5 h-5 text-white" />
                         <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white"></div>
                     </div>
                     <div>
-                        <p className="text-sm font-semibold text-gray-900">GitHub Connected</p>
-                        <p className="text-xs text-gray-500">@{githubUsername}</p>
+                        <p className="text-sm font-semibold text-app-text-main">GitHub Connected</p>
+                        <p className="text-xs text-app-text-muted">@{githubUsername}</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -305,10 +305,10 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                         <button
                             onClick={loadRepos}
                             disabled={loadingRepos}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 rounded-lg hover:bg-blue-100 transition-all disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-app-primary-hover bg-app-primary-light rounded-lg hover:bg-app-primary-light transition-all disabled:opacity-50"
                         >
                             {loadingRepos ? (
-                                <span className="animate-spin inline-block w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full"></span>
+                                <span className="animate-spin inline-block w-3 h-3 border-2 border-app-primary border-t-transparent rounded-full"></span>
                             ) : (
                                 <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
                             )}
@@ -317,7 +317,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                     )}
                     <button
                         onClick={handleDisconnect}
-                        className="p-1.5 text-gray-400 hover:text-red-500 rounded-md hover:bg-red-50 transition-colors"
+                        className="p-1.5 text-app-text-light hover:text-app-status-error rounded-md hover:bg-app-status-errorBg transition-colors"
                         title="Disconnect GitHub"
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
@@ -327,7 +327,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
 
             {/* Selected Repo Badge */}
             {selectedRepo && !showRepoList && (
-                <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-lg p-3 mt-2">
+                <div className="flex items-center justify-between bg-app-status-successBg border border-emerald-200 rounded-lg p-3 mt-2">
                     <div className="flex items-center gap-2 min-w-0">
                         <div className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></div>
                         <div className="min-w-0">
@@ -355,45 +355,45 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
 
             {/* Repo List Dropdown */}
             {showRepoList && (
-                <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
-                    <div className="p-2 border-b border-gray-200">
+                <div className="mt-2 border border-app-border rounded-lg overflow-hidden bg-app-bg-page">
+                    <div className="p-2 border-b border-app-border">
                         <input
                             type="text"
                             value={searchFilter}
                             onChange={(e) => setSearchFilter(e.target.value)}
                             placeholder="Search repositories..."
-                            className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                            className="w-full px-3 py-1.5 text-xs border border-app-border rounded-md focus:ring-1 focus:ring-app-primary focus:border-app-primary bg-app-bg-card"
                             autoFocus
                         />
                     </div>
                     <div className="max-h-56 overflow-y-auto">
                         {filteredRepos.length === 0 ? (
-                            <p className="text-xs text-gray-400 p-4 text-center">No repositories found.</p>
+                            <p className="text-xs text-app-text-light p-4 text-center">No repositories found.</p>
                         ) : (
                             filteredRepos.map((repo) => (
                                 <button
                                     key={repo.id}
                                     onClick={() => handleSelectRepo(repo)}
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-blue-50 border-b border-gray-100 last:border-b-0 transition-colors"
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-app-primary-light border-b border-app-border-light last:border-b-0 transition-colors"
                                 >
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-app-text-light flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
                                     <div className="min-w-0 flex-1">
-                                        <p className="text-xs font-semibold text-gray-900 truncate">{repo.name}</p>
-                                        <p className="text-[11px] text-gray-500 truncate">
+                                        <p className="text-xs font-semibold text-app-text-main truncate">{repo.name}</p>
+                                        <p className="text-[11px] text-app-text-muted truncate">
                                             {repo.description || 'No description'}
                                             {repo.language && ` • ${repo.language}`}
                                             {repo.private && ' • 🔒 Private'}
                                         </p>
                                     </div>
-                                    <span className="text-[10px] text-gray-400 flex-shrink-0">⭐ {repo.stargazers_count}</span>
+                                    <span className="text-[10px] text-app-text-light flex-shrink-0">⭐ {repo.stargazers_count}</span>
                                 </button>
                             ))
                         )}
                     </div>
-                    <div className="p-2 border-t border-gray-200 text-center">
+                    <div className="p-2 border-t border-app-border text-center">
                         <button
                             onClick={() => setShowRepoList(false)}
-                            className="text-xs text-gray-500 hover:text-gray-700 font-medium"
+                            className="text-xs text-app-text-muted hover:text-app-text-label font-medium"
                         >
                             Cancel
                         </button>

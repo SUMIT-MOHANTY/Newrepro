@@ -6,6 +6,8 @@ import { Menu, Settings } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 
+import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
+
 const DEFAULT_ROADMAP = {
     steps: ['Project Setup', 'Governance', 'AI Analysis', 'Task Creation', 'Agent Execution', 'Complete'],
     current_step: 0,
@@ -27,11 +29,11 @@ export default function AppLayout({ children }) {
     const [user, setUser] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [projects, setProjects] = useState([]);
-    const [isProjectsLoading, setIsProjectsLoading] = useState(true);
     const [selectedProjectKey, setSelectedProjectKey] = useState('');
     const [showSettings, setShowSettings] = useState(false);
-    const [roadmapData, setRoadmapData] = useState(DEFAULT_ROADMAP);
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
+
+    const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
         : location.pathname === '/governance' ? 'governance'
@@ -69,158 +71,45 @@ export default function AppLayout({ children }) {
             .catch(() => handleLogout());
     }, [handleLogout, navigate]);
 
-    // Fetch projects for sidebar
-    const fetchProjects = useCallback(async () => {
-        setIsProjectsLoading(true);
-        try {
-            const token = localStorage.getItem('token');
-            const authHeaders = { Authorization: `Bearer ${token}` };
-            const [govRes, histRes] = await Promise.all([
-                fetch(API_ENDPOINTS.GOVERNANCE_HISTORY, { headers: authHeaders }),
-                fetch(API_ENDPOINTS.HISTORY, { headers: authHeaders }),
-            ]);
-            if (govRes.status === 401 || histRes.status === 401) { handleLogout(); return; }
+    const { data: generatedProjects = [], isLoading: isProjectsLoading, isError: isProjectsError, error: projectsError } = useProjects();
 
-            const [govPayload, historyPayload] = await Promise.all([
-                govRes.ok ? govRes.json() : Promise.resolve({}),
-                histRes.ok ? histRes.json() : Promise.resolve([]),
-            ]);
-            const submissions = Array.isArray(govPayload?.submissions) ? govPayload.submissions : [];
-            const history = Array.isArray(historyPayload) ? historyPayload : [];
-
-            // Build project map
-            const normalizeProjectName = (name) =>
-                String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
-
-            const projectMap = new Map();
-
-            submissions.forEach((sub) => {
-                const key = sub.project_token || String(sub.id);
-                projectMap.set(key, {
-                    key,
-                    governanceResultId: sub.id,
-                    projectToken: sub.project_token,
-                    name: sub.project_name || `Project #${sub.id}`,
-                    classification: sub.classification || 'N/A',
-                    weightedScore: sub.weighted_score ?? null,
-                    submissionDate: sub.submission_date || null,
-                    documents: [],
-                    latestDocument: null,
-                    latestRevision: 0,
-                    status: 'ready_for_upload',
-                    pendingRevisionReason: sub.pending_revision_reason || null,
-                    client_id: sub.client_id || null,
-                    client_secret: sub.client_secret || null,
-                });
-            });
-
-            history.forEach((doc) => {
-                let parsedAnalysis = null;
-                try { parsedAnalysis = doc?.analysis_result ? JSON.parse(doc.analysis_result) : null; } catch { /* ignore */ }
-
-                const meta = parsedAnalysis?.projectMeta || {};
-                const govMeta = parsedAnalysis?.governanceContext || {};
-                const projectName = meta.project_name || govMeta.project_name || 'Unassigned Project';
-                const governanceResultId = meta.governance_result_id || govMeta.result_id || null;
-                const projectToken = meta.project_token || govMeta.project_token || null;
-
-                // Grab credentials if they exist (usually from the new GET API)
-                const client_id = doc.project_application?.client_id || null;
-                const client_secret = doc.project_application?.client_secret || null;
-
-                let targetKey = projectToken || null;
-                if (!targetKey || !projectMap.has(targetKey)) {
-                    const byId = governanceResultId
-                        ? Array.from(projectMap.values()).find(p => p.governanceResultId === governanceResultId)
-                        : null;
-                    if (byId) targetKey = byId.key;
-                }
-                if (!targetKey || !projectMap.has(targetKey)) {
-                    const byName = Array.from(projectMap.values()).find(
-                        p => normalizeProjectName(p.name) === normalizeProjectName(projectName)
-                    );
-                    if (byName) targetKey = byName.key;
-                }
-                if (!targetKey || !projectMap.has(targetKey)) {
-                    targetKey = projectToken || (governanceResultId ? String(governanceResultId) : `doc-${doc.id}`);
-                    if (!projectMap.has(targetKey)) {
-                        projectMap.set(targetKey, {
-                            key: targetKey, governanceResultId: governanceResultId, projectToken,
-                            name: projectName, classification: 'N/A', weightedScore: null,
-                            submissionDate: null, documents: [], latestDocument: null,
-                            latestRevision: 0, status: 'ready_for_upload',
-                            client_id, client_secret
-                        });
-                    }
-                }
-                const project = projectMap.get(targetKey);
-                // merge credentials if missing and we just found them
-                if (client_id && !project.client_id) {
-                    project.client_id = client_id;
-                    project.client_secret = client_secret;
-                }
-
-                project.documents.push(doc);
-                if (!project.latestDocument) project.latestDocument = doc;
-            });
-
-            const builtProjects = Array.from(projectMap.values())
-                .map(project => {
-                    const docs = [...project.documents].sort(
-                        (a, b) => new Date(b.upload_date || 0).getTime() - new Date(a.upload_date || 0).getTime()
-                    );
-                    return { ...project, documents: docs, latestDocument: docs[0] || null, latestRevision: docs.length, status: docs.length > 0 ? 'analysis_complete' : 'ready_for_upload' };
-                })
-                .sort((a, b) => {
-                    const aDate = new Date(a.submissionDate || a.latestDocument?.upload_date || 0).getTime();
-                    const bDate = new Date(b.submissionDate || b.latestDocument?.upload_date || 0).getTime();
-                    return bDate - aDate;
-                });
-
-            setProjects(builtProjects);
-        } catch (err) {
-            console.error('Error fetching projects for layout:', err);
-        } finally {
-            setIsProjectsLoading(false);
-        }
-    }, [handleLogout]);
-
-    // Fetch roadmap data for a project
-    const fetchRoadmapData = useCallback(async (projectKey) => {
-        if (!projectKey) {
-            setRoadmapData(DEFAULT_ROADMAP);
-            return;
-        }
-        try {
-            const token = localStorage.getItem('token');
-            const res = await fetch(API_ENDPOINTS.GOVERNANCE_ROADMAP_STEP(projectKey), {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (res.ok) {
-                const data = await res.json();
-                setRoadmapData(data);
-            } else {
-                setRoadmapData(DEFAULT_ROADMAP);
+    useEffect(() => {
+        setTimeout(() => {
+            if (isProjectsError && projectsError?.message === 'Unauthorized') {
+                handleLogout();
+            } else if (generatedProjects) {
+                setProjects(generatedProjects);
             }
-        } catch (e) {
-            console.error('Failed to fetch roadmap data', e);
-            setRoadmapData(DEFAULT_ROADMAP);
+        }, 0);
+    }, [generatedProjects, isProjectsError, projectsError, handleLogout]);
+
+    const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
+    let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
+
+    // Fast-fail the UI stepper if the project classification is Enterprise (meaning it's blocked from task agent workflow)
+    const selectedProject = projects.find(p => p.key === selectedProjectKey);
+    if (selectedProject?.classification === 'ENTERPRISE') {
+        roadmapData = {
+            ...roadmapData,
+            current_step: 1,
+            failed_step: 1,
+            step_statuses: ['completed', 'failed', 'pending', 'pending', 'pending', 'pending']
+        };
+    }
+
+    // Backward compatibility for components expecting the old fetch logic
+    const fetchRoadmapData = useCallback(() => {
+        if (selectedProjectKey) {
+            refetchRoadmapData();
         }
-    }, []);
+    }, [selectedProjectKey, refetchRoadmapData]);
 
-    useEffect(() => {
-        const load = async () => { await fetchProjects(); };
-        load();
-    }, [fetchProjects]);
-
-    // Re-fetch roadmap whenever selected project changes
-    useEffect(() => {
-        fetchRoadmapData(selectedProjectKey);
-    }, [selectedProjectKey, fetchRoadmapData]);
+    const fetchProjects = useCallback(() => {
+        invalidateProjects();
+    }, [invalidateProjects]);
 
     const handleNewProject = useCallback(() => {
         // Reset roadmap immediately and enter "new project" mode
-        setRoadmapData(DEFAULT_ROADMAP);
         setSelectedProjectKey('');
         setIsNewProjectMode(true);
         localStorage.removeItem('governancePassed');
@@ -247,8 +136,8 @@ export default function AppLayout({ children }) {
 
     if (!user) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-gray-100">
-                <div className="text-gray-600">Loading...</div>
+            <div className="flex items-center justify-center min-h-screen bg-app-bg-muted">
+                <div className="text-app-text-label">Loading...</div>
             </div>
         );
     }
@@ -267,7 +156,7 @@ export default function AppLayout({ children }) {
     };
 
     return (
-        <div className="flex h-screen bg-gray-50 overflow-hidden font-sans">
+        <div className="flex h-screen bg-app-bg-page overflow-hidden font-sans">
             <Sidebar
                 isSidebarOpen={isSidebarOpen}
                 setIsSidebarOpen={setIsSidebarOpen}
@@ -283,7 +172,7 @@ export default function AppLayout({ children }) {
                 handleLogout={handleLogout}
             />
 
-            <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-gray-50 h-full transition-all duration-300 ease-in-out">
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
                 {/* Global Top Navbar */}
                 <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-20 shrink-0">
                     <div className="flex items-center gap-3 md:gap-4 w-full">
@@ -291,7 +180,7 @@ export default function AppLayout({ children }) {
                             <button
                                 type="button"
                                 onClick={() => setIsSidebarOpen(true)}
-                                className="p-1.5 md:p-2 bg-white/10 hover:bg-white/20 rounded-md shadow-sm text-gray-100 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
+                                className="p-1.5 md:p-2 bg-app-bg-card/10 hover:bg-app-bg-card/20 rounded-md shadow-sm text-gray-100 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
                                 aria-label="Open menu"
                             >
                                 <Menu className="w-4 h-4 md:w-5 md:h-5" />
@@ -304,7 +193,7 @@ export default function AppLayout({ children }) {
                                         currentView === 'governance' ? 'Project Governance' :
                                             'BRD Requirements Analyzer'}
                                 </h1>
-                                <h2 className="text-[10px] md:text-sm italic text-gray-300 mt-0.5 md:mt-1 truncate">
+                                <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'governance' ? 'Questionnaire & Configuration' :
                                             'Project Insight & AI Assessment'}
@@ -313,7 +202,7 @@ export default function AppLayout({ children }) {
 
                             {/* Status Pipeline graphic top right - ONLY shown on statusDashboard */}
                             {/* {currentView === 'statusDashboard' && (
-                                <div className="text-[9px] md:text-xs font-bold text-gray-700 flex items-center space-x-1.5 bg-white px-2 md:px-3 py-1.5 rounded-full shadow-md border border-gray-100 whitespace-nowrap ml-4 shrink-0 hidden sm:flex">
+                                <div className="text-[9px] md:text-xs font-bold text-app-text-label flex items-center space-x-1.5 bg-app-bg-card px-2 md:px-3 py-1.5 rounded-full shadow-md border border-app-border-light whitespace-nowrap ml-4 shrink-0 hidden sm:flex">
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-gray-400 rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-orange-200 rounded-full mr-1"></span><span className="hidden md:inline">PREPARE</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-yellow-400 rounded-full mr-1"></span><span className="hidden md:inline">INTERVIEW</span></div>
@@ -326,7 +215,7 @@ export default function AppLayout({ children }) {
                             {/* <button
                                 type="button"
                                 onClick={() => setShowSettings(true)}
-                                className="p-1.5 md:p-2 ml-4 rounded-md text-gray-300 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0"
+                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-white hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0"
                                 aria-label="Open settings"
                             >
                                 <Settings className="w-4 h-4 md:w-5 md:h-5" />
@@ -337,7 +226,7 @@ export default function AppLayout({ children }) {
 
                 {/* ── Project-level Roadmap Stepper — shown on all pages ── */}
                 {roadmapData && (
-                    <div className="bg-white border-b border-gray-100 shadow-sm shrink-0 overflow-x-auto">
+                    <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto">
                         <RoadmapHeader
                             steps={roadmapData.steps || []}
                             currentStep={roadmapData.current_step || 0}
