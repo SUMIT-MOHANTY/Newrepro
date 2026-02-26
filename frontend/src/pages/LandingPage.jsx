@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
-    ArrowRight, Zap, CheckCircle, Smartphone, Globe, Shield,
+    ArrowRight, Zap, CheckCircle, Shield, Workflow,
     FileText, FileCode, FileSpreadsheet, FileJson, File,
     Database, Server, Layout, Code, Terminal, Cpu
 } from 'lucide-react';
@@ -193,27 +193,27 @@ const Interactive3DScroll = () => {
 
     const steps = [
         {
-            title: "Upload & Extract",
-            desc: "Drag and drop your unstructured BRDs. Our engine immediately gets to work extracting key entities, requirements, and constraints.",
+            title: "DSuite Master Analysis",
+            desc: "Document is uploaded into DSuite. The platform analyzes requirements, validates architecture direction, and prepares an execution-ready blueprint.",
             icon: <FileText className="h-16 w-16 text-blue-500" />,
             color: "from-blue-500 to-cyan-400"
         },
         {
-            title: "AI Analysis",
-            desc: "Powered by advanced NLP, DSuite identifies technical dependencies, risks, and contradictory requirements instantly.",
-            icon: <Cpu className="h-16 w-16 text-indigo-500" />,
+            title: "Nxdune Orchestration",
+            desc: "The DSuite blueprint is routed to Nxdune. Nxdune creates the workspace and automatically distributes Dev, Test, and Deploy tasks to agents.",
+            icon: <Workflow className="h-16 w-16 text-indigo-500" />,
             color: "from-indigo-500 to-purple-400"
         },
         {
-            title: "Visual Roadmap",
-            desc: "Watch your static document transform into an interactive 3D roadmap and precise architecture diagrams.",
-            icon: <Layout className="h-16 w-16 text-pink-500" />,
+            title: "Dev + Test Agent Execution",
+            desc: "Dev Agent works through N-Mod EXT to build the solution. Test Agent runs Kaktox validations and confirms quality before release.",
+            icon: <Code className="h-16 w-16 text-pink-500" />,
             color: "from-pink-500 to-rose-400"
         },
         {
-            title: "Ready to Build",
-            desc: "Export Jira tickets, GitHub issues, or download scaffolding code straight to your local environment.",
-            icon: <Code className="h-16 w-16 text-green-500" />,
+            title: "Deploy Agent -> CloudSpx",
+            desc: "After approval, Deploy Agent pushes the validated build through CloudSpx pipelines while execution traceability stays visible in Nxdune.",
+            icon: <Server className="h-16 w-16 text-green-500" />,
             color: "from-green-500 to-emerald-400"
         }
     ];
@@ -227,16 +227,16 @@ const Interactive3DScroll = () => {
                     trigger: wrapperRef.current,
                     pin: true,
                     start: "top top",
-                    end: `+=${panels.length * 100}%`,
-                    scrub: 1,
+                    end: `+=${panels.length * 70}%`,
+                    scrub: 0.35,
                 }
             });
 
             gsap.set(panels, {
-                z: i => i === 0 ? 0 : -2000,
+                z: i => i === 0 ? 0 : -1200,
                 autoAlpha: i => i === 0 ? 1 : 0,
-                rotationX: i => i === 0 ? 0 : 45,
-                scale: i => i === 0 ? 1 : 0.4
+                rotationX: i => i === 0 ? 0 : 24,
+                scale: i => i === 0 ? 1 : 0.72
             });
 
             panels.forEach((panel, i) => {
@@ -244,12 +244,12 @@ const Interactive3DScroll = () => {
                     const nextPanel = panels[i + 1];
 
                     tl.to(panel, {
-                        z: 1500,
+                        z: 900,
                         autoAlpha: 0,
-                        scale: 1.5,
-                        rotationX: -45,
-                        duration: 1,
-                        ease: "power1.inOut"
+                        scale: 1.18,
+                        rotationX: -20,
+                        duration: 0.65,
+                        ease: "power1.out"
                     }, i);
 
                     tl.to(nextPanel, {
@@ -257,20 +257,20 @@ const Interactive3DScroll = () => {
                         autoAlpha: 1,
                         scale: 1,
                         rotationX: 0,
-                        duration: 1,
-                        ease: "power1.inOut"
+                        duration: 0.65,
+                        ease: "power1.out"
                     }, i);
                 }
             });
 
             gsap.to('.float-shape', {
-                y: "-=15",
-                duration: 2.5,
+                y: "-=8",
+                duration: 1.8,
                 repeat: -1,
                 yoyo: true,
                 ease: "sine.inOut",
                 stagger: {
-                    amount: 1.5,
+                    amount: 0.8,
                     from: "random"
                 }
             });
@@ -315,7 +315,7 @@ const Interactive3DScroll = () => {
                         </div>
 
                         {/* Text Content */}
-                        <div className="flex-1 space-y-6 text-center md:text-left z-10 bg-app-bg-page/50 md:bg-transparent p-6 rounded-3xl backdrop-blur-sm md:backdrop-blur-none" style={{ transform: 'translateZ(50px)' }}>
+                        <div className="flex-1 space-y-6 text-center md:text-left z-10 bg-app-bg-page/50 md:bg-transparent p-6 rounded-3xl" style={{ transform: 'translateZ(50px)' }}>
                             <div className="inline-flex items-center gap-2 px-4 py-2 bg-app-bg-hover rounded-full border border-app-border text-app-text-main text-sm font-bold tracking-widest shadow-sm">
                                 <span>STEP 0{i + 1}</span>
                                 <div className={`h-2.5 w-2.5 rounded-full bg-gradient-to-r ${step.color} shadow-[0_0_10px_rgba(255,255,255,0.5)]`}></div>
@@ -344,10 +344,224 @@ const Interactive3DScroll = () => {
 
 const LandingPage = () => {
     const heroRef = useRef(null);
-    const featuresRef = useRef(null);
     const ctaRef = useRef(null);
     const [isLoginOpen, setIsLoginOpen] = useState(false);
     const [isSignupOpen, setIsSignupOpen] = useState(false);
+    const [activeModeKey, setActiveModeKey] = useState('developer');
+
+    const projectUseCases = [
+        {
+            key: 'greenfield',
+            title: 'Greenfield Development',
+            subtitle: 'Build from scratch',
+            icon: <Zap className="h-5 w-5 text-white" />,
+            color: 'bg-emerald-500',
+            ring: 'border-emerald-200',
+            bg: 'bg-emerald-50/70',
+            useCase: [
+                'No existing system or legacy constraints',
+                'New architecture and new tech stack',
+                'Complete freedom in design and implementation',
+                'Example: Building a new SaaS product from zero'
+            ],
+            solution: [
+                'DSuite extracts architecture-ready requirements from BRD',
+                'Defines module boundaries and implementation flow early',
+                'Generates a build-ready roadmap before coding starts'
+            ],
+            comparison: {
+                existing: 'No',
+                freedom: 'High',
+                risk: 'Medium',
+                typical: 'New product'
+            }
+        },
+        {
+            key: 'brownfield',
+            title: 'Brownfield Development',
+            subtitle: 'Enhancement of existing systems',
+            icon: <Workflow className="h-5 w-5 text-white" />,
+            color: 'bg-amber-600',
+            ring: 'border-amber-200',
+            bg: 'bg-amber-50/70',
+            useCase: [
+                'Existing application already in place',
+                'Adds features, integrations, or modules',
+                'Works within current architecture and constraints',
+                'May require selective refactoring'
+            ],
+            solution: [
+                'Maps new requirements against current system boundaries',
+                'Flags integration risks and dependency impacts upfront',
+                'Prioritizes change-safe rollout plans and task sequencing'
+            ],
+            note: 'Most enterprise projects fall into this category.',
+            comparison: {
+                existing: 'Yes',
+                freedom: 'Limited',
+                risk: 'Medium-High',
+                typical: 'Feature enhancements'
+            }
+        },
+        {
+            key: 'modernization',
+            title: 'Modernization / Re-engineering',
+            subtitle: 'Legacy transformation',
+            icon: <Cpu className="h-5 w-5 text-white" />,
+            color: 'bg-sky-600',
+            ring: 'border-sky-200',
+            bg: 'bg-sky-50/70',
+            useCase: [
+                'Rebuild or significantly transform legacy applications',
+                'Technology migration, architecture migration, and cloud migration',
+                'UI modernization from legacy desktop to modern web',
+                'Focus on scalability, maintainability, and performance'
+            ],
+            solution: [
+                'Supports phased strategies: rehost, replatform, refactor, rebuild, replace',
+                'Builds migration-ready dependency and risk views from BRD inputs',
+                'Creates execution plans aligned to modernization milestones'
+            ],
+            comparison: {
+                existing: 'Yes (Legacy)',
+                freedom: 'Partial',
+                risk: 'High',
+                typical: 'Digital transformation'
+            }
+        }
+    ];
+
+    const platformModes = [
+        {
+            key: 'developer',
+            title: 'Developer Mode',
+            subtitle: 'Human-Led Development',
+            icon: <Code className="h-5 w-5 text-white" />,
+            color: 'from-blue-600 to-cyan-500',
+            description: 'In this model, all work is performed manually by developers. AI is only used as a reference tool.',
+            brief: 'Teams follow a fully human-led delivery path where architecture decisions, coding standards, and validation gates are handled directly by engineers. This model minimizes automation risk and gives leadership complete visibility into every change before release. It is effective when accuracy, accountability, and auditability are more important than delivery speed.',
+            executiveView: [
+                'Maximum human control',
+                'Lower automation',
+                'Slower but highly controlled execution',
+                'Suitable for sensitive or regulated environments'
+            ],
+            bestForPoints: [
+                'Mission-critical systems',
+                'Compliance-heavy industries',
+                'Deep innovation work'
+            ]
+        },
+        {
+            key: 'auto-complete',
+            title: 'Auto-Complete Mode',
+            subtitle: 'AI-Assisted Productivity',
+            icon: <Terminal className="h-5 w-5 text-white" />,
+            color: 'from-indigo-600 to-violet-500',
+            description: 'AI acts as a smart assistant, suggesting improvements and accelerating routine tasks while humans remain in full control.',
+            brief: 'This mode improves day-to-day engineering throughput by automating routine drafting, code suggestions, and repetitive refinement work. Developers still make final decisions and keep ownership of quality, security, and release readiness. It provides quick productivity gains without requiring major process or governance changes.',
+            executiveView: [
+                'Improves productivity without reducing oversight',
+                'Low risk',
+                'Quick return on investment',
+                'Minimal process disruption'
+            ],
+            bestForPoints: [
+                'Organizations seeking incremental productivity gains',
+                'Teams that want minimal process disruption',
+                'Enterprises avoiding structural change in delivery'
+            ]
+        },
+        {
+            key: 'vibe',
+            title: 'Vibe Coding Mode',
+            subtitle: 'Intent-Driven Development',
+            icon: <FileCode className="h-5 w-5 text-white" />,
+            color: 'from-fuchsia-600 to-pink-500',
+            description: 'Teams describe desired outcomes, and AI generates structured outputs rapidly. Humans refine and validate.',
+            brief: 'Vibe Coding is intent-first: teams define business outcomes and AI translates them into draft implementation paths quickly. This allows rapid concept testing, faster prototyping cycles, and accelerated early-stage feature development. Human review remains essential to align outputs with architecture standards and governance expectations.',
+            executiveView: [
+                'Rapid prototyping',
+                'Faster product launches',
+                'Encourages experimentation',
+                'Requires governance oversight'
+            ],
+            bestForPoints: [
+                'Innovation labs',
+                'MVP delivery',
+                'Digital product acceleration'
+            ]
+        },
+        {
+            key: 'decisive-ask-first',
+            title: 'Decisive / Ask-First Mode',
+            subtitle: 'Governed AI Execution',
+            icon: <Workflow className="h-5 w-5 text-white" />,
+            color: 'from-amber-500 to-orange-500',
+            description: 'AI operates cautiously, asking for approvals before making changes.',
+            brief: 'This model applies automation with explicit checkpoints so AI does not proceed through critical actions without approval. It is useful where change risk is high, dependencies are complex, or compliance controls are strict. Organizations get safer transformation progress while preserving governance and operational stability.',
+            executiveView: [
+                'Strong governance',
+                'Reduced operational risk',
+                'Controlled transformation',
+                'Slower but safer automation'
+            ],
+            bestForPoints: [
+                'Enterprise modernization programs',
+                'Large legacy systems',
+                'Risk-sensitive domains'
+            ]
+        },
+        {
+            key: 'coexistence',
+            title: 'Co-Existence Mode',
+            subtitle: 'Human + AI Collaboration Model',
+            icon: <CheckCircle className="h-5 w-5 text-white" />,
+            color: 'from-emerald-600 to-teal-500',
+            description: 'Humans and AI actively collaborate. AI handles repetitive and analytical tasks while humans focus on strategy, architecture, and decision-making.',
+            brief: 'Co-Existence combines human judgment with AI execution in a shared workflow. AI accelerates analysis, drafting, and repetitive implementation tasks while people guide architecture, prioritization, and final sign-off decisions. This balance supports sustainable scale in enterprise engineering without sacrificing control or quality.',
+            executiveView: [
+                'Balanced automation',
+                'Higher productivity',
+                'Preserves strategic human oversight',
+                'Sustainable long-term model'
+            ],
+            bestForPoints: [
+                'Scaling technology organizations',
+                'Programs requiring both speed and control',
+                'Quality-focused multi-team engineering'
+            ],
+            note: 'This is currently the most practical enterprise model.'
+        },
+        {
+            key: 'sandbox',
+            title: 'Sandbox Mode',
+            subtitle: 'Fully Autonomous AI Environment',
+            icon: <Shield className="h-5 w-5 text-white" />,
+            color: 'from-sky-600 to-cyan-500',
+            description: 'AI independently builds, tests, and iterates with minimal human involvement.',
+            brief: 'Sandbox mode runs autonomous AI workflows inside a separate, isolated environment to reduce impact on core systems. It enables rapid experimentation, repeated test cycles, and controlled iteration at high speed. This is suited for internal innovation tracks where strong monitoring and clear boundaries are already in place.',
+            executiveView: [
+                'Maximum speed',
+                'High experimentation potential',
+                'Elevated risk without guardrails',
+                'Requires strong monitoring systems'
+            ],
+            bestForPoints: [
+                'Internal tools',
+                'R&D environments',
+                'Innovation pilots'
+            ]
+        }
+    ];
+
+    const activeMode = platformModes.find((mode) => mode.key === activeModeKey) || platformModes[0];
+    const toSentence = (items = []) => {
+        if (items.length === 0) return '';
+        if (items.length === 1) return items[0];
+        if (items.length === 2) return `${items[0]} and ${items[1]}`;
+        return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+    };
 
     const openLogin = () => {
         setIsSignupOpen(false);
@@ -385,19 +599,6 @@ const LandingPage = () => {
                 clearProps: 'all'
             });
 
-            // Features Animations
-            gsap.from('.feature-card', {
-                scrollTrigger: {
-                    trigger: featuresRef.current,
-                    start: 'top bottom-=100',
-                    toggleActions: 'play none none reverse'
-                },
-                y: 30,
-                opacity: 0,
-                duration: 0.6,
-                stagger: 0.1,
-                ease: 'power2.out'
-            });
         });
 
         return () => ctx.revert();
@@ -500,49 +701,144 @@ const LandingPage = () => {
             {/* Interactive 3D Scroll Section */}
             <Interactive3DScroll />
 
-            {/* Features Section */}
-            <section id="features" ref={featuresRef} className="py-10 bg-app-bg-card/90 relative z-10 border-t border-app-border-light" style={{ transform: "translateZ(0)" }}>
+            {/* Use Cases Section */}
+            <section className="py-14 bg-app-bg-page/90 relative z-10 border-t border-app-border-light">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="text-center max-w-3xl mx-auto mb-12">
+                    <div className="text-center max-w-4xl mx-auto mb-10">
                         <h2 className="text-3xl font-bold tracking-tight text-app-text-main sm:text-4xl mb-4">
-                            Everything you need
+                            Enterprise Project Use Cases and Our Solution
                         </h2>
                         <p className="text-lg text-app-text-label">
-                            Comprehensive technical breakdowns from your requirements.
+                            In application development, projects are typically categorized as Greenfield, Brownfield, or Modernization.
+                            This is the standard classification used in enterprise documentation, proposals, and RFP responses.
                         </p>
                     </div>
 
-                    <div className="grid md:grid-cols-3 gap-8">
-                        {[
-                            {
-                                icon: <Smartphone className="h-6 w-6 text-white" />,
-                                title: "Instant Analysis",
-                                desc: "Upload and get a complete breakdown in seconds.",
-                                color: "bg-blue-500"
-                            },
-                            {
-                                icon: <Shield className="h-6 w-6 text-white" />,
-                                title: "Security First",
-                                desc: "Encryption and secure processing environment.",
-                                color: "bg-indigo-500"
-                            },
-                            {
-                                icon: <Globe className="h-6 w-6 text-white" />,
-                                title: "Global Standards",
-                                desc: "Analysis based on industry best practices.",
-                                color: "bg-purple-500"
-                            }
-                        ].map((feature, idx) => (
-                            <div key={idx} className="feature-card bg-app-bg-card p-6 rounded-2xl shadow-sm border border-app-border-light hover:shadow-md transition-shadow">
-                                <div className={`h-12 w-12 ${feature.color} rounded-xl flex items-center justify-center mb-4 shadow-md shadow-blue-500/10`}>
-                                    {feature.icon}
+                    <div className="grid lg:grid-cols-3 gap-6">
+                        {projectUseCases.map((item) => (
+                            <article key={item.key} className={`rounded-2xl border ${item.ring} bg-app-bg-card shadow-sm overflow-hidden`}>
+                                <div className={`px-5 py-4 border-b border-app-border-light ${item.bg}`}>
+                                    <div className="flex items-center gap-3">
+                                        <div className={`h-10 w-10 ${item.color} rounded-xl flex items-center justify-center shadow-sm`}>
+                                            {item.icon}
+                                        </div>
+                                        <div>
+                                            <h3 className="text-lg font-bold text-app-text-main">{item.title}</h3>
+                                            <p className="text-sm text-app-text-label">{item.subtitle}</p>
+                                        </div>
+                                    </div>
                                 </div>
-                                <h3 className="text-lg font-bold text-app-text-main mb-2">{feature.title}</h3>
-                                <p className="text-app-text-label text-sm leading-relaxed">
-                                    {feature.desc}
-                                </p>
-                            </div>
+
+                                <div className="p-5 space-y-5">
+                                    <div>
+                                        <p className="text-xs font-bold tracking-widest uppercase text-app-text-light mb-3">Use Case</p>
+                                        <ul className="space-y-2">
+                                            {item.useCase.map((point, idx) => (
+                                                <li key={idx} className="flex items-start gap-2 text-sm text-app-text-label leading-relaxed">
+                                                    <CheckCircle className="h-4 w-4 text-app-status-success mt-0.5 shrink-0" />
+                                                    <span>{point}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+
+                                    <div className="rounded-xl border border-app-border bg-app-bg-page p-4">
+                                        <p className="text-xs font-bold tracking-widest uppercase text-app-text-light mb-3">Our Solution</p>
+                                        <ul className="space-y-2">
+                                            {item.solution.map((point, idx) => (
+                                                <li key={idx} className="flex items-start gap-2 text-sm text-app-text-label leading-relaxed">
+                                                    <ArrowRight className="h-4 w-4 text-app-primary mt-0.5 shrink-0" />
+                                                    <span>{point}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+
+                                    {item.note && (
+                                        <p className="text-sm font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                            {item.note}
+                                        </p>
+                                    )}
+                                </div>
+                            </article>
                         ))}
+                    </div>
+
+                </div>
+            </section>
+
+            {/* Working Modes Section */}
+            <section className="py-14 bg-app-bg-card/90 relative z-10 border-t border-app-border-light">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="text-center max-w-4xl mx-auto mb-10">
+                        <h2 className="text-3xl font-bold tracking-tight text-app-text-main sm:text-4xl mb-4">
+                            AI Collaboration Models in Software Development
+                        </h2>
+                        <p className="text-lg text-app-text-label">
+                            Executive Overview: As organizations adopt AI in engineering, each operating model balances control, speed, risk, and automation differently.
+                        </p>
+                    </div>
+
+                    <div className="grid md:grid-cols-[280px_1fr] lg:grid-cols-[320px_1fr] gap-6 items-stretch">
+                        <div className="rounded-2xl border border-app-border-light bg-app-bg-card overflow-hidden shadow-sm h-full">
+                            {platformModes.map((mode, idx) => {
+                                const isActive = mode.key === activeMode.key;
+                                const isLast = idx === platformModes.length - 1;
+
+                                return (
+                                    <button
+                                        key={mode.key}
+                                        type="button"
+                                        onClick={() => setActiveModeKey(mode.key)}
+                                        aria-pressed={isActive}
+                                        className={`w-full text-left px-5 py-4 transition-colors ${isLast ? '' : 'border-b border-app-border-light'} ${isActive ? 'bg-app-bg-page border-l-4 border-l-app-primary pl-4' : 'hover:bg-app-bg-page/70'}`}
+                                    >
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div>
+                                                <p className={`font-semibold ${isActive ? 'text-app-text-main' : 'text-app-text-label'}`}>{mode.title}</p>
+                                                <p className="text-xs text-app-text-light mt-1">{mode.subtitle}</p>
+                                            </div>
+                                            <div className={`h-8 w-8 rounded-lg bg-gradient-to-br ${mode.color} flex items-center justify-center shrink-0 shadow-sm`}>
+                                                {mode.icon}
+                                            </div>
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        <article className="rounded-2xl border border-app-border-light bg-app-bg-card shadow-sm p-6 lg:p-7 h-full flex flex-col">
+                            <div className="flex flex-wrap items-center gap-4 mb-4">
+                                <div className={`h-11 w-11 rounded-xl bg-gradient-to-br ${activeMode.color} flex items-center justify-center shadow-md`}>
+                                    {activeMode.icon}
+                                </div>
+                                <div>
+                                    <h3 className="text-2xl font-bold text-app-text-main">{activeMode.title}</h3>
+                                    <p className="text-sm text-app-text-light">{activeMode.subtitle}</p>
+                                </div>
+                            </div>
+
+                            <p className="text-app-text-label leading-relaxed mb-4">
+                                {activeMode.description}
+                            </p>
+
+                            <div className="rounded-xl border border-app-border bg-app-bg-page p-4 flex-1 flex flex-col justify-between gap-4">
+                                <p className="text-sm text-app-text-label leading-relaxed">
+                                    {activeMode.brief}
+                                </p>
+                                <p className="text-sm text-app-text-label leading-relaxed">
+                                    <span className="font-semibold text-app-text-main">Executive perspective:</span> {toSentence(activeMode.executiveView)}.
+                                </p>
+                                <p className="text-sm text-app-text-label leading-relaxed">
+                                    <span className="font-semibold text-app-text-main">Where it fits:</span> {toSentence(activeMode.bestForPoints)}.
+                                </p>
+                                {activeMode.note && (
+                                    <p className="text-sm font-semibold text-app-text-main leading-relaxed">
+                                        {activeMode.note}
+                                    </p>
+                                )}
+                            </div>
+                        </article>
                     </div>
                 </div>
             </section>
