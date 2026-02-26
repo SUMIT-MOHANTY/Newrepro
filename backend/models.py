@@ -87,4 +87,7 @@ class GovernanceResponse(Base):
     client_id = Column(String, nullable=True)
     client_secret = Column(String, nullable=True)
 
+    # Track when prerequisites were acknowledged
+    prerequisites_completed_at = Column(DateTime, nullable=True)
+
     owner = relationship("User", back_populates="governance_responses")

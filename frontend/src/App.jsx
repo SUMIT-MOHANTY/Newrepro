@@ -3,6 +3,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
 import GovernanceForm from './pages/GovernanceForm';
+import PrerequisiteClassification from './pages/PrerequisiteClassification';
 import GitHubCallback from './pages/GitHubCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
@@ -38,6 +39,11 @@ function App() {
         <Route path="/governance" element={
           <AppLayout>
             {(layoutProps) => <GovernanceForm {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/prerequisites" element={
+          <AppLayout>
+            {(layoutProps) => <PrerequisiteClassification {...layoutProps} />}
           </AppLayout>
         } />
       </Routes>

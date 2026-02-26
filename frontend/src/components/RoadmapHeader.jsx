@@ -1,7 +1,8 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
     CheckCircle2, Circle, AlertCircle, Loader2,
-    FolderOpen, ShieldCheck, Brain, ListChecks, Bot, Flag
+    FolderOpen, ShieldCheck, Brain, KeyRound, ListChecks, Bot, Flag
 } from 'lucide-react';
 
 /**
@@ -9,8 +10,9 @@ import {
  */
 const STEP_ICONS = {
     'Project Setup': FolderOpen,
-    'Governance': ShieldCheck,
+    'Requirement Screening': ShieldCheck,
     'AI Analysis': Brain,
+    'Prerequisite Classification': KeyRound,
     'Task Creation': ListChecks,
     'Agent Execution': Bot,
     'Complete': Flag,
@@ -79,6 +81,7 @@ const styles = {
  * RoadmapHeader — Railway-track dotted stepper.
  */
 const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }) => {
+    const navigate = useNavigate();
     if (!steps.length) return null;
 
     const statuses =
@@ -90,6 +93,19 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                 if (i === currentStep) return 'active';
                 return 'pending';
             });
+
+    // Map step labels to navigable routes
+    const STEP_ROUTES = {
+        'Requirement Screening': '/governance',
+        'Prerequisite Classification': '/prerequisites',
+    };
+
+    const handleStepClick = (stepLabel, status) => {
+        const route = STEP_ROUTES[stepLabel];
+        if (route && (status === 'active' || status === 'completed')) {
+            navigate(route);
+        }
+    };
 
     // percentage of the track that is "filled"
     const filledPct = Math.min(
@@ -111,6 +127,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                         const status = statuses[index];
                         const StepIcon = STEP_ICONS[step] || Circle;
                         const labelPosition = index % 2 === 0 ? 'top' : 'bottom';
+                        const isClickable = !!(STEP_ROUTES[step] && (status === 'active' || status === 'completed'));
                         return (
                             <StepNode
                                 key={index}
@@ -119,6 +136,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                                 status={status}
                                 icon={StepIcon}
                                 labelPosition={labelPosition}
+                                clickable={isClickable}
+                                onClick={() => handleStepClick(step, status)}
                             />
                         );
                     })}
@@ -131,7 +150,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
 /**
  * StepNode — A single "station" dot on the railway track.
  */
-const StepNode = ({ index, label, status, icon, labelPosition }) => {
+const StepNode = ({ index, label, status, icon, labelPosition, clickable, onClick }) => {
     /**
      * Style map per status.
      */
@@ -194,7 +213,7 @@ const StepNode = ({ index, label, status, icon, labelPosition }) => {
         transition: 'all 0.3s ease',
         position: 'relative',
         zIndex: 3,
-        cursor: 'default',
+        cursor: clickable ? 'pointer' : 'default',
     };
 
     const labelBlock = (
@@ -230,14 +249,18 @@ const StepNode = ({ index, label, status, icon, labelPosition }) => {
     );
 
     return (
-        <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '4px',
-            position: 'relative',
-            flex: '0 0 auto',
-        }}>
+        <div
+            style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '4px',
+                position: 'relative',
+                flex: '0 0 auto',
+            }}
+            onClick={clickable ? onClick : undefined}
+            title={clickable ? `Click to open ${label}` : undefined}
+        >
             {/* Label on TOP if even index */}
             {labelPosition === 'top' && (
                 <div style={{ marginBottom: '2px', minHeight: '28px', display: 'flex', alignItems: 'flex-end' }}>

@@ -164,7 +164,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     useEffect(() => {
         if (queryError) {
             setTimeout(() => {
-                setError(prev => prev || `Failed to load governance questions: ${queryError.message}`);
+                setError(prev => prev || `Failed to load screening questions: ${queryError.message}`);
             }, 0);
         }
     }, [queryError]);
@@ -245,7 +245,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                         <div className="w-14 h-14 border-4 border-app-primary-light border-t-blue-600 rounded-full animate-spin" />
                         <div className="absolute inset-0 w-14 h-14 border-4 border-transparent border-b-indigo-400 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
                     </div>
-                    <p className="text-app-text-muted font-semibold text-sm tracking-wide">Loading governance questionnaire…</p>
+                    <p className="text-app-text-muted font-semibold text-sm tracking-wide">Loading screening questionnaire…</p>
                 </div>
             </div>
         );
@@ -384,7 +384,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                                 <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
                                             </div>
                                         </div>
-                                        <p className="text-[11px] text-app-text-light mt-2 ml-1">This name will be used to identify your governance assessment.</p>
+                                        <p className="text-[11px] text-app-text-light mt-2 ml-1">This name will be used to identify your screening assessment.</p>
                                     </div>
                                 )}
 
@@ -655,7 +655,7 @@ const GovernanceResult = ({ result, onBack }) => {
                             </div>
 
                             <div className="flex-1 min-w-0">
-                                <p className="text-white/70 text-xs font-semibold uppercase tracking-widest mb-1">Governance Result</p>
+                                <p className="text-white/70 text-xs font-semibold uppercase tracking-widest mb-1">Requirement Screening Result</p>
                                 <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-1 truncate">
                                     {theme.emoji} {theme.label}
                                 </h1>
@@ -870,7 +870,7 @@ const GovernanceResult = ({ result, onBack }) => {
                     )}
                     <button
                         onClick={() => {
-                            if (window.confirm('Are you sure you want to reset your governance assessment? All answers will be cleared.')) {
+                            if (window.confirm('Are you sure you want to reset your screening assessment? All answers will be cleared.')) {
                                 localStorage.removeItem('governanceResult');
                                 localStorage.removeItem('governanceContext');
                                 localStorage.removeItem('governancePassed');
