@@ -19,6 +19,9 @@ import ai_service
 import governance_scoring
 import github_service
 import agent_service
+import rag_service
+import context_manager
+import knowledge_graph_service as kg_service
 from database import engine, get_db, SessionLocal
 from config import settings
 
@@ -893,6 +896,229 @@ async def github_repo_context(
         return {"context": context, "repo": f"{payload.owner}/{payload.repo}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
+
+
+# ═════════════════════════ KNOWLEDGE GRAPH + RAG ═════════════════════════════
+
+class KGIndexRequest(BaseModel):
+    repo_url: str
+    branch: str = "main"
+    token: Optional[str] = None
+    brd_analysis: Optional[str] = None
+    governance_context: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/knowledge-graph/index")
+async def index_knowledge_graph(
+    payload: KGIndexRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """
+    Start indexing a repository into the Knowledge Graph + RAG system.
+    Pipeline: Clone repo → Tree-sitter AST → Build KG → LightRAG embed.
+    Runs in the background; use /status to poll progress.
+    """
+    project_token = x_task_token or str(uuid.uuid4())
+
+    # Use user's GitHub token if no explicit token provided
+    github_token = payload.token or current_user.github_token
+
+    # Run indexing in background
+    async def _run_indexing():
+        try:
+            result = await context_manager.index_project_repository(
+                project_token=project_token,
+                repo_url=payload.repo_url,
+                token=github_token,
+                branch=payload.branch,
+                brd_analysis=payload.brd_analysis,
+                governance_context=payload.governance_context,
+            )
+            logger.info(f"KG indexing complete for {project_token}: {result.get('status')}")
+        except Exception as e:
+            logger.error(f"KG indexing background task failed for {project_token}: {e}")
+
+    bg_task = asyncio.create_task(_run_indexing())
+    bg_task.add_done_callback(lambda t: logger.error(f"KG indexing error: {t.exception()}") if t.exception() else None)
+
+    return {
+        "status": "indexing_started",
+        "project_token": project_token,
+        "message": f"Indexing {payload.repo_url} in background. Poll /api/knowledge-graph/status/{project_token} for progress.",
+    }
+
+
+@app.get("/api/knowledge-graph/status/{project_token}")
+async def get_kg_status(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Check the indexing status for a project's Knowledge Graph.
+    """
+    rag_status = rag_service.get_indexing_status(project_token)
+    graph_stats = context_manager.get_project_graph_stats(project_token)
+
+    return {
+        "project_token": project_token,
+        "rag_status": rag_status,
+        "graph_stats": graph_stats,
+        "is_ready": context_manager.is_project_indexed(project_token),
+    }
+
+
+class KGQueryRequest(BaseModel):
+    query: str
+    mode: str = "hybrid"  # naive, local, global, hybrid
+    top_k: int = 10
+
+
+@app.post("/api/knowledge-graph/query")
+async def query_knowledge_graph(
+    payload: KGQueryRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """
+    Query the Knowledge Graph + RAG system for relevant code context.
+    Returns semantically relevant code snippets and graph-connected relationships.
+    """
+    project_token = x_task_token
+    if not project_token:
+        raise HTTPException(status_code=400, detail="x-task-token header is required")
+
+    if not context_manager.is_project_indexed(project_token):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project {project_token} is not indexed. Call /api/knowledge-graph/index first.",
+        )
+
+    result = await rag_service.query_codebase(
+        project_token=project_token,
+        query=payload.query,
+        mode=payload.mode,
+        top_k=payload.top_k,
+    )
+    return result
+
+
+@app.get("/api/knowledge-graph/stats/{project_token}")
+async def get_kg_stats(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Get Knowledge Graph statistics for a project.
+    Returns counts of nodes (files, classes, functions, imports)
+    and edges (contains, imports, calls, inherits).
+    """
+    stats = context_manager.get_project_graph_stats(project_token)
+    if not stats:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No knowledge graph found for project {project_token}",
+        )
+    return {"project_token": project_token, "stats": stats}
+
+
+@app.delete("/api/knowledge-graph/{project_token}")
+async def delete_knowledge_graph(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Delete all indexed Knowledge Graph and RAG data for a project.
+    """
+    result = await rag_service.delete_index(project_token)
+    return {"status": "deleted", "project_token": project_token, "details": result}
+
+
+class AgentContextRequest(BaseModel):
+    task_description: str
+    task_type: Optional[str] = None
+    brd_analysis: Optional[str] = None
+    governance_context: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/knowledge-graph/agent-context")
+async def get_agent_context(
+    payload: AgentContextRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """
+    Get the full three-layer context for an agent task:
+    Layer 1: Global codebase context (tech stack, structure)
+    Layer 2: Project rules (BRD analysis, governance)
+    Layer 3: Just-in-time code snippets (LightRAG hybrid query)
+    """
+    project_token = x_task_token
+    if not project_token:
+        raise HTTPException(status_code=400, detail="x-task-token header is required")
+
+    context = await context_manager.get_full_agent_context(
+        project_token=project_token,
+        task_description=payload.task_description,
+        task_type=payload.task_type,
+        brd_analysis=payload.brd_analysis,
+        governance_context=payload.governance_context,
+    )
+    return {
+        "context": context,
+        "is_indexed": context_manager.is_project_indexed(project_token),
+        "project_token": project_token,
+    }
+
+
+@app.get("/api/knowledge-graph/cross-agent-memory/{project_token}")
+async def get_cross_agent_memory(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Get the live cross-agent shared memory for a project.
+    Shows which agents are active, what files they're touching,
+    and what was recently completed.
+    """
+    memory = context_manager.get_live_memory(project_token)
+
+    active_agents = []
+    for aid, record in memory.active_tasks.items():
+        active_agents.append({
+            "agent_id": record.agent_id,
+            "task_title": record.task_title,
+            "task_description": record.task_description[:200],
+            "branch_name": record.branch_name,
+            "started_at": record.started_at,
+        })
+
+    completed_history = []
+    for record in memory.completed_history[:20]:
+        completed_history.append({
+            "agent_id": record.agent_id,
+            "task_title": record.task_title,
+            "status": record.status,
+            "files_touched": record.files_touched,
+            "symbols_created": record.symbols_created,
+            "exit_code": record.exit_code,
+            "summary": record.summary,
+            "completed_at": record.completed_at,
+        })
+
+    file_locks = {
+        fpath: list(agents)
+        for fpath, agents in memory.file_locks.items()
+        if agents
+    }
+
+    return {
+        "project_token": project_token,
+        "active_agents": active_agents,
+        "completed_history": completed_history,
+        "file_locks": file_locks,
+        "total_completed": len(memory.completed_history),
+    }
 
 
 # ═══════════════════════════════ AI AGENTS ═══════════════════════════════════

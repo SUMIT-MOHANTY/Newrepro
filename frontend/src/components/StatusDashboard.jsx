@@ -6,6 +6,7 @@ import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
 import { API_ENDPOINTS } from '../config';
+import KnowledgeGraphCard from './KnowledgeGraphCard';
 
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
@@ -1632,6 +1633,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         </div>
                                     </div>
                                 )}
+
+                                {/* ── KNOWLEDGE GRAPH SECTION ── */}
+                                <KnowledgeGraphCard
+                                    selectedProjectKey={selectedProjectKey}
+                                    token={token}
+                                    taskToken={taskToken}
+                                    repoUrl={agents.find(a => a.git_repo_url)?.git_repo_url || ''}
+                                />
 
                                 {/* ── AI AGENTS SECTION ── */}
                                 <div className="w-full mt-6 lg:col-start-1 min-w-0">

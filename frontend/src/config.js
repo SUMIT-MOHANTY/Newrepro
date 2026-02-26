@@ -54,6 +54,14 @@ export const API_ENDPOINTS = {
     AGENT_CREATE_TASK: `${API_BASE_URL}/api/agent/tasks/`,
     AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`,
     AGENT_DASHBOARD: `${API_BASE_URL}/api/agent/dashboard/`,
+
+    // Knowledge Graph + RAG
+    KG_INDEX: `${API_BASE_URL}/api/knowledge-graph/index`,
+    KG_STATUS: (projectToken) => `${API_BASE_URL}/api/knowledge-graph/status/${projectToken}`,
+    KG_QUERY: `${API_BASE_URL}/api/knowledge-graph/query`,
+    KG_STATS: (projectToken) => `${API_BASE_URL}/api/knowledge-graph/stats/${projectToken}`,
+    KG_DELETE: (projectToken) => `${API_BASE_URL}/api/knowledge-graph/${projectToken}`,
+    KG_AGENT_CONTEXT: `${API_BASE_URL}/api/knowledge-graph/agent-context`,
 };
 
 export default {

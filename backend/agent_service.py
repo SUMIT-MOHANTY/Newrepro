@@ -361,8 +361,14 @@ def _is_workspace_empty(container_name: str) -> bool:
 
 # ── Helper: Call AI Model ───────────────────────────────────────────────────
 
-async def _call_ai_for_code(task_description: str, agent_type: str) -> tuple[str, str]:
-    """Call AI model to generate project-building Python code."""
+async def _call_ai_for_code(task_description: str, agent_type: str, code_context: str = "") -> tuple[str, str]:
+    """Call AI model to generate project-building Python code.
+    
+    Args:
+        task_description: The task to implement
+        agent_type: Type of agent (validator, risk, estimator)
+        code_context: Optional JIT context from Knowledge Graph + RAG system
+    """
     url = settings.ai_api_url
     key = settings.ai_api_key
     model_name = settings.ai_model
@@ -372,11 +378,24 @@ async def _call_ai_for_code(task_description: str, agent_type: str) -> tuple[str
 
     system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
 
+    # Build user prompt with optional KG context
+    user_content = f"Task to implement:\n\n{task_description}"
+    if code_context:
+        user_content = (
+            f"RELEVANT CODEBASE CONTEXT (from Knowledge Graph analysis):\n"
+            f"{code_context}\n\n"
+            f"---\n\n"
+            f"Task to implement:\n\n{task_description}\n\n"
+            f"Use the codebase context above to understand existing patterns, "
+            f"naming conventions, file structure, and dependencies. "
+            f"Ensure your generated code is consistent with the existing codebase."
+        )
+
     payload = {
         "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Task to implement:\n\n{task_description}"},
+            {"role": "user", "content": user_content},
         ],
         "stream": False,
         "chat_template_kwargs": {"thinking": False},
@@ -2140,6 +2159,28 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             task["status"] = "in_progress"
             task["assigned_agent"] = agent_id
             task["started_at"] = datetime.utcnow().isoformat()
+
+            # ── Register in Cross-Agent Shared Memory ────────────────
+            try:
+                import context_manager as ctx_mgr
+                live_mem = ctx_mgr.get_live_memory(project_token or "")
+                live_mem.register_task_start(
+                    agent_id=agent_id,
+                    task_title=task.get("title", "Untitled"),
+                    task_description=task.get("description", "")[:500],
+                    branch_name=_branch_name_for_task(task) if use_git else None,
+                )
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Cross-agent memory: registered task start"
+                })
+            except Exception as mem_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Cross-agent memory: skipped ({str(mem_err)[:80]})"
+                })
             
             # Map "agent_01" -> "agent1"
             username = agent_id.replace("agent_0", "agent")
@@ -2294,6 +2335,37 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
             # ── AI Code Generation ───────────────────────────────────
             agent["progress"] = 20
+            agent["progress_message"] = "Fetching relevant code context from Knowledge Graph..."
+
+            # Fetch JIT context from Knowledge Graph + RAG if indexed
+            jit_context = ""
+            try:
+                import context_manager as ctx_mgr
+                if ctx_mgr.is_project_indexed(project_token or ""):
+                    jit_context = await ctx_mgr.get_full_agent_context(
+                        project_token=project_token or "",
+                        task_description=task.get("description", ""),
+                        task_type=task.get("task_type"),
+                        agent_id=agent_id,
+                    )
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"KG context retrieved: {len(jit_context)} chars of targeted context"
+                    })
+                else:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "Knowledge Graph not indexed for this project, using task description only"
+                    })
+            except Exception as ctx_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"KG context fetch skipped: {str(ctx_err)[:100]}"
+                })
+
             agent["progress_message"] = "AI is generating project code..."
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
@@ -2301,7 +2373,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 "message": "Calling AI model to generate project code..."
             })
 
-            generated_code, thought = await _call_ai_for_code(task["description"], agent["type"])
+            generated_code, thought = await _call_ai_for_code(task["description"], agent["type"], code_context=jit_context)
             if thought:
                 await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
 
@@ -2557,7 +2629,20 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         "message": f"API: linked task start message {'ok' if msg_ok else 'failed'}, progress 10% {'ok' if prog_ok else 'skipped/failed'}"
                     })
 
-                    lt_code, thought = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"])
+                    # Fetch JIT context for linked task too
+                    lt_jit_context = ""
+                    try:
+                        import context_manager as ctx_mgr
+                        if ctx_mgr.is_project_indexed(project_token or ""):
+                            lt_jit_context = await ctx_mgr.get_full_agent_context(
+                                project_token=project_token or "",
+                                task_description=linked_task.get("description", lt_title),
+                                task_type=linked_task.get("task_type"),
+                            )
+                    except Exception:
+                        pass
+
+                    lt_code, thought = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"], code_context=lt_jit_context)
                     if thought:
                         await _post_task_message(linked_task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
                     lt_result = await asyncio.to_thread(
@@ -2978,6 +3063,43 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             })
             agent["progress"] = 100
             agent["progress_message"] = "Task completed"
+
+            # ── Write to Cross-Agent Shared Memory ───────────────────
+            try:
+                import context_manager as ctx_mgr
+                live_mem = ctx_mgr.get_live_memory(project_token or "")
+
+                # Extract files and symbols from what the agent produced
+                touched_files = ctx_mgr.extract_files_from_workspace_tree(workspace_tree)
+                symbols = ctx_mgr.extract_symbols_from_code(all_generated_code)
+
+                live_mem.register_task_complete(
+                    agent_id=agent_id,
+                    files_touched=touched_files[:25],
+                    symbols_created=symbols.get("created", []),
+                    symbols_modified=symbols.get("modified", []),
+                    exit_code=result["exit_code"],
+                    summary=(
+                        f"{'Completed' if result['exit_code'] == 0 else 'Failed'} "
+                        f"task '{task['title']}' in {elapsed}s. "
+                        f"Generated {len(all_generated_code.splitlines())} lines of code. "
+                        f"Touched {len(touched_files)} files."
+                    ),
+                )
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": (
+                        f"Cross-agent memory: recorded completion "
+                        f"({len(touched_files)} files, {len(symbols.get('created', []))} new symbols)"
+                    )
+                })
+            except Exception as mem_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Cross-agent memory write skipped: {str(mem_err)[:80]}"
+                })
 
             # ═════════════════════════════════════════════════════════
             # PICK NEXT TASK (only if continuous mode)

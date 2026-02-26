@@ -11,3 +11,10 @@ httpx
 numpy<2.0.0
 argon2-cffi
 Pillow==10.4.0
+lightrag-hku
+tree-sitter>=0.23.0
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+gitpython
+networkx
