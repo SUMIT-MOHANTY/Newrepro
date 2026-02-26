@@ -617,7 +617,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
 
         return (
-            <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+            <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
                 <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${cfg.accent}`}></div>
 
                 <div className="flex items-start justify-between mb-4">
@@ -663,7 +663,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 </div>
 
                 {/* Stats */}
-                <div className="flex items-center gap-4 mb-4 py-2 px-3 bg-app-bg-page rounded-lg">
+                <div className="flex items-center gap-3 mb-3 py-1.5 px-2.5 bg-app-bg-page rounded-lg">
                     {cfg.stats.map((key, idx) => (
                         <React.Fragment key={key}>
                             {idx > 0 && <div className="w-px h-8 bg-app-bg-hover"></div>}
@@ -797,7 +797,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     const renderDashboardSkeleton = () => (
         <SkeletonTheme baseColor="#e5e7eb" highlightColor="#f3f4f6">
-            <div className="flex-1 p-4 md:p-6 flex flex-col gap-6">
+            <div className="flex-1 p-3 sm:p-4 md:p-5 flex flex-col gap-4">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {[0, 1, 2, 3].map((idx) => (
                         <div key={idx} className="bg-app-bg-card p-4 rounded-xl shadow border border-app-border-light">
@@ -812,9 +812,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     ))}
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 w-full items-start">
-                    <div className="space-y-6 lg:col-start-1 w-full min-w-0">
-                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6">
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4 md:gap-5 w-full items-start">
+                    <div className="space-y-4 lg:col-start-1 w-full min-w-0">
+                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5">
                             <Skeleton height={20} width={220} />
                             <div className="mt-5 space-y-3">
                                 {[0, 1, 2, 3].map((i) => (
@@ -827,7 +827,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </div>
                         </div>
 
-                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-6">
+                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5">
                             <Skeleton height={20} width={260} />
                             <div className="mt-6 flex items-end justify-center gap-6">
                                 <Skeleton height={160} width={120} />
@@ -845,7 +845,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </div>
                     </div>
 
-                    <div className="w-full bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 md:p-6 flex flex-col items-center lg:col-start-2 lg:row-span-4 sticky top-6">
+                    <div className="w-full bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 md:p-5 flex flex-col items-center lg:col-start-2">
                         <Skeleton height={28} width={170} />
                         <div className="w-full mt-4 mb-6">
                             <Skeleton height={2} />
@@ -867,8 +867,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     </div>
                 </div>
 
-                <div className="w-full mt-6 lg:col-start-1 min-w-0">
-                    <div className="flex items-center justify-between mb-6">
+                <div className="w-full mt-4 lg:col-span-2 min-w-0">
+                    <div className="flex items-center justify-between mb-4">
                         <Skeleton height={24} width={180} />
                         <div className="flex items-center gap-2">
                             <Skeleton height={28} width={90} />
@@ -876,9 +876,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             <Skeleton height={28} width={90} />
                         </div>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                         {[0, 1, 2].map((idx) => (
-                            <div key={idx} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5">
+                            <div key={idx} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4">
                                 <div className="flex items-center justify-between">
                                     <Skeleton circle width={40} height={40} />
                                     <Skeleton height={12} width={56} />
@@ -976,6 +976,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const cxoRiskLabel = lateTaskCount > 0 || overallHealth === 'Critical' ? 'High'
         : overallHealth === 'At Risk' ? 'Medium'
             : 'Low';
+    const workCompletedPct = Math.max(0, Math.min(100, Number(dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0)));
+    const workRemainingPct = Math.max(0, Math.min(100, Number(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0)));
+    const workTotalPct = workCompletedPct + workRemainingPct;
+    const donutCompletedPct = workTotalPct > 0 ? (workCompletedPct / workTotalPct) * 100 : 0;
+    const donutRemainingPct = workTotalPct > 0 ? (workRemainingPct / workTotalPct) * 100 : 0;
+    const donutRadius = 56;
+    const donutCircumference = 2 * Math.PI * donutRadius;
+    const donutCompletedLength = (donutCompletedPct / 100) * donutCircumference;
+    const donutRemainingLength = (donutRemainingPct / 100) * donutCircumference;
+    const workCompletedDisplay = Number.isFinite(workCompletedPct) ? Number(workCompletedPct.toFixed(1)) : 0;
+    const workRemainingDisplay = Number.isFinite(workRemainingPct) ? Number(workRemainingPct.toFixed(1)) : 0;
     const salesSignals = [
         {
             label: 'Pipeline Stage',
@@ -996,13 +1007,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     ];
 
     return (
-        <div className="w-full min-h-full bg-app-bg-page flex flex-col font-sans overflow-y-auto relative">
+        <div className="w-full h-full bg-app-bg-page flex flex-col font-sans overflow-y-auto relative">
             {/* Top Graphic Header Area */}
             <div className="bg-app-bg-card shadow">
 
                 {/* Top spacer since title is now in global navbar */}
-                <div className="pt-4"></div>
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-4 md:px-8 py-2 mb-2 gap-3">
+                <div className="pt-2 md:pt-3"></div>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-3 sm:px-4 md:px-6 py-1.5 mb-1 gap-2">
                     <div className="flex items-center space-x-4 flex-shrink-0">
                         {projects.length > 0 && (
                             <>
@@ -1022,7 +1033,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             {isInitialProjectsLoading ? (
                 renderDashboardSkeleton()
             ) : projects.length === 0 ? (
-                <div className="flex-1 p-4 md:p-6 flex flex-col items-center justify-center min-h-[500px]">
+                <div className="flex-1 p-3 sm:p-4 md:p-5 flex flex-col items-center justify-center min-h-[360px]">
                     <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light p-10 max-w-md w-full text-center flex flex-col items-center">
                         <div className="w-20 h-20 bg-app-primary-light rounded-full flex items-center justify-center mb-6 shadow-inner">
                             <PlusCircle className="w-10 h-10 text-blue-500" />
@@ -1044,7 +1055,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             ) : isDashboardSkeletonVisible ? (
                 renderDashboardSkeleton()
             ) : (
-                <div className="flex-1 p-4 md:p-6 flex flex-col gap-6">
+                <div className="flex-1 p-3 sm:p-4 md:p-5 flex flex-col gap-4">
                     <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                         <div>
                             <p className="text-[10px] uppercase tracking-widest font-bold text-gray-400">Active Role View</p>
@@ -1080,8 +1091,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                <div className="lg:col-span-2 bg-white rounded-xl shadow border border-gray-100 p-6">
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5">
+                                <div className="lg:col-span-2 bg-white rounded-xl shadow border border-gray-100 p-5">
                                     <div className="flex items-center mb-5">
                                         <Flag className="w-4 h-4 text-orange-500 mr-2" />
                                         <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Milestone Visibility</h3>
@@ -1180,8 +1191,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5">
+                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
                                     <div className="flex items-center mb-5">
                                         <Calendar className="w-4 h-4 text-orange-500 mr-2" />
                                         <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Client-Facing Delivery Commitments</h3>
@@ -1206,7 +1217,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </div>
                                 </div>
 
-                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                                <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
                                     <div className="flex items-center mb-5">
                                         <Tag className="w-4 h-4 text-orange-500 mr-2" />
                                         <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Delivery Readiness</h3>
@@ -1234,7 +1245,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </div>
                             </div>
 
-                            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
                                 <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">Sales Signals</h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                                     {salesSignals.map((signal) => (
@@ -1313,14 +1324,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </div>
 
                             {/* Bottom Section: 2 Columns */}
-                            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 w-full items-start">
+                            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4 md:gap-5 w-full items-start">
 
                                 {/* Left Column (Main Content) */}
-                                <div className="space-y-6 lg:col-start-1 w-full min-w-0">
+                                <div className="space-y-4 lg:col-start-1 w-full min-w-0">
 
-                                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                         {/* KEY MILESTONES & DATES */}
-                                        <div className="bg-white rounded-xl shadow-sm border border-app-border-light p-5 relative flex flex-col h-[320px]">
+                                        <div className="bg-white rounded-xl shadow-sm border border-app-border-light p-5 relative flex flex-col min-h-[270px] md:min-h-[340px] lg:min-h-[410px]">
                                             <div className="flex items-center gap-2 mb-4">
                                                 <Flag className="w-4 h-4 text-orange-500" />
                                                 <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Milestones & Dates</h3>
@@ -1360,47 +1371,60 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         </div>
 
                                         {/* ACTUAL VS REMAINING WORK */}
-                                        <div className="bg-white rounded-xl shadow-sm border border-app-border-light p-5 flex flex-col relative h-[320px]">
+                                        <div className="bg-white rounded-xl shadow-sm border border-app-border-light p-5 flex flex-col relative min-h-[270px] md:min-h-[340px] lg:min-h-[410px]">
                                             <div className="flex items-center gap-2 mb-4">
                                                 <Activity className="w-4 h-4 text-orange-500" />
                                                 <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Work: Actual vs Remaining</h3>
                                             </div>
 
-                                            <div className="flex-1 flex items-end justify-center px-8 relative mt-2">
-                                                <div className="absolute left-6 flex flex-col justify-between h-[180px] bottom-6 text-[10px] font-bold text-gray-400 w-10 text-right pr-2">
-                                                    <span className="relative -top-2">100%</span>
-                                                    <span className="relative">50%</span>
-                                                    <span className="relative top-2">0%</span>
-                                                </div>
-
-                                                {/* Grid lines */}
-                                                <div className="absolute left-16 right-4 flex flex-col justify-between h-[180px] bottom-6 pointer-events-none">
-                                                    <div className="w-full border-t border-gray-100"></div>
-                                                    <div className="w-full border-t border-gray-100"></div>
-                                                    <div className="w-full border-t border-gray-300"></div>
-                                                </div>
-
-                                                {/* The Stacked Bar */}
-                                                <div className="w-[40%] min-w-[80px] relative z-10 flex flex-col justify-end h-[180px] mb-6">
-                                                    {/* Remaining Work */}
-                                                    <div className="bg-amber-100 w-full relative flex items-center justify-center border-t border-l border-r border-amber-200" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
-                                                        <span className="text-amber-700 font-bold text-xs">{dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}%</span>
+                                            <div className="flex-1 flex flex-col items-center justify-center gap-4">
+                                                <div className="relative w-[210px] h-[210px] flex items-center justify-center">
+                                                    <svg viewBox="0 0 160 160" className="w-[190px] h-[190px]">
+                                                        <circle
+                                                            cx="80"
+                                                            cy="80"
+                                                            r={donutRadius}
+                                                            fill="none"
+                                                            stroke="#e5e7eb"
+                                                            strokeWidth="18"
+                                                        />
+                                                        <circle
+                                                            cx="80"
+                                                            cy="80"
+                                                            r={donutRadius}
+                                                            fill="none"
+                                                            stroke="#374151"
+                                                            strokeWidth="18"
+                                                            strokeLinecap="round"
+                                                            strokeDasharray={`${donutCompletedLength} ${donutCircumference}`}
+                                                            transform="rotate(-90 80 80)"
+                                                        />
+                                                        <circle
+                                                            cx="80"
+                                                            cy="80"
+                                                            r={donutRadius}
+                                                            fill="none"
+                                                            stroke="#fef3c7"
+                                                            strokeWidth="18"
+                                                            strokeLinecap="round"
+                                                            strokeDasharray={`${donutRemainingLength} ${donutCircumference}`}
+                                                            strokeDashoffset={-donutCompletedLength}
+                                                            transform="rotate(-90 80 80)"
+                                                        />
+                                                    </svg>
+                                                    <div className="absolute text-center">
+                                                        <p className="text-2xl font-black text-gray-900">{workCompletedDisplay}%</p>
+                                                        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Completed</p>
                                                     </div>
-                                                    {/* Completed Work */}
-                                                    <div className="bg-gradient-to-t from-gray-800 to-gray-700 w-full relative flex items-center justify-center shadow-inner" style={{ height: `${Math.max(dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0, 5)}%`, minHeight: '20px' }}>
-                                                        <span className="text-white font-bold text-xs">{dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0}%</span>
-                                                    </div>
                                                 </div>
-
-                                                {/* Legend */}
-                                                <div className="absolute top-0 right-4 flex flex-col gap-2 bg-white/80 p-2 rounded backdrop-blur-sm shadow-sm border border-gray-50">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="w-3 h-3 bg-amber-100 border border-amber-200 rounded-sm"></div>
-                                                        <span className="text-[10px] text-gray-600 font-semibold uppercase tracking-wider">Remaining</span>
+                                                <div className="grid grid-cols-2 gap-2 w-full max-w-[260px]">
+                                                    <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-center">
+                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-gray-500">Completed</p>
+                                                        <p className="text-sm font-black text-gray-800">{workCompletedDisplay}%</p>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
-                                                        <div className="w-3 h-3 bg-gray-700 rounded-sm"></div>
-                                                        <span className="text-[10px] text-gray-600 font-semibold uppercase tracking-wider">Completed</span>
+                                                    <div className="rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2 text-center">
+                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-amber-700">Remaining</p>
+                                                        <p className="text-sm font-black text-amber-700">{workRemainingDisplay}%</p>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1409,8 +1433,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </div>
 
                                 {/* Right Column (Sidebar Summary) */}
-                                <div className="w-full bg-gradient-to-b from-app-bg-card to-gray-50/50 rounded-xl shadow-sm border border-app-border-light p-5 lg:col-start-2 lg:row-span-4 sticky top-6">
-                                    <h2 className="text-[13px] font-bold text-gray-800 uppercase tracking-widest mb-5 flex items-center gap-2"><Activity className="w-4 h-4 text-indigo-500" /> Project Status</h2>
+                                <div className="w-full bg-gradient-to-b from-app-bg-card to-gray-50/50 rounded-xl shadow-sm border border-app-border-light p-5 lg:col-start-2">
+                                    <h2 className="text-[13px] font-bold text-gray-800 uppercase tracking-widest mb-4 flex items-center gap-2"><Activity className="w-4 h-4 text-indigo-500" /> Project Status</h2>
 
                                     <div className="flex flex-col gap-4">
                                         {/* Launch Date */}
@@ -1492,16 +1516,16 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                 {/* Task Tables Section - matching screenshot layout */}
                                 {dashboardData?.tasks && (
-                                    <div className="mt-8 space-y-6 lg:col-start-1 w-full min-w-0">
+                                    <div className="mt-4 space-y-4 lg:col-span-2 w-full min-w-0">
                                         {/* Row 1: Late Tasks + Upcoming Tasks (Next Period) */}
-                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                             {/* Late Tasks Table */}
-                                            <div className="bg-white rounded-xl shadow-sm border border-app-border-light p-4 flex flex-col">
+                                            <div className="bg-white rounded-xl shadow-sm border border-app-border-light p-4 flex flex-col min-h-[240px] md:min-h-[260px] lg:min-h-[280px]">
                                                 <div className="flex items-center gap-1.5 mb-3">
                                                     <AlertCircle className="w-4 h-4 text-red-500" />
                                                     <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Late Tasks</h3>
                                                 </div>
-                                                <div className="overflow-auto rounded border border-gray-100 flex-1" style={{ minHeight: '120px', maxHeight: '200px' }}>
+                                                <div className="overflow-auto rounded border border-gray-100" style={{ maxHeight: '240px' }}>
                                                     <table className="min-w-full text-xs">
                                                         <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-100">
                                                             <tr className="text-gray-500 uppercase tracking-widest">
@@ -1532,7 +1556,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     <Calendar className="w-4 h-4 text-blue-500" />
                                                     <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Upcoming</h3>
                                                 </div>
-                                                <div className="overflow-auto rounded border border-gray-100 flex-1" style={{ minHeight: '120px', maxHeight: '200px' }}>
+                                                <div className="overflow-auto rounded border border-gray-100" style={{ maxHeight: '200px' }}>
                                                     <table className="min-w-full text-xs">
                                                         <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-100">
                                                             <tr className="text-gray-500 uppercase tracking-widest">
@@ -1559,14 +1583,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         </div>
 
                                         {/* Row 2: Due This Week + In Progress / Recently Completed */}
-                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                                             {/* Due This Week Table */}
                                             <div className="bg-white rounded-xl shadow-sm border border-app-border-light p-4 flex flex-col">
                                                 <div className="flex items-center gap-1.5 mb-3">
                                                     <AlertTriangle className="w-4 h-4 text-amber-500" />
                                                     <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Due This Week</h3>
                                                 </div>
-                                                <div className="overflow-auto rounded border border-gray-100 flex-1" style={{ minHeight: '120px', maxHeight: '200px' }}>
+                                                <div className="overflow-auto rounded border border-gray-100" style={{ maxHeight: '200px' }}>
                                                     <table className="min-w-full text-xs">
                                                         <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-100">
                                                             <tr className="text-gray-500 uppercase tracking-widest">
@@ -1599,7 +1623,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     <Activity className="w-4 h-4 text-emerald-500" />
                                                     <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Active & Done</h3>
                                                 </div>
-                                                <div className="overflow-auto rounded border border-gray-100 flex-1" style={{ minHeight: '120px', maxHeight: '200px' }}>
+                                                <div className="overflow-auto rounded border border-gray-100" style={{ maxHeight: '200px' }}>
                                                     <table className="min-w-full text-xs">
                                                         <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-100">
                                                             <tr className="text-gray-500 uppercase tracking-widest">
@@ -1643,9 +1667,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 />
 
                                 {/* ── AI AGENTS SECTION ── */}
-                                <div className="w-full mt-6 lg:col-start-1 min-w-0">
-                                    <div className="flex items-center justify-between mb-6">
-                                        <div className="flex items-center">
+                                <div className="w-full mt-4 lg:col-span-2 min-w-0">
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
+                                        <div className="flex items-center flex-wrap">
                                             <div className="p-2 mr-3 bg-app-primary-light rounded text-indigo-500">
                                                 <Bot className="w-5 h-5" />
                                             </div>
@@ -1654,7 +1678,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 {agents.filter(a => a.status === 'running').length} Running
                                             </span>
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center flex-wrap gap-2 lg:justify-end">
                                             <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
                                                 {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
                                             </span>
@@ -1700,7 +1724,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         </div>
                                     </div>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                                         {agents.map(agent => renderAgentCard(agent))}
                                     </div>
                                 </div>
