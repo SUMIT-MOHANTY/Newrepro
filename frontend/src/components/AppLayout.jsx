@@ -17,9 +17,9 @@ const DASHBOARD_ROLES = [
 const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 
 const DEFAULT_ROADMAP = {
-    steps: ['Project Setup', 'Governance', 'AI Analysis', 'Task Creation', 'Agent Execution', 'Complete'],
+    steps: ['Project Setup', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'Agent Execution', 'Complete'],
     current_step: 0,
-    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending'],
+    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
     failed_step: null,
 };
 
@@ -67,13 +67,16 @@ export default function AppLayout({ children }) {
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
         : location.pathname === '/governance' ? 'governance'
-            : 'main';
+            : location.pathname === '/prerequisites' ? 'prerequisites'
+                : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
             navigate('/status-dashboard');
         } else if (view === 'governance') {
             navigate('/governance');
+        } else if (view === 'prerequisites') {
+            navigate('/prerequisites');
         } else {
             navigate('/dashboard');
         }
@@ -221,13 +224,15 @@ export default function AppLayout({ children }) {
                             <div className="min-w-0 truncate">
                                 <h1 className="text-lg md:text-2xl lg:text-3xl font-bold tracking-wide truncate">
                                     {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
-                                        currentView === 'governance' ? 'Project Governance' :
-                                            'BRD Requirements Analyzer'}
+                                        currentView === 'governance' ? 'Project Requirement Screening' :
+                                            currentView === 'prerequisites' ? 'Prerequisite Classification' :
+                                                'BRD Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
-                                        currentView === 'governance' ? 'Questionnaire & Configuration' :
-                                            'Project Insight & AI Assessment'}
+                                        currentView === 'governance' ? 'Screening & Configuration' :
+                                            currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
+                                                'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 

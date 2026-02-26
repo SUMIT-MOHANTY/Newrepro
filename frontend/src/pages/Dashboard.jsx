@@ -5,7 +5,7 @@ import { clearAuthData } from '../utils/auth';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X, CheckCircle2 } from 'lucide-react';
+import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X, CheckCircle2, KeyRound } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import AIConfig from '../components/AIConfig';
 
@@ -53,7 +53,8 @@ const parseAIResponse = (text) => {
             report,
             questions: lastValidFenced.parsed.questions || [],
             metrics: lastValidFenced.parsed.metrics || null,
-            title: lastValidFenced.parsed.title || null
+            title: lastValidFenced.parsed.title || null,
+            prerequisites: lastValidFenced.parsed.prerequisites || []
         };
     }
 
@@ -61,7 +62,7 @@ const parseAIResponse = (text) => {
     if (lastJsonLikeFence) {
         const before = source.slice(0, lastJsonLikeFence.index);
         const after = source.slice(lastJsonLikeFence.index + lastJsonLikeFence.fullMatch.length);
-        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null };
+        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null, prerequisites: [] };
     }
 
     // 2) Fallback: parse trailing raw JSON object without fences
@@ -75,12 +76,13 @@ const parseAIResponse = (text) => {
                 report,
                 questions: parsed.questions || [],
                 metrics: parsed.metrics || null,
-                title: parsed.title || null
+                title: parsed.title || null,
+                prerequisites: parsed.prerequisites || []
             };
         }
     }
 
-    return { report: source, questions: [], metrics: null, title: null };
+    return { report: source, questions: [], metrics: null, title: null, prerequisites: [] };
 };
 
 const isLikelyHtml = (content = '') => {
@@ -894,7 +896,7 @@ const Dashboard = ({
             }
 
             const data = await response.json();
-            const { report, questions, metrics, title } = parseAIResponse(data.analysis || '');
+            const { report, questions, metrics, title, prerequisites } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
             const finalFilename = title || (initialContext || result).filename;
@@ -907,6 +909,7 @@ const Dashboard = ({
                     analysis: report,
                     questions: questions,
                     metrics: metrics,
+                    prerequisites: prerequisites,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: governanceContext
@@ -1091,7 +1094,7 @@ const Dashboard = ({
                             }
 
                             // Parse questions dynamically during stream
-                            const { report, questions, metrics } = parseAIResponse(aiText);
+                            const { report, questions, metrics, prerequisites } = parseAIResponse(aiText);
                             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
                             // Update UI gracefully
@@ -1103,7 +1106,8 @@ const Dashboard = ({
                                         analysis: report,
                                         reasoning: aiReasoning,
                                         model: payload.model || 'Streaming...',
-                                        metrics: metrics
+                                        metrics: metrics,
+                                        prerequisites: prerequisites
                                     }
                                 }
                             }));
@@ -1116,7 +1120,7 @@ const Dashboard = ({
             }
 
             // Save history after stream completes
-            const { report, questions, metrics, title } = parseAIResponse(aiText);
+            const { report, questions, metrics, title, prerequisites } = parseAIResponse(aiText);
 
             const finalFilename = title || (initialContext || result).filename;
 
@@ -1127,6 +1131,7 @@ const Dashboard = ({
                     analysis: report,
                     questions: questions,
                     metrics: metrics,
+                    prerequisites: prerequisites,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: governanceContext,
@@ -2114,6 +2119,26 @@ const Dashboard = ({
                                             No Go
                                         </button>
                                     </div>
+                                </div>
+
+                                {/* Prerequisites Review Banner */}
+                                <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 flex items-center justify-center shadow-lg shadow-amber-200">
+                                            <KeyRound className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
+                                            <p className="text-xs text-amber-700">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => navigate('/prerequisites')}
+                                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                    >
+                                        <KeyRound className="w-4 h-4" />
+                                        Review Prerequisites
+                                    </button>
                                 </div>
 
                                 <div id="analysis-content" className="bg-transparent space-y-6">

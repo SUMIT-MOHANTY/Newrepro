@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Optional, List, Dict, Any
 
 from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, Header
@@ -503,6 +503,29 @@ async def update_revision_reason(
     return {"status": "success", "pending_revision_reason": payload.reason}
 
 
+@app.post("/governance/{identifier}/prerequisites-complete")
+async def mark_prerequisites_complete(
+    identifier: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Mark prerequisites as completed for a project."""
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    governance.prerequisites_completed_at = datetime.utcnow()
+    db.commit()
+
+    return {"status": "ok", "completed_at": governance.prerequisites_completed_at.isoformat()}
+
 @app.get("/governance/{identifier}/roadmap-step")
 async def get_project_roadmap_step(
     identifier: str,
@@ -514,12 +537,13 @@ async def get_project_roadmap_step(
     Get the current roadmap step for a project.
 
     Steps:
-        0 - Project Setup     (project named)
-        1 - Governance        (governance assessment completed)
-        2 - AI Analysis       (BRD uploaded & analysis completed)
-        3 - Task Creation     (tasks auto-generated via external API)
-        4 - Agent Execution   (agents working on tasks)
-        5 - Complete          (all tasks completed)
+        0 - Project Setup                (project named)
+        1 - Requirement Screening        (governance assessment completed)
+        2 - AI Analysis                  (BRD uploaded & analysis completed)
+        3 - Prerequisite Classification  (prerequisites / credentials identified)
+        4 - Task Creation                (tasks auto-generated via external API)
+        5 - Agent Execution              (agents working on tasks)
+        6 - Complete                     (all tasks completed)
 
     Returns a `step_statuses` array with per-step status:
         "completed" | "active" | "pending" | "failed"
@@ -527,8 +551,9 @@ async def get_project_roadmap_step(
     """
     STEP_LABELS = [
         "Project Setup",
-        "Governance",
+        "Requirement Screening",
         "AI Analysis",
+        "Prerequisite Classification",
         "Task Creation",
         "Agent Execution",
         "Complete",
@@ -547,7 +572,7 @@ async def get_project_roadmap_step(
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Step 0 (Project Setup) is always complete once a governance response exists
-    # Step 1 (Governance) is complete: governance submitted
+    # Step 1 (Requirement Screening) is complete: governance submitted
     current_step = 2  # user is now at "AI Analysis"
     failed_step = None
 
@@ -583,7 +608,11 @@ async def get_project_roadmap_step(
             _doc_has_completed_analysis(doc) for doc in linked_docs
         )
         if has_analysis:
-            current_step = 3  # AI Analysis complete, now at "Task Creation"
+            current_step = 3  # AI Analysis complete, now at "Prerequisite Classification"
+
+            # Check if prerequisites were acknowledged
+            if governance.prerequisites_completed_at is not None:
+                current_step = 4  # Prerequisites done, now at "Task Creation"
 
     # 3. Check external task management for task creation & agent execution
     has_tasks = False
@@ -602,7 +631,7 @@ async def get_project_roadmap_step(
 
             if page_results:
                 has_tasks = True
-                current_step = 4  # Tasks created, now at "Agent Execution"
+                current_step = 5  # Tasks created, now at "Agent Execution"
 
                 # Check if any agent is actively working (has progress or is assigned)
                 any_agent_working = any(
@@ -612,7 +641,7 @@ async def get_project_roadmap_step(
                 )
 
                 if any_agent_working:
-                    current_step = 4  # Still at Agent Execution (active)
+                    current_step = 5  # Still at Agent Execution (active)
 
                 # Check if ALL tasks are completed
                 all_tasks_complete = all(
@@ -622,7 +651,7 @@ async def get_project_roadmap_step(
                 )
 
                 if all_tasks_complete:
-                    current_step = 5  # Complete
+                    current_step = 6  # Complete
         except Exception as e:
             print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
             # If task check fails, we don't mark it as failed - just stay at current step
@@ -1741,6 +1770,7 @@ async def get_agent_dashboard(
 
 class AutoGenerateRequest(BaseModel):
     project_token: str
+    prerequisites: Optional[List[Dict[str, Any]]] = None
 
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
@@ -1774,6 +1804,7 @@ async def auto_generate_project_tasks(
         ).all()
 
         analysis_report = ""
+        prerequisites_context = ""
         project_name = gov_response.project_name or ""
 
         for doc in user_documents:
@@ -1792,6 +1823,25 @@ async def auto_generate_project_tasks(
                    (doc_token_id and str(doc_token_id) == str(gov_response.project_token)) or \
                    (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
                     analysis_report = analysis.get("analysis", "")
+
+                    # Extract prerequisites if available
+                    prereqs = analysis.get("prerequisites", [])
+                    if prereqs and isinstance(prereqs, list):
+                        prereq_lines = ["\n\nPREREQUISITES & CREDENTIALS (confirmed by the team):"]
+                        for p in prereqs:
+                            name = p.get("name", "Unknown")
+                            desc = p.get("description", "")
+                            cat = p.get("category", "other")
+                            priority = p.get("priority", "medium")
+                            provided = p.get("provided", False)
+                            status_str = "PROVIDED" if provided else "NOT YET PROVIDED"
+                            notes = p.get("userNotes", "")
+                            prereq_lines.append(
+                                f"- [{status_str}] {name} ({cat}, {priority}): {desc}"
+                                + (f" — Notes: {notes}" if notes else "")
+                            )
+                        prerequisites_context = "\n".join(prereq_lines)
+
                     if analysis_report:
                         break
             except (ValueError, AttributeError):
@@ -1799,6 +1849,26 @@ async def auto_generate_project_tasks(
 
         if not analysis_report:
             raise HTTPException(status_code=400, detail="No BRD analysis found for this project.")
+
+        # Append prerequisites context to the analysis report for task generation
+        # Prefer prerequisites from stored analysis; if missing, use the ones sent from frontend
+        if prerequisites_context:
+            analysis_report += prerequisites_context
+        elif request.prerequisites and isinstance(request.prerequisites, list) and len(request.prerequisites) > 0:
+            prereq_lines = ["\n\nPREREQUISITES & CREDENTIALS (confirmed by the team):"]
+            for p in request.prerequisites:
+                name = p.get("name", "Unknown")
+                desc = p.get("description", "")
+                cat = p.get("category", "other")
+                priority = p.get("priority", "medium")
+                provided = p.get("provided", False)
+                status_str = "PROVIDED" if provided else "NOT YET PROVIDED"
+                notes = p.get("userNotes", "")
+                prereq_lines.append(
+                    f"- [{status_str}] {name} ({cat}, {priority}): {desc}"
+                    + (f" — Notes: {notes}" if notes else "")
+                )
+            analysis_report += "\n".join(prereq_lines)
 
         # 3. Fetch Agents from external API
         team_members = project_info.get("team_members", [])

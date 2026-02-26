@@ -752,12 +752,27 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             };
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
+            // Include prerequisites data if available
+            let prerequisitesPayload = null;
+            try {
+                const savedPrereqs = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
+                if (savedPrereqs) {
+                    const parsed = JSON.parse(savedPrereqs);
+                    prerequisitesPayload = parsed.items || [];
+                }
+            } catch { /* ignore */ }
+
+            const requestBody = {
+                project_token: selectedProjectKey,
+            };
+            if (prerequisitesPayload && prerequisitesPayload.length > 0) {
+                requestBody.prerequisites = prerequisitesPayload;
+            }
+
             const response = await fetch(API_ENDPOINTS.AGENT_AUTO_GENERATE, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({
-                    project_token: selectedProjectKey
-                })
+                body: JSON.stringify(requestBody)
             });
 
             if (!response.ok) {
@@ -1013,7 +1028,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </div>
                         <h2 className="text-2xl font-extrabold text-gray-800 mb-2">No Projects Found</h2>
                         <p className="text-app-text-muted mb-8 text-sm leading-relaxed">
-                            It looks like you haven't created any governance assessments yet. Add a new project to start tracking your progress and metrics.
+                            It looks like you haven't created any screening assessments yet. Add a new project to start tracking your progress and metrics.
                         </p>
                         <button
                             type="button"
@@ -1984,7 +1999,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </button>
                             </div>
                             <div className="p-6">
-                                <p className="text-sm text-app-text-muted mb-4 font-medium">Step 1 of Governance Track: Give your project a descriptive name to get started.</p>
+                                <p className="text-sm text-app-text-muted mb-4 font-medium">Step 1 of Requirement Screening Track: Give your project a descriptive name to get started.</p>
                                 <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Project Name <span className="text-red-400">*</span></label>
                                 <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()} placeholder="e.g. Customer Analytics Platform" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
                                 <div className="flex items-center gap-3">

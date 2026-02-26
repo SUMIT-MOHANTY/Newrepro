@@ -35,7 +35,18 @@ Assess the technical viability of the project.
 - **Missing Elements**: What is not defined but should be?
 - **Business Risks**: Potential pitfalls.
 
-# 5. Go / No-Go Recommendation
+# 5. Prerequisites & Credentials
+Identify ALL prerequisites, credentials, infrastructure, external services, and access requirements that must be arranged BEFORE development can begin. Be thorough and specific. For each prerequisite, classify it into one of these categories:
+- **credentials**: API keys, authentication tokens, OAuth secrets, SSL certificates, SSH keys, SSO/LDAP access
+- **apis**: Third-party API integrations, payment gateways, webhooks, callback URLs
+- **infrastructure**: CI/CD pipelines, Docker/Kubernetes, SMTP/email, domain/DNS, firewalls, monitoring/logging
+- **databases**: Database credentials, connection strings, cache servers (Redis/Memcache)
+- **cloud**: AWS/Azure/GCP accounts, S3/blob storage, CDN, cloud subscriptions
+- **dependencies**: Private package registries, licensed libraries, SDK access
+
+List each prerequisite in a clear bullet format with its category and priority (high/medium/low).
+
+# 6. Go / No-Go Recommendation
 **Verdict: [GO / NO-GO / PROCEED WITH CAUTION]**
 Provide a definitive recommendation on whether to proceed with development, accompanied by a short justification based on the clarity and feasibility of the requirements.
 
@@ -45,7 +56,7 @@ Output format rules for the main report body (everything before the final JSON b
 - Do NOT use Markdown syntax (no `#`, `**`, `*`, or pipe-table markdown).
 - Do NOT wrap the HTML content in code fences.
 
-Finally, output a SINGLE JSON block containing both the key metrics and the targeted questions.
+Finally, output a SINGLE JSON block containing the key metrics, targeted questions, AND prerequisites.
 All targeted questions must appear ONLY in the final JSON `questions` array.
 Do not include or repeat questions anywhere else in the response body.
 The `questions` array should include at least 5-7 specific technical questions, covering:
@@ -70,6 +81,14 @@ The JSON must follow this exact structure:
     "How many concurrent users are expected?",
     "What is the total expected user base?",
     "Question 3"
+  ],
+  "prerequisites": [
+    {
+      "name": "Short descriptive name (e.g., 'AWS S3 Bucket Access')",
+      "description": "Detailed description of what is needed and why",
+      "category": "one of: credentials, apis, infrastructure, databases, cloud, dependencies",
+      "priority": "high / medium / low"
+    }
   ]
 }
 ```
@@ -380,6 +399,11 @@ RULES:
 8. **Complexity-based Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
 9. **Smart Budgeting**: You MUST complete the entire project development within the total project wallet. Allocate points smartly so that high-priority/complex tasks get sufficient budget while still leaving enough for the remaining development (e.g., don't exhaust the budget on just the first few features).
 10. If all necessary tasks have already been created and the project breakdown is complete, return an EMPTY array: []
+11. **Placeholder Handling for Missing Prerequisites**: If the PREREQUISITES section lists items marked as [NOT YET PROVIDED], you MUST include in the relevant task descriptions:
+    - Use environment variables with placeholder defaults (e.g., `API_KEY=your-api-key-here`) so the app can still run.
+    - Use mock/stub services where applicable (e.g., mock SMTP, in-memory cache instead of Redis, local file storage instead of S3).
+    - Add a clear note in the task description like: "NOTE: Using placeholder credentials — replace with real values once provided."
+    - This ensures development is NOT blocked by missing credentials or access.
 
 Output ONLY a JSON array of task objects (max 5) with this structure:
 [
