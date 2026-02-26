@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, Lock, UserPlus, Loader2, ArrowRight } from 'lucide-react';
+import { Mail, Lock, User, Building2, Loader2, ArrowRight } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
 
 const Signup = ({ isModal = false, onClose, onSwitch }) => {
+    const [firstName, setFirstName] = useState('');
+    const [lastName, setLastName] = useState('');
+    const [organizationName, setOrganizationName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
@@ -22,7 +25,13 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ email, password }),
+                body: JSON.stringify({
+                    first_name: firstName,
+                    last_name: lastName,
+                    organization_name: organizationName,
+                    email,
+                    password,
+                }),
             });
 
             if (!response.ok) {
@@ -53,8 +62,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                         </svg>
                     </button>
                 )}
-                <h2 className="text-2xl font-bold text-slate-800 tracking-tight mb-2">Create Account</h2>
-                <p className="text-app-text-muted text-sm">Join to start processing documents</p>
+                <h2 className="text-2xl font-bold text-slate-800 tracking-tight mb-2">Register Organization</h2>
+                <p className="text-app-text-muted text-sm">Create your admin account and configure enterprise SSO</p>
             </div>
 
             {/* Form Section */}
@@ -69,9 +78,70 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                 )}
 
                 <form onSubmit={handleSubmit} className="space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                            <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="firstName">
+                                First Name
+                            </label>
+                            <div className="relative group">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <User className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
+                                </div>
+                                <input
+                                    id="firstName"
+                                    type="text"
+                                    placeholder="John"
+                                    value={firstName}
+                                    onChange={(e) => setFirstName(e.target.value)}
+                                    className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
+                                    required
+                                />
+                            </div>
+                        </div>
+                        <div className="space-y-1">
+                            <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="lastName">
+                                Last Name
+                            </label>
+                            <div className="relative group">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <User className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
+                                </div>
+                                <input
+                                    id="lastName"
+                                    type="text"
+                                    placeholder="Doe"
+                                    value={lastName}
+                                    onChange={(e) => setLastName(e.target.value)}
+                                    className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
+                                    required
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-1">
+                        <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="organizationName">
+                            Organization Name
+                        </label>
+                        <div className="relative group">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <Building2 className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
+                            </div>
+                            <input
+                                id="organizationName"
+                                type="text"
+                                placeholder="Acme Technologies"
+                                value={organizationName}
+                                onChange={(e) => setOrganizationName(e.target.value)}
+                                className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
+                                required
+                            />
+                        </div>
+                    </div>
+
                     <div className="space-y-1">
                         <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="email">
-                            Email Address
+                            Business Email
                         </label>
                         <div className="relative group">
                             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -80,7 +150,7 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                             <input
                                 id="email"
                                 type="email"
-                                placeholder="name@company.com"
+                                placeholder="you@company.com"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
                                 className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
@@ -117,11 +187,11 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                         {isLoading ? (
                             <>
                                 <Loader2 className="animate-spin -ml-1 mr-2 h-4 w-4" />
-                                Creating Account...
+                                Registering...
                             </>
                         ) : (
                             <>
-                                Sign Up
+                                Create Admin Account
                                 <ArrowRight className="ml-2 h-4 w-4" />
                             </>
                         )}

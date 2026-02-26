@@ -7,6 +7,7 @@ import PrerequisiteClassification from './pages/PrerequisiteClassification';
 import GitHubCallback from './pages/GitHubCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
+import OrganizationAdmin from './pages/OrganizationAdmin';
 import AppLayout from './components/AppLayout';
 
 function App() {
@@ -44,6 +45,11 @@ function App() {
         <Route path="/prerequisites" element={
           <AppLayout>
             {(layoutProps) => <PrerequisiteClassification {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/organization-admin" element={
+          <AppLayout>
+            {(layoutProps) => <OrganizationAdmin {...layoutProps} />}
           </AppLayout>
         } />
       </Routes>

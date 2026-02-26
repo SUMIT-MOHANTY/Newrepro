@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Plus, History, Activity, Settings, User, LogOut } from 'lucide-react';
+import { X, Plus, History, Activity, Settings, User, LogOut, ShieldCheck } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
 export default function Sidebar({
@@ -109,6 +109,18 @@ export default function Sidebar({
                         <Activity className="w-4 h-4 mr-3" />
                         Status Dashboard
                     </button>
+                    {user?.is_org_admin && (
+                        <button
+                            onClick={() => {
+                                setCurrentView('organizationAdmin');
+                            }}
+                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin' ? 'bg-indigo-900/40 text-indigo-100 border border-indigo-800' : 'text-app-border hover:bg-app-text-label hover:text-white'
+                                }`}
+                        >
+                            <ShieldCheck className="w-4 h-4 mr-3" />
+                            Organization Admin
+                        </button>
+                    )}
                     <button
                         onClick={() => {
                             setShowSettings(true);

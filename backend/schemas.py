@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, EmailStr
 
@@ -5,11 +6,18 @@ class UserBase(BaseModel):
     email: EmailStr
 
 class UserCreate(UserBase):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    organization_name: Optional[str] = None
     password: str
 
 class User(UserBase):
     id: int
     is_active: bool
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    organization_name: Optional[str] = None
+    is_org_admin: bool = False
 
     class Config:
         from_attributes = True
@@ -21,7 +29,24 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     email: Optional[str] = None
 
-from datetime import datetime
+class OrganizationSSOSettingsUpdate(BaseModel):
+    sso_provider: Optional[str] = None
+    tenant_id: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    authority_url: Optional[str] = None
+    redirect_uri: Optional[str] = None
+    logout_url: Optional[str] = None
+    scopes: Optional[str] = None
+    domain_hint: Optional[str] = None
+    sso_enabled: bool = False
+
+class OrganizationSSOSettingsResponse(OrganizationSSOSettingsUpdate):
+    organization_name: str
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 class DocumentBase(BaseModel):
     filename: str

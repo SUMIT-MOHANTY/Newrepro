@@ -10,6 +10,7 @@ import json
 import shutil
 import logging
 import tempfile
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -23,7 +24,10 @@ try:
 except ImportError:
     _TS_AVAILABLE = False
 
-import git as gitpython
+try:
+    import git as gitpython
+except ImportError:
+    gitpython = None
 
 logger = logging.getLogger(__name__)
 
@@ -227,20 +231,41 @@ def clone_repository(
         clone_url = repo_url.replace("https://", f"https://{token}@")
 
     logger.info(f"Cloning {repo_url} (branch={branch}) into {target_dir}")
-    try:
-        gitpython.Repo.clone_from(
-            clone_url,
-            target_dir,
-            branch=branch,
-            depth=1,  # shallow clone for speed
-        )
-    except gitpython.exc.GitCommandError as e:
-        # Try without branch specification (some repos use 'master')
-        logger.warning(f"Clone with branch={branch} failed, trying default: {e}")
-        if os.path.exists(target_dir):
-            shutil.rmtree(target_dir)
-        os.makedirs(target_dir, exist_ok=True)
-        gitpython.Repo.clone_from(clone_url, target_dir, depth=1)
+    if gitpython is not None:
+        try:
+            gitpython.Repo.clone_from(
+                clone_url,
+                target_dir,
+                branch=branch,
+                depth=1,  # shallow clone for speed
+            )
+        except gitpython.exc.GitCommandError as e:
+            # Try without branch specification (some repos use 'master')
+            logger.warning(f"Clone with branch={branch} failed, trying default: {e}")
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir)
+            os.makedirs(target_dir, exist_ok=True)
+            gitpython.Repo.clone_from(clone_url, target_dir, depth=1)
+    else:
+        logger.warning("GitPython is not installed; falling back to git CLI clone.")
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch, clone_url, target_dir],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Clone with branch={branch} failed, trying default: {e.stderr or e}")
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir)
+            os.makedirs(target_dir, exist_ok=True)
+            subprocess.run(
+                ["git", "clone", "--depth", "1", clone_url, target_dir],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
     logger.info(f"Repository cloned to {target_dir}")
     return target_dir

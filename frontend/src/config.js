@@ -10,6 +10,7 @@ export const API_ENDPOINTS = {
     TASK_TOKEN: `${API_BASE_URL}/api/token/task/`,
     USERS: `${API_BASE_URL}/users/`,
     USERS_ME: `${API_BASE_URL}/users/me`,
+    ORG_SSO_SETTINGS: `${API_BASE_URL}/organization/sso-settings`,
 
     // Documents
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,

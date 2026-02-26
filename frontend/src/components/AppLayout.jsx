@@ -66,13 +66,16 @@ export default function AppLayout({ children }) {
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
-        : location.pathname === '/governance' ? 'governance'
-            : location.pathname === '/prerequisites' ? 'prerequisites'
-                : 'main';
+        : location.pathname === '/organization-admin' ? 'organizationAdmin'
+            : location.pathname === '/governance' ? 'governance'
+                : location.pathname === '/prerequisites' ? 'prerequisites'
+                    : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
             navigate('/status-dashboard');
+        } else if (view === 'organizationAdmin') {
+            navigate('/organization-admin');
         } else if (view === 'governance') {
             navigate('/governance');
         } else if (view === 'prerequisites') {
@@ -224,12 +227,14 @@ export default function AppLayout({ children }) {
                             <div className="min-w-0 truncate">
                                 <h1 className="text-lg md:text-2xl lg:text-3xl font-bold tracking-wide truncate">
                                     {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
+                                        currentView === 'organizationAdmin' ? 'Organization Admin' :
                                         currentView === 'governance' ? 'Project Requirement Screening' :
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
                                                 'BRD Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
+                                        currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
                                         currentView === 'governance' ? 'Screening & Configuration' :
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
                                                 'Project Insight & AI Assessment'}

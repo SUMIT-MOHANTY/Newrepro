@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, H
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import func, text
 from pydantic import BaseModel
 
 import auth
@@ -122,11 +122,35 @@ async def login_for_access_token(
 
 @app.post("/users/", response_model=schemas.User)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.email == user.email).first()
+    normalized_email = user.email.strip().lower()
+    db_user = db.query(models.User).filter(func.lower(models.User.email) == normalized_email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    organization_name = (user.organization_name or "").strip()
+    if not organization_name:
+        local_name = normalized_email.split("@", 1)[0].replace(".", " ").replace("_", " ").strip().title()
+        organization_name = f"{local_name or 'Default'} Organization"
+
+    existing_org_admin = db.query(models.User).filter(
+        func.lower(models.User.organization_name) == organization_name.lower(),
+        models.User.is_org_admin.is_(True),
+    ).first()
+    if existing_org_admin:
+        raise HTTPException(
+            status_code=400,
+            detail="Organization already registered. Sign in with your admin account.",
+        )
+
     hashed_password = auth.get_password_hash(user.password)
-    db_user = models.User(email=user.email, hashed_password=hashed_password)
+    db_user = models.User(
+        email=normalized_email,
+        hashed_password=hashed_password,
+        first_name=(user.first_name or "").strip() or None,
+        last_name=(user.last_name or "").strip() or None,
+        organization_name=organization_name,
+        is_org_admin=True,
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -137,6 +161,73 @@ async def read_users_me(
     current_user: Annotated[models.User, Depends(auth.get_current_user)],
 ):
     return current_user
+
+def _require_org_admin(current_user: models.User) -> str:
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Organization admin access required")
+    organization_name = (current_user.organization_name or "").strip()
+    if not organization_name:
+        raise HTTPException(status_code=400, detail="Organization not configured for this account")
+    return organization_name
+
+@app.get("/organization/sso-settings", response_model=schemas.OrganizationSSOSettingsResponse)
+def get_organization_sso_settings(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    row = db.query(models.OrganizationSSOSetting).filter(
+        func.lower(models.OrganizationSSOSetting.organization_name) == organization_name.lower()
+    ).first()
+    if not row:
+        return schemas.OrganizationSSOSettingsResponse(
+            organization_name=organization_name,
+            sso_provider=None,
+            tenant_id=None,
+            client_id=None,
+            client_secret=None,
+            authority_url=None,
+            redirect_uri=None,
+            logout_url=None,
+            scopes=None,
+            domain_hint=None,
+            sso_enabled=False,
+            updated_at=None,
+        )
+    return row
+
+@app.put("/organization/sso-settings", response_model=schemas.OrganizationSSOSettingsResponse)
+def update_organization_sso_settings(
+    payload: schemas.OrganizationSSOSettingsUpdate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    row = db.query(models.OrganizationSSOSetting).filter(
+        func.lower(models.OrganizationSSOSetting.organization_name) == organization_name.lower()
+    ).first()
+    if not row:
+        row = models.OrganizationSSOSetting(
+            organization_name=organization_name,
+            admin_user_id=current_user.id,
+        )
+        db.add(row)
+
+    row.sso_provider = payload.sso_provider
+    row.tenant_id = payload.tenant_id
+    row.client_id = payload.client_id
+    row.client_secret = payload.client_secret
+    row.authority_url = payload.authority_url
+    row.redirect_uri = payload.redirect_uri
+    row.logout_url = payload.logout_url
+    row.scopes = payload.scopes
+    row.domain_hint = payload.domain_hint
+    row.sso_enabled = payload.sso_enabled
+    row.admin_user_id = current_user.id
+
+    db.commit()
+    db.refresh(row)
+    return row
 
 # --- Document Endpoints ---
 @app.post("/documents/upload")
@@ -1175,6 +1266,27 @@ def _ensure_agent_project_columns() -> None:
             conn.execute(text("ALTER TABLE agent_credentials ADD COLUMN project_token VARCHAR"))
             conn.commit()
 
+def _ensure_user_organization_columns() -> None:
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(users)"))
+        columns = [row[1] for row in result.fetchall()]
+
+        if "first_name" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN first_name VARCHAR"))
+            conn.commit()
+
+        if "last_name" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN last_name VARCHAR"))
+            conn.commit()
+
+        if "organization_name" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN organization_name VARCHAR"))
+            conn.commit()
+
+        if "is_org_admin" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_org_admin BOOLEAN DEFAULT 0"))
+            conn.commit()
+
 
 # Seed sample tasks on startup
 @app.on_event("startup")
@@ -1183,6 +1295,7 @@ async def startup_event():
     db = SessionLocal()
     try:
         _ensure_agent_project_columns()
+        _ensure_user_organization_columns()
         _ensure_default_agents(db)
         agents = db.query(models.Agent).filter(models.Agent.project_token.is_(None)).all()
         agent_service.initialize_agents_from_records(_runtime_agent_records(agents, None))

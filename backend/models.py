@@ -10,12 +10,37 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    organization_name = Column(String, index=True, nullable=True)
+    is_org_admin = Column(Boolean, default=False)
     github_token = Column(String, nullable=True)
     github_username = Column(String, nullable=True)
 
     documents = relationship("Document", back_populates="owner")
     governance_responses = relationship("GovernanceResponse", back_populates="owner")
     agent_credentials = relationship("AgentCredential", back_populates="owner")
+    organization_sso_settings = relationship("OrganizationSSOSetting", back_populates="admin_user")
+
+class OrganizationSSOSetting(Base):
+    __tablename__ = "organization_sso_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_name = Column(String, unique=True, index=True, nullable=False)
+    admin_user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    sso_provider = Column(String, nullable=True)
+    tenant_id = Column(String, nullable=True)
+    client_id = Column(String, nullable=True)
+    client_secret = Column(String, nullable=True)
+    authority_url = Column(String, nullable=True)
+    redirect_uri = Column(String, nullable=True)
+    logout_url = Column(String, nullable=True)
+    scopes = Column(String, nullable=True)
+    domain_hint = Column(String, nullable=True)
+    sso_enabled = Column(Boolean, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    admin_user = relationship("User", back_populates="organization_sso_settings")
 
 class AgentCredential(Base):
     __tablename__ = "agent_credentials"
