@@ -32,6 +32,15 @@ def migrate():
         else:
             print("[OK] client_secret column already exists")
 
+        # Add prerequisites_completed_at column if it doesn't exist
+        if 'prerequisites_completed_at' not in columns:
+            print("Adding prerequisites_completed_at column...")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN prerequisites_completed_at DATETIME"))
+            conn.commit()
+            print("[OK] prerequisites_completed_at column added")
+        else:
+            print("[OK] prerequisites_completed_at column already exists")
+
         print("\nMigration completed successfully!")
 
 if __name__ == "__main__":
