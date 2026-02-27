@@ -230,6 +230,63 @@ async def index_codebase(
         return _rag_statuses[project_token]
 
 
+async def incremental_insert(
+    project_token: str,
+    text_chunks: List[str],
+    source_label: str = "agent_output",
+) -> Dict[str, Any]:
+    """
+    Incrementally insert new text chunks into an EXISTING RAG index.
+    This is called when an agent completes a task — its generated code
+    is parsed back into the KG and then fed here so downstream agents
+    can discover it via semantic search.
+
+    Unlike index_codebase(), this does NOT reset the index status or
+    overwrite existing data. It appends to the existing vector store.
+    """
+    status = _rag_statuses.get(project_token, {})
+    if status.get("status") != "ready":
+        logger.warning(
+            f"[{project_token}] incremental_insert skipped — index not ready "
+            f"(status={status.get('status', 'unknown')})"
+        )
+        return {"status": "skipped", "reason": "index_not_ready"}
+
+    try:
+        rag = await _get_or_create_rag(project_token)
+        inserted = 0
+
+        for chunk in text_chunks:
+            try:
+                # Prefix each chunk with source so it's identifiable
+                labeled = f"[{source_label}]\n{chunk}"
+                await rag.ainsert(labeled)
+                inserted += 1
+            except Exception as e:
+                logger.warning(
+                    f"[{project_token}] incremental insert error: {e}"
+                )
+
+        # Update total indexed count
+        prev_count = status.get("indexed_chunks", 0)
+        _rag_statuses[project_token]["indexed_chunks"] = prev_count + inserted
+
+        logger.info(
+            f"[{project_token}] Incremental insert: {inserted}/{len(text_chunks)} "
+            f"chunks from {source_label}"
+        )
+        return {
+            "status": "inserted",
+            "inserted_chunks": inserted,
+            "total_chunks_now": prev_count + inserted,
+            "source": source_label,
+        }
+
+    except Exception as e:
+        logger.error(f"[{project_token}] incremental_insert failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 async def query_codebase(
     project_token: str,
     query: str,

@@ -1121,6 +1121,68 @@ async def get_cross_agent_memory(
     }
 
 
+@app.get("/api/knowledge-graph/tech-spec/{project_token}")
+async def get_tech_spec(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get the generated Technical Spec (Layer 1: Architect Agent)."""
+    from agent_service import get_technical_spec, _project_tech_specs
+    spec = get_technical_spec(project_token)
+    record = _project_tech_specs.get(project_token, {})
+    return {
+        "project_token": project_token,
+        "status": record.get("status", "not_generated"),
+        "spec": spec,
+        "char_length": len(spec),
+        "generated_at": record.get("generated_at"),
+    }
+
+
+@app.post("/api/knowledge-graph/tech-spec/{project_token}/generate")
+async def generate_tech_spec(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Manually trigger Technical Spec generation (Layer 1: Architect Agent)."""
+    from agent_service import _generate_technical_spec
+
+    # Get KG context if available
+    kg_context = ""
+    try:
+        if context_manager.is_project_indexed(project_token):
+            kg_context = await context_manager.get_full_agent_context(
+                project_token=project_token,
+                task_description="Full system architecture overview",
+                agent_id="architect_agent",
+            )
+    except Exception:
+        pass
+
+    result = await _generate_technical_spec(
+        project_token=project_token,
+        tasks=[],
+        kg_context=kg_context,
+    )
+    return result
+
+
+@app.get("/api/github/pr-status/{project_token}")
+async def get_pr_status(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get the status of merged branches and created PRs."""
+    from agent_service import _ensure_project_state
+    state = _ensure_project_state(project_token)
+    return {
+        "project_token": project_token,
+        "merged_branches": state.get("merged_branches", []),
+        "merge_queue_length": len(state.get("git_merge_queue", [])),
+        "is_merging": state.get("git_merge_running", False)
+    }
+
+
 # ═══════════════════════════════ AI AGENTS ═══════════════════════════════════
 
 def _normalize_project_token(project_token: Optional[str]) -> Optional[str]:

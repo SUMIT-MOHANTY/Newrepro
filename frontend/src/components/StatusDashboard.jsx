@@ -7,6 +7,7 @@ import 'react-loading-skeleton/dist/skeleton.css';
 
 import { API_ENDPOINTS } from '../config';
 import KnowledgeGraphCard from './KnowledgeGraphCard';
+import PrStatusCard from './PrStatusCard';
 
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
@@ -697,6 +698,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     {isCompleted && <span className="font-semibold text-app-status-success">✓ Completed</span>}
                     {isError && <span className="font-semibold text-app-status-error">✗ Error</span>}
                 </div>
+                {/* Error details when agent has errored */}
+                {isError && agent.progress_message && (
+                    <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+                        <p className="text-[11px] text-red-600 font-medium break-all leading-relaxed">
+                            {agent.progress_message}
+                        </p>
+                    </div>
+                )}
 
                 {/* Actions */}
                 <div className="flex gap-2 mt-auto">
@@ -735,7 +744,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </button>
                     )}
                 </div>
-            </div>
+            </div >
         );
     };
 
@@ -1658,13 +1667,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </div>
                                 )}
 
-                                {/* ── KNOWLEDGE GRAPH SECTION ── */}
-                                <KnowledgeGraphCard
-                                    selectedProjectKey={selectedProjectKey}
-                                    token={token}
-                                    taskToken={taskToken}
-                                    repoUrl={agents.find(a => a.git_repo_url)?.git_repo_url || ''}
-                                />
+                                {/* ── KNOWLEDGE GRAPH & CI/CD SECTION ── */}
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
+                                    {/* ── KNOWLEDGE GRAPH SECTION ── */}
+                                    <div className="w-full min-w-0">
+                                        <KnowledgeGraphCard
+                                            selectedProjectKey={selectedProjectKey}
+                                            token={token}
+                                            taskToken={taskToken}
+                                            repoUrl={agents.find(a => a.git_repo_url)?.git_repo_url || ''}
+                                        />
+                                    </div>
+
+                                    {/* ── CI/CD PR STATUS SECTION ── */}
+                                    <div className="w-full min-w-0">
+                                        <PrStatusCard selectedProjectKey={selectedProjectKey} />
+                                    </div>
+                                </div>
 
                                 {/* ── AI AGENTS SECTION ── */}
                                 <div className="w-full mt-4 lg:col-span-2 min-w-0">

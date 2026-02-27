@@ -253,6 +253,11 @@ async def analyze_document(
         if stream:
             async def stream_response():
                 try:
+                    # State machine to handle <think> tags embedded in content
+                    # Some models (e.g. minimax-m2.5) put reasoning inside <think> in content
+                    _inside_think = False
+                    _think_buffer = ""
+
                     async with client.stream("POST", url, json=payload, headers=headers) as response:
                         response.raise_for_status()
                         async for line in response.aiter_lines():
@@ -265,17 +270,55 @@ async def analyze_document(
                                     if "choices" in data_json and len(data_json["choices"]) > 0:
                                         delta = data_json["choices"][0].get("delta", {})
                                         
-                                        # Construct a clean chunk to proxy back to frontend
-                                        # Use OpenAI format so frontend parser works seamlessly
-                                        response_chunk = {
-                                            "choices": [{
-                                                "delta": {
-                                                    "content": delta.get("content"),
-                                                    "reasoning_content": delta.get("reasoning_content")
-                                                }
-                                            }]
-                                        }
-                                        yield f"data: {json.dumps(response_chunk)}\n\n"
+                                        raw_content = delta.get("content") or ""
+                                        reasoning = delta.get("reasoning_content") or ""
+                                        
+                                        # Handle <think> tags inside content
+                                        clean_content = ""
+                                        if raw_content:
+                                            if _inside_think:
+                                                # Check if </think> appears in this chunk
+                                                end_idx = raw_content.find("</think>")
+                                                if end_idx != -1:
+                                                    # Think block ends here
+                                                    _think_buffer += raw_content[:end_idx]
+                                                    reasoning += _think_buffer
+                                                    _think_buffer = ""
+                                                    _inside_think = False
+                                                    # Content after </think> is real content
+                                                    clean_content = raw_content[end_idx + len("</think>"):]
+                                                else:
+                                                    # Still inside think block
+                                                    _think_buffer += raw_content
+                                            else:
+                                                # Check if <think> starts in this chunk
+                                                start_idx = raw_content.find("<think>")
+                                                if start_idx != -1:
+                                                    # Content before <think> is real
+                                                    clean_content = raw_content[:start_idx]
+                                                    remaining = raw_content[start_idx + len("<think>"):]
+                                                    # Check if </think> is also in this chunk
+                                                    end_idx = remaining.find("</think>")
+                                                    if end_idx != -1:
+                                                        reasoning += remaining[:end_idx]
+                                                        clean_content += remaining[end_idx + len("</think>"):]
+                                                    else:
+                                                        _inside_think = True
+                                                        _think_buffer = remaining
+                                                else:
+                                                    clean_content = raw_content
+                                        
+                                        # Only yield if there's actual content or reasoning
+                                        if clean_content or reasoning:
+                                            response_chunk = {
+                                                "choices": [{
+                                                    "delta": {
+                                                        "content": clean_content if clean_content else None,
+                                                        "reasoning_content": reasoning if reasoning else None
+                                                    }
+                                                }]
+                                            }
+                                            yield f"data: {json.dumps(response_chunk)}\n\n"
                                 except json.JSONDecodeError:
                                     continue
                 except Exception as e:

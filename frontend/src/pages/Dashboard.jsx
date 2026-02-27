@@ -15,7 +15,11 @@ import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
 
 const parseAIResponse = (text) => {
-    const source = String(text || '');
+    // Strip <think>...</think> blocks that some models (e.g. minimax-m2.5) embed in content
+    let source = String(text || '');
+    source = source.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    // Also handle unclosed <think> tags (model still streaming reasoning)
+    source = source.replace(/<think>[\s\S]*/gi, '').trim();
 
     const hasExpectedShape = (obj) => obj && typeof obj === 'object' && !Array.isArray(obj)
         && ('questions' in obj || 'metrics' in obj || 'title' in obj);
