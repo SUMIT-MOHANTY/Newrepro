@@ -6,8 +6,8 @@ import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
 import { API_ENDPOINTS } from '../config';
-import KnowledgeGraphCard from './KnowledgeGraphCard';
-import PrStatusCard from './PrStatusCard';
+// import KnowledgeGraphCard from './KnowledgeGraphCard';
+// import PrStatusCard from './PrStatusCard';
 
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
@@ -1402,7 +1402,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             cy="80"
                                                             r={donutRadius}
                                                             fill="none"
-                                                            stroke="#374151"
+                                                            stroke="#fef3c7"
                                                             strokeWidth="18"
                                                             strokeLinecap="round"
                                                             strokeDasharray={`${donutCompletedLength} ${donutCircumference}`}
@@ -1413,7 +1413,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             cy="80"
                                                             r={donutRadius}
                                                             fill="none"
-                                                            stroke="#fef3c7"
+                                                            stroke="#000000"
                                                             strokeWidth="18"
                                                             strokeLinecap="round"
                                                             strokeDasharray={`${donutRemainingLength} ${donutCircumference}`}
@@ -1427,13 +1427,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     </div>
                                                 </div>
                                                 <div className="grid grid-cols-2 gap-2 w-full max-w-[260px]">
-                                                    <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-center">
-                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-gray-500">Completed</p>
-                                                        <p className="text-sm font-black text-gray-800">{workCompletedDisplay}%</p>
-                                                    </div>
                                                     <div className="rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2 text-center">
-                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-amber-700">Remaining</p>
-                                                        <p className="text-sm font-black text-amber-700">{workRemainingDisplay}%</p>
+                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-amber-700">Completed</p>
+                                                        <p className="text-sm font-black text-amber-700">{workCompletedDisplay}%</p>
+                                                    </div>
+                                                    <div className="rounded-lg border border-black bg-black px-3 py-2 text-center">
+                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-gray-200">Remaining</p>
+                                                        <p className="text-sm font-black text-white">{workRemainingDisplay}%</p>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1599,7 +1599,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     <AlertTriangle className="w-4 h-4 text-amber-500" />
                                                     <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Due This Week</h3>
                                                 </div>
-                                                <div className="overflow-auto rounded border border-gray-100" style={{ maxHeight: '200px' }}>
+                                                <div className="overflow-auto rounded border border-gray-100" style={{ height: '200px' }}>
                                                     <table className="min-w-full text-xs">
                                                         <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-100">
                                                             <tr className="text-gray-500 uppercase tracking-widest">
@@ -1668,8 +1668,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 )}
 
                                 {/* ── KNOWLEDGE GRAPH & CI/CD SECTION ── */}
+                                {/*
+                                  Temporarily hidden as requested:
+                                  - Knowledge Graph
+                                  - CI/CD Pipeline (Pre-Compilation & Linting card)
+                                */}
+                                {/*
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
-                                    {/* ── KNOWLEDGE GRAPH SECTION ── */}
                                     <div className="w-full min-w-0">
                                         <KnowledgeGraphCard
                                             selectedProjectKey={selectedProjectKey}
@@ -1678,12 +1683,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             repoUrl={agents.find(a => a.git_repo_url)?.git_repo_url || ''}
                                         />
                                     </div>
-
-                                    {/* ── CI/CD PR STATUS SECTION ── */}
                                     <div className="w-full min-w-0">
                                         <PrStatusCard selectedProjectKey={selectedProjectKey} />
                                     </div>
                                 </div>
+                                */}
 
                                 {/* ── AI AGENTS SECTION ── */}
                                 <div className="w-full mt-4 lg:col-span-2 min-w-0">

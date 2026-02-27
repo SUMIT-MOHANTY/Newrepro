@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Annotated, Optional, List, Dict, Any
 
@@ -27,7 +28,13 @@ from config import settings
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="BRD Analysis API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _startup_init()
+    yield
+
+
+app = FastAPI(title="BRD Analysis API", version="1.0.0", lifespan=lifespan)
 logger = logging.getLogger(__name__)
 
 app.add_middleware(
@@ -1239,8 +1246,7 @@ def _ensure_agent_project_columns() -> None:
 
 
 # Seed sample tasks on startup
-@app.on_event("startup")
-async def startup_event():
+def _startup_init() -> None:
     agent_service.seed_sample_tasks()
     db = SessionLocal()
     try:
@@ -2376,3 +2382,14 @@ async def auto_generate_project_tasks(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=False,
+    )
