@@ -342,6 +342,100 @@ const Interactive3DScroll = () => {
     );
 };
 
+const EfficiencySection = () => {
+    return (
+        <section className="py-20 relative z-10 bg-app-bg-page overflow-hidden border-t border-app-border-light">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_rgba(56,189,248,0.05)_0%,_transparent_70%)] pointer-events-none" />
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 relative">
+                <div className="flex flex-col lg:flex-row items-center gap-8 lg:gap-14">
+                    <div className="flex-1 space-y-6">
+                        <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-full text-blue-600 text-xs font-bold tracking-widest uppercase">
+                            <Zap className="h-3.5 w-3.5" />
+                            Pre-IDE Acceleration
+                        </div>
+                        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-app-text-main leading-tight">
+                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600 shrink-0">80% of the work.</span><br />
+                            Done before you even open your IDE.
+                        </h2>
+                        <p className="text-lg text-app-text-label leading-relaxed">
+                            Stop wasting engineering hours on boilerplate, initial scaffolding, and basic architectural setups.
+                            DSuite Agents handle the heavy lifting straight from your requirements.
+                        </p>
+                        <div className="space-y-3">
+                            {[
+                                { title: 'Architecture & DB Schema Generation', icon: <Database className="w-4 h-4" /> },
+                                { title: 'API scaffolding & Routing', icon: <Server className="w-4 h-4" /> },
+                                { title: 'Base UI components setup', icon: <Layout className="w-4 h-4" /> },
+                            ].map((item, idx) => (
+                                <div key={idx} className="flex items-center gap-3 bg-app-bg-card p-3 rounded-2xl border border-app-border-light shadow-sm">
+                                    <div className="h-8 w-8 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 shrink-0">
+                                        {item.icon}
+                                    </div>
+                                    <span className="font-semibold text-app-text-main text-base">{item.title}</span>
+                                    <CheckCircle className="w-5 h-5 text-green-500 ml-auto" />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="flex-1 w-full relative">
+                        <div className="relative bg-app-bg-card rounded-[2rem] border border-app-border-light shadow-2xl p-6 sm:p-8 flex flex-col justify-center overflow-hidden">
+                            <div className="absolute top-0 right-0 w-56 h-56 bg-blue-400/20 rounded-full blur-[80px]" />
+                            <div className="absolute bottom-0 left-0 w-56 h-56 bg-indigo-400/20 rounded-full blur-[80px]" />
+
+                            <h3 className="text-xl font-bold text-app-text-main mb-8 text-center relative z-10">Traditional vs Agentic Workflow</h3>
+
+                            <div className="space-y-6 relative z-10 w-full max-w-sm mx-auto">
+                                {/* Traditional */}
+                                <div>
+                                    <div className="flex justify-between text-xs font-semibold mb-2">
+                                        <span className="text-app-text-muted">Human Effort</span>
+                                        <span className="text-app-text-muted">100% Manual</span>
+                                    </div>
+                                    <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden flex border border-slate-200">
+                                        <div className="h-full bg-slate-300 w-[10%]"></div>
+                                        <div className="h-full bg-slate-400 w-[80%]"></div>
+                                        <div className="h-full bg-slate-500 w-[10%]"></div>
+                                    </div>
+                                    <div className="flex text-[9px] sm:text-[10px] font-bold text-app-text-muted mt-2 uppercase tracking-wide">
+                                        <span className="w-[10%] text-center">Plan</span>
+                                        <span className="w-[80%] text-center">Manual Coding</span>
+                                        <span className="w-[10%] text-center">Deploy</span>
+                                    </div>
+                                </div>
+
+                                {/* Agentic */}
+                                <div className="p-4 bg-blue-50/50 rounded-2xl border border-blue-100/50 mt-6">
+                                    <div className="flex justify-between text-xs font-semibold mb-2">
+                                        <span className="text-app-text-main">With DSuite Agents</span>
+                                        <span className="text-blue-600">80% Automated</span>
+                                    </div>
+                                    <div className="h-8 w-full bg-app-bg-page rounded-xl overflow-hidden flex shadow-inner border border-app-border">
+                                        <div className="h-full bg-gradient-to-r from-indigo-500 to-blue-500 w-[80%] flex items-center justify-center relative shadow-[inset_0_2px_10px_rgba(0,0,0,0.1)]">
+                                            <div className="absolute inset-0 opacity-20 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CjxyZWN0IHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCIgZmlsbD0ibm9uZSIvPgo8bGluZSB4MT0iMCIgeTE9IjIwIiB4Mj0iMjAiIHkyPSIwIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjUiLz4KPC9zdmc+')]"></div>
+                                            <span className="text-[10px] sm:text-xs font-bold text-white relative z-10 flex items-center gap-1.5 drop-shadow-md">
+                                                <Zap className="w-3.5 h-3.5 fill-white" />
+                                                80% Agentic Pre-Work
+                                            </span>
+                                        </div>
+                                        <div className="h-full bg-white w-[20%] flex items-center justify-center border-l-2 border-blue-400">
+                                            <span className="text-[9px] sm:text-[10px] font-bold text-blue-600">20% IDE</span>
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-between mt-2 text-[10px]">
+                                        <span className="text-indigo-600 font-bold max-w-[70%] text-left leading-tight">Scaffold, APIs, UI, Schemas, Tests, Deploy</span>
+                                        <span className="text-blue-600 font-bold flex-1 text-right">Human Polish</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    );
+};
+
 const LandingPage = () => {
     const heroRef = useRef(null);
     const ctaRef = useRef(null);
@@ -648,7 +742,7 @@ const LandingPage = () => {
             </nav>
 
             {/* Hero Section */}
-            <section ref={heroRef} className="pt-32 pb-6 lg:pt-48 lg:pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto relative z-10">
+            <section ref={heroRef} className="pt-24 pb-6 lg:pt-32 lg:pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto relative z-10">
                 <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
                     <div className="hero-content space-y-6 lg:space-y-8 text-center lg:text-left">
                         <div className="inline-flex items-center gap-2 px-3 py-1 bg-app-primary-light border border-app-primary-light rounded-full text-app-primary text-xs font-semibold mx-auto lg:mx-0">
@@ -659,10 +753,10 @@ const LandingPage = () => {
                             AI-Powered Analysis v1.0
                         </div>
                         <h1 className="text-4xl sm:text-5xl lg:text-7xl font-extrabold tracking-tight leading-tight text-app-text-main">
-                            Transform <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Docs</span> into Intelligence
+                            Transform <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Ideas</span> into Intelligence
                         </h1>
                         <p className="text-lg sm:text-xl text-app-text-label leading-relaxed max-w-lg mx-auto lg:mx-0">
-                            Instantly analyze Business Requirement Documents (BRDs) with advanced AI. Get feasibility checks and technical insights in seconds.
+                            Instantly analyze concepts, ideas, and Business Requirement Documents (BRDs) with advanced AI. Get feasibility checks and technical blueprints in seconds.
                         </p>
                         <div className="flex flex-col sm:flex-row gap-4 pt-4 justify-center lg:justify-start">
                             <button
@@ -697,6 +791,9 @@ const LandingPage = () => {
                     </div>
                 </div>
             </section>
+
+            {/* Performance/Efficiency Section */}
+            <EfficiencySection />
 
             {/* Interactive 3D Scroll Section */}
             <Interactive3DScroll />
