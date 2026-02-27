@@ -3252,6 +3252,17 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             if use_git:
                 branch_name = _branch_name_for_task(task)
                 if tasks_completed > 1:
+                    # Reset any stale index (merge conflicts from previous task)
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "reset", "--hard", "HEAD"],
+                        capture_output=True, text=True, timeout=60,
+                    )
                     # Switch back to repo base branch and create a new task branch.
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
@@ -3261,12 +3272,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "checkout", "-B", repo_base_branch, f"origin/{repo_base_branch}"],
-                        capture_output=True, text=True, timeout=15,
+                        capture_output=True, text=True, timeout=60,
                     )
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "checkout", "-B", branch_name],
-                        capture_output=True, text=True, timeout=15,
+                        capture_output=True, text=True, timeout=60,
                     )
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -3690,9 +3701,21 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
             # ═════════════════════════════════════════════════════════
             # MARK CHECKLIST ITEMS COMPLETE
+            # Only if real code was generated (more than just session notes)
             # ═════════════════════════════════════════════════════════
+            workspace_file_count = workspace_tree.count('FILE:')
             normalized_task_id = _normalize_task_id(task)
-            if checklist and normalized_task_id:
+            if workspace_file_count <= 1:
+                # Only the agent handoff session note exists — no real code
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": (
+                        f"⚠️ Skipping checklist completion: only {workspace_file_count} file(s) "
+                        f"captured — AI may not have produced real code"
+                    )
+                })
+            elif checklist and normalized_task_id:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
