@@ -40,6 +40,8 @@ export default function AppLayout({ children }) {
     const [selectedProjectKey, setSelectedProjectKey] = useState('');
     const [showSettings, setShowSettings] = useState(false);
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
+    const [pluginClients, setPluginClients] = useState([]);
+    const [launchingPluginId, setLaunchingPluginId] = useState('');
 
     const [selectedRole, setSelectedRole] = useState(() => {
         try {
@@ -107,6 +109,34 @@ export default function AppLayout({ children }) {
             .catch(() => handleLogout());
     }, [handleLogout, navigate]);
 
+    const fetchPluginClients = useCallback(() => {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        fetch(API_ENDPOINTS.OAUTH_CLIENTS, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error('Failed to load plugins');
+                return res.json();
+            })
+            .then((data) => {
+                if (Array.isArray(data)) {
+                    setPluginClients(data);
+                } else {
+                    setPluginClients([]);
+                }
+            })
+            .catch(() => {
+                setPluginClients([]);
+            });
+    }, []);
+
+    useEffect(() => {
+        if (!user) return;
+        fetchPluginClients();
+    }, [fetchPluginClients, user]);
+
     const { data: generatedProjects = [], isLoading: isProjectsLoading, isError: isProjectsError, error: projectsError } = useProjects();
 
     useEffect(() => {
@@ -170,6 +200,28 @@ export default function AppLayout({ children }) {
         return 'No uploads yet';
     };
 
+    const handleOpenPlugin = useCallback(async (clientId) => {
+        const token = localStorage.getItem('token');
+        if (!token || !clientId) return;
+
+        setLaunchingPluginId(clientId);
+        try {
+            const response = await fetch(API_ENDPOINTS.OAUTH_PLUGIN_LAUNCH(clientId), {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.launch_url) {
+                throw new Error(data.detail || 'Unable to launch plugin.');
+            }
+            window.location.assign(data.launch_url);
+        } catch (err) {
+            fetchPluginClients();
+            window.alert(err.message || 'Unable to launch plugin.');
+        } finally {
+            setLaunchingPluginId('');
+        }
+    }, [fetchPluginClients]);
+
     if (!user) {
         return (
             <div className="flex items-center justify-center min-h-screen bg-app-bg-muted">
@@ -207,6 +259,9 @@ export default function AppLayout({ children }) {
                 setShowSettings={setShowSettings}
                 user={user}
                 handleLogout={handleLogout}
+                pluginClients={pluginClients}
+                launchingPluginId={launchingPluginId}
+                handleOpenPlugin={handleOpenPlugin}
             />
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">

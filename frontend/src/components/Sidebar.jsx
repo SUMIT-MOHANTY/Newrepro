@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Plus, History, Activity, Settings, User, LogOut, ShieldCheck } from 'lucide-react';
+import { X, Plus, History, Activity, Settings, User, LogOut, ShieldCheck, PlugZap, ExternalLink, Loader2 } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
 export default function Sidebar({
@@ -14,7 +14,10 @@ export default function Sidebar({
     setCurrentView,
     setShowSettings,
     user,
-    handleLogout
+    handleLogout,
+    pluginClients = [],
+    launchingPluginId = '',
+    handleOpenPlugin,
 }) {
     return (
         <>
@@ -92,6 +95,44 @@ export default function Sidebar({
                                         </div>
                                     </button>
                                 ))
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="mb-2">
+                        <h3 className="text-xs font-semibold text-app-text-muted uppercase tracking-wider mb-3 px-2">Plugins</h3>
+                        <div className="space-y-1">
+                            {pluginClients.length === 0 ? (
+                                <p className="text-xs text-app-text-label px-2 italic">No plugins configured.</p>
+                            ) : (
+                                pluginClients.map((plugin) => {
+                                    const isLaunching = launchingPluginId === plugin.client_id;
+                                    const isConnected = Boolean(plugin.connected);
+                                    return (
+                                        <button
+                                            key={plugin.client_id}
+                                            onClick={() => handleOpenPlugin?.(plugin.client_id)}
+                                            disabled={isLaunching}
+                                            className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-md border border-transparent text-app-text-light hover:bg-app-text-label hover:text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                            title={plugin.login_url || plugin.name}
+                                        >
+                                            <span className="inline-flex items-center min-w-0">
+                                                {isLaunching ? (
+                                                    <Loader2 className="w-4 h-4 mr-2 animate-spin flex-shrink-0" />
+                                                ) : (
+                                                    <PlugZap className="w-4 h-4 mr-2 flex-shrink-0 text-app-text-label" />
+                                                )}
+                                                <span className="min-w-0">
+                                                    <span className="truncate block">{plugin.name}</span>
+                                                    <span className={`text-[10px] ${isConnected ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                                        {isConnected ? 'Connected' : 'Not Connected'}
+                                                    </span>
+                                                </span>
+                                            </span>
+                                            <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
+                                        </button>
+                                    );
+                                })
                             )}
                         </div>
                     </div>

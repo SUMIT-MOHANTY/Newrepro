@@ -32,9 +32,30 @@ class TokenData(BaseModel):
 class SSOStartRequest(BaseModel):
     email: Optional[EmailStr] = None
     organization_name: Optional[str] = None
+    next: Optional[str] = None
 
 class SSOStartResponse(BaseModel):
     auth_url: str
+
+class OAuthClientPublic(BaseModel):
+    name: str
+    client_id: str
+    login_url: Optional[str] = None
+    connected: bool = False
+    connected_at: Optional[datetime] = None
+    remote_org_tenant: Optional[str] = None
+    connection_message: Optional[str] = None
+    connection_error: Optional[str] = None
+
+class OAuthPluginLaunchResponse(BaseModel):
+    launch_url: str
+    connected: bool = False
+
+class OAuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    scope: Optional[str] = None
 
 class OrganizationSSOSettingsUpdate(BaseModel):
     sso_provider: Optional[str] = None

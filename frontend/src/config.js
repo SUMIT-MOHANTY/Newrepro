@@ -8,6 +8,8 @@ export const API_ENDPOINTS = {
     // Auth
     TOKEN: `${API_BASE_URL}/token`,
     SSO_START: `${API_BASE_URL}/auth/sso/start`,
+    OAUTH_CLIENTS: `${API_BASE_URL}/oauth/clients`,
+    OAUTH_PLUGIN_LAUNCH: (clientId) => `${API_BASE_URL}/oauth/plugins/${clientId}/launch`,
     TASK_TOKEN: `${API_BASE_URL}/api/token/task/`,
     USERS: `${API_BASE_URL}/users/`,
     USERS_ME: `${API_BASE_URL}/users/me`,

@@ -1,20 +1,44 @@
 import { useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, Loader2, ShieldCheck } from 'lucide-react';
+import { API_BASE_URL } from '../config';
+
+const isAllowedNextUrl = (nextUrl) => {
+    if (!nextUrl) return false;
+    try {
+        const absolute = new URL(nextUrl, window.location.origin);
+        const apiBase = new URL(API_BASE_URL, window.location.origin);
+        return absolute.origin === apiBase.origin && absolute.pathname === '/oauth/authorize';
+    } catch {
+        return false;
+    }
+};
+
+const appendDsuiteToken = (url, token) => {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.set('dsuite_token', token);
+    return parsed.toString();
+};
 
 export default function SsoCallback() {
     const navigate = useNavigate();
     const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
     const token = params.get('token');
+    const nextParam = params.get('next');
+    const nextUrl = isAllowedNextUrl(nextParam) ? nextParam : null;
     const errorParam = params.get('error');
     const error = errorParam || (!token ? 'Could not complete SSO login. Missing response from identity provider.' : '');
 
     useEffect(() => {
         if (token) {
             localStorage.setItem('token', token);
+            if (nextUrl) {
+                window.location.assign(appendDsuiteToken(nextUrl, token));
+                return;
+            }
             navigate('/status-dashboard', { replace: true });
         }
-    }, [navigate, token]);
+    }, [navigate, nextUrl, token]);
 
     const isProcessing = !error;
 

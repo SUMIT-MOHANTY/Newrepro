@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, DateTime, Text, JSON, Float
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, DateTime, Text, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -21,6 +21,59 @@ class User(Base):
     governance_responses = relationship("GovernanceResponse", back_populates="owner")
     agent_credentials = relationship("AgentCredential", back_populates="owner")
     organization_sso_settings = relationship("OrganizationSSOSetting", back_populates="admin_user")
+    oauth_authorization_codes = relationship("OAuthAuthorizationCode", back_populates="user")
+
+class OAuthClient(Base):
+    __tablename__ = "oauth_clients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    client_id = Column(String, unique=True, index=True, nullable=False)
+    client_secret = Column(String, nullable=False)
+    redirect_uri = Column(String, nullable=False)
+    login_url = Column(String, nullable=True)
+    allowed_organization = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    organization_connections = relationship("OrganizationPluginConnection", back_populates="oauth_client")
+
+class OAuthAuthorizationCode(Base):
+    __tablename__ = "oauth_authorization_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, unique=True, index=True, nullable=False)
+    client_id = Column(String, ForeignKey("oauth_clients.client_id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    organization_name = Column(String, index=True, nullable=True)
+    redirect_uri = Column(String, nullable=False)
+    scope = Column(String, nullable=True)
+    nonce = Column(String, nullable=True)
+    state = Column(String, nullable=True)
+    expires_at = Column(DateTime, index=True, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="oauth_authorization_codes")
+
+class OrganizationPluginConnection(Base):
+    __tablename__ = "organization_plugin_connections"
+    __table_args__ = (
+        UniqueConstraint("organization_name", "oauth_client_id", name="uq_org_plugin_connection"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_name = Column(String, index=True, nullable=False)
+    oauth_client_id = Column(String, ForeignKey("oauth_clients.client_id"), index=True, nullable=False)
+    is_connected = Column(Boolean, default=False)
+    remote_org_tenant = Column(String, nullable=True)
+    last_message = Column(String, nullable=True)
+    last_error = Column(Text, nullable=True)
+    connected_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    oauth_client = relationship("OAuthClient", back_populates="organization_connections")
 
 class OrganizationSSOSetting(Base):
     __tablename__ = "organization_sso_settings"

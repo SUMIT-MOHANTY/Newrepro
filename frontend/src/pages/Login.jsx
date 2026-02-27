@@ -1,8 +1,25 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck } from 'lucide-react';
-import { API_ENDPOINTS } from '../config';
+import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
+
+const isAllowedNextUrl = (nextUrl) => {
+    if (!nextUrl) return false;
+    try {
+        const absolute = new URL(nextUrl, window.location.origin);
+        const apiBase = new URL(API_BASE_URL, window.location.origin);
+        return absolute.origin === apiBase.origin && absolute.pathname === '/oauth/authorize';
+    } catch {
+        return false;
+    }
+};
+
+const appendDsuiteToken = (url, token) => {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.set('dsuite_token', token);
+    return parsed.toString();
+};
 
 const Login = ({ isModal = false, onClose, onSwitch }) => {
     const [email, setEmail] = useState('');
@@ -16,6 +33,9 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
         if (isModal && onClose) onClose();
         navigate(path);
     };
+
+    const nextParam = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '').get('next');
+    const nextUrl = isAllowedNextUrl(nextParam) ? nextParam : null;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -38,6 +58,10 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
             const data = await response.json();
             localStorage.setItem('token', data.access_token);
+            if (nextUrl) {
+                window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
+                return;
+            }
             finishNavigate('/status-dashboard');
         } catch {
             setError('Invalid email or password. Please try again.');
@@ -60,7 +84,10 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ email: email.trim().toLowerCase() }),
+                body: JSON.stringify({
+                    email: email.trim().toLowerCase(),
+                    next: nextUrl || undefined,
+                }),
             });
 
             const data = await response.json().catch(() => ({}));

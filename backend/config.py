@@ -29,6 +29,24 @@ class Settings(BaseSettings):
     github_client_id: Optional[str] = None
     github_client_secret: Optional[str] = None
 
+    # DSuite OAuth Provider (for plugin apps)
+    oauth_issuer: str = "dsuite"
+    oauth_nxdune_client_id: str = "nxdune"
+    oauth_nxdune_client_secret: str = "nxdune_local_change_me"
+    oauth_nxdune_redirect_uri: str = "https://stg-nxdune.bourntec.com/auth/dsuite/callback"
+    oauth_nxdune_login_url: str = "https://stg-nxdune.bourntec.com/login"
+    oauth_kaktox_client_id: str = "kaktox"
+    oauth_kaktox_client_secret: str = "kaktox_local_change_me"
+    oauth_kaktox_redirect_uri: str = "http://localhost:9002/auth/dsuite/callback"
+    oauth_kaktox_login_url: str = "http://localhost:9002/login"
+    oauth_cloudspx_client_id: str = "cloudspx"
+    oauth_cloudspx_client_secret: str = "cloudspx_local_change_me"
+    oauth_cloudspx_redirect_uri: str = "http://localhost:9003/auth/dsuite/callback"
+    oauth_cloudspx_login_url: str = "http://localhost:9003/login"
+    nxdune_org_create_url: str = "https://stg-nxdune.bourntec.com/api/organizations/create/"
+    nxdune_org_create_auth_token: Optional[str] = None
+    nxdune_org_create_timeout_seconds: int = 20
+
     # Task Management API
     task_api_base_url: str = "https://01e5-49-42-156-24.ngrok-free.app"
     task_api_client_id: str = "proj_240_4aba49b2"
