@@ -265,7 +265,7 @@ const VideoExplainer = () => {
   useEffect(() => {
     return () => {
       if (audioContextRef.current) {
-        audioContextRef.current.close().catch(() => {});
+        audioContextRef.current.close().catch(() => { });
         audioContextRef.current = null;
       }
     };
@@ -320,7 +320,7 @@ const VideoExplainer = () => {
     const ctx = getAudioContext();
     if (!ctx) return;
     if (ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
+      ctx.resume().catch(() => { });
     }
 
     const cueMap = {
@@ -415,7 +415,7 @@ const VideoExplainer = () => {
       if (next) {
         const ctx = getAudioContext();
         if (ctx && ctx.state === 'suspended') {
-          ctx.resume().catch(() => {});
+          ctx.resume().catch(() => { });
         }
       }
       return next;
@@ -680,11 +680,10 @@ const VideoExplainer = () => {
             <button
               type="button"
               onClick={toggleSound}
-              className={`inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest border px-2 py-1 rounded transition-colors ${
-                soundEnabled
-                  ? 'text-emerald-700 border-emerald-200 bg-emerald-50'
-                  : 'text-slate-600 border-slate-200 bg-slate-50'
-              }`}
+              className={`inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest border px-2 py-1 rounded transition-colors ${soundEnabled
+                ? 'text-emerald-700 border-emerald-200 bg-emerald-50'
+                : 'text-slate-600 border-slate-200 bg-slate-50'
+                }`}
             >
               {soundEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
               <span>{soundEnabled ? 'Narration On' : 'Narration Off'}</span>
@@ -827,10 +826,16 @@ const HowItWorks = () => {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.1)_0%,_transparent_60%)] pointer-events-none" />
         <div className="max-w-4xl mx-auto text-center relative z-10">
           <div className="inline-flex items-center justify-center p-3 sm:p-4 bg-blue-50 rounded-2xl mb-8 border border-blue-100 shadow-inner">
-            <img src={Logo} alt="DSuite" className="w-12 h-12" />
+            <div className="flex items-center justify-center gap-3">
+              <img src={Logo} alt="DSuite" className="h-9 w-auto" />
+              <div className="h-6 w-px bg-blue-200" />
+              <span className="text-xl font-bold tracking-tight text-app-text-main">
+                DSuite
+              </span>
+            </div>
           </div>
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight text-app-text-main mb-6 leading-tight">
-            One Document. <br /> Zero Developers.
+            One Document. <br /> Autonomous Engineering.
           </h1>
           <p className="text-xl sm:text-2xl text-app-text-label leading-relaxed max-w-2xl mx-auto">
             Discover how DSuite orchestrates a highly-specialized swarm of AI agents to instantly build, test, and deploy software from a single requirements document.

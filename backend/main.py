@@ -1,12 +1,16 @@
 import asyncio
 import logging
+import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional, List, Dict, Any
+from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, Header
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, Header, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from pydantic import BaseModel
@@ -29,6 +33,9 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="BRD Analysis API", version="1.0.0")
 logger = logging.getLogger(__name__)
+SSO_DEFAULT_SCOPES = "openid profile email"
+SSO_STATE_TTL_SECONDS = 1800
+SSO_STATE_CLOCK_SKEW_SECONDS = 300
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,7 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 # --- Pydantic Models for AI ---
 class AnalyzeRequest(BaseModel):
@@ -119,6 +126,406 @@ async def login_for_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+def _normalized_text(value: Optional[str]) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+def _find_sso_setting_by_organization(
+    db: Session,
+    organization_name: str,
+) -> Optional[models.OrganizationSSOSetting]:
+    org_name = _normalized_text(organization_name)
+    if not org_name:
+        return None
+    return db.query(models.OrganizationSSOSetting).filter(
+        func.lower(models.OrganizationSSOSetting.organization_name) == org_name.lower()
+    ).first()
+
+def _find_sso_setting_by_domain(
+    db: Session,
+    domain: str,
+) -> Optional[models.OrganizationSSOSetting]:
+    cleaned_domain = _normalized_text(domain).lower()
+    if not cleaned_domain:
+        return None
+    matches = db.query(models.OrganizationSSOSetting).filter(
+        models.OrganizationSSOSetting.sso_enabled.is_(True),
+        func.lower(models.OrganizationSSOSetting.domain_hint) == cleaned_domain,
+    ).all()
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Multiple organizations are mapped to this email domain. Contact your administrator.",
+        )
+    return matches[0] if matches else None
+
+def _resolve_login_sso_setting(
+    payload: schemas.SSOStartRequest,
+    db: Session,
+) -> tuple[models.OrganizationSSOSetting, str, str]:
+    email_hint = _normalized_text(payload.email).lower()
+    requested_org_name = _normalized_text(payload.organization_name)
+
+    setting: Optional[models.OrganizationSSOSetting] = None
+    resolved_org_name = ""
+
+    if email_hint:
+        user = db.query(models.User).filter(func.lower(models.User.email) == email_hint).first()
+        if user and _normalized_text(user.organization_name):
+            resolved_org_name = _normalized_text(user.organization_name)
+            setting = _find_sso_setting_by_organization(db, resolved_org_name)
+
+        if not setting and "@" in email_hint:
+            domain = email_hint.split("@", 1)[1]
+            setting = _find_sso_setting_by_domain(db, domain)
+            if setting:
+                resolved_org_name = setting.organization_name
+
+    if not setting and requested_org_name:
+        setting = _find_sso_setting_by_organization(db, requested_org_name)
+        if setting:
+            resolved_org_name = setting.organization_name
+
+    if not setting:
+        raise HTTPException(
+            status_code=404,
+            detail="No SSO-enabled organization found for this account.",
+        )
+    if not setting.sso_enabled:
+        raise HTTPException(status_code=400, detail="SSO is disabled for this organization.")
+    if not _normalized_text(setting.client_id):
+        raise HTTPException(status_code=400, detail="Organization SSO client ID is not configured.")
+    if not _normalized_text(setting.client_secret):
+        raise HTTPException(status_code=400, detail="Organization SSO client secret is not configured.")
+    if not _normalized_text(setting.authority_url):
+        raise HTTPException(status_code=400, detail="Organization SSO authority URL is not configured.")
+
+    return setting, resolved_org_name, email_hint
+
+def _resolve_sso_redirect_uri(
+    setting: models.OrganizationSSOSetting,
+    request: Request,
+) -> str:
+    configured = _normalized_text(setting.redirect_uri)
+    if configured:
+        return configured
+    return str(request.url_for("sso_callback"))
+
+def _build_frontend_sso_redirect(
+    *,
+    token: Optional[str] = None,
+    error: Optional[str] = None,
+) -> str:
+    base_url = f"{settings.frontend_url.rstrip('/')}/sso/callback"
+    params: Dict[str, str] = {}
+    if token:
+        params["token"] = token
+    if error:
+        params["error"] = error
+    if not params:
+        return base_url
+    return f"{base_url}?{urlencode(params)}"
+
+async def _fetch_oidc_metadata(setting: models.OrganizationSSOSetting) -> Dict[str, str]:
+    authority_url = _normalized_text(setting.authority_url)
+    if not authority_url:
+        raise HTTPException(status_code=400, detail="Organization authority URL is missing.")
+
+    if "/.well-known/openid-configuration" in authority_url:
+        metadata_url = authority_url
+        authority_base = authority_url.split("/.well-known/openid-configuration", 1)[0].rstrip("/")
+    else:
+        authority_base = authority_url.rstrip("/")
+        metadata_url = f"{authority_base}/.well-known/openid-configuration"
+
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            metadata_response = await client.get(metadata_url)
+            metadata_response.raise_for_status()
+        metadata = metadata_response.json()
+    except Exception as exc:
+        if _normalized_text(setting.sso_provider).lower() == "azure_ad":
+            return {
+                "authorization_endpoint": f"{authority_base}/oauth2/v2.0/authorize",
+                "token_endpoint": f"{authority_base}/oauth2/v2.0/token",
+                "userinfo_endpoint": "",
+            }
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to fetch provider metadata from {metadata_url}. {str(exc)}",
+        )
+
+    authorization_endpoint = _normalized_text(metadata.get("authorization_endpoint"))
+    token_endpoint = _normalized_text(metadata.get("token_endpoint"))
+    userinfo_endpoint = _normalized_text(metadata.get("userinfo_endpoint"))
+
+    if not authorization_endpoint or not token_endpoint:
+        raise HTTPException(
+            status_code=400,
+            detail="OIDC provider metadata is missing authorization/token endpoints.",
+        )
+
+    return {
+        "authorization_endpoint": authorization_endpoint,
+        "token_endpoint": token_endpoint,
+        "userinfo_endpoint": userinfo_endpoint,
+    }
+
+def _extract_email_from_claims(claims: Dict[str, Any]) -> str:
+    return _normalized_text(
+        claims.get("email")
+        or claims.get("preferred_username")
+        or claims.get("upn")
+        or claims.get("unique_name")
+    )
+
+async def _fetch_userinfo_claims(userinfo_endpoint: str, access_token: str) -> Dict[str, Any]:
+    endpoint = _normalized_text(userinfo_endpoint)
+    token = _normalized_text(access_token)
+    if not endpoint or not token:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                endpoint,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if response.status_code >= 400:
+            return {}
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        return {}
+    return {}
+
+def _validate_sso_state_window(state_payload: Dict[str, Any]) -> bool:
+    try:
+        exp_ts = int(state_payload.get("exp"))
+        iat_ts = int(state_payload.get("iat"))
+    except (TypeError, ValueError):
+        return False
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    if exp_ts + SSO_STATE_CLOCK_SKEW_SECONDS < now_ts:
+        return False
+    if iat_ts - SSO_STATE_CLOCK_SKEW_SECONDS > now_ts:
+        return False
+    return True
+
+@app.post("/auth/sso/start", response_model=schemas.SSOStartResponse)
+async def start_sso_login(
+    payload: schemas.SSOStartRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    if not payload.email and not _normalized_text(payload.organization_name):
+        raise HTTPException(status_code=400, detail="Email or organization name is required.")
+
+    setting, organization_name, email_hint = _resolve_login_sso_setting(payload, db)
+    metadata = await _fetch_oidc_metadata(setting)
+    redirect_uri = _resolve_sso_redirect_uri(setting, request)
+    nonce = secrets.token_urlsafe(16)
+
+    now = datetime.now(timezone.utc)
+    state_payload = {
+        "org": organization_name,
+        "email_hint": email_hint or None,
+        "nonce": nonce,
+        "redirect_uri": redirect_uri,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=SSO_STATE_TTL_SECONDS)).timestamp()),
+    }
+    state_token = jwt.encode(state_payload, settings.secret_key, algorithm=settings.algorithm)
+
+    query_params = {
+        "client_id": setting.client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "response_mode": "query",
+        "scope": _normalized_text(setting.scopes) or SSO_DEFAULT_SCOPES,
+        "state": state_token,
+        "nonce": nonce,
+    }
+    if email_hint:
+        query_params["login_hint"] = email_hint
+    if _normalized_text(setting.domain_hint):
+        query_params["domain_hint"] = _normalized_text(setting.domain_hint)
+
+    auth_url = f"{metadata['authorization_endpoint']}?{urlencode(query_params)}"
+    return schemas.SSOStartResponse(auth_url=auth_url)
+
+@app.get("/auth/sso/callback")
+async def sso_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    if error:
+        message = _normalized_text(error_description) or _normalized_text(error) or "SSO sign-in failed."
+        return RedirectResponse(url=_build_frontend_sso_redirect(error=message), status_code=302)
+
+    if not code or not state:
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error="Missing authorization code or state."),
+            status_code=302,
+        )
+
+    try:
+        state_payload = jwt.decode(
+            state,
+            settings.secret_key,
+            algorithms=[settings.algorithm],
+            options={"verify_exp": False, "verify_aud": False},
+        )
+    except JWTError as exc:
+        logger.warning("SSO state decode failed: %s", exc)
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error="Invalid SSO state. Please try Sign in with SSO again."),
+            status_code=302,
+        )
+    if not _validate_sso_state_window(state_payload):
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error="SSO state expired. Please click Sign in with SSO again."),
+            status_code=302,
+        )
+
+    organization_name = _normalized_text(state_payload.get("org"))
+    if not organization_name:
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error="Invalid organization context in SSO state."),
+            status_code=302,
+        )
+
+    setting = _find_sso_setting_by_organization(db, organization_name)
+    if not setting or not setting.sso_enabled:
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error="Organization SSO is not available."),
+            status_code=302,
+        )
+
+    try:
+        metadata = await _fetch_oidc_metadata(setting)
+    except HTTPException as exc:
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error=str(exc.detail)),
+            status_code=302,
+        )
+
+    redirect_uri = _normalized_text(state_payload.get("redirect_uri")) or _resolve_sso_redirect_uri(setting, request)
+    token_payload = {
+        "grant_type": "authorization_code",
+        "client_id": _normalized_text(setting.client_id),
+        "client_secret": _normalized_text(setting.client_secret),
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            token_response = await client.post(
+                metadata["token_endpoint"],
+                data=token_payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        if token_response.status_code >= 400:
+            truncated_error = token_response.text[:300] or "Token exchange failed."
+            return RedirectResponse(
+                url=_build_frontend_sso_redirect(error=f"SSO token exchange failed. {truncated_error}"),
+                status_code=302,
+            )
+        token_data = token_response.json()
+    except Exception as exc:
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error=f"Unable to complete SSO token exchange. {str(exc)}"),
+            status_code=302,
+        )
+
+    claims: Dict[str, Any] = {}
+    id_token = token_data.get("id_token")
+    if id_token:
+        try:
+            claims = jwt.get_unverified_claims(id_token) or {}
+        except Exception:
+            claims = {}
+
+    expected_nonce = _normalized_text(state_payload.get("nonce"))
+    id_token_nonce = _normalized_text(claims.get("nonce"))
+    if expected_nonce and id_token_nonce and expected_nonce != id_token_nonce:
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error="SSO nonce validation failed."),
+            status_code=302,
+        )
+
+    email = _extract_email_from_claims(claims)
+    if not email:
+        userinfo_claims = await _fetch_userinfo_claims(
+            metadata.get("userinfo_endpoint", ""),
+            token_data.get("access_token", ""),
+        )
+        if userinfo_claims:
+            merged_claims = dict(userinfo_claims)
+            merged_claims.update(claims)
+            claims = merged_claims
+            email = _extract_email_from_claims(claims)
+
+    if not email:
+        email = _normalized_text(state_payload.get("email_hint"))
+
+    if not email:
+        return RedirectResponse(
+            url=_build_frontend_sso_redirect(error="Unable to determine user email from SSO provider."),
+            status_code=302,
+        )
+
+    normalized_email = email.lower()
+    first_name = _normalized_text(claims.get("given_name")) or None
+    last_name = _normalized_text(claims.get("family_name")) or None
+
+    user = db.query(models.User).filter(func.lower(models.User.email) == normalized_email).first()
+    if user:
+        existing_org = _normalized_text(user.organization_name)
+        if existing_org and existing_org.lower() != organization_name.lower():
+            return RedirectResponse(
+                url=_build_frontend_sso_redirect(error="This account belongs to a different organization."),
+                status_code=302,
+            )
+        if not existing_org:
+            user.organization_name = organization_name
+        if not user.first_name and first_name:
+            user.first_name = first_name
+        if not user.last_name and last_name:
+            user.last_name = last_name
+    else:
+        # Generate a random password because this user signs in through SSO.
+        generated_password = secrets.token_urlsafe(32)
+        user = models.User(
+            email=normalized_email,
+            hashed_password=auth.get_password_hash(generated_password),
+            first_name=first_name,
+            last_name=last_name,
+            organization_name=organization_name,
+            is_org_admin=False,
+        )
+        db.add(user)
+
+    db.commit()
+    db.refresh(user)
+
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    app_access_token = auth.create_access_token(
+        data={"sub": user.email},
+        expires_delta=access_token_expires,
+    )
+    return RedirectResponse(
+        url=_build_frontend_sso_redirect(token=app_access_token),
+        status_code=302,
+    )
 
 @app.post("/users/", response_model=schemas.User)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):

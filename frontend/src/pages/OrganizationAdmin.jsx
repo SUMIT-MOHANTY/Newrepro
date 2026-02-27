@@ -93,12 +93,11 @@ export default function OrganizationAdmin({ user }) {
         if (success) setSuccess('');
     };
 
-    const handleSave = async (e) => {
-        e.preventDefault();
+    const persistSettings = async (payload, successMessage = 'Organization SSO settings saved successfully.') => {
         const token = localStorage.getItem('token');
         if (!token) {
             navigate('/login');
-            return;
+            return false;
         }
 
         setIsSaving(true);
@@ -112,7 +111,7 @@ export default function OrganizationAdmin({ user }) {
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${token}`,
                 },
-                body: JSON.stringify(form),
+                body: JSON.stringify(payload),
             });
             if (!response.ok) {
                 const data = await response.json().catch(() => ({}));
@@ -121,11 +120,35 @@ export default function OrganizationAdmin({ user }) {
             const data = await response.json();
             setForm(normalizeSettings(data));
             setUpdatedAt(data.updated_at || null);
-            setSuccess('Organization SSO settings saved successfully.');
+            setSuccess(successMessage);
+            return true;
         } catch (err) {
             setError(err.message || 'Failed to save organization settings');
+            return false;
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    const handleSave = async (e) => {
+        e.preventDefault();
+        await persistSettings(form);
+    };
+
+    const handleToggleSsoEnabled = async () => {
+        if (isSaving) return;
+
+        const nextEnabled = !form.sso_enabled;
+        const previousForm = form;
+        const nextForm = { ...form, sso_enabled: nextEnabled };
+        setForm(nextForm);
+
+        const saved = await persistSettings(
+            nextForm,
+            nextEnabled ? 'SSO has been enabled for this organization.' : 'SSO has been disabled for this organization.',
+        );
+        if (!saved) {
+            setForm(previousForm);
         }
     };
 
@@ -273,9 +296,12 @@ export default function OrganizationAdmin({ user }) {
                                     type="text"
                                     value={form.redirect_uri || ''}
                                     onChange={(e) => handleChange('redirect_uri', e.target.value)}
-                                    placeholder="https://yourapp.com/auth/callback"
+                                    placeholder="http://localhost:8000/auth/sso/callback"
                                     className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
                                 />
+                                <p className="mt-1 text-[11px] text-app-text-light">
+                                    Use backend callback URL (example: <code className="font-mono">/auth/sso/callback</code>).
+                                </p>
                             </label>
                             <label className="block">
                                 <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Logout URL</span>
@@ -316,12 +342,13 @@ export default function OrganizationAdmin({ user }) {
                             </div>
                             <button
                                 type="button"
-                                onClick={() => handleChange('sso_enabled', !form.sso_enabled)}
+                                onClick={handleToggleSsoEnabled}
+                                disabled={isSaving}
                                 className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold transition-colors ${
                                     form.sso_enabled
                                         ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
                                         : 'bg-app-bg-card text-app-text-muted border border-app-border'
-                                }`}
+                                } ${isSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
                             >
                                 {form.sso_enabled ? 'Enabled' : 'Disabled'}
                             </button>

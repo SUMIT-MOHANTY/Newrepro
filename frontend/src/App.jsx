@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import GovernanceForm from './pages/GovernanceForm';
 import PrerequisiteClassification from './pages/PrerequisiteClassification';
 import GitHubCallback from './pages/GitHubCallback';
+import SsoCallback from './pages/SsoCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
 import OrganizationAdmin from './pages/OrganizationAdmin';
@@ -20,6 +21,7 @@ function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/how-it-works" element={<HowItWorks />} />
         <Route path="/github/callback" element={<GitHubCallback />} />
+        <Route path="/sso/callback" element={<SsoCallback />} />
 
         {/* Authenticated routes — wrapped with AppLayout for uniform sidebar/navbar */}
         <Route path="/dashboard" element={

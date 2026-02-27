@@ -1,4 +1,4 @@
-const PUBLIC_AUTH_PATHS = new Set(['/login', '/signup', '/']);
+const PUBLIC_AUTH_PATHS = new Set(['/login', '/signup', '/', '/sso/callback']);
 
 let isAuthRedirectInProgress = false;
 

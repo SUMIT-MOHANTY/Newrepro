@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, Lock, ArrowRight, Loader2 } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Loader2, ShieldCheck } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
 
@@ -9,6 +9,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [isSsoLoading, setIsSsoLoading] = useState(false);
     const navigate = useNavigate();
 
     const finishNavigate = (path) => {
@@ -42,6 +43,35 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
             setError('Invalid email or password. Please try again.');
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleSsoLogin = async () => {
+        setError('');
+        if (!email.trim()) {
+            setError('Enter your business email first to continue with SSO.');
+            return;
+        }
+
+        setIsSsoLoading(true);
+        try {
+            const response = await fetch(API_ENDPOINTS.SSO_START, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ email: email.trim().toLowerCase() }),
+            });
+
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.auth_url) {
+                throw new Error(data.detail || 'SSO is not configured for this account.');
+            }
+
+            window.location.assign(data.auth_url);
+        } catch (err) {
+            setError(err.message || 'Unable to start SSO login.');
+            setIsSsoLoading(false);
         }
     };
 
@@ -119,7 +149,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
                     <button
                         type="submit"
-                        disabled={isLoading}
+                        disabled={isLoading || isSsoLoading}
                         className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-white bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
                     >
                         {isLoading ? (
@@ -131,6 +161,34 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                             <>
                                 Sign In
                                 <ArrowRight className="ml-2 h-4 w-4" />
+                            </>
+                        )}
+                    </button>
+
+                    <div className="relative py-1">
+                        <div className="absolute inset-0 flex items-center">
+                            <div className="w-full border-t border-app-border-light"></div>
+                        </div>
+                        <div className="relative flex justify-center text-xs">
+                            <span className="bg-app-bg-card px-3 text-app-text-muted font-semibold uppercase tracking-wider">Or</span>
+                        </div>
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={handleSsoLogin}
+                        disabled={isLoading || isSsoLoading}
+                        className="w-full flex items-center justify-center py-3.5 px-4 border border-app-border rounded-xl text-sm font-bold text-app-text-main bg-app-bg-page hover:bg-app-bg-muted focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 disabled:opacity-70 disabled:cursor-not-allowed"
+                    >
+                        {isSsoLoading ? (
+                            <>
+                                <Loader2 className="animate-spin -ml-1 mr-2 h-4 w-4" />
+                                Redirecting to SSO...
+                            </>
+                        ) : (
+                            <>
+                                <ShieldCheck className="mr-2 h-4 w-4 text-app-primary" />
+                                Continue with SSO
                             </>
                         )}
                     </button>

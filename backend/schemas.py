@@ -29,6 +29,13 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     email: Optional[str] = None
 
+class SSOStartRequest(BaseModel):
+    email: Optional[EmailStr] = None
+    organization_name: Optional[str] = None
+
+class SSOStartResponse(BaseModel):
+    auth_url: str
+
 class OrganizationSSOSettingsUpdate(BaseModel):
     sso_provider: Optional[str] = None
     tenant_id: Optional[str] = None

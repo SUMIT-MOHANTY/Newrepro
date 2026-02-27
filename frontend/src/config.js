@@ -7,6 +7,7 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localho
 export const API_ENDPOINTS = {
     // Auth
     TOKEN: `${API_BASE_URL}/token`,
+    SSO_START: `${API_BASE_URL}/auth/sso/start`,
     TASK_TOKEN: `${API_BASE_URL}/api/token/task/`,
     USERS: `${API_BASE_URL}/users/`,
     USERS_ME: `${API_BASE_URL}/users/me`,
