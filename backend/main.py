@@ -1259,20 +1259,41 @@ def _startup_init() -> None:
         db.close()
 
 
-def _get_agent_credentials_map(
+GLOBAL_GIT_CREDENTIAL_AGENT_ID = "__global_git__"
+
+
+def _get_project_global_credential(
     db: Session,
     user_id: int,
     project_token: Optional[str],
-) -> Dict[str, models.AgentCredential]:
-    creds_query = db.query(models.AgentCredential).filter(
-        models.AgentCredential.owner_id == user_id
+) -> Optional[models.AgentCredential]:
+    project_token = _normalize_project_token(project_token)
+    cred_query = db.query(models.AgentCredential).filter(
+        models.AgentCredential.owner_id == user_id,
+        models.AgentCredential.agent_id == GLOBAL_GIT_CREDENTIAL_AGENT_ID,
     )
     if project_token:
-        creds_query = creds_query.filter(models.AgentCredential.project_token == project_token)
+        cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
     else:
-        creds_query = creds_query.filter(models.AgentCredential.project_token.is_(None))
-    creds = creds_query.all()
-    return {c.agent_id: c for c in creds}
+        cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
+    return cred_query.first()
+
+
+def _list_legacy_agent_credentials(
+    db: Session,
+    user_id: int,
+    project_token: Optional[str],
+) -> List[models.AgentCredential]:
+    project_token = _normalize_project_token(project_token)
+    cred_query = db.query(models.AgentCredential).filter(
+        models.AgentCredential.owner_id == user_id,
+        models.AgentCredential.agent_id != GLOBAL_GIT_CREDENTIAL_AGENT_ID,
+    )
+    if project_token:
+        cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
+    else:
+        cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
+    return cred_query.all()
 
 
 def _ensure_default_agents(db: Session, project_token: Optional[str] = None) -> None:
@@ -1343,31 +1364,19 @@ def _delete_agent_record(db: Session, agent_id: str, project_token: Optional[str
     db.commit()
 
 
-def _upsert_agent_credentials(
+def _upsert_project_global_credentials(
     db: Session,
     user_id: int,
-    agent_id: str,
     git_repo_url: Optional[str] = None,
     git_token: Optional[str] = None,
     project_token: Optional[str] = None,
 ) -> models.AgentCredential:
     project_token = _normalize_project_token(project_token)
-    cred_query = (
-        db.query(models.AgentCredential)
-        .filter(
-            models.AgentCredential.owner_id == user_id,
-            models.AgentCredential.agent_id == agent_id,
-        )
-    )
-    if project_token:
-        cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
-    else:
-        cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
-    cred = cred_query.first()
+    cred = _get_project_global_credential(db, user_id, project_token)
     if not cred:
         cred = models.AgentCredential(
             owner_id=user_id,
-            agent_id=agent_id,
+            agent_id=GLOBAL_GIT_CREDENTIAL_AGENT_ID,
             project_token=project_token,
         )
         db.add(cred)
@@ -1384,14 +1393,56 @@ def _upsert_agent_credentials(
     return cred
 
 
+def _resolve_project_global_credential(
+    db: Session,
+    user_id: int,
+    project_token: Optional[str],
+) -> Optional[models.AgentCredential]:
+    """
+    Return project-wide global Git credential.
+    Backfills from legacy per-agent credentials so existing users are not disrupted.
+    """
+    cred = _get_project_global_credential(db, user_id, project_token)
+    if cred:
+        return cred
+
+    legacy = sorted(
+        _list_legacy_agent_credentials(db, user_id, project_token),
+        key=lambda row: row.updated_at or datetime.min,
+        reverse=True,
+    )
+    if not legacy:
+        return None
+
+    latest_complete = next((row for row in legacy if row.git_repo_url and row.git_token), None)
+    if latest_complete:
+        repo_val = latest_complete.git_repo_url.strip()
+        token_val = latest_complete.git_token.strip()
+    else:
+        first_repo = next((row.git_repo_url for row in legacy if row.git_repo_url), None)
+        first_token = next((row.git_token for row in legacy if row.git_token), None)
+        repo_val = first_repo.strip() if first_repo else None
+        token_val = first_token.strip() if first_token else None
+
+    if not repo_val and not token_val:
+        return None
+
+    return _upsert_project_global_credentials(
+        db,
+        user_id,
+        git_repo_url=repo_val,
+        git_token=token_val,
+        project_token=project_token,
+    )
+
+
 def _sanitize_agent_for_user(
     agent: Dict[str, Any],
-    cred: Optional[models.AgentCredential],
+    global_cred: Optional[models.AgentCredential],
 ) -> Dict[str, Any]:
     safe_agent = dict(agent)
-    if cred and cred.git_repo_url:
-        safe_agent["git_repo_url"] = cred.git_repo_url
-    safe_agent["has_git_token"] = bool(cred and cred.git_token)
+    safe_agent["git_repo_url"] = global_cred.git_repo_url if global_cred and global_cred.git_repo_url else None
+    safe_agent["has_git_token"] = bool(global_cred and global_cred.git_token)
     if "git_token" in safe_agent:
         safe_agent["git_token"] = None
     return safe_agent
@@ -1434,9 +1485,9 @@ async def list_agents(
     records = query.all()
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-    creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
+    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
     agents = [
-        _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))
+        _sanitize_agent_for_user(agent, global_cred)
         for agent in agent_service.get_all_agents(project_token)
     ]
     return {"agents": agents}
@@ -1491,22 +1542,29 @@ async def deploy_preview(
     """
     project_token = _normalize_project_token(project_token)
 
-    # Get git credentials: from request body, or from first agent with credentials
+    # Get git credentials: from request body, or from project-global saved credentials.
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
 
+    if request and (request.git_repo_url is not None or request.git_token is not None):
+        _upsert_project_global_credentials(
+            db,
+            current_user.id,
+            git_repo_url=git_repo_url,
+            git_token=git_token,
+            project_token=project_token,
+        )
+
     if not git_repo_url or not git_token:
-        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
-        for cred in creds_map.values():
-            if cred.git_repo_url and cred.git_token:
-                git_repo_url = git_repo_url or cred.git_repo_url
-                git_token = git_token or cred.git_token
-                break
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        if global_cred:
+            git_repo_url = git_repo_url or global_cred.git_repo_url
+            git_token = git_token or global_cred.git_token
 
     if not git_repo_url or not git_token:
         raise HTTPException(
             status_code=400,
-            detail="Git repo URL and token are required. Configure them on any agent first."
+            detail="Git repo URL and token are required. Configure global Git credentials first."
         )
 
     result = await agent_service.deploy_preview(
@@ -1543,13 +1601,15 @@ async def stop_preview(
 async def get_agent_status(
     agent_id: str,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
     project_token: Optional[str] = None,
 ):
     """Get the current status and details of a specific agent."""
     try:
         project_token = _normalize_project_token(project_token)
         agent = agent_service.get_agent_status(agent_id, project_token)
-        return {"agent": agent}
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1589,21 +1649,24 @@ async def run_agent(
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
 
-    cred = None
-    if git_repo_url or git_token:
-        cred = _upsert_agent_credentials(
+    if request and (request.git_repo_url is not None or request.git_token is not None):
+        _upsert_project_global_credentials(
             db,
             current_user.id,
-            agent_id,
             git_repo_url=git_repo_url,
             git_token=git_token,
             project_token=project_token,
         )
-    else:
-        cred = _get_agent_credentials_map(db, current_user.id, project_token).get(agent_id)
+    cred = _resolve_project_global_credential(db, current_user.id, project_token)
 
     effective_repo = git_repo_url or (cred.git_repo_url if cred else None)
     effective_token = git_token or (cred.git_token if cred else None)
+    if effective_repo and effective_token:
+        agent["git_repo_url"] = effective_repo
+        agent["git_token"] = effective_token
+    else:
+        agent["git_repo_url"] = None
+        agent["git_token"] = None
 
     # Mark as running immediately so frontend refresh sees it instantly
     agent["status"] = "running"
@@ -1686,36 +1749,47 @@ async def run_all_agents(
     if not idle_agents:
         raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
 
+    # Backward-compatible request parsing: if caller still sends per-agent config,
+    # use the first provided repo/token as project-global credentials.
     agents_config = dict(request.agents_config) if request and request.agents_config else {}
-    if agents_config:
-        for agent_id, cfg in agents_config.items():
-            if not cfg:
-                continue
-            _upsert_agent_credentials(
-                db,
-                current_user.id,
-                agent_id,
-                git_repo_url=cfg.get("git_repo_url"),
-                git_token=cfg.get("git_token"),
-                project_token=project_token,
-            )
-
-    creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
-    for agent in idle_agents:
-        if agent["id"] in agents_config:
+    provided_repo = None
+    provided_token = None
+    for cfg in agents_config.values():
+        if not isinstance(cfg, dict):
             continue
-        cred = creds_map.get(agent["id"])
-        if cred and cred.git_repo_url and cred.git_token:
-            agents_config[agent["id"]] = {
-                "git_repo_url": cred.git_repo_url,
-                "git_token": cred.git_token,
+        if not provided_repo and cfg.get("git_repo_url"):
+            provided_repo = cfg.get("git_repo_url")
+        if not provided_token and cfg.get("git_token"):
+            provided_token = cfg.get("git_token")
+        if provided_repo and provided_token:
+            break
+    if provided_repo or provided_token:
+        _upsert_project_global_credentials(
+            db,
+            current_user.id,
+            git_repo_url=provided_repo,
+            git_token=provided_token,
+            project_token=project_token,
+        )
+
+    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+    run_all_config: Dict[str, Dict[str, str]] = {}
+    if global_cred and global_cred.git_repo_url and global_cred.git_token:
+        for agent in idle_agents:
+            run_all_config[agent["id"]] = {
+                "git_repo_url": global_cred.git_repo_url,
+                "git_token": global_cred.git_token,
             }
+    else:
+        for agent in idle_agents:
+            agent["git_repo_url"] = None
+            agent["git_token"] = None
 
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
     bg_task = asyncio.create_task(
         agent_service.run_all_agents(
-            agents_config=agents_config if agents_config else None,
+            agents_config=run_all_config if run_all_config else None,
             project_token=project_token,
             task_token=x_task_token,
         )
@@ -1776,20 +1850,18 @@ async def add_agent(
 
     agent = agent_service.add_agent(
         name=name,
-        git_repo_url=git_repo_url,
-        git_token=git_token,
         project_token=project_token,
     )
     _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
     if git_repo_url or git_token:
-        _upsert_agent_credentials(
+        _upsert_project_global_credentials(
             db,
             current_user.id,
-            agent["id"],
             git_repo_url=git_repo_url,
             git_token=git_token,
             project_token=project_token,
         )
+    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
     external_agent = None
     external_error = None
     external_username = _build_external_agent_username(agent.get("id"), agent.get("name"))
@@ -1815,7 +1887,10 @@ async def add_agent(
             external_error,
         )
 
-    response = {"agent": agent, "external_username": external_username}
+    response = {
+        "agent": _sanitize_agent_for_user(agent, global_cred),
+        "external_username": external_username,
+    }
     if external_agent is not None:
         response["external_agent"] = external_agent
     if external_error:
@@ -1857,16 +1932,15 @@ async def update_agent(
             agent = agent_service.update_agent_name(agent_id, next_name, project_token)
         _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
         if repo_provided or token_provided:
-            _upsert_agent_credentials(
+            _upsert_project_global_credentials(
                 db,
                 current_user.id,
-                agent_id,
                 git_repo_url=request.git_repo_url,
                 git_token=request.git_token,
                 project_token=project_token,
             )
-        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))}
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1905,16 +1979,15 @@ async def update_agent_post(
             agent = agent_service.update_agent_name(agent_id, next_name, project_token)
         _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
         if repo_provided or token_provided:
-            _upsert_agent_credentials(
+            _upsert_project_global_credentials(
                 db,
                 current_user.id,
-                agent_id,
                 git_repo_url=request.git_repo_url,
                 git_token=request.git_token,
                 project_token=project_token,
             )
-        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))}
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
