@@ -341,6 +341,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     const isAiAssistMode = processMode === 'ai_assist' || processMode === 'ai_first';
     const isDeveloperOnlyMode = processMode === 'developer_only';
+    const shouldAutoStartAfterGlobalGitSetup = isAiAssistMode && Boolean(location.state?.fromTaskCreationModeSelection);
 
     useEffect(() => {
         if (!selectedProjectKey) {
@@ -710,6 +711,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
             setGitModalAgent(null);
             await fetchAgents();
+            if (shouldAutoStartAfterGlobalGitSetup) {
+                await handleRunAll(true);
+            }
         } catch (e) {
             console.error('Save global git configuration failed', e);
         }
@@ -2738,7 +2742,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken);
                                     }
                                 }} disabled={(gitModalAgent.id === '__run_all_setup__' || gitModalAgent.id === '__global_setup_only__') ? (!agentsGitConfig.__global__?.git_repo_url?.trim() || !agentsGitConfig.__global__?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
-                                    <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all_setup__' ? 'Start All Agents' : (gitModalAgent.id === '__global_setup_only__' ? 'Save Global Config' : 'Start Agent')}
+                                    <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all_setup__' ? 'Start All Agents' : (gitModalAgent.id === '__global_setup_only__' ? (shouldAutoStartAfterGlobalGitSetup ? 'Save & Start Agents' : 'Save Global Config') : 'Start Agent')}
                                 </button>
                             </div>
                         </div>
