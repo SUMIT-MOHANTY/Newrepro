@@ -492,7 +492,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             });
             if (!updateRes.ok) {
                 const errData = await updateRes.json().catch(() => ({}));
-                throw new Error(errData?.detail || 'Failed to save global Git config.');
+                throw new Error(errData?.detail || 'Failed to save  Git config.');
             }
             setHasSavedGlobalGitToken(true);
             setGlobalGitToken('');
@@ -771,7 +771,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 {/* ── SUMMARY + SUBMIT ── */}
                 <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-100/80 p-6 mb-6">
                     <div className="mb-6 pb-6 border-b border-gray-100">
-                        <h3 className="text-base font-bold text-gray-900 mb-1">Global Git Configuration</h3>
+                        <h3 className="text-base font-bold text-gray-900 mb-1">Git Configuration</h3>
                         <p className="text-sm text-gray-500 mb-4">
                             Provide one global repository and PAT here. All agents in this project will use these credentials.
                         </p>
@@ -790,7 +790,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             </div>
                             <div>
                                 <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
-                                    Global Personal Access Token {!hasSavedGlobalGitToken && <span className="text-red-500">*</span>}
+                                    Personal Access Token {!hasSavedGlobalGitToken && <span className="text-red-500">*</span>}
                                 </label>
                                 <input
                                     type="password"
