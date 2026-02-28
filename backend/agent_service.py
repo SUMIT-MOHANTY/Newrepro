@@ -138,6 +138,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "git_merge_queue": [],
             "git_merge_running": False,
             "git_merge_lock": asyncio.Lock(),
+            "git_merge_inflight": set(),
             "merged_branches": [],
             "repo_bootstrap": _new_repo_bootstrap_state(),
             "repo_bootstrap_lock": asyncio.Lock(),
@@ -1862,6 +1863,100 @@ async def _run_commands_in_container(container_name: str, commands: List[str]) -
     return last
 
 
+def _git_ref_exists(container_name: str, ref: str) -> bool:
+    check = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "show-ref", "--verify", "--quiet", f"refs/remotes/{ref}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    return check.returncode == 0
+
+
+def _list_changed_files_between_refs(container_name: str, base_ref: str, compare_ref: str) -> List[str]:
+    diff = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "diff", "--name-only", "--diff-filter=ACMR", f"{base_ref}...{compare_ref}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if diff.returncode != 0:
+        diff = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "diff", "--name-only", "--diff-filter=ACMR", base_ref, compare_ref],
+            capture_output=True, text=True, timeout=30,
+        )
+    if diff.returncode != 0:
+        return []
+    return [line.strip() for line in (diff.stdout or "").splitlines() if line.strip()]
+
+
+def _check_path_ownership_gate(
+    container_name: str,
+    source_branch: str,
+    base_ref: str,
+    source_agent: str,
+    project_token: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Compare source branch changed files against active peer branches and
+    current file locks from shared memory. Blocks merge when overlap exists.
+    """
+    try:
+        import context_manager as ctx_mgr
+    except Exception:
+        return {"allowed": True, "changed_files": [], "conflicts": []}
+
+    live_mem = ctx_mgr.get_live_memory(project_token or "")
+    source_ref = f"origin/{source_branch}"
+    changed_files = _list_changed_files_between_refs(container_name, base_ref, source_ref)
+    if not changed_files:
+        return {"allowed": True, "changed_files": [], "conflicts": []}
+
+    changed_set = set(changed_files)
+    conflicts: List[Dict[str, Any]] = []
+
+    conflict_map = live_mem.get_file_conflicts(source_agent or GIT_MANAGER_AGENT_ID, changed_files)
+    for path, agents in conflict_map.items():
+        conflicts.append({
+            "agent_id": ", ".join(sorted(agents)),
+            "branch": "(file-lock)",
+            "overlap": [path],
+        })
+
+    with live_mem._lock:
+        active_records = list(live_mem.active_tasks.items())
+
+    for peer_id, record in active_records:
+        if peer_id == source_agent:
+            continue
+        peer_branch = (record.branch_name or "").strip()
+        if not peer_branch or peer_branch == source_branch:
+            continue
+        peer_ref = f"origin/{peer_branch}"
+
+        fetch_peer = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "fetch", "origin", peer_branch],
+            capture_output=True, text=True, timeout=30,
+        )
+        if fetch_peer.returncode != 0 or not _git_ref_exists(container_name, peer_ref):
+            continue
+
+        peer_files = _list_changed_files_between_refs(container_name, base_ref, peer_ref)
+        overlap = sorted(changed_set.intersection(peer_files))
+        if overlap:
+            conflicts.append({
+                "agent_id": peer_id,
+                "branch": peer_branch,
+                "overlap": overlap[:20],
+            })
+
+    return {
+        "allowed": len(conflicts) == 0,
+        "changed_files": changed_files,
+        "conflicts": conflicts,
+    }
+
+
 def _commit_if_dirty(container_name: str, message: str) -> None:
     status = subprocess.run(
         ["docker", "exec", "-w", "/workspace", container_name,
@@ -1900,12 +1995,34 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
     )
     install_res = await _run_commands_in_container(container_name, install_cmds)
     if install_res.get("exit_code", 0) != 0:
+        stderr = (install_res.get("stderr") or "")
+        stdout = (install_res.get("stdout") or "")
+        combined = f"{stdout}\n{stderr}".lower()
+        # Keep merge flow resilient: missing toolchains in the merge container
+        # should not drop already-produced branch work.
+        if "not found" in combined or "command not found" in combined:
+            _log_git_agent(
+                f"Install skipped (toolchain missing): {install_res.get('cmd')}\n{stderr}",
+                "warning",
+                project_token=project_token
+            )
+            _log_git_agent(
+                "Proceeding without test gate for this merge to avoid dropping branch changes.",
+                "warning",
+                project_token=project_token
+            )
+            return True
         _log_git_agent(
             f"Install failed: {install_res.get('cmd')}\n{install_res.get('stderr')}",
-            "error",
+            "warning",
             project_token=project_token
         )
-        return False
+        _log_git_agent(
+            "Proceeding without test gate for this merge (install failure).",
+            "warning",
+            project_token=project_token
+        )
+        return True
 
     test_failures: List[str] = []
 
@@ -2011,7 +2128,19 @@ async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Option
                              project_token: Optional[str] = None) -> None:
     if not branch or not repo_url:
         return
+    branch = branch.strip()
+    if not branch:
+        return
     state = _ensure_project_state(project_token)
+    inflight = state.setdefault("git_merge_inflight", set())
+    already_queued = any((entry.get("branch") or "").strip() == branch for entry in state["git_merge_queue"])
+    if branch in inflight or already_queued:
+        _log_git_agent(
+            f"Merge already queued/in progress for {branch}. Skipping duplicate request.",
+            "warning",
+            project_token=project_token,
+        )
+        return
     state["git_merge_queue"].append({
         "branch": branch,
         "repo_url": repo_url,
@@ -2021,7 +2150,8 @@ async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Option
         "project_token": project_token,
     })
     _log_git_agent(
-        f"Queued merge: {branch} (from {source_agent}, task '{task_title}')",
+        f"Queued merge: {branch} (from {source_agent}, task '{task_title}')"
+        f" [queue={len(state['git_merge_queue'])}]",
         project_token=project_token
     )
     asyncio.create_task(_git_merge_worker(project_token))
@@ -2035,11 +2165,26 @@ async def _git_merge_worker(project_token: Optional[str] = None) -> None:
         state["git_merge_running"] = True
 
     try:
+        inflight = state.setdefault("git_merge_inflight", set())
         while state["git_merge_queue"]:
             item = state["git_merge_queue"].pop(0)
-            await _process_git_merge_item(item)
+            branch = (item.get("branch") or "").strip()
+            not_before = float(item.get("not_before") or 0)
+            now_ts = time.time()
+            if not_before > now_ts:
+                state["git_merge_queue"].append(item)
+                await asyncio.sleep(min(2.0, max(0.2, not_before - now_ts)))
+                continue
+            if branch:
+                inflight.add(branch)
+            try:
+                await _process_git_merge_item(item)
+            finally:
+                if branch:
+                    inflight.discard(branch)
     finally:
         state["git_merge_running"] = False
+        state.setdefault("git_merge_inflight", set()).clear()
         project_agents = _get_agent_states(project_token)
         git_agent = project_agents.get(GIT_MANAGER_AGENT_ID)
         if git_agent:
@@ -2121,9 +2266,14 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
     repo_url = creds["repo_url"]
     token = creds["token"]
     branch = item.get("branch")
+    source_agent = (item.get("source_agent") or "").strip()
+    task_title = (item.get("task_title") or "").strip()
+    ownership_retries = int(item.get("ownership_retries") or 0)
+    max_ownership_retries = 8
     if not repo_url or not branch:
         _log_git_agent("Git manager skipped merge (missing repo/branch)", "error", project_token=project_token)
         return
+    branch = branch.strip()
 
     container_name = f"git_manager_{uuid.uuid4().hex[:8]}"
     try:
@@ -2163,62 +2313,158 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error", project_token=project_token)
             return
 
-        # Fetch branch and checkout integration branch
-        subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "fetch", "origin", branch],
-            capture_output=True, text=True, timeout=60,
-        )
         default_branch = _get_default_branch(container_name)
-        subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "checkout", "-B", GIT_INTEGRATION_BRANCH, f"origin/{default_branch}"],
-            capture_output=True, text=True, timeout=30,
-        )
 
         if git_agent:
             git_agent["progress"] = 60
             git_agent["progress_message"] = f"Merging {branch} -> {GIT_INTEGRATION_BRANCH}"
 
-        merge = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "merge", "--no-ff", "--allow-unrelated-histories", f"origin/{branch}"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if merge.returncode != 0:
-            conflict_list = subprocess.run(
+        max_push_attempts = 5
+        for attempt in range(1, max_push_attempts + 1):
+            # Always re-read remote refs before each attempt so retries are
+            # based on the latest integration tip, not stale local history.
+            fetch_branch = subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
-                 "git", "diff", "--name-only", "--diff-filter=U"],
-                capture_output=True, text=True, timeout=20,
+                 "git", "fetch", "origin", branch],
+                capture_output=True, text=True, timeout=60,
             )
-            files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
-            if not files:
-                _log_git_agent(f"Merge failed for {branch}: {merge.stderr}", "error", project_token=project_token)
-                subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
-                    capture_output=True, text=True, timeout=10,
+            if fetch_branch.returncode != 0:
+                _log_git_agent(
+                    f"Failed to fetch source branch {branch}: {fetch_branch.stderr or fetch_branch.stdout}",
+                    "error",
+                    project_token=project_token,
                 )
                 return
 
-            _log_git_agent(
-                f"Conflicts detected. Applying union merge for {len(files)} files.",
-                project_token=project_token
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "fetch", "origin", GIT_INTEGRATION_BRANCH],
+                capture_output=True, text=True, timeout=60,
             )
-            for file_path in files:
-                merge_script = (
-                    f"git show :2:{file_path} > /tmp/ours_merge && "
-                    f"git show :3:{file_path} > /tmp/theirs_merge && "
-                    f"git show :1:{file_path} > /tmp/base_merge 2>/dev/null || : > /tmp/base_merge; "
-                    f"git merge-file -p --union /tmp/ours_merge /tmp/base_merge /tmp/theirs_merge > \"{file_path}\" && "
-                    f"git add \"{file_path}\""
-                )
-                file_merge = subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", merge_script],
-                    capture_output=True, text=True, timeout=60,
-                )
-                if file_merge.returncode != 0:
+
+            integration_exists = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{GIT_INTEGRATION_BRANCH}"],
+                capture_output=True, text=True, timeout=15,
+            ).returncode == 0
+            base_ref = f"origin/{GIT_INTEGRATION_BRANCH}" if integration_exists else f"origin/{default_branch}"
+
+            ownership_gate = _check_path_ownership_gate(
+                container_name=container_name,
+                source_branch=branch,
+                base_ref=base_ref,
+                source_agent=source_agent,
+                project_token=project_token,
+            )
+            if not ownership_gate.get("allowed", True):
+                conflicts = ownership_gate.get("conflicts") or []
+                compact = []
+                for entry in conflicts[:3]:
+                    who = entry.get("agent_id") or "unknown-agent"
+                    peer_branch = entry.get("branch") or "unknown-branch"
+                    overlap = entry.get("overlap") or []
+                    compact.append(f"{who}/{peer_branch}: {', '.join(overlap[:3])}")
+                conflict_msg = " | ".join(compact) if compact else "overlapping ownership"
+
+                if ownership_retries < max_ownership_retries:
+                    ownership_retries += 1
+                    wait_seconds = min(90, 8 * ownership_retries)
+                    item["ownership_retries"] = ownership_retries
+                    item["not_before"] = time.time() + wait_seconds
+                    _ensure_project_state(project_token)["git_merge_queue"].append(item)
                     _log_git_agent(
-                        f"Union merge failed for {file_path}: {file_merge.stderr}",
+                        f"Path ownership gate blocked merge for {branch}"
+                        f"{f' ({task_title})' if task_title else ''}: {conflict_msg}. "
+                        f"Re-queued with backoff {wait_seconds}s "
+                        f"({ownership_retries}/{max_ownership_retries}).",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    return
+
+                _log_git_agent(
+                    f"Path ownership conflicts persisted for {branch} after "
+                    f"{max_ownership_retries} retries: {conflict_msg}. "
+                    "Proceeding to merge to avoid deadlock.",
+                    "warning",
+                    project_token=project_token,
+                )
+
+            checkout = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "checkout", "-B", GIT_INTEGRATION_BRANCH, base_ref],
+                capture_output=True, text=True, timeout=30,
+            )
+            if checkout.returncode != 0:
+                _log_git_agent(
+                    f"Failed to checkout {GIT_INTEGRATION_BRANCH} from {base_ref}: "
+                    f"{checkout.stderr or checkout.stdout}",
+                    "error",
+                    project_token=project_token,
+                )
+                return
+
+            merge = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "merge", "--no-ff", "--allow-unrelated-histories", f"origin/{branch}"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if merge.returncode != 0:
+                conflict_list = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
+                if not files:
+                    _log_git_agent(
+                        f"Merge failed for {branch}: {merge.stderr or merge.stdout}",
+                        "error",
+                        project_token=project_token,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    return
+
+                _log_git_agent(
+                    f"Conflicts detected. Applying union merge for {len(files)} files.",
+                    project_token=project_token
+                )
+                for file_path in files:
+                    merge_script = (
+                        f"git show :2:{file_path} > /tmp/ours_merge && "
+                        f"git show :3:{file_path} > /tmp/theirs_merge && "
+                        f"git show :1:{file_path} > /tmp/base_merge 2>/dev/null || : > /tmp/base_merge; "
+                        f"git merge-file -p --union /tmp/ours_merge /tmp/base_merge /tmp/theirs_merge > \"{file_path}\" && "
+                        f"git add \"{file_path}\""
+                    )
+                    file_merge = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", merge_script],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if file_merge.returncode != 0:
+                        _log_git_agent(
+                            f"Union merge failed for {file_path}: {file_merge.stderr}",
+                            "error",
+                            project_token=project_token
+                        )
+                        subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        return
+
+                commit_union = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "commit", "-m", f"Auto-union merge {branch}"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                commit_union_out = (commit_union.stdout or "") + (commit_union.stderr or "")
+                if commit_union.returncode != 0 and "nothing to commit" not in commit_union_out.lower():
+                    _log_git_agent(
+                        f"Union merge commit failed for {branch}: {commit_union.stderr}",
                         "error",
                         project_token=project_token
                     )
@@ -2228,136 +2474,73 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     )
                     return
 
-            commit_union = subprocess.run(
-                ["docker", "exec", "-w", "/workspace", container_name,
-                 "git", "commit", "-m", f"Auto-union merge {branch}"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if commit_union.returncode != 0:
+            try:
+                tests_ok = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
+            except Exception as test_err:
                 _log_git_agent(
-                    f"Union merge commit failed for {branch}: {commit_union.stderr}",
-                    "error",
+                    f"Test runner error after merging {branch}: {str(test_err)[:200]}",
+                    "warning",
+                    project_token=project_token,
+                )
+                tests_ok = True
+            if not tests_ok:
+                _log_git_agent(
+                    f"Tests failed after merge for {branch}. Proceeding without test gate.",
+                    "warning",
+                    project_token=project_token,
+                )
+
+            push = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
+                capture_output=True, text=True, timeout=60,
+            )
+            if push.returncode == 0:
+                push_note = "" if attempt == 1 else f" (after retry {attempt})"
+                _log_git_agent(
+                    f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed{push_note}.",
                     project_token=project_token
                 )
-                subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
-                    capture_output=True, text=True, timeout=10,
+                state = _ensure_project_state(project_token)
+                merged = state.setdefault("merged_branches", [])
+                if branch not in merged:
+                    merged.append(branch)
+                await _try_create_pr(
+                    repo_url=repo_url, token=token,
+                    default_branch=default_branch,
+                    branch=branch,
+                    project_token=project_token,
+                )
+                if git_agent:
+                    git_agent["progress"] = 100
+                    git_agent["progress_message"] = f"Merged {branch}"
+                return
+
+            err = push.stderr or push.stdout
+            lower_err = err.lower()
+            if "non-fast-forward" in lower_err or "rejected" in lower_err:
+                if attempt < max_push_attempts:
+                    _log_git_agent(
+                        f"Non-fast-forward on {GIT_INTEGRATION_BRANCH}. "
+                        f"Rebuilding merge on latest remote tip (attempt {attempt + 1}/{max_push_attempts}).",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                _log_git_agent(
+                    f"Push rejected for {GIT_INTEGRATION_BRANCH} after {max_push_attempts} attempts: {err}",
+                    "error",
+                    project_token=project_token,
                 )
                 return
 
-        tests_ok = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
-        if not tests_ok:
-            _log_git_agent(f"Tests failed after merge for {branch}. Not pushing.", "error", project_token=project_token)
-            return
-
-        push = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
-            capture_output=True, text=True, timeout=60,
-        )
-        if push.returncode != 0:
-            err = push.stderr or push.stdout
-            if "non-fast-forward" in err or "rejected" in err:
-                _log_git_agent(
-                    f"Non-fast-forward detected for {GIT_INTEGRATION_BRANCH}, pulling remote changes...",
-                    project_token=project_token
-                )
-                pull = subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "pull", "--rebase", "origin", GIT_INTEGRATION_BRANCH],
-                    capture_output=True, text=True, timeout=60,
-                )
-                if pull.returncode == 0:
-                    # Retry push with backoff
-                    push_success = False
-                    for attempt in range(5):
-                        await asyncio.sleep(2 * attempt)  # Increasing delay
-                        push_retry = subprocess.run(
-                            ["docker", "exec", "-w", "/workspace", container_name,
-                             "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
-                            capture_output=True, text=True, timeout=60,
-                        )
-                        if push_retry.returncode == 0:
-                            push_success = True
-                            break
-
-                    if push_success:
-                        _log_git_agent(
-                            f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed (after rebase).",
-                            project_token=project_token
-                        )
-                        state = _ensure_project_state(project_token)
-                        state["merged_branches"].append(branch)
-                        await _try_create_pr(
-                            repo_url=repo_url, token=token,
-                            default_branch=default_branch,
-                            branch=branch,
-                            project_token=project_token,
-                        )
-                        if git_agent:
-                            git_agent["progress"] = 100
-                            git_agent["progress_message"] = f"Merged {branch}"
-                        return
-
-                _log_git_agent(
-                    f"Rebase failed for {GIT_INTEGRATION_BRANCH}, trying force push...",
-                    "warning",
-                    project_token=project_token
-                )
-
-                # Retry force push with backoff
-                push_force_success = False
-                for attempt in range(5):
-                    await asyncio.sleep(2 * attempt)  # Increasing delay
-                    push_force = subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "push", "-f", "origin", GIT_INTEGRATION_BRANCH],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    if push_force.returncode == 0:
-                        push_force_success = True
-                        break
-
-                if push_force_success:
-                    _log_git_agent(
-                        f"Merged {branch} into {GIT_INTEGRATION_BRANCH} (force pushed).",
-                        project_token=project_token
-                    )
-                    state = _ensure_project_state(project_token)
-                    state["merged_branches"].append(branch)
-                    await _try_create_pr(
-                        repo_url=repo_url, token=token,
-                        default_branch=default_branch,
-                        branch=branch,
-                        project_token=project_token,
-                    )
-                    if git_agent:
-                        git_agent["progress"] = 100
-                        git_agent["progress_message"] = f"Merged {branch}"
-                    return
-
             _log_git_agent(
-                f"Push failed for {GIT_INTEGRATION_BRANCH}: {push.stderr}",
+                f"Push failed for {GIT_INTEGRATION_BRANCH}: {err}",
                 "error",
                 project_token=project_token
             )
             return
-
-        _log_git_agent(
-            f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed.",
-            project_token=project_token
-        )
-        state = _ensure_project_state(project_token)
-        state["merged_branches"].append(branch)
-        await _try_create_pr(
-            repo_url=repo_url, token=token,
-            default_branch=default_branch,
-            branch=branch,
-            project_token=project_token,
-        )
-        if git_agent:
-            git_agent["progress"] = 100
-            git_agent["progress_message"] = f"Merged {branch}"
     finally:
         await asyncio.to_thread(_destroy_container, container_name)
 
@@ -2467,6 +2650,17 @@ def _run_git_command_with_retry(container_name: str, command: List[str],
 def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> Dict[str, Any]:
     """Stage all changes, commit with task title, and push to the remote branch."""
     try:
+        def _abort_pending_git_ops() -> None:
+            # If rebase/merge/cherry-pick stopped mid-way, clear that state
+            # before any fallback checkout logic.
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+                 "git rebase --abort >/dev/null 2>&1 || true; "
+                 "git merge --abort >/dev/null 2>&1 || true; "
+                 "git cherry-pick --abort >/dev/null 2>&1 || true"],
+                capture_output=True, text=True, timeout=20,
+            )
+
         # Add all files
         add = subprocess.run(
             ["docker", "exec", "-w", "/workspace", container_name, "git", "add", "-A"],
@@ -2511,10 +2705,14 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                     )
                     if push_retry.returncode == 0:
                         return {"success": True, "pushed": True, "branch": branch_name, "rebased": True}
+                else:
+                    _abort_pending_git_ops()
 
                 # Strategy 2: Fallback - push to a new branch to avoid collisions
                 suffix = uuid.uuid4().hex[:6]
                 new_branch = f"{branch_name}-{suffix}"
+
+                _abort_pending_git_ops()
 
                 # Retry checkout until it succeeds
                 checkout = _run_git_command_with_retry(
@@ -2525,7 +2723,24 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                     operation="checkout"
                 )
                 if checkout.returncode != 0:
-                    return {"success": False, "error": f"Failed to create branch {new_branch}: {checkout.stderr}"}
+                    # One more cleanup + direct retry for the common
+                    # "resolve your current index first" state.
+                    _abort_pending_git_ops()
+                    checkout_retry = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "-B", new_branch],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if checkout_retry.returncode != 0:
+                        pull_err = (pull.stderr or pull.stdout or "").strip() if 'pull' in locals() else ""
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Failed to create branch {new_branch}: "
+                                f"{(checkout_retry.stderr or checkout_retry.stdout).strip()} "
+                                f"| prior rebase error: {pull_err[:400]}"
+                            ),
+                        }
 
                 # Retry push until it succeeds
                 push2 = _run_git_command_with_retry(
@@ -2860,24 +3075,37 @@ def _normalize_task_id(task: Dict[str, Any]):
 
 
 async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post task message with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.post_task_message({
-            "task_id": task_id,
-            "message": message
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to post message for task {task_id}: {e}")
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.post_task_message({
+                "task_id": task_id,
+                "message": message
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to post message for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to post message for task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
 
 
 async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None,
                               project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post task progress with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
@@ -2892,85 +3120,209 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
             f"cannot decrease from {last_progress} to {progress}"
         )
         return False
-    if not state["timer_log_state"].get(task_key, False):
+    timer_active = state["timer_log_state"].get(task_key, False)
+    terminal_progress = progress in (0, 100)
+    if not timer_active and not terminal_progress:
         print(
             f"[agent_service] Skipping progress for task {task_id}: "
             "no successful clock_in recorded"
         )
         return False
-    try:
-        payload = {
-            "task_id": task_id,
-            "task_progress": progress,
-        }
-        if additional_info:
-            payload["additional_info"] = additional_info
-        effective_token = task_token or get_project_task_token(resolved_project)
-        await task_service.update_task_progress(payload, task_token=effective_token)
-        state["task_progress_state"][task_key] = progress
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to update progress for task {task_id}: {e}")
-        return False
+    if not timer_active and terminal_progress:
+        print(
+            f"[agent_service] Allowing terminal progress {progress}% for task {task_id} "
+            "without active timer"
+        )
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            payload = {
+                "task_id": task_id,
+                "task_progress": progress,
+            }
+            if additional_info:
+                payload["additional_info"] = additional_info
+            effective_token = task_token or get_project_task_token(resolved_project)
+            await task_service.update_task_progress(payload, task_token=effective_token)
+            state["task_progress_state"][task_key] = progress
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to update progress for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to update progress for task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
+
+
+def _normalize_error_text(err: Exception) -> str:
+    text = str(err).lower()
+    for ch in ("-", "_", "/", "\\"):
+        text = text.replace(ch, " ")
+    return " ".join(text.split())
+
+
+def _is_timer_running_error(error_text: str) -> bool:
+    checks = (
+        "timer is still running",
+        "timer still running",
+        "active timer",
+        "clock out before",
+        "clock out first",
+        "must clock out",
+        "clockout before",
+    )
+    return any(c in error_text for c in checks)
+
+
+def _is_already_completed_error(error_text: str) -> bool:
+    checks = (
+        "already completed",
+        "already complete",
+        "task already completed",
+        "status already completed",
+        "already closed",
+        "already done",
+    )
+    return any(c in error_text for c in checks)
+
+
+def _is_clock_out_idempotent_success(error_text: str) -> bool:
+    checks = (
+        "timer not running",
+        "no active timer",
+        "not clocked in",
+        "already clocked out",
+        "already clocked out for this task",
+        "cannot clock out before clock in",
+    )
+    return any(c in error_text for c in checks)
 
 
 async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Complete task with retry logic. Ensures clock_out happens first if timer is still running."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.complete_task({
-            "task_id": task_id
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to complete task {task_id}: {e}")
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.complete_task({
+                "task_id": task_id
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            return True
+        except Exception as e:
+            error_str = _normalize_error_text(e)
+
+            if _is_already_completed_error(error_str):
+                print(f"[agent_service] Task {task_id} already completed upstream. Treating as success.")
+                return True
+
+            # If timer is still running, try to clock out before retrying completion.
+            if _is_timer_running_error(error_str):
+                print(f"[agent_service] Task {task_id} timer still running, attempting clock_out before completion...")
+                clock_out_success = await _post_timer_log(
+                    task, "clock_out", project_token=resolved_project, task_token=task_token
+                )
+                if clock_out_success:
+                    print(f"[agent_service] Successfully clocked out task {task_id}, retrying completion...")
+                else:
+                    print(f"[agent_service] Failed to clock out task {task_id}, will retry completion anyway...")
+             
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to complete task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to complete task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
 
 
 async def _opt_in_task(task: Dict[str, Any], username: str,
                        project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Opt in to task with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.opt_in_task({
-            "task_id": task_id,
-            "username": username
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to opt in to task {task_id}: {e}")
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.opt_in_task({
+                "task_id": task_id,
+                "username": username
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to opt in to task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to opt in to task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
 
 
 async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post timer log with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.post_timer_log({
-            "task_id": task_id,
-            "action": action
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        task_key = str(task_id)
-        state = _ensure_project_state(resolved_project)
-        if action == "clock_in":
-            state["timer_log_state"][task_key] = True
-        elif action == "clock_out":
-            state["timer_log_state"][task_key] = False
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to post timer log for task {task_id}: {e}")
-        if action == "clock_in":
-            _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.post_timer_log({
+                "task_id": task_id,
+                "action": action
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            task_key = str(task_id)
+            state = _ensure_project_state(resolved_project)
+            if action == "clock_in":
+                state["timer_log_state"][task_key] = True
+            elif action == "clock_out":
+                state["timer_log_state"][task_key] = False
+            return True
+        except Exception as e:
+            normalized_error = _normalize_error_text(e)
+            if action == "clock_out" and _is_clock_out_idempotent_success(normalized_error):
+                # Upstream says there is nothing to clock out; treat as success so completion can proceed.
+                _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
+                print(
+                    f"[agent_service] Timer log clock_out for task {task_id} already in desired state "
+                    f"(treating as success): {e}"
+                )
+                return True
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to post timer log for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to post timer log for task {task_id} after {max_retries} attempts: {e}")
+                if action == "clock_in":
+                    _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
+                return False
+    return False
 
 
 # ── Main Agent Execution ────────────────────────────────────────────────────

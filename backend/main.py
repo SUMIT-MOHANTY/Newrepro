@@ -1831,7 +1831,12 @@ async def remove_agent(
         raise HTTPException(status_code=400, detail=str(e))
 # ─────────────────────────────── Task Management Integration ──────────────────────────
 
-from task_service import task_service
+from task_service import (
+    task_service,
+    TaskServiceError,
+    TaskServiceTimeoutError,
+    TaskServiceConnectionError,
+)
 
 @app.get("/api/agents/")
 async def get_external_agents(
@@ -2031,6 +2036,13 @@ async def get_external_agent_tasks(
     try:
         tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
         return tasks
+    except TaskServiceTimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except TaskServiceConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except TaskServiceError as e:
+        status_code = e.status_code if 400 <= e.status_code < 500 else 502
+        raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
