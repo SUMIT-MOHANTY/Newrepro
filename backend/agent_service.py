@@ -3707,9 +3707,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     project_token: Optional[str] = None,
                     task_token: Optional[str] = None) -> Dict[str, Any]:
     """
-    Main function to run an agent.
-    When continuous=True, the agent keeps picking new tasks after completing
-    the current one, only stopping when NO uncompleted tasks remain.
+    Main function to run an agent WITH automatic retry on failure.
+    Retries up to 3 times with increasing delays when the agent encounters
+    errors (model failures, timeouts, bad responses, etc.).
 
     Flow per task:
       1. Pick task (or use pre-assigned)
@@ -3722,6 +3722,116 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
       8. Git: commit & push
       9. Loop back to step 1 if continuous
      10. Capture workspace, destroy container when done
+    """
+    MAX_RETRIES = 3
+    RETRY_DELAYS = [10, 20, 30]  # seconds between retries
+
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    agent = project_agents.get(agent_id)
+    if not agent:
+        raise ValueError(f"Agent {agent_id} not found")
+
+    last_result = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result = await _run_agent_once(
+                agent_id,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                assigned_task=assigned_task,
+                continuous=continuous,
+                ignore_running_check=ignore_running_check if attempt == 1 else True,
+                project_token=project_token,
+                task_token=task_token,
+            )
+
+            if result.get("success") or result.get("reason") == "no_tasks":
+                # Success or no tasks — no retry needed
+                return result
+
+            # Agent returned failure but didn't throw — treat as retryable
+            last_result = result
+            error_msg = result.get("error", "Unknown error")
+
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAYS[attempt - 1]
+                agent["status"] = "running"
+                agent["progress"] = 0
+                retry_msg = (
+                    f"⚠️ Attempt {attempt}/{MAX_RETRIES} failed: {error_msg}. "
+                    f"Auto-retrying in {delay}s..."
+                )
+                agent["progress_message"] = retry_msg
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": retry_msg,
+                })
+                await asyncio.sleep(delay)
+                # Reset for next attempt
+                assigned_task = None  # re-pick task on retry
+                continue
+            else:
+                # All retries exhausted
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {error_msg}",
+                })
+                return last_result
+
+        except Exception as e:
+            last_result = {
+                "success": False,
+                "agent_id": agent_id,
+                "error": str(e),
+                "tasks_completed": 0,
+                "duration": 0,
+            }
+
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAYS[attempt - 1]
+                retry_msg = (
+                    f"⚠️ Attempt {attempt}/{MAX_RETRIES} crashed: {str(e)}. "
+                    f"Auto-retrying in {delay}s..."
+                )
+                agent["status"] = "running"
+                agent["progress"] = 0
+                agent["progress_message"] = retry_msg
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": retry_msg,
+                })
+                await asyncio.sleep(delay)
+                assigned_task = None
+                continue
+            else:
+                agent["status"] = "error"
+                agent["progress"] = 0
+                agent["progress_message"] = f"Error after {MAX_RETRIES} retries: {str(e)}"
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {str(e)}",
+                })
+                agent["last_run"] = datetime.utcnow().isoformat()
+                agent["current_task"] = None
+                return last_result
+
+    return last_result
+
+
+async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: str = None,
+                    assigned_task: Dict[str, Any] = None,
+                    continuous: bool = False,
+                    ignore_running_check: bool = False,
+                    project_token: Optional[str] = None,
+                    task_token: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Single execution attempt for an agent. Called by run_agent with retry wrapper.
     """
     state = _ensure_project_state(project_token)
     if task_token:
