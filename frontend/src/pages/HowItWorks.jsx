@@ -12,12 +12,25 @@ import NModLogo from '../assets/N-Mod-icon.png';
 const AnimatedWorkflowDiagram = () => {
   const containerRef = useRef(null);
   const [currentStepText, setCurrentStepText] = useState("Awaiting Document...");
+  const [executionMode, setExecutionMode] = useState("agentic"); // "agentic" | "coexistence"
+  const [autonomyMode, setAutonomyMode] = useState("decisive"); // "decisive" | "ask_first"
 
   useEffect(() => {
     if (!containerRef.current) return;
 
     const ctx = gsap.context(() => {
+      // Clear previous styles/tweens on human elements if context is recreating
+      gsap.set(['.packet-to-human', '.packet-dev-to-human', '.packet-human-to-nxdune', '.path-nxdune-human', '.path-human-nxdune', '.path-dev-human'], { opacity: 0 });
+
       const tl = gsap.timeline({ repeat: -1 });
+      const isCoex = executionMode === "coexistence";
+      const isAskFirst = autonomyMode === "ask_first";
+
+      if (isCoex || isAskFirst) {
+        gsap.set('.path-nxdune-human', { opacity: isCoex ? 1 : 0 });
+        gsap.set('.path-dev-human', { opacity: isAskFirst ? 1 : 0 });
+        gsap.set('.path-human-nxdune', { opacity: (isCoex || isAskFirst) ? 1 : 0 });
+      }
 
       // Step 1: Uploading
       tl.call(() => setCurrentStepText("1. Doc is being uploaded..."))
@@ -43,23 +56,60 @@ const AnimatedWorkflowDiagram = () => {
         .to('.nxdune-pulse', { opacity: 1, scale: 1.2, duration: 0.5, yoyo: true, repeat: 3 })
         .to({}, { duration: 0.5 })
 
-        // Dev Task -> N-Mod
-        .call(() => setCurrentStepText("5. Appointing Dev Task to Dev Agent..."))
-        .to('.packet-to-dev', { opacity: 1, duration: 0.2 })
-        .to('.packet-to-dev', { motionPath: { path: '.path-nxdune-dev', align: '.path-nxdune-dev', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
-        .to('.agent-ring-dev', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
-        .set('.packet-to-dev', { opacity: 0 })
+      // Dev Task
+      if (isCoex) {
+        tl.call(() => setCurrentStepText("5. Co-working: Appointing Dev & Human..."))
+          .to(['.packet-to-dev', '.packet-to-human'], { opacity: 1, duration: 0.2 })
+          .to('.packet-to-dev', { motionPath: { path: '.path-nxdune-dev', align: '.path-nxdune-dev', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "to-dev")
+          .to('.packet-to-human', { motionPath: { path: '.path-nxdune-human', align: '.path-nxdune-human', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "to-dev")
+          .to(['.agent-ring-dev', '.human-ring'], { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set(['.packet-to-dev', '.packet-to-human'], { opacity: 0 })
 
-        // Dev Working
-        .call(() => setCurrentStepText("6. Dev Agent completing task... Done."))
-        .to('.agent-pulse-dev', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 })
-        .to('.packet-return-dev', { opacity: 1, duration: 0.2 })
-        .to('.packet-return-dev', { motionPath: { path: '.path-dev-nxdune', align: '.path-dev-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
-        .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
-        .set('.packet-return-dev', { opacity: 0 })
+          .call(() => setCurrentStepText("6. Dev Agent & Human working..."))
+          .to(['.agent-pulse-dev', '.human-pulse'], { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 });
+      } else {
+        tl.call(() => setCurrentStepText("5. Appointing Dev Task to Dev Agent..."))
+          .to('.packet-to-dev', { opacity: 1, duration: 0.2 })
+          .to('.packet-to-dev', { motionPath: { path: '.path-nxdune-dev', align: '.path-nxdune-dev', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .to('.agent-ring-dev', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set('.packet-to-dev', { opacity: 0 })
 
-        // Test Task -> Kaktox
-        .call(() => setCurrentStepText("7. Appointing Test Task to Test Agent..."))
+          .call(() => setCurrentStepText("6. Dev Agent completing task..."))
+          .to('.agent-pulse-dev', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 });
+      }
+
+      // Return or Ask First
+      if (isAskFirst) {
+        tl.call(() => setCurrentStepText("Awaiting Human Approval..."))
+          .to('.packet-dev-to-human', { opacity: 1, duration: 0.2 })
+          .to('.packet-dev-to-human', { motionPath: { path: '.path-dev-human', align: '.path-dev-human', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .set('.packet-dev-to-human', { opacity: 0 })
+          .to('.human-pulse', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 1 })
+
+          .call(() => setCurrentStepText("Action Approved! Returning..."))
+          .to('.packet-human-to-nxdune', { opacity: 1, duration: 0.2 })
+          .to('.packet-human-to-nxdune', { motionPath: { path: '.path-human-nxdune', align: '.path-human-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set('.packet-human-to-nxdune', { opacity: 0 });
+      } else {
+        if (isCoex) {
+          tl.call(() => setCurrentStepText("Co-work done. Returning..."))
+            .to(['.packet-return-dev', '.packet-human-to-nxdune'], { opacity: 1, duration: 0.2 })
+            .to('.packet-return-dev', { motionPath: { path: '.path-dev-nxdune', align: '.path-dev-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "return-dev")
+            .to('.packet-human-to-nxdune', { motionPath: { path: '.path-human-nxdune', align: '.path-human-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "return-dev")
+            .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+            .set(['.packet-return-dev', '.packet-human-to-nxdune'], { opacity: 0 });
+        } else {
+          tl.call(() => setCurrentStepText("Task Done. Returning..."))
+            .to('.packet-return-dev', { opacity: 1, duration: 0.2 })
+            .to('.packet-return-dev', { motionPath: { path: '.path-dev-nxdune', align: '.path-dev-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+            .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+            .set('.packet-return-dev', { opacity: 0 });
+        }
+      }
+
+      // Step 7: Test Task -> Kaktox
+      tl.call(() => setCurrentStepText("7. Appointing Test Task to Test Agent..."))
         .to('.packet-to-test', { opacity: 1, duration: 0.2 })
         .to('.packet-to-test', { motionPath: { path: '.path-nxdune-test', align: '.path-nxdune-test', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
         .to('.agent-ring-test', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
@@ -93,145 +143,215 @@ const AnimatedWorkflowDiagram = () => {
 
     }, containerRef);
     return () => ctx.revert();
-  }, []);
+  }, [executionMode, autonomyMode]);
 
   return (
-    <div ref={containerRef} className="relative w-full h-[700px] bg-app-bg-card/50 rounded-3xl border border-app-border-light shadow-2xl overflow-hidden mt-16 p-4">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_rgba(56,189,248,0.05)_0%,_transparent_70%)] pointer-events-none"></div>
-
-      {/* Title & Live Status */}
-      <div className="absolute top-8 left-8 z-20 flex flex-col gap-4">
-        <div>
-          <h3 className="text-3xl font-bold text-app-text-main">The Autonomous Loop</h3>
-          <p className="text-app-text-label text-sm mt-1 max-w-sm">Observe the exact logic progression of the DSuite ecosystem in real-time.</p>
+    <div className="flex flex-col items-center mt-16 w-full max-w-[1200px] mx-auto">
+      {/* Toggles */}
+      <div className="flex flex-col sm:flex-row gap-8 mb-4 w-full justify-center opacity-0" style={{ animation: "fadeIn 1s forwards" }}>
+        <style dangerouslySetInnerHTML={{
+          __html: `
+          @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+        `}} />
+        <div className="flex flex-col items-center gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Execution Mode</span>
+          <div className="flex items-center gap-1 bg-slate-800/80 p-1.5 rounded-full border border-slate-700 shadow-xl backdrop-blur-md">
+            <button
+              onClick={() => setExecutionMode('agentic')}
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'agentic' ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              Fully Agentic
+            </button>
+            <button
+              onClick={() => setExecutionMode('coexistence')}
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'coexistence' ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              Coexistence
+            </button>
+          </div>
         </div>
 
-        {/* Dynamic Video-like Status Indicator */}
-        <div className="bg-slate-900/90 backdrop-blur border border-slate-700 p-4 rounded-xl shadow-2xl w-80">
-          <p className="text-[10px] text-slate-400 font-mono uppercase tracking-widest mb-2 flex items-center justify-between">
-            Live Flow Status
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          </p>
-          <p className="text-sm font-semibold text-emerald-400 h-5 transition-all">{currentStepText}</p>
+        <div className="flex flex-col items-center gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Agent Autonomy</span>
+          <div className="flex items-center gap-1 bg-slate-800/80 p-1.5 rounded-full border border-slate-700 shadow-xl backdrop-blur-md">
+            <button
+              onClick={() => setAutonomyMode('decisive')}
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${autonomyMode === 'decisive' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              Decisive
+            </button>
+            <button
+              onClick={() => setAutonomyMode('ask_first')}
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${autonomyMode === 'ask_first' ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              Ask First
+            </button>
+          </div>
         </div>
       </div>
 
-      <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <linearGradient id="gradDsuite" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.5" />
-            <stop offset="100%" stopColor="#6366f1" stopOpacity="0.5" />
-          </linearGradient>
-          <linearGradient id="gradReturn" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#10b981" stopOpacity="0.5" />
-            <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.5" />
-          </linearGradient>
-          <filter id="glowFlow">
-            <feGaussianBlur stdDeviation="4" result="coloredBlur" />
-            <feMerge>
-              <feMergeNode in="coloredBlur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
+      <div ref={containerRef} className="relative w-full h-[700px] bg-app-bg-card/50 rounded-3xl border border-app-border-light shadow-2xl overflow-hidden p-4">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_rgba(56,189,248,0.05)_0%,_transparent_70%)] pointer-events-none"></div>
 
-        {/* Forward Paths */}
-        <path className="path-upload" d="M 100 350 L 250 350" stroke="url(#gradDsuite)" strokeWidth="2" fill="none" strokeDasharray="5,5" />
-        <path className="path-dsuite-nxdune" d="M 350 350 L 550 350" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
-        <path className="path-nxdune-dev" d="M 650 350 C 750 350, 800 150, 950 150" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
-        <path className="path-nxdune-test" d="M 650 350 L 950 350" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
-        <path className="path-nxdune-deploy" d="M 650 350 C 750 350, 800 550, 950 550" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
-
-        {/* Return Paths (Task updates) */}
-        <path className="path-dev-nxdune" d="M 950 170 C 800 170, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
-        <path className="path-test-nxdune" d="M 950 370 L 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
-        <path className="path-deploy-nxdune" d="M 950 530 C 800 530, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
-
-        {/* Packets */}
-        <rect className="packet-doc" width="16" height="20" rx="3" fill="#ffffff" stroke="#3b82f6" strokeWidth="2" x="-8" y="-10" />
-        <circle className="packet-to-nxdune" r="6" fill="#6366f1" filter="url(#glowFlow)" />
-        <circle className="packet-to-dev" r="5" fill="#a855f7" filter="url(#glowFlow)" />
-        <circle className="packet-to-test" r="5" fill="#ec4899" filter="url(#glowFlow)" />
-        <circle className="packet-to-deploy" r="5" fill="#10b981" filter="url(#glowFlow)" />
-
-        {/* Return Packets */}
-        <circle className="packet-return-dev" r="4" fill="#34d399" filter="url(#glowFlow)" />
-        <circle className="packet-return-test" r="4" fill="#34d399" filter="url(#glowFlow)" />
-        <circle className="packet-return-deploy" r="4" fill="#34d399" filter="url(#glowFlow)" />
-      </svg>
-
-      <div className="absolute inset-0 z-10 w-full h-full max-w-[1200px] mx-auto pointer-events-none">
-        {/* Start Point */}
-        <div className="absolute top-[350px] left-[50px] -translate-x-1/2 -translate-y-1/2 text-center">
-          <div className="w-12 h-16 bg-white border-2 border-slate-200 rounded-md shadow-md mx-auto mb-2 flex items-center justify-center">
-            <FileText className="w-6 h-6 text-slate-400" />
+        {/* Title & Live Status */}
+        <div className="absolute top-8 left-8 z-20 flex flex-col gap-4">
+          <div>
+            <h3 className="text-3xl font-bold text-app-text-main">The Autonomous Loop</h3>
+            <p className="text-app-text-label text-sm mt-1 max-w-sm">Observe the exact logic progression of the DSuite ecosystem in real-time.</p>
           </div>
-          <p className="text-xs font-bold text-app-text-main">Raw BRD</p>
-        </div>
 
-        {/* DSuite */}
-        <div className="absolute top-[350px] left-[300px] -translate-x-1/2 -translate-y-1/2">
-          <div className="dsuite-pulse absolute inset-0 bg-blue-500 rounded-3xl blur-xl opacity-0"></div>
-          <div className="dsuite-ring absolute inset-0 rounded-3xl border-2 border-blue-500/50"></div>
-          <div className="relative w-28 h-28 bg-app-bg-card border border-blue-500/30 rounded-3xl shadow-[0_0_30px_rgba(59,130,246,0.2)] flex flex-col items-center justify-center gap-2">
-            <img src={Logo} alt="DSuite" className="w-10 h-10 object-contain" />
-            <span className="text-xs font-bold text-blue-500">DSuite Master</span>
+          {/* Dynamic Video-like Status Indicator */}
+          <div className="bg-slate-900/90 backdrop-blur border border-slate-700 p-4 rounded-xl shadow-2xl w-80">
+            <p className="text-[10px] text-slate-400 font-mono uppercase tracking-widest mb-2 flex items-center justify-between">
+              Live Flow Status
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            </p>
+            <p className="text-sm font-semibold text-emerald-400 h-5 transition-all">{currentStepText}</p>
           </div>
         </div>
 
-        {/* Nxdune */}
-        <div className="absolute top-[350px] left-[600px] -translate-x-1/2 -translate-y-1/2">
-          <div className="nxdune-pulse absolute inset-0 bg-indigo-500 rounded-2xl blur-xl opacity-0"></div>
-          <div className="nxdune-ring absolute inset-0 rounded-2xl border-2 border-indigo-500/50"></div>
-          <div className="relative w-32 h-24 bg-white border border-indigo-500/30 rounded-2xl shadow-[0_0_30px_rgba(99,102,241,0.2)] flex flex-col items-center justify-center p-3">
-            <div className="absolute -top-3 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[9px] font-bold rounded-full border border-indigo-200 uppercase tracking-wider">The Hub</div>
-            <img src={Logo1} alt="Nxdune" className="w-10 h-10 object-contain mb-1" />
-            <span className="text-xs font-bold text-slate-800">Nxdune</span>
-            <span className="text-[9px] text-slate-500">Task Router</span>
-          </div>
-        </div>
+        <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <linearGradient id="gradDsuite" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="#6366f1" stopOpacity="0.5" />
+            </linearGradient>
+            <linearGradient id="gradReturn" x1="1200" y1="0" x2="0" y2="0" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="#10b981" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.5" />
+            </linearGradient>
+            <filter id="glowFlow" filterUnits="userSpaceOnUse" x="-100" y="-100" width="1400" height="900">
+              <feGaussianBlur stdDeviation="4" result="coloredBlur" />
+              <feMerge>
+                <feMergeNode in="coloredBlur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
 
-        {/* Dev Agent (N-Mod) */}
-        <div className="absolute top-[150px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
-          <div className="agent-pulse-dev absolute inset-0 bg-purple-500 rounded-2xl blur-xl opacity-0"></div>
-          <div className="agent-ring-dev absolute inset-0 rounded-2xl border-2 border-purple-500/50"></div>
-          <div className="relative flex items-center gap-3 bg-white border border-purple-200 rounded-2xl p-3 shadow-lg w-52">
-            <div className="w-12 h-12 bg-slate-50 rounded-xl p-1.5 shrink-0 border border-slate-100 flex items-center justify-center">
-              <img src={NModLogo} alt="N-Mod" className="w-full h-full object-contain" />
+          {/* Forward Paths */}
+          <path className="path-upload" d="M 100 350 L 250 350" stroke="url(#gradDsuite)" strokeWidth="2" fill="none" strokeDasharray="5,5" />
+          <path className="path-dsuite-nxdune" d="M 350 350 L 550 350" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
+          <path className="path-nxdune-dev" d="M 650 350 C 750 350, 800 150, 950 150" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
+          <path className="path-nxdune-test" d="M 650 350 L 950 350" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
+          <path className="path-nxdune-deploy" d="M 650 350 C 750 350, 800 550, 950 550" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
+
+          {/* Human Paths */}
+          <path className="path-nxdune-human" d="M 650 350 C 680 350, 700 250, 750 250" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-human-nxdune" d="M 750 250 C 700 250, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-dev-human" d="M 950 150 C 900 150, 880 250, 850 250" stroke="#f59e0b" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+
+          {/* Return Paths (Task updates) */}
+          <path className="path-dev-nxdune" d="M 950 170 C 800 170, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
+          <path className="path-test-nxdune" d="M 950 370 L 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
+          <path className="path-deploy-nxdune" d="M 950 530 C 800 530, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
+
+          {/* Packets */}
+          <rect className="packet-doc" width="16" height="20" rx="3" fill="#ffffff" stroke="#3b82f6" strokeWidth="2" x="-8" y="-10" />
+          <circle className="packet-to-nxdune" r="6" fill="#6366f1" filter="url(#glowFlow)" />
+          <circle className="packet-to-dev" r="5" fill="#a855f7" filter="url(#glowFlow)" />
+          <circle className="packet-to-test" r="5" fill="#ec4899" filter="url(#glowFlow)" />
+          <circle className="packet-to-deploy" r="5" fill="#10b981" filter="url(#glowFlow)" />
+
+          {/* Human packets */}
+          <circle className="packet-to-human" r="5" fill="#f59e0b" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-dev-to-human" r="5" fill="#f59e0b" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-human-to-nxdune" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
+
+          {/* Return Packets */}
+          <circle className="packet-return-dev" r="4" fill="#34d399" filter="url(#glowFlow)" />
+          <circle className="packet-return-test" r="4" fill="#34d399" filter="url(#glowFlow)" />
+          <circle className="packet-return-deploy" r="4" fill="#34d399" filter="url(#glowFlow)" />
+        </svg>
+
+        <div className="absolute inset-0 z-10 w-full h-full max-w-[1200px] mx-auto pointer-events-none">
+          {/* Start Point */}
+          <div className="absolute top-[350px] left-[50px] -translate-x-1/2 -translate-y-1/2 text-center">
+            <div className="w-12 h-16 bg-white border-2 border-slate-200 rounded-md shadow-md mx-auto mb-2 flex items-center justify-center">
+              <FileText className="w-6 h-6 text-slate-400" />
             </div>
-            <div>
-              <p className="text-xs font-bold text-slate-800 leading-tight">Dev Agent <span className="text-[10px] text-purple-500 ml-1">uses N-Mod</span></p>
-              <p className="text-[10px] text-slate-500 mt-0.5">Builds code iterative workflow.</p>
+            <p className="text-xs font-bold text-app-text-main">Raw BRD</p>
+          </div>
+
+          {/* DSuite */}
+          <div className="absolute top-[350px] left-[300px] -translate-x-1/2 -translate-y-1/2">
+            <div className="dsuite-pulse absolute inset-0 bg-blue-500 rounded-3xl blur-xl opacity-0"></div>
+            <div className="dsuite-ring absolute inset-0 rounded-3xl border-2 border-blue-500/50"></div>
+            <div className="relative w-28 h-28 bg-app-bg-card border border-blue-500/30 rounded-3xl shadow-[0_0_30px_rgba(59,130,246,0.2)] flex flex-col items-center justify-center gap-2">
+              <img src={Logo} alt="DSuite" className="w-10 h-10 object-contain" />
+              <span className="text-xs font-bold text-blue-500">DSuite Master</span>
             </div>
           </div>
-        </div>
 
-        {/* Test Agent (Kaktox) */}
-        <div className="absolute top-[350px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
-          <div className="agent-pulse-test absolute inset-0 bg-pink-500 rounded-2xl blur-xl opacity-0"></div>
-          <div className="agent-ring-test absolute inset-0 rounded-2xl border-2 border-pink-500/50"></div>
-          <div className="relative flex items-center gap-3 bg-white border border-pink-200 rounded-2xl p-3 shadow-lg w-52">
-            <div className="w-12 h-12 bg-slate-50 rounded-xl p-1 shrink-0 border border-slate-100 flex items-center justify-center">
-              <img src={KaktoxLogo} alt="Kaktox" className="w-full h-full object-contain" />
-            </div>
-            <div>
-              <p className="text-xs font-bold text-slate-800 leading-tight">Test Agent <span className="text-[10px] text-pink-500 ml-1">uses Kaktox</span></p>
-              <p className="text-[10px] text-slate-500 mt-0.5">Executes rigorous automated tests.</p>
+          {/* Nxdune */}
+          <div className="absolute top-[350px] left-[600px] -translate-x-1/2 -translate-y-1/2">
+            <div className="nxdune-pulse absolute inset-0 bg-indigo-500 rounded-2xl blur-xl opacity-0"></div>
+            <div className="nxdune-ring absolute inset-0 rounded-2xl border-2 border-indigo-500/50"></div>
+            <div className="relative w-32 h-24 bg-white border border-indigo-500/30 rounded-2xl shadow-[0_0_30px_rgba(99,102,241,0.2)] flex flex-col items-center justify-center p-3">
+              <div className="absolute -top-3 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[9px] font-bold rounded-full border border-indigo-200 uppercase tracking-wider">The Hub</div>
+              <img src={Logo1} alt="Nxdune" className="w-10 h-10 object-contain mb-1" />
+              <span className="text-xs font-bold text-slate-800">Nxdune</span>
+              <span className="text-[9px] text-slate-500">Task Router</span>
             </div>
           </div>
-        </div>
 
-        {/* Deploy Agent (CloudSpx) */}
-        <div className="absolute top-[550px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
-          <div className="agent-pulse-deploy absolute inset-0 bg-emerald-500 rounded-2xl blur-xl opacity-0"></div>
-          <div className="agent-ring-deploy absolute inset-0 rounded-2xl border-2 border-emerald-500/50"></div>
-          <div className="relative flex items-center gap-3 bg-white border border-emerald-200 rounded-2xl p-3 shadow-lg w-52">
-            <div className="w-12 h-12 bg-slate-50 rounded-xl p-1 shrink-0 border border-slate-100 flex items-center justify-center">
-              <img src={CloudSpxLogo} alt="CloudSpx" className="w-full h-full object-contain" />
+          {/* Human Dev Node */}
+          <div className={`absolute top-[250px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
+            <div className="human-pulse absolute inset-0 bg-amber-500 rounded-2xl blur-xl opacity-0"></div>
+            <div className="human-ring absolute inset-0 rounded-2xl border-2 border-amber-500/50"></div>
+            <div className="relative w-28 h-20 bg-white border border-amber-500/30 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.15)] flex flex-col items-center justify-center p-2">
+              <div className="absolute -top-3 px-2 py-0.5 bg-amber-100 text-amber-700 text-[9px] font-bold rounded-full border border-amber-200 uppercase tracking-wider">Human</div>
+              <div className="w-8 h-8 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center mb-1">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-600">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+              </div>
+              <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">Developer / Approver</span>
             </div>
-            <div>
-              <p className="text-xs font-bold text-slate-800 leading-tight">Deploy Agent <span className="text-[10px] text-emerald-500 ml-1">uses CloudSpx</span></p>
-              <p className="text-[10px] text-slate-500 mt-0.5">Pushes verified builds to prod.</p>
+          </div>
+
+          {/* Dev Agent (N-Mod) */}
+          <div className="absolute top-[150px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
+            <div className="agent-pulse-dev absolute inset-0 bg-purple-500 rounded-2xl blur-xl opacity-0"></div>
+            <div className="agent-ring-dev absolute inset-0 rounded-2xl border-2 border-purple-500/50"></div>
+            <div className="relative flex items-center gap-3 bg-white border border-purple-200 rounded-2xl p-3 shadow-lg w-52">
+              <div className="w-12 h-12 bg-slate-50 rounded-xl p-1.5 shrink-0 border border-slate-100 flex items-center justify-center">
+                <img src={NModLogo} alt="N-Mod" className="w-full h-full object-contain" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-800 leading-tight">Dev Agent <span className="text-[10px] text-purple-500 ml-1">uses N-Mod</span></p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Builds code iterative workflow.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Test Agent (Kaktox) */}
+          <div className="absolute top-[350px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
+            <div className="agent-pulse-test absolute inset-0 bg-pink-500 rounded-2xl blur-xl opacity-0"></div>
+            <div className="agent-ring-test absolute inset-0 rounded-2xl border-2 border-pink-500/50"></div>
+            <div className="relative flex items-center gap-3 bg-white border border-pink-200 rounded-2xl p-3 shadow-lg w-52">
+              <div className="w-12 h-12 bg-slate-50 rounded-xl p-1 shrink-0 border border-slate-100 flex items-center justify-center">
+                <img src={KaktoxLogo} alt="Kaktox" className="w-full h-full object-contain" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-800 leading-tight">Test Agent <span className="text-[10px] text-pink-500 ml-1">uses Kaktox</span></p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Executes rigorous automated tests.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Deploy Agent (CloudSpx) */}
+          <div className="absolute top-[550px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
+            <div className="agent-pulse-deploy absolute inset-0 bg-emerald-500 rounded-2xl blur-xl opacity-0"></div>
+            <div className="agent-ring-deploy absolute inset-0 rounded-2xl border-2 border-emerald-500/50"></div>
+            <div className="relative flex items-center gap-3 bg-white border border-emerald-200 rounded-2xl p-3 shadow-lg w-52">
+              <div className="w-12 h-12 bg-slate-50 rounded-xl p-1 shrink-0 border border-slate-100 flex items-center justify-center">
+                <img src={CloudSpxLogo} alt="CloudSpx" className="w-full h-full object-contain" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-800 leading-tight">Deploy Agent <span className="text-[10px] text-emerald-500 ml-1">uses CloudSpx</span></p>
+                <p className="text-[10px] text-slate-500 mt-0.5">Pushes verified builds to prod.</p>
+              </div>
             </div>
           </div>
         </div>

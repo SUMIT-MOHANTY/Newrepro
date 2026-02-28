@@ -221,6 +221,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         return sprints.size;
     }, [sortedTaskList]);
     const autoAiAssistRunRef = useRef(new Set());
+    const taskCreationGitPromptRef = useRef(new Set());
 
     const selectedProjectKeyRef = useRef(selectedProjectKey);
     const dashboardRequestIdRef = useRef(0);
@@ -267,6 +268,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         },
         enabled: !!token,
     });
+    const hasGlobalGitConfigured = agents.some(agent => Boolean(agent.git_repo_url && agent.has_git_token));
 
     const setAgents = useCallback((updater) => {
         queryClient.setQueryData(['agents', selectedProjectKey], updater);
@@ -315,8 +317,31 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         setProcessModeForProject(selectedProjectKey, normalizedMode);
     }, [selectedProjectKey, location.state]);
 
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        if (isLoadingAgents) return;
+        if (!location.state?.fromTaskCreationModeSelection) return;
+
+        const promptKey = `${selectedProjectKey}:${location.key}`;
+        if (taskCreationGitPromptRef.current.has(promptKey)) return;
+        taskCreationGitPromptRef.current.add(promptKey);
+
+        const hasGlobalGitConfig = agents.some(agent => agent.git_repo_url && agent.has_git_token);
+        if (hasGlobalGitConfig) return;
+
+        const existingRepo = agents.find(agent => agent.git_repo_url)?.git_repo_url || '';
+        setAgentsGitConfig({
+            __global__: {
+                git_repo_url: existingRepo,
+                git_token: '',
+            },
+        });
+        setGitModalAgent({ id: '__global_setup_only__', name: 'Configure Global Git', missingConfig: [] });
+    }, [selectedProjectKey, isLoadingAgents, location.state, location.key, agents]);
+
     const isAiAssistMode = processMode === 'ai_assist' || processMode === 'ai_first';
     const isDeveloperOnlyMode = processMode === 'developer_only';
+    const shouldAutoStartAfterGlobalGitSetup = isAiAssistMode && Boolean(location.state?.fromTaskCreationModeSelection);
 
     useEffect(() => {
         if (!selectedProjectKey) {
@@ -606,16 +631,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
         if (!skipMissingConfigPrompt && missingConfig.length > 0) {
-            const initialMap = {};
             const existingRepo = agents.find(a => a.git_repo_url)?.git_repo_url || '';
-            missingConfig.forEach(agent => {
-                initialMap[agent.id] = {
-                    git_repo_url: agent.git_repo_url || existingRepo,
+            setAgentsGitConfig({
+                __global__: {
+                    git_repo_url: existingRepo,
                     git_token: '',
-                };
+                },
             });
-            setAgentsGitConfig(initialMap);
-            setGitModalAgent({ id: '__run_all_setup__', name: 'Configure Specific Agents', missingConfig });
+            setGitModalAgent({ id: '__run_all_setup__', name: 'Configure Global Git', missingConfig });
             return;
         }
 
@@ -646,6 +669,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         if (!isAiAssistMode) return;
         if (!selectedProjectKey) return;
         if (isLoadingAgents || runningAll) return;
+        if (gitModalAgent) return;
         if (!hasValidTaskToken) return;
         if (agents.some(a => a.status === 'running')) return;
 
@@ -655,10 +679,48 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const autoKey = `${selectedProjectKey}:${processMode}`;
         if (autoAiAssistRunRef.current.has(autoKey)) return;
         autoAiAssistRunRef.current.add(autoKey);
-        handleRunAll(true);
-    }, [isAiAssistMode, selectedProjectKey, isLoadingAgents, runningAll, hasValidTaskToken, agents, processMode, handleRunAll]);
+        handleRunAll(false);
+    }, [isAiAssistMode, selectedProjectKey, isLoadingAgents, runningAll, gitModalAgent, hasValidTaskToken, agents, processMode, handleRunAll]);
+
+    const submitGlobalGitConfigOnly = async () => {
+        const globalConfig = agentsGitConfig.__global__ || {};
+        const git_repo_url = (globalConfig.git_repo_url || '').trim();
+        const git_token = (globalConfig.git_token || '').trim();
+        if (!git_repo_url || !git_token) return;
+
+        const targetAgent = agents.find(a => a.id !== 'agent_03' && a.id !== 'agent_04') || agents[0];
+        if (!targetAgent) return;
+
+        try {
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
+
+            const res = await fetch(withProjectToken(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id)), {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ git_repo_url, git_token }),
+            });
+
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || 'Failed to save global git configuration');
+            }
+
+            setGitModalAgent(null);
+            await fetchAgents();
+            if (shouldAutoStartAfterGlobalGitSetup) {
+                await handleRunAll(true);
+            }
+        } catch (e) {
+            console.error('Save global git configuration failed', e);
+        }
+    };
 
     const submitMultiAgentConfig = async () => {
+        const globalConfig = agentsGitConfig.__global__ || {};
         setGitModalAgent(null);
         setRunningAll(true);
         setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
@@ -670,7 +732,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ agents_config: agentsGitConfig }),
+                body: JSON.stringify({ agents_config: { __global__: globalConfig } }),
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
@@ -683,10 +745,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Add/Remove Agent ─────────────────────────────────────────────
     const handleAddAgent = () => {
+        if (hasGlobalGitConfigured) {
+            setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
+        }
         setShowAddAgentModal(true);
     };
 
     const submitAddAgent = async () => {
+        const nextName = (newAgentConfig.name || '').trim();
+        const nextRepo = (newAgentConfig.git_repo_url || '').trim();
+        const nextToken = (newAgentConfig.git_token || '').trim();
+        const payload = {};
+        if (nextName) payload.name = nextName;
+        if (!hasGlobalGitConfigured) {
+            if (nextRepo) payload.git_repo_url = nextRepo;
+            if (nextToken) payload.git_token = nextToken;
+        }
+
         setShowAddAgentModal(false);
         try {
             const headers = {
@@ -697,7 +772,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_ADD), {
                 method: 'POST',
                 headers,
-                body: JSON.stringify(newAgentConfig),
+                body: JSON.stringify(payload),
             });
             setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
             fetchAgents();
@@ -2472,7 +2547,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </button>
                             </div>
                             <div className="p-6">
-                                <p className="text-sm text-app-text-muted mb-4 font-medium">Update agent name, Git repository URL, and Personal Access Token.</p>
+                                <p className="text-sm text-app-text-muted mb-4 font-medium">Update agent name. Git repository URL and PAT are global per project and apply to all agents.</p>
 
                                 <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Agent Name <span className="text-red-400">*</span></label>
                                 <input
@@ -2482,7 +2557,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4"
                                 />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL</label>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Git Repository URL</label>
                                 <input
                                     type="text"
                                     value={editingAgentRepoUrl}
@@ -2491,7 +2566,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4"
                                 />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token</label>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token</label>
                                 <input
                                     type="password"
                                     value={editingAgentToken}
@@ -2530,15 +2605,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Agent Name (optional)</label>
                                 <input type="text" value={newAgentConfig.name} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, name: e.target.value })} placeholder="e.g. Code Reviewer" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL</label>
-                                <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
+                                {hasGlobalGitConfigured ? (
+                                    <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-6">
+                                        Global Git repository and PAT are already configured for this project. This agent will use those automatically.
+                                    </p>
+                                ) : (
+                                    <>
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Git Repository URL (optional)</label>
+                                        <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
-                                <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token (optional)</label>
+                                        <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="Leave blank to keep existing global PAT" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
+                                    </>
+                                )}
 
                                 <div className="flex items-center gap-3">
                                     <button type="button" onClick={() => setShowAddAgentModal(false)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
-                                    <button type="button" onClick={submitAddAgent} disabled={!newAgentConfig.git_token.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30">
+                                    <button type="button" onClick={submitAddAgent} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30">
                                         Add Agent
                                     </button>
                                 </div>
@@ -2555,7 +2638,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
-                                    <Bot className="w-5 h-5 text-indigo-500" /> {gitModalAgent.id === '__run_all_setup__' ? 'Configure Agents' : 'Git Configuration'}
+                                    <Bot className="w-5 h-5 text-indigo-500" /> {(gitModalAgent.id === '__run_all_setup__' || gitModalAgent.id === '__global_setup_only__') ? 'Configure Global Git' : 'Git Configuration'}
                                 </h3>
                                 <button type="button" onClick={() => setGitModalAgent(null)} className="text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
@@ -2564,29 +2647,86 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             <div className="p-6 overflow-y-auto">
                                 {gitModalAgent.id === '__run_all_setup__' ? (
                                     <>
-                                        <p className="text-sm text-app-text-muted mb-6 font-medium">To run simultaneously, the following agents require Git configuration.</p>
-                                        <div className="space-y-6">
-                                            {gitModalAgent.missingConfig.map(agent => (
-                                                <div key={agent.id} className="p-4 border border-indigo-100 bg-app-primary-light/30 rounded-xl">
-                                                    <h4 className="text-sm font-bold text-indigo-900 mb-3">{agent.name || agent.id}</h4>
+                                        <p className="text-sm text-app-text-muted mb-6 font-medium">
+                                            {`To run ${gitModalAgent.missingConfig.length} agent(s), provide one global Git repository and PAT. All agents will use this same configuration.`}
+                                        </p>
+                                        <div className="p-4 border border-indigo-100 bg-app-primary-light/30 rounded-xl">
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Git Repository URL <span className="text-red-400">*</span></label>
+                                            <input
+                                                type="text"
+                                                value={agentsGitConfig.__global__?.git_repo_url || ''}
+                                                onChange={(e) => setAgentsGitConfig({
+                                                    ...agentsGitConfig,
+                                                    __global__: {
+                                                        ...agentsGitConfig.__global__,
+                                                        git_repo_url: e.target.value,
+                                                    },
+                                                })}
+                                                placeholder="https://github.com/org/repo.git"
+                                                className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main mb-3"
+                                            />
 
-                                                    <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
-                                                    <input type="text" value={agentsGitConfig[agent.id]?.git_repo_url || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_repo_url: e.target.value } })} placeholder="https://github.com/org/repo.git" className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main mb-3" />
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Personal Access Token <span className="text-red-400">*</span></label>
+                                            <input
+                                                type="password"
+                                                value={agentsGitConfig.__global__?.git_token || ''}
+                                                onChange={(e) => setAgentsGitConfig({
+                                                    ...agentsGitConfig,
+                                                    __global__: {
+                                                        ...agentsGitConfig.__global__,
+                                                        git_token: e.target.value,
+                                                    },
+                                                })}
+                                                placeholder="ghp_..."
+                                                className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main"
+                                            />
+                                        </div>
+                                    </>
+                                ) : gitModalAgent.id === '__global_setup_only__' ? (
+                                    <>
+                                        <p className="text-sm text-app-text-muted mb-6 font-medium">
+                                            Set one global Git repository and PAT for this project. All agents will use this same configuration.
+                                        </p>
+                                        <div className="p-4 border border-indigo-100 bg-app-primary-light/30 rounded-xl">
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Git Repository URL <span className="text-red-400">*</span></label>
+                                            <input
+                                                type="text"
+                                                value={agentsGitConfig.__global__?.git_repo_url || ''}
+                                                onChange={(e) => setAgentsGitConfig({
+                                                    ...agentsGitConfig,
+                                                    __global__: {
+                                                        ...agentsGitConfig.__global__,
+                                                        git_repo_url: e.target.value,
+                                                    },
+                                                })}
+                                                placeholder="https://github.com/org/repo.git"
+                                                className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main mb-3"
+                                            />
 
-                                                    <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
-                                                    <input type="password" value={agentsGitConfig[agent.id]?.git_token || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_token: e.target.value } })} placeholder="ghp_..." className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main" />
-                                                </div>
-                                            ))}
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Personal Access Token <span className="text-red-400">*</span></label>
+                                            <input
+                                                type="password"
+                                                value={agentsGitConfig.__global__?.git_token || ''}
+                                                onChange={(e) => setAgentsGitConfig({
+                                                    ...agentsGitConfig,
+                                                    __global__: {
+                                                        ...agentsGitConfig.__global__,
+                                                        git_token: e.target.value,
+                                                    },
+                                                })}
+                                                placeholder="ghp_..."
+                                                className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main"
+                                            />
                                         </div>
                                     </>
                                 ) : (
                                     <>
-                                        <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
+                                        <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, provide global Git settings that all agents in this project will use.</p>
 
-                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Git Repository URL <span className="text-red-400">*</span></label>
                                         <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token <span className="text-red-400">*</span></label>
                                         <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
                                     </>
                                 )}
@@ -2596,11 +2736,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <button type="button" onClick={() => {
                                     if (gitModalAgent.id === '__run_all_setup__') {
                                         submitMultiAgentConfig();
+                                    } else if (gitModalAgent.id === '__global_setup_only__') {
+                                        submitGlobalGitConfigOnly();
                                     } else {
                                         handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken);
                                     }
-                                }} disabled={gitModalAgent.id === '__run_all_setup__' ? gitModalAgent.missingConfig.some(a => !agentsGitConfig[a.id]?.git_repo_url?.trim() || !agentsGitConfig[a.id]?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
-                                    <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all_setup__' ? 'Start All Agents' : 'Start Agent'}
+                                }} disabled={(gitModalAgent.id === '__run_all_setup__' || gitModalAgent.id === '__global_setup_only__') ? (!agentsGitConfig.__global__?.git_repo_url?.trim() || !agentsGitConfig.__global__?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                    <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all_setup__' ? 'Start All Agents' : (gitModalAgent.id === '__global_setup_only__' ? (shouldAutoStartAfterGlobalGitSetup ? 'Save & Start Agents' : 'Save Global Config') : 'Start Agent')}
                                 </button>
                             </div>
                         </div>

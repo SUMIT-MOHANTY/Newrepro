@@ -504,7 +504,12 @@ export default function TaskCreation({
             saveProcessModeForProject(selectedProjectKey, mode);
         }
         setShowProcessModeModal(false);
-        navigate('/status-dashboard', { state: { processMode: mode } });
+        navigate('/status-dashboard', {
+            state: {
+                processMode: mode,
+                fromTaskCreationModeSelection: true,
+            },
+        });
     };
 
     return (
