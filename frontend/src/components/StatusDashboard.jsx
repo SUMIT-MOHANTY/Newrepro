@@ -1852,7 +1852,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <details className="group" open>
                                         <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
                                             <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
-                                            View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files created in Docker)
+                                            View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files created )
                                         </summary>
                                         <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-96 overflow-y-auto whitespace-pre-wrap">
                                             {result.generated_code}

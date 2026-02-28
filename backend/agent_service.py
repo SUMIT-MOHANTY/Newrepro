@@ -2887,7 +2887,7 @@ def _capture_workspace_tree(container_name: str) -> str:
         # Build tree output
         output_parts = []
         output_parts.append("=" * 60)
-        output_parts.append("PROJECT STRUCTURE (created in Docker container)")
+        output_parts.append("PROJECT STRUCTURE")
         output_parts.append("=" * 60)
         output_parts.append("")
 
