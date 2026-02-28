@@ -2324,7 +2324,7 @@ const Dashboard = ({
                             <button onClick={() => setShowSettings(false)} className="text-app-text-light hover:text-app-text-label transition-colors">✕</button>
                         </div>
                         <div className="p-6">
-                            <AIConfig aiConfig={aiConfig} setAiConfig={setAiConfig} />
+                            <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
                         </div>
                         <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
                             <button
