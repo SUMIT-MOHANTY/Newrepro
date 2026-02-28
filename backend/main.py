@@ -305,6 +305,54 @@ async def upload_and_analyze_document(
 
 # ===== GOVERNANCE QUESTIONNAIRE ENDPOINTS =====
 
+ALL_SKIPPED_GOVERNANCE_MESSAGE = "Our IT team will reach out to you. Thanks for connecting."
+ALL_SKIPPED_HARD_STOP = "All governance questions were skipped. IT follow-up is required before BRD upload."
+ALL_SKIPPED_SCORE = 5.0
+
+
+def _is_skip_option_label(label: Optional[str]) -> bool:
+    return str(label or "").strip().lower() == "skip"
+
+
+def _all_answers_skipped_from_submission(answers: List[schemas.GovernanceAnswer]) -> bool:
+    return bool(answers) and all(_is_skip_option_label(answer.selected_option) for answer in answers)
+
+
+def _all_answers_skipped_from_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+
+    for value in payload.values():
+        if not isinstance(value, dict):
+            return False
+        if not _is_skip_option_label(value.get("selected_option")):
+            return False
+
+    return True
+
+
+def _apply_all_skipped_override(scoring_result: Dict[str, Any]) -> Dict[str, Any]:
+    dimension_scores = scoring_result.get("dimension_scores") or {}
+    if dimension_scores:
+        overridden_dimension_scores = {dimension: ALL_SKIPPED_SCORE for dimension in dimension_scores.keys()}
+    else:
+        overridden_dimension_scores = {
+            dimension: ALL_SKIPPED_SCORE for dimension in governance_scoring.DIMENSION_WEIGHTS.keys()
+        }
+
+    hard_stops = list(scoring_result.get("hard_stops") or [])
+    if ALL_SKIPPED_HARD_STOP not in hard_stops:
+        hard_stops.append(ALL_SKIPPED_HARD_STOP)
+
+    return {
+        **scoring_result,
+        "dimension_scores": overridden_dimension_scores,
+        "weighted_score": ALL_SKIPPED_SCORE,
+        "classification": "ENTERPRISE",
+        "classification_description": ALL_SKIPPED_GOVERNANCE_MESSAGE,
+        "hard_stops": hard_stops,
+    }
+
 @app.get("/governance/questions")
 async def get_governance_questions():
     """
@@ -335,6 +383,9 @@ async def submit_governance_response(
     
     # Perform complete scoring
     scoring_result = governance_scoring.score_governance_response(answers_dict)
+
+    if _all_answers_skipped_from_submission(request.answers):
+        scoring_result = _apply_all_skipped_override(scoring_result)
     
     detailed_answers = {
         str(answer.question_id): {
@@ -463,6 +514,13 @@ async def get_governance_result(
                     selected_option=_lookup_selected_option(int(question_id), score_value),
                 ))
 
+    all_answers_skipped = _all_answers_skipped_from_payload(response.answers)
+    classification_description = (
+        ALL_SKIPPED_GOVERNANCE_MESSAGE
+        if all_answers_skipped
+        else _classification_description(response.classification)
+    )
+
     return schemas.GovernanceResult(
         id=response.id,
         project_token=response.project_token or str(response.id),
@@ -478,7 +536,7 @@ async def get_governance_result(
         ),
         weighted_score=response.weighted_score,
         classification=response.classification,
-        classification_description=_classification_description(response.classification),
+        classification_description=classification_description,
         recommendation=response.recommendation,
         pending_revision_reason=response.pending_revision_reason,
         hard_stops=[],
@@ -738,7 +796,13 @@ def _generate_recommendation(scoring_result: dict, answers: dict) -> str:
     
     recommendation = f"**Governance Classification: {classification}**\n\n"
     
-    if hard_stops:
+    if ALL_SKIPPED_HARD_STOP in hard_stops:
+        recommendation += (
+            "**Screening Status: Incomplete**\n\n"
+            "Our IT team will reach out to you. Thanks for connecting.\n\n"
+            "BRD upload is currently disabled until the IT team completes a follow-up review.\n\n"
+        )
+    elif hard_stops:
         recommendation += f"**⚠️ HARD STOPS TRIGGERED:**\n"
         for stop in hard_stops:
             recommendation += f"- {stop}\n"

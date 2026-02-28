@@ -245,6 +245,13 @@ const Dashboard = ({
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
+    const getEnterpriseUploadBlockMessage = () => {
+        const description = String(governanceContext?.classification_description || '').trim();
+        if (description) {
+            return `${description} BRD upload is disabled for this project.`;
+        }
+        return 'Selected project is classified as ENTERPRISE. Upload is disabled until governance is updated.';
+    };
 
     const handleLogout = useCallback(() => {
         clearAuthData();
@@ -753,7 +760,7 @@ const Dashboard = ({
             return;
         }
         if (String(governanceContext.classification || '') === 'ENTERPRISE') {
-            setError('Selected project is classified as ENTERPRISE. Upload is disabled until governance is updated.');
+            setError(getEnterpriseUploadBlockMessage());
             return;
         }
         if (selectedProject.documents.length > 0 && !revisionUnlocked) {
@@ -1756,7 +1763,7 @@ const Dashboard = ({
                                                     </p>
                                                     {selectedProject.classification === 'ENTERPRISE' && (
                                                         <p className="text-xs text-red-700 mt-1">
-                                                            Upload blocked: this project currently requires Enterprise Build governance.
+                                                            Upload blocked: {getEnterpriseUploadBlockMessage()}
                                                         </p>
                                                     )}
                                                     {selectedProject.latestDocument && (
