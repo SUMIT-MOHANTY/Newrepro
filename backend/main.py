@@ -1469,6 +1469,76 @@ async def create_agent_task(
     return {"task": task}
 
 
+# ─────────────────────────────── Preview Deploy ──────────────────────────────
+# NOTE: These MUST be defined before /agents/{agent_id}/* routes,
+# otherwise FastAPI matches "preview" as an agent_id.
+
+class PreviewDeployRequest(BaseModel):
+    git_repo_url: Optional[str] = None
+    git_token: Optional[str] = None
+
+
+@app.post("/agents/preview/deploy")
+async def deploy_preview(
+    request: Optional[PreviewDeployRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
+):
+    """
+    Deploy the agent/integration branch into a live Docker container.
+    Returns a preview URL that opens the running application.
+    """
+    project_token = _normalize_project_token(project_token)
+
+    # Get git credentials: from request body, or from first agent with credentials
+    git_repo_url = request.git_repo_url if request else None
+    git_token = request.git_token if request else None
+
+    if not git_repo_url or not git_token:
+        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
+        for cred in creds_map.values():
+            if cred.git_repo_url and cred.git_token:
+                git_repo_url = git_repo_url or cred.git_repo_url
+                git_token = git_token or cred.git_token
+                break
+
+    if not git_repo_url or not git_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Git repo URL and token are required. Configure them on any agent first."
+        )
+
+    result = await agent_service.deploy_preview(
+        git_repo_url=git_repo_url,
+        git_token=git_token,
+        project_token=project_token,
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("error", "Deploy failed"))
+    return result
+
+
+@app.get("/agents/preview/status")
+async def preview_status(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """Get the current preview deployment status."""
+    project_token = _normalize_project_token(project_token)
+    return agent_service.get_preview_status(project_token)
+
+
+@app.post("/agents/preview/stop")
+async def stop_preview(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """Stop and destroy the preview container."""
+    project_token = _normalize_project_token(project_token)
+    return await agent_service.stop_preview(project_token)
+
+
 @app.get("/agents/{agent_id}/status")
 async def get_agent_status(
     agent_id: str,
@@ -1873,6 +1943,9 @@ async def remove_agent(
         return {"success": True, "removed": agent_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+
 # ─────────────────────────────── Task Management Integration ──────────────────────────
 
 from task_service import (

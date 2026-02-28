@@ -48,6 +48,11 @@ export const API_ENDPOINTS = {
     AGENT_UPDATE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,
     AGENT_REMOVE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,
 
+    // Preview Deploy
+    AGENT_PREVIEW_DEPLOY: `${API_BASE_URL}/agents/preview/deploy`,
+    AGENT_PREVIEW_STATUS: `${API_BASE_URL}/agents/preview/status`,
+    AGENT_PREVIEW_STOP: `${API_BASE_URL}/agents/preview/stop`,
+
     // External Task Management API
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
     AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,

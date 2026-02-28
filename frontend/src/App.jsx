@@ -8,6 +8,7 @@ import TaskCreation from './pages/TaskCreation';
 import GitHubCallback from './pages/GitHubCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
+import AppPreview from './pages/AppPreview';
 import AppLayout from './components/AppLayout';
 
 function App() {
@@ -51,6 +52,9 @@ function App() {
           <AppLayout>
             {(layoutProps) => <TaskCreation {...layoutProps} />}
           </AppLayout>
+        } />
+        <Route path="/app/:projectId" element={
+          <AppPreview />
         } />
       </Routes>
     </Router>

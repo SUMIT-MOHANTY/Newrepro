@@ -5120,6 +5120,395 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
         }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# PREVIEW DEPLOY — Run the merged project in a live Docker container
+# ═══════════════════════════════════════════════════════════════════════════
+
+_preview_states: Dict[str, Dict[str, Any]] = {}
+_PREVIEW_PORT_RANGE_START = 9100
+_PREVIEW_PORT_RANGE_END = 9200
+
+
+def _find_available_preview_port() -> int:
+    """Find an unused port in the preview range."""
+    import socket
+    used_ports = {
+        s.get("host_port") for s in _preview_states.values()
+        if s.get("host_port")
+    }
+    for port in range(_PREVIEW_PORT_RANGE_START, _PREVIEW_PORT_RANGE_END):
+        if port in used_ports:
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("0.0.0.0", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError("No available ports in preview range")
+
+
+def _detect_project_stack(container_name: str) -> Dict[str, Any]:
+    """Auto-detect the tech stack inside the container's /workspace."""
+    stack = {"type": "static", "image": "python:3.10-slim", "port": 8080,
+             "install_cmd": "", "start_cmd": "python3 -m http.server 8080"}
+
+    # Check for package.json (Node.js)
+    check_pkg = subprocess.run(
+        ["docker", "exec", container_name, "cat", "/workspace/package.json"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if check_pkg.returncode == 0:
+        content = check_pkg.stdout.lower()
+        stack["type"] = "node"
+        stack["image"] = "node:18-slim"
+        stack["install_cmd"] = "cd /workspace && npm install"
+
+        if '"vite"' in content or '"@vitejs/plugin-react"' in content:
+            stack["start_cmd"] = "cd /workspace && npx vite --host 0.0.0.0 --port 5173"
+            stack["port"] = 5173
+        elif '"react-scripts"' in content:
+            stack["start_cmd"] = "cd /workspace && npx react-scripts start"
+            stack["port"] = 3000
+        elif '"next"' in content:
+            stack["start_cmd"] = "cd /workspace && npx next dev -p 3000"
+            stack["port"] = 3000
+        else:
+            stack["start_cmd"] = "cd /workspace && npm start"
+            stack["port"] = 3000
+        return stack
+
+    # Check for requirements.txt (Python)
+    check_req = subprocess.run(
+        ["docker", "exec", container_name, "cat", "/workspace/requirements.txt"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if check_req.returncode == 0:
+        content = check_req.stdout.lower()
+        stack["type"] = "python"
+        stack["install_cmd"] = "cd /workspace && pip install -r requirements.txt"
+
+        if "fastapi" in content or "uvicorn" in content:
+            # Try to find the main app file
+            find_main = subprocess.run(
+                ["docker", "exec", container_name, "sh", "-c",
+                 "find /workspace -maxdepth 2 -name 'main.py' -o -name 'app.py' | head -1"],
+                capture_output=True, text=True, timeout=10,
+            )
+            main_file = (find_main.stdout.strip().replace("/workspace/", "")
+                         if find_main.returncode == 0 and find_main.stdout.strip()
+                         else "main:app")
+            module = main_file.replace(".py", "").replace("/", ".")
+            stack["start_cmd"] = f"cd /workspace && uvicorn {module}:app --host 0.0.0.0 --port 8000"
+            stack["port"] = 8000
+        elif "flask" in content:
+            stack["start_cmd"] = "cd /workspace && flask run --host=0.0.0.0 --port 5000"
+            stack["port"] = 5000
+        elif "django" in content:
+            stack["start_cmd"] = "cd /workspace && python manage.py runserver 0.0.0.0:8000"
+            stack["port"] = 8000
+        else:
+            # Generic python — try to run main.py
+            stack["start_cmd"] = "cd /workspace && python main.py"
+            stack["port"] = 8000
+        return stack
+
+    # Check for index.html (static site)
+    check_html = subprocess.run(
+        ["docker", "exec", container_name, "test", "-f", "/workspace/index.html"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if check_html.returncode == 0:
+        stack["type"] = "static"
+        stack["start_cmd"] = "cd /workspace && python3 -m http.server 8080"
+        stack["port"] = 8080
+
+    return stack
+
+
+async def deploy_preview(
+    git_repo_url: str,
+    git_token: str,
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Deploy the agent/integration branch into a live Docker container with
+    port mapping so the user can preview the built application.
+    """
+    pk = _project_key(project_token)
+
+    # Stop any existing preview for this project
+    if pk in _preview_states and _preview_states[pk].get("status") == "running":
+        await stop_preview(project_token)
+
+    preview_id = f"preview_{pk[:12]}_{int(time.time())}"
+    container_name = preview_id
+
+    _preview_states[pk] = {
+        "status": "deploying",
+        "container_name": container_name,
+        "host_port": None,
+        "preview_url": None,
+        "logs": [],
+        "started_at": datetime.utcnow().isoformat(),
+        "stack": None,
+    }
+    pstate = _preview_states[pk]
+
+    def _log(msg: str):
+        pstate["logs"].append({
+            "time": datetime.utcnow().isoformat(),
+            "message": msg,
+        })
+        logger.info(f"[Preview] {msg}")
+
+    try:
+        # 1. Create container (using python:3.10-slim initially for cloning)
+        _log("Creating temporary clone container...")
+        create_res = _create_persistent_container(container_name)
+        if not create_res.get("success"):
+            raise RuntimeError(f"Failed to create container: {create_res.get('error')}")
+
+        # 2. Install git
+        _log("Installing git...")
+        subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
+            capture_output=True, text=True, timeout=120,
+        )
+
+        # 3. Clone the repo (agent/integration branch)
+        auth_url = git_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
+        _log(f"Cloning {GIT_INTEGRATION_BRANCH} branch...")
+        clone = subprocess.run(
+            ["docker", "exec", "-w", "/", container_name,
+             "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+             auth_url, "/workspace"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone.returncode != 0:
+            raise RuntimeError(f"Git clone failed: {clone.stderr}")
+
+        # 4. Detect the project stack
+        _log("Detecting project tech stack...")
+        stack = _detect_project_stack(container_name)
+        pstate["stack"] = stack
+        _log(f"Detected: {stack['type']} project")
+
+        # 5. Destroy the clone container — we'll create a proper one with the right image
+        _destroy_container(container_name)
+
+        # 6. Find available port
+        host_port = _find_available_preview_port()
+        pstate["host_port"] = host_port
+
+        # 7. Create the real container with the correct base image and port mapping
+        _log(f"Starting {stack['type']} container...")
+        docker_run = subprocess.run(
+            ["docker", "run", "-d",
+             "--name", container_name,
+             "-p", f"{host_port}:{stack['port']}",
+             "-w", "/workspace",
+             "-e", "CI=true",
+             "-e", "HOST=0.0.0.0",
+             "-e", "PORT=3000",
+             stack["image"],
+             "sleep", "infinity"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if docker_run.returncode != 0:
+            raise RuntimeError(f"Docker run failed: {docker_run.stderr}")
+
+        # 8. Clone repo again inside the properly imaged container
+        _log("Cloning code into preview container...")
+        subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1 || true"],
+            capture_output=True, text=True, timeout=120,
+        )
+        # Clear workspace and clone
+        subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/*"],
+            capture_output=True, text=True, timeout=10,
+        )
+        clone2 = subprocess.run(
+            ["docker", "exec", "-w", "/", container_name,
+             "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+             auth_url, "/workspace"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone2.returncode != 0:
+            raise RuntimeError(f"Git clone into preview container failed: {clone2.stderr}")
+
+        # 9. Install dependencies
+        if stack["install_cmd"]:
+            _log(f"Installing dependencies: {stack['install_cmd']}")
+            install = subprocess.run(
+                ["docker", "exec", container_name, "sh", "-c", stack["install_cmd"]],
+                capture_output=True, text=True, timeout=300,
+            )
+            if install.returncode != 0:
+                _log(f"⚠️ Install warning: {install.stderr[:300]}")
+
+        # 10. Start the dev server in the background
+        _log(f"Starting application server...")
+        subprocess.run(
+            ["docker", "exec", "-d", container_name, "sh", "-c",
+             f"nohup sh -c '{stack['start_cmd']}' > /tmp/preview_server.log 2>&1 &"],
+            capture_output=True, text=True, timeout=15,
+        )
+
+        # 11. Wait a moment for the server to initialize
+        await asyncio.sleep(3)
+
+        preview_url = f"http://localhost:{host_port}"
+        pstate["status"] = "running"
+        pstate["preview_url"] = preview_url
+        _log("✅ Preview is live and ready!")
+
+        return {
+            "status": "running",
+            "preview_url": preview_url,
+            "host_port": host_port,
+            "container_name": container_name,
+            "stack": stack["type"],
+        }
+
+    except Exception as e:
+        pstate["status"] = "error"
+        pstate["logs"].append({
+            "time": datetime.utcnow().isoformat(),
+            "message": f"❌ Deploy failed: {str(e)}",
+        })
+        # Clean up container on failure
+        try:
+            _destroy_container(container_name)
+        except Exception:
+            pass
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
+def _recover_preview_from_docker(pk: str) -> Optional[Dict[str, Any]]:
+    """Try to find a running preview container from Docker when in-memory state is lost."""
+    try:
+        # List all running containers with names starting with "preview_"
+        result = subprocess.run(
+            ["docker", "ps", "--filter", f"name=preview_{pk[:12]}", "--format",
+             "{{.Names}}\t{{.Ports}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        # Parse the first matching container
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            container_name = parts[0].strip()
+            ports_str = parts[1].strip()
+
+            # Extract host port from port mapping like "0.0.0.0:9100->3000/tcp"
+            host_port = None
+            import re as _re_local
+            port_match = _re_local.search(r"0\.0\.0\.0:(\d+)->(\d+)", ports_str)
+            if port_match:
+                host_port = int(port_match.group(1))
+
+            if host_port:
+                preview_url = f"http://localhost:{host_port}"
+                # Reconstruct state
+                recovered = {
+                    "status": "running",
+                    "container_name": container_name,
+                    "host_port": host_port,
+                    "preview_url": preview_url,
+                    "logs": [{"time": datetime.utcnow().isoformat(),
+                              "message": "Recovered running preview from Docker."}],
+                    "started_at": datetime.utcnow().isoformat(),
+                    "stack": None,
+                    "server_log": "",
+                }
+                # Cache it in memory
+                _preview_states[pk] = recovered
+                return recovered
+    except Exception as e:
+        logger.debug(f"Preview recovery failed: {e}")
+    return None
+
+
+def get_preview_status(project_token: Optional[str] = None) -> Dict[str, Any]:
+    """Get the current preview deployment status for a project."""
+    pk = _project_key(project_token)
+    pstate = _preview_states.get(pk)
+
+    # If no in-memory state, try to recover from Docker
+    if not pstate:
+        recovered = _recover_preview_from_docker(pk)
+        if not recovered:
+            return {"status": "none", "message": "No preview deployed"}
+        pstate = recovered
+
+    # If status is "running", verify the container is actually alive
+    if pstate["status"] == "running" and pstate.get("container_name"):
+        check = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", pstate["container_name"]],
+            capture_output=True, text=True, timeout=5,
+        )
+        if check.returncode != 0 or "true" not in check.stdout.lower():
+            pstate["status"] = "stopped"
+
+    # Grab recent server logs
+    if pstate.get("container_name") and pstate["status"] == "running":
+        try:
+            log_result = subprocess.run(
+                ["docker", "exec", pstate["container_name"],
+                 "tail", "-20", "/tmp/preview_server.log"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if log_result.returncode == 0:
+                pstate["server_log"] = log_result.stdout
+        except Exception:
+            pass
+
+    return {
+        "status": pstate["status"],
+        "preview_url": pstate.get("preview_url"),
+        "host_port": pstate.get("host_port"),
+        "container_name": pstate.get("container_name"),
+        "stack": pstate.get("stack", {}).get("type") if isinstance(pstate.get("stack"), dict) else pstate.get("stack"),
+        "started_at": pstate.get("started_at"),
+        "logs": pstate.get("logs", []),
+        "server_log": pstate.get("server_log", ""),
+    }
+
+
+async def stop_preview(project_token: Optional[str] = None) -> Dict[str, Any]:
+    """Stop and destroy the preview container for a project."""
+    pk = _project_key(project_token)
+    pstate = _preview_states.get(pk)
+    if not pstate:
+        # Try to recover from Docker
+        pstate = _recover_preview_from_docker(pk)
+    if not pstate:
+        return {"status": "none", "message": "No preview to stop"}
+
+    container_name = pstate.get("container_name")
+    if container_name:
+        await asyncio.to_thread(_destroy_container, container_name)
+
+    pstate["status"] = "stopped"
+    pstate["logs"].append({
+        "time": datetime.utcnow().isoformat(),
+        "message": "Preview container stopped and destroyed.",
+    })
+
+    return {"status": "stopped", "message": f"Preview container {container_name} destroyed"}
+
+
 # ── Agent & Task Management Helpers ─────────────────────────────────────────
 
 def get_pending_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
