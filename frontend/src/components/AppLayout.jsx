@@ -240,14 +240,8 @@ export default function AppLayout({ children }) {
         };
     }
 
-    const forcedRoadmapStepIndex = (() => {
-        if (!roadmapData?.steps || !Array.isArray(roadmapData.steps)) return null;
-        if (currentView === 'taskCreation' || currentView === 'statusDashboard') {
-            const idx = roadmapData.steps.findIndex((s) => s === 'Agent Execution');
-            return idx >= 0 ? idx : null;
-        }
-        return null;
-    })();
+    // Let backend roadmap state drive the active step; do not force Agent Execution by page.
+    const forcedRoadmapStepIndex = null;
 
     // Backward compatibility for components expecting the old fetch logic
     const fetchRoadmapData = useCallback(() => {
