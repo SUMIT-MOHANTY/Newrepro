@@ -2006,185 +2006,178 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                                             {agents.map(agent => renderAgentCard(agent))}
+
+                                            {/* ── Preview Deploy Section (Tile Format) ────────────────────── */}
+                                            <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow h-full">
+                                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-violet-500 to-purple-600"></div>
+
+                                                <div className="flex items-start justify-between mb-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/20">
+                                                            <Globe className="w-5 h-5 text-white" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-bold text-app-text-main">Live Preview</h4>
+                                                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">agent/integration</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center">
+                                                        {previewStatus.status === 'running' && (
+                                                            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 text-[10px] font-bold uppercase tracking-wider">
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                                                Live
+                                                            </span>
+                                                        )}
+                                                        {previewStatus.status === 'deploying' && (
+                                                            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 text-[10px] font-bold uppercase tracking-wider">
+                                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                                Deploying...
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex-1 flex flex-col justify-end">
+                                                    {previewStatus.status === 'running' && previewStatus.preview_url ? (
+                                                        <div className="space-y-3">
+                                                            <div className="flex flex-col gap-2">
+                                                                <a
+                                                                    href={`/app/${selectedProjectKey}`}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-indigo-50 text-indigo-700 font-semibold text-xs hover:bg-indigo-100 transition-colors"
+                                                                >
+                                                                    <ExternalLink className="w-3.5 h-3.5" />
+                                                                    Open Preview
+                                                                </a>
+                                                                <div className="flex bg-app-bg-muted rounded-lg p-2 justify-between items-center text-[10px]">
+                                                                    <code className="text-app-text-main font-mono truncate mr-2">/app/{selectedProjectKey}</code>
+                                                                    <span className="text-app-text-light shrink-0">{previewStatus.stack} project</span>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={handleDeployPreview}
+                                                                    disabled={isDeploying}
+                                                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-bold hover:bg-blue-100 transition-colors"
+                                                                >
+                                                                    <RefreshCw className={`w-3 h-3 ${isDeploying ? 'animate-spin' : ''}`} />
+                                                                    Redeploy
+                                                                </button>
+                                                                <button
+                                                                    onClick={handleStopPreview}
+                                                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-red-50 text-red-600 text-[10px] font-bold hover:bg-red-100 transition-colors"
+                                                                >
+                                                                    <StopCircle className="w-3 h-3" />
+                                                                    Stop
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => setShowPreviewLogs(!showPreviewLogs)}
+                                                                    className="px-2.5 py-1.5 rounded-lg bg-app-bg-hover text-app-text-light hover:text-app-text-main hover:bg-app-bg-muted transition-colors"
+                                                                    title="View Logs"
+                                                                >
+                                                                    <Terminal className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            </div>
+
+                                                            {showPreviewLogs && previewStatus.logs && (
+                                                                <div className="mt-2 bg-slate-900 rounded-lg p-2 max-h-32 overflow-y-auto">
+                                                                    <div className="space-y-0.5 font-mono text-[9px]">
+                                                                        {previewStatus.logs.map((log, i) => (
+                                                                            <div key={i} className="text-slate-400">
+                                                                                <span className="text-slate-600 mr-1">[{new Date(log.time).toLocaleTimeString()}]</span>
+                                                                                {log.message}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                    {previewStatus.server_log && (
+                                                                        <div className="mt-1 pt-1 border-t border-slate-800">
+                                                                            <pre className="text-[9px] text-emerald-400 whitespace-pre-wrap">{previewStatus.server_log}</pre>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : previewStatus.status === 'deploying' ? (
+                                                        <div className="space-y-3">
+                                                            <div className="flex items-center gap-2 text-app-text-main justify-center py-2">
+                                                                <Loader2 className="w-4 h-4 animate-spin text-app-primary" />
+                                                                <span className="text-[11px] font-medium">Deploying preview...</span>
+                                                            </div>
+                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                                <div className="bg-slate-900 rounded-lg p-2 h-20 overflow-y-auto">
+                                                                    <div className="space-y-0.5 font-mono text-[9px]">
+                                                                        {previewStatus.logs.map((log, i) => (
+                                                                            <div key={i} className="text-slate-400">
+                                                                                <span className="text-violet-400 mr-1">›</span>
+                                                                                {log.message}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : previewStatus.status === 'error' ? (
+                                                        <div className="space-y-3">
+                                                            <div className="flex items-center gap-1.5 text-red-500 text-xs font-semibold justify-center bg-red-50 p-2 rounded-lg">
+                                                                <AlertCircle className="w-3.5 h-3.5" />
+                                                                <span>Deployment Failed</span>
+                                                            </div>
+                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                                <div className="bg-slate-900 rounded-lg p-2 max-h-24 overflow-y-auto">
+                                                                    <div className="space-y-0.5 font-mono text-[9px]">
+                                                                        {previewStatus.logs.slice(-5).map((log, i) => (
+                                                                            <div key={i} className="text-red-400/80">
+                                                                                {log.message}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={handleDeployPreview}
+                                                                    disabled={isDeploying || isFixing}
+                                                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-app-bg-hover text-app-text-main text-[10px] font-bold hover:bg-app-bg-muted transition-colors disabled:opacity-50"
+                                                                >
+                                                                    <RefreshCw className={`w-3 h-3 ${isDeploying ? 'animate-spin' : ''}`} />
+                                                                    Retry
+                                                                </button>
+                                                                <button
+                                                                    onClick={handleFixWithAI}
+                                                                    disabled={isDeploying || isFixing}
+                                                                    className="flex-[2] flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 text-[10px] font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50"
+                                                                >
+                                                                    {isFixing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
+                                                                    AI Fix
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex flex-col items-center justify-center py-4 bg-app-bg-muted rounded-xl">
+                                                            <Rocket className="w-6 h-6 text-app-text-light mb-2 opacity-50" />
+                                                            <p className="text-[11px] text-app-text-light text-center font-medium mb-3 px-4">
+                                                                View a live version of the integration branch
+                                                            </p>
+                                                            <button
+                                                                onClick={handleDeployPreview}
+                                                                disabled={isDeploying}
+                                                                className="flex items-center justify-center gap-1.5 w-full max-w-[140px] py-1.5 rounded-lg bg-app-primary text-white text-[10px] font-bold hover:bg-indigo-600 transition-colors disabled:opacity-50"
+                                                            >
+                                                                {isDeploying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Rocket className="w-3 h-3" />}
+                                                                {isDeploying ? 'Deploying...' : 'Deploy Preview'}
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+
                                         </div>
                                     </div>
                                 )}
 
-                                {/* ── Preview Deploy Section ────────────────────── */}
-                                <div className="mt-8">
-                                    <div className="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 rounded-2xl border border-gray-700/50 overflow-hidden shadow-xl">
-                                        <div className="px-6 py-5 flex items-center justify-between border-b border-gray-700/50">
-                                            <div className="flex items-center gap-3">
-                                                <div className="p-2.5 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 shadow-lg shadow-violet-500/20">
-                                                    <Globe className="w-5 h-5 text-white" />
-                                                </div>
-                                                <div>
-                                                    <h3 className="font-bold text-white text-base">Live Preview</h3>
-                                                    <p className="text-xs text-gray-400">Deploy the merged integration branch and preview your application</p>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                {previewStatus.status === 'running' && (
-                                                    <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-                                                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                                                        Live
-                                                    </span>
-                                                )}
-                                                {previewStatus.status === 'deploying' && (
-                                                    <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
-                                                        <Loader2 className="w-3 h-3 animate-spin" />
-                                                        Deploying...
-                                                    </span>
-                                                )}
-                                            </div>
-                                        </div>
-
-                                        <div className="p-6">
-                                            {previewStatus.status === 'running' && previewStatus.preview_url ? (
-                                                <div className="space-y-4">
-                                                    <div className="flex items-center gap-4 flex-wrap">
-                                                        <a
-                                                            href={`/app/${selectedProjectKey}`}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold text-sm shadow-lg shadow-violet-600/25 hover:shadow-violet-600/40 hover:scale-[1.02] transition-all duration-200"
-                                                        >
-                                                            <ExternalLink className="w-4 h-4" />
-                                                            Open Preview
-                                                        </a>
-                                                        <code className="px-3 py-1.5 bg-gray-800 rounded-lg text-gray-300 text-xs font-mono border border-gray-700">
-                                                            {window.location.origin}/app/{selectedProjectKey}
-                                                        </code>
-                                                        <span className="text-xs text-gray-500">
-                                                            {previewStatus.stack && `${previewStatus.stack} project`}
-                                                        </span>
-                                                    </div>
-
-                                                    <div className="flex items-center gap-3">
-                                                        <button
-                                                            onClick={handleDeployPreview}
-                                                            disabled={isDeploying}
-                                                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600/10 border border-blue-500/30 text-blue-400 text-xs font-semibold hover:bg-blue-600/20 transition-all"
-                                                        >
-                                                            <RefreshCw className={`w-3.5 h-3.5 ${isDeploying ? 'animate-spin' : ''}`} />
-                                                            Redeploy
-                                                        </button>
-                                                        <button
-                                                            onClick={handleStopPreview}
-                                                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600/10 border border-red-500/30 text-red-400 text-xs font-semibold hover:bg-red-600/20 transition-all"
-                                                        >
-                                                            <StopCircle className="w-3.5 h-3.5" />
-                                                            Stop Preview
-                                                        </button>
-                                                        <button
-                                                            onClick={() => setShowPreviewLogs(!showPreviewLogs)}
-                                                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gray-700/50 border border-gray-600/50 text-gray-300 text-xs font-semibold hover:bg-gray-700 transition-all"
-                                                        >
-                                                            <Terminal className="w-3.5 h-3.5" />
-                                                            {showPreviewLogs ? 'Hide' : 'Show'} Logs
-                                                        </button>
-                                                    </div>
-
-                                                    {showPreviewLogs && previewStatus.logs && (
-                                                        <div className="mt-3 bg-gray-950 rounded-xl border border-gray-800 p-4 max-h-48 overflow-y-auto">
-                                                            <div className="space-y-1 font-mono text-[11px]">
-                                                                {previewStatus.logs.map((log, i) => (
-                                                                    <div key={i} className="text-gray-400">
-                                                                        <span className="text-gray-600 mr-2">[{new Date(log.time).toLocaleTimeString()}]</span>
-                                                                        {log.message}
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                            {previewStatus.server_log && (
-                                                                <div className="mt-3 pt-3 border-t border-gray-800">
-                                                                    <p className="text-[10px] text-gray-500 mb-1">Server Output:</p>
-                                                                    <pre className="text-[10px] text-green-400 whitespace-pre-wrap">{previewStatus.server_log}</pre>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            ) : previewStatus.status === 'deploying' ? (
-                                                <div className="space-y-4">
-                                                    <div className="flex items-center gap-3 text-gray-300">
-                                                        <Loader2 className="w-5 h-5 animate-spin text-violet-400" />
-                                                        <span className="text-sm font-medium">Deploying application... This may take a minute.</span>
-                                                    </div>
-                                                    {previewStatus.logs && previewStatus.logs.length > 0 && (
-                                                        <div className="bg-gray-950 rounded-xl border border-gray-800 p-4 max-h-48 overflow-y-auto">
-                                                            <div className="space-y-1 font-mono text-[11px]">
-                                                                {previewStatus.logs.map((log, i) => (
-                                                                    <div key={i} className="text-gray-400">
-                                                                        <span className="text-violet-400 mr-1">›</span>
-                                                                        {log.message}
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            ) : previewStatus.status === 'error' ? (
-                                                <div className="space-y-3">
-                                                    <div className="flex items-center gap-2 text-red-400 text-sm">
-                                                        <AlertCircle className="w-4 h-4" />
-                                                        <span>Preview deployment failed</span>
-                                                    </div>
-                                                    {previewStatus.logs && previewStatus.logs.length > 0 && (
-                                                        <div className="bg-gray-950 rounded-xl border border-gray-800 p-4 max-h-36 overflow-y-auto mb-3">
-                                                            <div className="space-y-1 font-mono text-[11px]">
-                                                                {previewStatus.logs.slice(-5).map((log, i) => (
-                                                                    <div key={i} className="text-red-400/80">
-                                                                        {log.message}
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                    <div className="flex items-center gap-3">
-                                                        <button
-                                                            onClick={handleDeployPreview}
-                                                            disabled={isDeploying || isFixing}
-                                                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold text-sm shadow-lg hover:scale-[1.02] transition-all"
-                                                        >
-                                                            <RefreshCw className={`w-4 h-4 ${isDeploying ? 'animate-spin' : ''}`} />
-                                                            Retry Deploy
-                                                        </button>
-                                                        <button
-                                                            onClick={handleFixWithAI}
-                                                            disabled={isDeploying || isFixing}
-                                                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-semibold text-sm shadow-lg hover:scale-[1.02] transition-all"
-                                                        >
-                                                            {isFixing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
-                                                            Fix with AI
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="flex flex-col items-center py-6 gap-4">
-                                                    <div className="p-4 rounded-full bg-violet-500/10 border border-violet-500/20">
-                                                        <Rocket className="w-8 h-8 text-violet-400" />
-                                                    </div>
-                                                    <div className="text-center">
-                                                        <p className="text-gray-300 text-sm font-medium">Ready to preview your application</p>
-                                                        <p className="text-gray-500 text-xs mt-1">Deploys the <code className="px-1.5 py-0.5 bg-gray-800 rounded text-violet-300">agent/integration</code> branch</p>
-                                                    </div>
-                                                    <button
-                                                        onClick={handleDeployPreview}
-                                                        disabled={isDeploying}
-                                                        className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold text-sm shadow-lg shadow-violet-600/25 hover:shadow-violet-600/40 hover:scale-[1.02] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    >
-                                                        {isDeploying ? (
-                                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                                        ) : (
-                                                            <Rocket className="w-4 h-4" />
-                                                        )}
-                                                        {isDeploying ? 'Deploying...' : 'Deploy Preview'}
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
+                                {/* Render bottom spacer */}
 
                                 {isDeveloperOnlyMode && (
                                     <div className="w-full mt-4 lg:col-span-2 min-w-0">
@@ -2207,63 +2200,64 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
             )
             }
-            {showLogModal && (() => {
-                const agent = agents.find(a => a.id === showLogModal);
-                if (!agent) return null;
-                const logs = agent.output_log || [];
-                const result = agent.last_result;
-                return (
-                    <div className="fixed inset-0 bg-app-text-main/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-app-text-main text-gray-100 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-                            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-app-text-label">
-                                <div className="flex items-center gap-3">
-                                    <Terminal className="w-5 h-5 text-green-400" />
-                                    <h3 className="font-bold text-white text-sm">{agent.name} — Execution Log</h3>
-                                </div>
-                                <button onClick={() => setShowLogModal(null)} className="text-app-text-light hover:text-white p-1 rounded hover:bg-gray-700 transition-colors">
-                                    <X className="w-5 h-5" />
-                                </button>
-                            </div>
-                            <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5">
-                                {logs.length === 0 ? (
-                                    <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
-                                ) : logs.map((log, idx) => (
-                                    <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
-                                        <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
-                                        <span className="break-all">{log.message}</span>
+            {
+                showLogModal && (() => {
+                    const agent = agents.find(a => a.id === showLogModal);
+                    if (!agent) return null;
+                    const logs = agent.output_log || [];
+                    const result = agent.last_result;
+                    return (
+                        <div className="fixed inset-0 bg-app-text-main/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                            <div className="bg-app-text-main text-gray-100 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+                                <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-app-text-label">
+                                    <div className="flex items-center gap-3">
+                                        <Terminal className="w-5 h-5 text-green-400" />
+                                        <h3 className="font-bold text-white text-sm">{agent.name} — Execution Log</h3>
                                     </div>
-                                ))}
+                                    <button onClick={() => setShowLogModal(null)} className="text-app-text-light hover:text-white p-1 rounded hover:bg-gray-700 transition-colors">
+                                        <X className="w-5 h-5" />
+                                    </button>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5">
+                                    {logs.length === 0 ? (
+                                        <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
+                                    ) : logs.map((log, idx) => (
+                                        <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
+                                            <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
+                                            <span className="break-all">{log.message}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                {result?.generated_code && (
+                                    <div className="border-t border-gray-700">
+                                        <details className="group" open>
+                                            <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
+                                                <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
+                                                View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files captured)
+                                            </summary>
+                                            <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-96 overflow-y-auto whitespace-pre-wrap">
+                                                {result.generated_code}
+                                            </pre>
+                                        </details>
+                                    </div>
+                                )}
+                                {result?.builder_scripts && (
+                                    <div className="border-t border-gray-700">
+                                        <details className="group">
+                                            <summary className="px-4 py-2 text-xs font-bold text-blue-400 cursor-pointer hover:text-blue-300 select-none flex items-center gap-2">
+                                                <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
+                                                View Builder Scripts ({result.builder_scripts.split('\n').length} lines of AI-generated code)
+                                            </summary>
+                                            <pre className="px-4 py-3 overflow-x-auto text-[10px] text-app-primary-ring bg-gray-950 max-h-60 overflow-y-auto whitespace-pre-wrap">
+                                                {result.builder_scripts}
+                                            </pre>
+                                        </details>
+                                    </div>
+                                )}
                             </div>
-                            {result?.generated_code && (
-                                <div className="border-t border-gray-700">
-                                    <details className="group" open>
-                                        <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
-                                            <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
-                                            View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files captured)
-                                        </summary>
-                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-96 overflow-y-auto whitespace-pre-wrap">
-                                            {result.generated_code}
-                                        </pre>
-                                    </details>
-                                </div>
-                            )}
-                            {result?.builder_scripts && (
-                                <div className="border-t border-gray-700">
-                                    <details className="group">
-                                        <summary className="px-4 py-2 text-xs font-bold text-blue-400 cursor-pointer hover:text-blue-300 select-none flex items-center gap-2">
-                                            <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
-                                            View Builder Scripts ({result.builder_scripts.split('\n').length} lines of AI-generated code)
-                                        </summary>
-                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-app-primary-ring bg-gray-950 max-h-60 overflow-y-auto whitespace-pre-wrap">
-                                            {result.builder_scripts}
-                                        </pre>
-                                    </details>
-                                </div>
-                            )}
                         </div>
-                    </div>
-                );
-            })()
+                    );
+                })()
             }
             {/* Generated Tasks Section */}
             {
@@ -2474,7 +2468,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </div>
                         </div>
                     )
-                )}
+                )
+            }
 
             {/* Add Project Modal */}
             {
