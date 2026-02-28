@@ -18,7 +18,7 @@ const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
 const DASHBOARD_ROLES = [
     { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
-    { value: 'project', label: 'Project Dashboard'},
+    { value: 'project', label: 'Project Dashboard' },
 ];
 
 function decodeJwtExpiry(token) {
@@ -925,8 +925,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 {/* Last run info */}
                 <div className="flex items-center justify-between text-[10px] text-app-text-light mb-4">
                     <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {agent.last_run ? `Last: ${new Date(agent.last_run).toLocaleTimeString()}` : 'Not run yet'}
+                        {agent.last_run && (
+                            <>
+                                <Clock className="w-3 h-3" />
+                                {`Last: ${new Date(agent.last_run).toLocaleTimeString()}`}
+                            </>
+                        )}
                     </span>
                     {isCompleted && <span className="font-semibold text-app-status-success">✓ Completed</span>}
                     {isError && <span className="font-semibold text-app-status-error">✗ Error</span>}
