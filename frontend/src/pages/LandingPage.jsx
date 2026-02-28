@@ -528,7 +528,7 @@ const LandingPage = () => {
     const platformModes = [
         {
             key: 'developer',
-            title: 'Developer Mode',
+            title: 'Developer Only',
             subtitle: 'Human-Led Development',
             icon: <Code className="h-5 w-5 text-white" />,
             color: 'from-blue-600 to-cyan-500',
@@ -548,7 +548,7 @@ const LandingPage = () => {
         },
         {
             key: 'auto-complete',
-            title: 'Auto-Complete Mode',
+            title: 'AI Assist Mode',
             subtitle: 'AI-Assisted Productivity',
             icon: <Terminal className="h-5 w-5 text-white" />,
             color: 'from-indigo-600 to-violet-500',
@@ -609,7 +609,7 @@ const LandingPage = () => {
         },
         {
             key: 'sandbox',
-            title: 'Sandbox Mode',
+            title: 'AI First Mode',
             subtitle: 'Fully Autonomous AI Environment',
             icon: <Shield className="h-5 w-5 text-white" />,
             color: 'from-sky-600 to-cyan-500',
