@@ -1174,16 +1174,16 @@ const LandingPage = () => {
 
                     <div className="relative px-6 py-12 md:px-12 md:py-16 text-center">
                         <h2 className="text-2xl md:text-4xl font-bold text-white mb-4 tracking-tight">
-                            Ready to clean up your docs?
+                            Watch the agents work.
                         </h2>
                         <p className="text-app-border text-base md:text-lg max-w-xl mx-auto mb-8">
-                            Join thousands of developers using DSuite today.
+                            Upload a document into DSuite today and let the ecosystem plan, code, test, and deploy for you.
                         </p>
                         <button
                             onClick={openSignup}
                             className="inline-flex justify-center items-center px-8 py-3.5 text-base font-bold text-app-text-main bg-app-bg-card rounded-xl hover:bg-app-bg-page transition-colors shadow-lg active:scale-95 cursor-pointer border-0"
                         >
-                            Get Started for Free
+                            Get Started
                             <ArrowRight className="ml-2 h-5 w-5" />
                         </button>
                     </div>
