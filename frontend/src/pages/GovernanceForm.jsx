@@ -91,6 +91,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     const [projectName, setProjectName] = useState('');
     const [error, setError] = useState('');
     const [result, setResult] = useState(null);
+    const skipOption = { label: 'Skip', score: 0 };
 
     // Step state: 0 = Project Name, 1…N = dimension steps, N+1 = review
     const [currentStep, setCurrentStep] = useState(0);
@@ -171,6 +172,13 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
     const handleAnswer = (questionId, option) =>
         setAnswers((prev) => ({ ...prev, [questionId]: option }));
+
+    const getQuestionOptions = (question) => {
+        if (question.options.some((option) => option.label === skipOption.label)) {
+            return question.options;
+        }
+        return [...question.options, skipOption];
+    };
 
     /* ── submit ── */
     const handleSubmit = (e) => {
@@ -431,7 +439,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
                                                         {/* Options — 2 cols on wider screens */}
                                                         <div className="ml-10 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                            {question.options.map((option) => {
+                                                            {getQuestionOptions(question).map((option) => {
                                                                 const selected = answers[question.id]?.label === option.label;
                                                                 return (
                                                                     <label

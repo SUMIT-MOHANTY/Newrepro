@@ -215,6 +215,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
     const [projectName, setProjectName] = useState('');
+    const [globalGitRepoUrl, setGlobalGitRepoUrl] = useState('');
+    const [globalGitToken, setGlobalGitToken] = useState('');
+    const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
+    const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -235,6 +239,49 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             } catch { /* ignore */ }
         }
     }, [projects, selectedProjectKey]);
+
+    useEffect(() => {
+        let isMounted = true;
+        const loadGlobalGitConfig = async () => {
+            if (!selectedProjectKey) {
+                setGlobalGitRepoUrl('');
+                setGlobalGitToken('');
+                setHasSavedGlobalGitToken(false);
+                return;
+            }
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) return;
+                setIsLoadingGitConfig(true);
+
+                const url = new URL(API_ENDPOINTS.AGENTS);
+                url.searchParams.set('project_token', selectedProjectKey);
+                const res = await fetch(url.toString(), {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!res.ok) return;
+
+                const data = await res.json().catch(() => ({}));
+                const agents = Array.isArray(data?.agents) ? data.agents : [];
+                const repo = agents.find((a) => a?.git_repo_url)?.git_repo_url || '';
+                const hasToken = agents.some((a) => a?.has_git_token);
+                if (!isMounted) return;
+
+                setGlobalGitRepoUrl(repo);
+                setHasSavedGlobalGitToken(Boolean(hasToken));
+                setGlobalGitToken('');
+            } catch (e) {
+                console.error('Failed to load global git config', e);
+            } finally {
+                if (isMounted) setIsLoadingGitConfig(false);
+            }
+        };
+
+        loadGlobalGitConfig();
+        return () => {
+            isMounted = false;
+        };
+    }, [selectedProjectKey]);
 
     // Load analysis data for the selected project
     useEffect(() => {
@@ -388,11 +435,67 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const providedCount = prerequisites.filter(p => p.provided).length;
     const progress = totalItems > 0 ? Math.round((providedCount / totalItems) * 100) : 0;
     const allProvided = totalItems > 0 && providedCount === totalItems;
+    const isGlobalGitConfigValid = Boolean(
+        globalGitRepoUrl.trim() && (hasSavedGlobalGitToken || globalGitToken.trim())
+    );
 
     const handleSubmit = async () => {
         setSubmitting(true);
         try {
             const token = localStorage.getItem('token');
+            if (!token) {
+                navigate('/login');
+                return;
+            }
+            if (!selectedProjectKey) {
+                throw new Error('No project selected.');
+            }
+
+            const repo = globalGitRepoUrl.trim();
+            const pat = globalGitToken.trim();
+            if (!repo) {
+                throw new Error('Global Git repository URL is required.');
+            }
+            if (!hasSavedGlobalGitToken && !pat) {
+                throw new Error('Global PAT is required.');
+            }
+
+            // Save global Git config from prerequisites so all agents reuse it.
+            const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
+            agentsUrl.searchParams.set('project_token', selectedProjectKey);
+            const agentsRes = await fetch(agentsUrl.toString(), {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!agentsRes.ok) {
+                throw new Error('Failed to load agents for saving global Git config.');
+            }
+            const agentsData = await agentsRes.json().catch(() => ({}));
+            const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
+            const targetAgent =
+                agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
+            if (!targetAgent?.id) {
+                throw new Error('No agent available to save global Git config.');
+            }
+
+            const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
+            updateUrl.searchParams.set('project_token', selectedProjectKey);
+            const gitPayload = { git_repo_url: repo };
+            if (pat) gitPayload.git_token = pat;
+
+            const updateRes = await fetch(updateUrl.toString(), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify(gitPayload),
+            });
+            if (!updateRes.ok) {
+                const errData = await updateRes.json().catch(() => ({}));
+                throw new Error(errData?.detail || 'Failed to save global Git config.');
+            }
+            setHasSavedGlobalGitToken(true);
+            setGlobalGitToken('');
 
             // Build the prerequisite summary to persist
             const prerequisiteData = {
@@ -667,6 +770,47 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── SUMMARY + SUBMIT ── */}
                 <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-100/80 p-6 mb-6">
+                    <div className="mb-6 pb-6 border-b border-gray-100">
+                        <h3 className="text-base font-bold text-gray-900 mb-1">Global Git Configuration</h3>
+                        <p className="text-sm text-gray-500 mb-4">
+                            Provide one global repository and PAT here. All agents in this project will use these credentials.
+                        </p>
+                        <div className="grid grid-cols-1 gap-4">
+                            <div>
+                                <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
+                                    Global Git Repository URL <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={globalGitRepoUrl}
+                                    onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
+                                    placeholder="https://github.com/org/repo.git"
+                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
+                                    Global Personal Access Token {!hasSavedGlobalGitToken && <span className="text-red-500">*</span>}
+                                </label>
+                                <input
+                                    type="password"
+                                    value={globalGitToken}
+                                    onChange={(e) => setGlobalGitToken(e.target.value)}
+                                    placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'ghp_...'}
+                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                />
+                                <p className="text-xs text-gray-500 mt-2">
+                                    {hasSavedGlobalGitToken
+                                        ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
+                                        : 'PAT is required the first time so agents can clone/push to the global repository.'}
+                                </p>
+                            </div>
+                            {isLoadingGitConfig && (
+                                <p className="text-xs text-gray-500">Loading saved Git config...</p>
+                            )}
+                        </div>
+                    </div>
+
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                         <div>
                             <h3 className="text-base font-bold text-gray-900 mb-1">Ready to proceed?</h3>
@@ -680,7 +824,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                         <button
                             onClick={handleSubmit}
-                            disabled={submitting}
+                            disabled={submitting || isLoadingGitConfig || !isGlobalGitConfigValid}
                             className={`inline-flex items-center gap-2 py-3 px-7 text-sm font-bold rounded-xl text-white transition-all shadow-lg active:scale-[0.97] flex-shrink-0 ${allProvided
                                 ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-emerald-200/50'
                                 : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-200/50'
