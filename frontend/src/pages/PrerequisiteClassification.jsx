@@ -492,7 +492,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             });
             if (!updateRes.ok) {
                 const errData = await updateRes.json().catch(() => ({}));
-                throw new Error(errData?.detail || 'Failed to save global Git config.');
+                throw new Error(errData?.detail || 'Failed to save  Git config.');
             }
             setHasSavedGlobalGitToken(true);
             setGlobalGitToken('');

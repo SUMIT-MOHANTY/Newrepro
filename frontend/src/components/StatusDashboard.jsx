@@ -2574,7 +2574,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                 {hasGlobalGitConfigured ? (
                                     <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-6">
-                                        Global Git repository and PAT are already configured for this project. This agent will use those automatically.
+                                        Git repository and PAT are already configured for this project. This agent will use those automatically.
                                     </p>
                                 ) : (
                                     <>
