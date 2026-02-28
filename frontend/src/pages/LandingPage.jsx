@@ -148,7 +148,7 @@ const HeroInteractiveImage = () => {
 
                 {/* Floating Foreground Card - Document input */}
                 <div
-                    className="absolute -right-2 sm:-right-8 -bottom-4 sm:-bottom-8 w-56 sm:w-64 bg-app-bg-page/95 border border-app-border-light p-4 sm:p-5 rounded-2xl shadow-2xl"
+                    className="absolute -right-2 sm:-right-4 bottom-4 sm:bottom-8 w-56 sm:w-64 bg-app-bg-page/95 border border-app-border-light p-4 sm:p-5 rounded-2xl shadow-2xl"
                     style={{ transform: "translateZ(60px)" }}
                 >
                     <div className="flex items-center gap-3 border-b border-app-border-light pb-3 mb-3 shrink-0">
