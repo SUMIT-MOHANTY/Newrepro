@@ -125,6 +125,10 @@ function extractEntityId(item, key) {
 }
 
 function getTaskSprintLabel(task) {
+    // Prioritize sprint_name from API response
+    if (task?.sprint_name && task.sprint_name !== '') {
+        return task.sprint_name;
+    }
     const sprint = task?.sprint;
     if (sprint && typeof sprint === 'object') {
         if (sprint.name) return sprint.name;
