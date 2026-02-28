@@ -1651,6 +1651,41 @@ async def preview_status(
     return agent_service.get_preview_status(project_token)
 
 
+@app.post("/agents/preview/fix")
+async def fix_preview(
+    request: Optional[PreviewDeployRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
+):
+    """Trigger AI to fix failing preview deployment, commit, push, and restart preview."""
+    project_token = _normalize_project_token(project_token)
+
+    git_repo_url = request.git_repo_url if request else None
+    git_token = request.git_token if request else None
+
+    if not git_repo_url or not git_token:
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        if global_cred:
+            git_repo_url = git_repo_url or global_cred.git_repo_url
+            git_token = git_token or global_cred.git_token
+
+    if not git_repo_url or not git_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Git repo URL and token are required. Configure global Git credentials first."
+        )
+
+    result = await agent_service.repair_preview(
+        git_repo_url=git_repo_url,
+        git_token=git_token,
+        project_token=project_token,
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("error", "Fix failed"))
+    return result
+
+
 @app.post("/agents/preview/stop")
 async def stop_preview(
     current_user: models.User = Depends(auth.get_current_user),
