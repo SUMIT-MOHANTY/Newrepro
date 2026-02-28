@@ -936,7 +936,7 @@ const LandingPage = () => {
                                 onClick={openSignup}
                                 className="inline-flex justify-center items-center px-8 py-4 text-base font-bold text-white bg-app-primary rounded-xl hover:bg-app-primary-hover transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 cursor-pointer border-0"
                             >
-                                Start Analysis Free
+                                Start Analysis
                                 <ArrowRight className="ml-2 h-5 w-5" />
                             </button>
                             <Link
@@ -949,7 +949,7 @@ const LandingPage = () => {
                         <div className="flex flex-wrap justify-center lg:justify-start gap-4 pt-4 text-sm text-app-text-muted">
                             <div className="flex items-center gap-1">
                                 <CheckCircle className="h-4 w-4 text-app-status-success shrink-0" />
-                                <span>No credit card required</span>
+                                <span>Professional-grade analysis</span>
                             </div>
                             <div className="flex items-center gap-1">
                                 <CheckCircle className="h-4 w-4 text-app-status-success shrink-0" />

@@ -18,7 +18,7 @@ const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
 const DASHBOARD_ROLES = [
     { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
-    { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
+    { value: 'project', label: 'Project Dashboard'},
 ];
 
 function decodeJwtExpiry(token) {
@@ -2124,7 +2124,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     </div>
                                                     <div className="text-center">
                                                         <p className="text-gray-300 text-sm font-medium">Ready to preview your application</p>
-                                                        <p className="text-gray-500 text-xs mt-1">Deploys the <code className="px-1.5 py-0.5 bg-gray-800 rounded text-violet-300">agent/integration</code> branch in a Docker container</p>
+                                                        <p className="text-gray-500 text-xs mt-1">Deploys the <code className="px-1.5 py-0.5 bg-gray-800 rounded text-violet-300">agent/integration</code> branch</p>
                                                     </div>
                                                     <button
                                                         onClick={handleDeployPreview}
