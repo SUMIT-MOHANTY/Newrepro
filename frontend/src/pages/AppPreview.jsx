@@ -253,7 +253,7 @@ export default function AppPreview() {
                             <h2 className="text-2xl font-bold text-white">Preview Your Application</h2>
                             <p className="text-gray-400 text-sm mt-2 leading-relaxed">
                                 Deploy the <code className="px-1.5 py-0.5 bg-gray-800 rounded text-violet-300 text-xs">agent/integration</code> branch
-                                into a live Docker container and preview it right here.
+                                and preview it right here.
                             </p>
                         </div>
                         <button
