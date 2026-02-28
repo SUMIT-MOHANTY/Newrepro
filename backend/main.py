@@ -1611,7 +1611,7 @@ async def run_all_agents(
 
     idle_agents = [
         a for a in agent_service.get_all_agents(project_token)
-        if a["status"] == "idle" and a["id"] != "agent_03"
+        if a["status"] == "idle" and a["id"] not in ("agent_03", "agent_04")
     ]
     if not idle_agents:
         raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
@@ -1670,12 +1670,25 @@ class UpdateAgentRequest(BaseModel):
     git_token: Optional[str] = None
 
 
+def _build_external_agent_username(agent_id: Optional[str], fallback_name: Optional[str] = None) -> str:
+    """Map local agent id to upstream username format, e.g. agent_04 -> agent4."""
+    source_id = str(agent_id or "").strip().lower()
+    digits = "".join(re.findall(r"\d", source_id))
+    if digits:
+        return f"agent{int(digits)}"
+
+    fallback = str(fallback_name or source_id or "agent").strip().lower()
+    normalized = re.sub(r"[^a-z0-9_]", "", fallback)
+    return normalized or "agent"
+
+
 @app.post("/agents/add")
 async def add_agent(
     request: Optional[AddAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Dynamically add a new agent."""
     name = request.name if request else None
@@ -1707,7 +1720,37 @@ async def add_agent(
             git_token=git_token,
             project_token=project_token,
         )
-    return {"agent": agent}
+    external_agent = None
+    external_error = None
+    external_username = _build_external_agent_username(agent.get("id"), agent.get("name"))
+    try:
+        external_agent = await task_service.create_agent(
+            {"username": external_username},
+            task_token=x_task_token,
+        )
+    except TaskServiceError as e:
+        external_error = str(e)
+        logger.warning(
+            "Failed to create upstream agent for %s (username=%s): %s",
+            agent.get("id"),
+            external_username,
+            external_error,
+        )
+    except Exception as e:
+        external_error = str(e)
+        logger.warning(
+            "Unexpected error while creating upstream agent for %s (username=%s): %s",
+            agent.get("id"),
+            external_username,
+            external_error,
+        )
+
+    response = {"agent": agent, "external_username": external_username}
+    if external_agent is not None:
+        response["external_agent"] = external_agent
+    if external_error:
+        response["external_agent_warning"] = external_error
+    return response
 
 
 @app.patch("/agents/{agent_id}")
@@ -1953,6 +1996,19 @@ class MilestoneCreateRequest(BaseModel):
     deadline: str
     start_date: str
 
+class SprintStatusUpdateRequest(BaseModel):
+    sprint_id: int
+    status: str
+    is_completed: bool
+
+class MilestoneStatusUpdateRequest(BaseModel):
+    milestone_id: int
+    is_completed: bool
+
+class ProjectStatusUpdateRequest(BaseModel):
+    deadline: str
+    status: str
+
 class TaskMessageRequest(BaseModel):
     task_id: int
     message: str
@@ -2018,6 +2074,21 @@ async def create_agent_sprint(
         raise HTTPException(status_code=500, detail=f"Failed to create sprint: {e}")
 
 
+@app.put("/api/agent/sprints/")
+async def update_agent_sprint_status(
+    payload: SprintStatusUpdateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Update sprint status/is_completed in the external task management API."""
+    try:
+        return await task_service.update_sprint_status(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to update sprint status")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update sprint status: {e}")
+
+
 @app.get("/api/agent/milestones/")
 async def get_agent_milestones(
     current_user: models.User = Depends(auth.get_current_user),
@@ -2045,6 +2116,21 @@ async def create_agent_milestone(
         _raise_task_service_http_exception(e, "Failed to create milestone")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create milestone: {e}")
+
+
+@app.put("/api/agent/milestones/")
+async def update_agent_milestone_status(
+    payload: MilestoneStatusUpdateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Update milestone completion state in the external task management API."""
+    try:
+        return await task_service.update_milestone_status(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to update milestone status")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update milestone status: {e}")
 
 
 @app.post("/api/agent/messages/")
@@ -2146,6 +2232,20 @@ async def get_agent_project_info(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {repr(e)}")
+
+@app.put("/api/agent/project/update/")
+async def update_agent_project_status(
+    payload: ProjectStatusUpdateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Update project deadline/status in the external task management API."""
+    try:
+        return await task_service.update_project_status(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to update project status")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update project status: {e}")
 
 @app.get("/api/agent/dashboard/")
 async def get_agent_dashboard(

@@ -192,6 +192,10 @@ class TaskManagementService:
         """Create a new project using the external task management API."""
         return await self._make_request("POST", "/api/agent/projects/", task_token=task_token, json=project_data)
 
+    async def create_agent(self, agent_data: dict, task_token: Optional[str] = None) -> dict:
+        """Create a new agent in external task management API."""
+        return await self._make_request("POST", "/api/agent/create-agent/", task_token=task_token, json=agent_data)
+
     async def create_task(self, task_data: dict, task_token: Optional[str] = None) -> dict:
         """Create a new task in external task management API."""
         return await self._make_request("POST", "/api/agent/tasks/", task_token=task_token, json=task_data)
@@ -204,6 +208,10 @@ class TaskManagementService:
         """Create sprint in external task management API."""
         return await self._make_request("POST", "/api/agent/sprints/", task_token=task_token, json=sprint_data)
 
+    async def update_sprint_status(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Update sprint status/is_completed in external task management API."""
+        return await self._make_request("PUT", "/api/agent/sprints/", task_token=task_token, json=payload)
+
     async def get_milestones(self, task_token: Optional[str] = None) -> dict:
         """Fetch milestones from external task management API."""
         return await self._make_request("GET", "/api/agent/milestones/", task_token=task_token)
@@ -211,6 +219,10 @@ class TaskManagementService:
     async def create_milestone(self, milestone_data: dict, task_token: Optional[str] = None) -> dict:
         """Create milestone in external task management API."""
         return await self._make_request("POST", "/api/agent/milestones/", task_token=task_token, json=milestone_data)
+
+    async def update_milestone_status(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Update milestone completion state in external task management API."""
+        return await self._make_request("PUT", "/api/agent/milestones/", task_token=task_token, json=payload)
 
     async def update_task(self, task_id: int, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update a task in external task management API."""
@@ -231,6 +243,10 @@ class TaskManagementService:
     async def get_project_info(self, task_token: Optional[str] = None) -> dict:
         """Fetch project info (deadline, wallet, team) from the external task management API."""
         return await self._make_request("GET", "/api/agent/project-info/", task_token=task_token)
+
+    async def update_project_status(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Update project deadline/status in external task management API."""
+        return await self._make_request("PUT", "/api/agent/project/update/", task_token=task_token, json=payload)
 
     async def add_checklist_to_task(self, task_id: Any, checklist_items: list, task_token: Optional[str] = None) -> dict:
         """Add checklist items to a task via the external task management API."""

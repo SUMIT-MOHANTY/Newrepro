@@ -99,11 +99,16 @@ _AGENT_TYPES = ["validator", "risk", "estimator"]
 _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimation"]
 
 GIT_MANAGER_AGENT_ID = "agent_03"
+MASTER_AGENT_ID = "agent_04"
 GIT_INTEGRATION_BRANCH = "agent/integration"
 DEFAULT_PROJECT_TOKEN = "__default__"
 AGENT_SESSION_NOTES_DIR = "agent_handoff"
 BOOTSTRAP_WAIT_TIMEOUT_SECONDS = 1800
 BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS = 20
+
+
+def _is_system_agent_id(agent_id: Optional[str]) -> bool:
+    return agent_id in {GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID}
 
 _project_states: Dict[str, Dict[str, Any]] = {}
 
@@ -143,8 +148,17 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "repo_bootstrap": _new_repo_bootstrap_state(),
             "repo_bootstrap_lock": asyncio.Lock(),
             "repo_bootstrap_event": asyncio.Event(),
+            "completed_milestones_synced": set(),
+            "completed_sprints_synced": set(),
+            "project_status_synced": None,
+            "status_sync_lock": asyncio.Lock(),
         }
         _project_states[key] = state
+    else:
+        state.setdefault("completed_milestones_synced", set())
+        state.setdefault("completed_sprints_synced", set())
+        state.setdefault("project_status_synced", None)
+        state.setdefault("status_sync_lock", asyncio.Lock())
     return state
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
@@ -162,7 +176,7 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
     atype = _AGENT_TYPES[idx % len(_AGENT_TYPES)]
     aname = _AGENT_NAMES[idx % len(_AGENT_NAMES)]
-    return {
+    agent = {
         "id": agent_id,
         "name": aname,
         "type": atype,
@@ -177,12 +191,32 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
         "git_repo_url": None,
         "git_token": None,
     }
+    if agent_id == GIT_MANAGER_AGENT_ID:
+        agent["name"] = "Git Manager"
+        agent["progress"] = 100
+        agent["progress_message"] = "Git manager idle"
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": "Git manager initialized and waiting for merge events."
+        })
+    elif agent_id == MASTER_AGENT_ID:
+        agent["name"] = "Master Agent"
+        agent["progress"] = 100
+        agent["progress_message"] = "Master agent idle"
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": "Master agent initialized and waiting for orchestration/status events."
+        })
+    return agent
 
 def get_default_agents() -> List[Dict[str, Any]]:
     return [
         _make_agent("agent_01", 0),
         _make_agent("agent_02", 1),
         _make_agent("agent_03", 2),
+        _make_agent("agent_04", 3),
     ]
 
 def initialize_agents_from_records(records: List[Any], project_token: Optional[str] = None) -> None:
@@ -193,6 +227,9 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
     state["claimed_task_ids"].clear()
     state["task_progress_state"].clear()
     state["timer_log_state"].clear()
+    state["completed_milestones_synced"].clear()
+    state["completed_sprints_synced"].clear()
+    state["project_status_synced"] = None
     state["repo_bootstrap"] = _new_repo_bootstrap_state()
     state["repo_bootstrap_event"] = asyncio.Event()
     agent_states = state["agent_states"]
@@ -212,9 +249,22 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
 
 def ensure_project_initialized(project_token: Optional[str], records: List[Any]) -> None:
     state = _ensure_project_state(project_token)
-    if state["agent_states"]:
+    if not state["agent_states"]:
+        initialize_agents_from_records(records, project_token=project_token)
         return
-    initialize_agents_from_records(records, project_token=project_token)
+    agent_states = state["agent_states"]
+    for idx, rec in enumerate(records):
+        agent_id = getattr(rec, "id", None) or (rec.get("id") if isinstance(rec, dict) else None)
+        if not agent_id or agent_id in agent_states:
+            continue
+        name = getattr(rec, "name", None) or (rec.get("name") if isinstance(rec, dict) else None)
+        atype = getattr(rec, "type", None) or (rec.get("type") if isinstance(rec, dict) else None)
+        agent = _make_agent(agent_id, idx)
+        if name:
+            agent["name"] = name
+        if atype:
+            agent["type"] = atype
+        agent_states[agent_id] = agent
 
 def get_completed_tasks(project_token: Optional[str]) -> List[Dict[str, Any]]:
     return list(_ensure_project_state(project_token)["completed_tasks"])
@@ -1426,11 +1476,11 @@ def _choose_bootstrap_agent_id(project_token: Optional[str], fallback_agent_id: 
     project_agents = _get_agent_states(project_token)
     running = sorted(
         aid for aid, data in project_agents.items()
-        if aid != GIT_MANAGER_AGENT_ID and data.get("status") == "running"
+        if not _is_system_agent_id(aid) and data.get("status") == "running"
     )
     if running:
         return running[0]
-    available = sorted(aid for aid in project_agents.keys() if aid != GIT_MANAGER_AGENT_ID)
+    available = sorted(aid for aid in project_agents.keys() if not _is_system_agent_id(aid))
     if available:
         return available[0]
     return fallback_agent_id
@@ -1685,6 +1735,18 @@ def _log_git_agent(message: str, level: str = "info", project_token: Optional[st
     if not git_agent:
         return
     git_agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": level,
+        "message": message
+    })
+
+
+def _log_master_agent(message: str, level: str = "info", project_token: Optional[str] = None) -> None:
+    project_agents = _get_agent_states(project_token)
+    master_agent = project_agents.get(MASTER_AGENT_ID)
+    if not master_agent:
+        return
+    master_agent["output_log"].append({
         "time": datetime.utcnow().isoformat(),
         "type": level,
         "message": message
@@ -3386,6 +3448,238 @@ async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Opti
 
 # ── Main Agent Execution ────────────────────────────────────────────────────
 
+def _to_optional_int(value: Any) -> Optional[int]:
+    try:
+        if value in (None, ""):
+            return None
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _extract_task_parent_id(task: Dict[str, Any], key: str) -> Optional[int]:
+    if not isinstance(task, dict):
+        return None
+    raw = task.get(f"{key}_id")
+    if raw in (None, ""):
+        raw = task.get(key)
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get(f"{key}_id")
+    return _to_optional_int(raw)
+
+
+def _normalize_status_text(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    return " ".join(text.split())
+
+
+def _is_completed_task_status(value: Any) -> bool:
+    status_text = _normalize_status_text(value)
+    completed_statuses = {
+        "completed",
+        "complete",
+        "done",
+        "closed",
+        "finished",
+        "resolved",
+        "completed with errors",
+    }
+    return status_text in completed_statuses
+
+
+def _extract_date_yyyy_mm_dd(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if len(text) < 10:
+        return None
+    candidate = text[:10]
+    try:
+        datetime.strptime(candidate, "%Y-%m-%d")
+        return candidate
+    except Exception:
+        return None
+
+
+async def _resolve_project_deadline(project_token: Optional[str] = None, task_token: Optional[str] = None) -> str:
+    from task_service import task_service
+
+    resolved_project = project_token
+    effective_token = task_token or get_project_task_token(resolved_project)
+    deadline = None
+
+    try:
+        project_info = await task_service.get_project_info(task_token=effective_token)
+        project_data = project_info.get("project", {}) if isinstance(project_info, dict) else {}
+        for key in ("deadline", "project_deadline", "end_date"):
+            deadline = _extract_date_yyyy_mm_dd(project_data.get(key))
+            if deadline:
+                break
+    except Exception as e:
+        print(f"[agent_service] Failed to fetch project info for status update: {e}")
+
+    if deadline:
+        return deadline
+
+    try:
+        tasks = await _fetch_external_tasks(resolved_project)
+        deadlines = []
+        for task in tasks:
+            d = _extract_date_yyyy_mm_dd(task.get("deadline"))
+            if d:
+                deadlines.append(d)
+        if deadlines:
+            return max(deadlines)
+    except Exception:
+        pass
+
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+async def _update_project_status(
+    status_value: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    force: bool = False,
+) -> bool:
+    from task_service import task_service
+
+    resolved_project = project_token
+    state = _ensure_project_state(resolved_project)
+    normalized_status = (status_value or "").strip()
+    if not normalized_status:
+        return False
+
+    if not force and state.get("project_status_synced") == normalized_status:
+        return True
+
+    deadline = await _resolve_project_deadline(resolved_project, task_token=task_token)
+    effective_token = task_token or get_project_task_token(resolved_project)
+
+    max_retries = 3
+    base_delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            await task_service.update_project_status(
+                {
+                    "deadline": deadline,
+                    "status": normalized_status,
+                },
+                task_token=effective_token,
+            )
+            state["project_status_synced"] = normalized_status
+            _log_master_agent(
+                f"Master sync: project status -> {normalized_status}",
+                project_token=resolved_project,
+            )
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(
+                    f"[agent_service] Failed to update project status to '{normalized_status}' "
+                    f"(attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                print(
+                    f"[agent_service] Failed to update project status to '{normalized_status}' "
+                    f"after {max_retries} attempts: {e}"
+                )
+                _log_master_agent(
+                    f"Master sync failed: project status -> {normalized_status} ({e})",
+                    "error",
+                    project_token=resolved_project,
+                )
+                return False
+    return False
+
+
+async def _sync_rollup_status_for_completed_task(
+    task: Dict[str, Any],
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, bool]:
+    from task_service import task_service
+
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    state = _ensure_project_state(resolved_project)
+    effective_token = task_token or get_project_task_token(resolved_project)
+    result = {
+        "milestone_completed": False,
+        "sprint_completed": False,
+        "project_completed": False,
+    }
+
+    sprint_id = _extract_task_parent_id(task, "sprint")
+    milestone_id = _extract_task_parent_id(task, "milestone")
+
+    async with state["status_sync_lock"]:
+        all_tasks = await _fetch_external_tasks(resolved_project)
+        if not all_tasks:
+            return result
+
+        if milestone_id is not None and milestone_id not in state["completed_milestones_synced"]:
+            milestone_tasks = [
+                t for t in all_tasks
+                if _extract_task_parent_id(t, "milestone") == milestone_id
+            ]
+            if milestone_tasks and all(_is_completed_task_status(t.get("status")) for t in milestone_tasks):
+                try:
+                    await task_service.update_milestone_status(
+                        {"milestone_id": milestone_id, "is_completed": True},
+                        task_token=effective_token,
+                    )
+                    state["completed_milestones_synced"].add(milestone_id)
+                    result["milestone_completed"] = True
+                    _log_master_agent(
+                        f"Master sync: milestone {milestone_id} marked completed",
+                        project_token=resolved_project,
+                    )
+                except Exception as e:
+                    print(f"[agent_service] Failed to mark milestone {milestone_id} completed: {e}")
+                    _log_master_agent(
+                        f"Master sync failed: milestone {milestone_id} ({e})",
+                        "error",
+                        project_token=resolved_project,
+                    )
+
+        if sprint_id is not None and sprint_id not in state["completed_sprints_synced"]:
+            sprint_tasks = [
+                t for t in all_tasks
+                if _extract_task_parent_id(t, "sprint") == sprint_id
+            ]
+            if sprint_tasks and all(_is_completed_task_status(t.get("status")) for t in sprint_tasks):
+                try:
+                    await task_service.update_sprint_status(
+                        {"sprint_id": sprint_id, "status": "Completed", "is_completed": True},
+                        task_token=effective_token,
+                    )
+                    state["completed_sprints_synced"].add(sprint_id)
+                    result["sprint_completed"] = True
+                    _log_master_agent(
+                        f"Master sync: sprint {sprint_id} marked completed",
+                        project_token=resolved_project,
+                    )
+                except Exception as e:
+                    print(f"[agent_service] Failed to mark sprint {sprint_id} completed: {e}")
+                    _log_master_agent(
+                        f"Master sync failed: sprint {sprint_id} ({e})",
+                        "error",
+                        project_token=resolved_project,
+                    )
+
+        if all(_is_completed_task_status(t.get("status")) for t in all_tasks):
+            result["project_completed"] = await _update_project_status(
+                "Completed",
+                project_token=resolved_project,
+                task_token=effective_token,
+                force=True,
+            )
+
+    return result
+
+
 async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                           task_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pick the next uncompleted, unclaimed task from the external API."""
@@ -3484,6 +3778,16 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     # Set agent to running
     agent["status"] = "running"
     agent["output_log"] = []
+    project_status_ok = await _update_project_status(
+        "On Going",
+        project_token=project_token,
+        task_token=task_token,
+    )
+    agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": "info",
+        "message": f"API: project status On Going {'ok' if project_status_ok else 'failed'}",
+    })
     total_start = time.time()
     tasks_completed = 0
     all_results = []
@@ -4602,6 +4906,30 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         f"complete {'ok' if complete_ok else 'failed'}"
                     )
                 })
+                if complete_ok:
+                    rollup_result = await _sync_rollup_status_for_completed_task(
+                        task,
+                        project_token=project_token,
+                        task_token=task_token,
+                    )
+                    if rollup_result.get("milestone_completed"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "API: milestone marked as completed",
+                        })
+                    if rollup_result.get("sprint_completed"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "API: sprint marked as completed",
+                        })
+                    if rollup_result.get("project_completed"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "API: project status updated to Completed",
+                        })
             else:
                 failure_message = f"Failed (exit={result['exit_code']})."
                 msg_ok = await _post_task_message(task, failure_message, task_token=task_token)
@@ -4893,7 +5221,10 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
     claimed_task_ids = state["claimed_task_ids"]
 
     # 1. Synchronously claim all idle agents immediately so UI updates instantly
-    idle_agents = [a for a in project_agents.values() if a["status"] == "idle" and a["id"] != "agent_03"]
+    idle_agents = [
+        a for a in project_agents.values()
+        if a["status"] == "idle" and not _is_system_agent_id(a["id"])
+    ]
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
 

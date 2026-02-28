@@ -429,7 +429,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
-        if (agent.id === 'agent_03') return;
+        if (agent.id === 'agent_03' || agent.id === 'agent_04') return;
         const needsConfig = !agent.git_repo_url || !agent.has_git_token;
         if (needsConfig) {
             setGitRepoUrl(agent.git_repo_url || '');
@@ -539,7 +539,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [runningAll, setRunningAll] = useState(false);
 
     const handleRunAll = async () => {
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
         if (idleAgents.length === 0) return;
 
         const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
@@ -559,7 +559,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+            ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
+            : a));
 
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -581,7 +583,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const submitMultiAgentConfig = async () => {
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+            ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
+            : a));
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
@@ -607,12 +611,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const submitAddAgent = async () => {
         setShowAddAgentModal(false);
         try {
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_ADD), {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
+                headers,
                 body: JSON.stringify(newAgentConfig),
             });
             setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
@@ -663,12 +669,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             stats: ['avg_time'],
             statLabels: { avg_time: 'Duration' },
         },
+        agent_04: {
+            icon: <Bot className="w-5 h-5 text-white" />,
+            gradient: 'from-fuchsia-500 to-rose-500',
+            shadow: 'shadow-fuchsia-200',
+            accent: 'from-fuchsia-500 to-rose-500',
+            color: 'fuchsia',
+            stats: ['avg_time'],
+            statLabels: { avg_time: 'Duration' },
+        },
     };
 
 
     // ── Render Agent Card ────────────────────────────────────────────
     const renderAgentCard = (agent) => {
         const isGitManager = agent.id === 'agent_03';
+        const isMasterAgent = agent.id === 'agent_04';
+        const isSystemAgent = isGitManager || isMasterAgent;
         const cfg = agentConfig[agent.id] || agentConfig.agent_01;
         const Icon = cfg.icon;
         const isRunning = agent.status === 'running';
@@ -690,9 +707,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <div>
                             <div className="flex items-center gap-2">
                                 <h4 className="text-sm font-bold text-app-text-main">
-                                    {isGitManager ? 'Git Manager' : agent.name}
+                                    {isGitManager ? 'Git Manager' : isMasterAgent ? 'Master Agent' : agent.name}
                                 </h4>
-                                {!isGitManager && (
+                                {!isSystemAgent && (
                                     <button
                                         type="button"
                                         onClick={() => startEditingAgentName(agent)}
@@ -704,7 +721,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 )}
                             </div>
                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
-                            {!isGitManager && (
+                            {!isSystemAgent && (
                                 <p className="text-[10px] text-app-text-light">
                                     Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
                                 </p>
@@ -770,7 +787,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                 {/* Actions */}
                 <div className="flex gap-2 mt-auto">
-                    {!isGitManager && (
+                    {!isSystemAgent && (
                         (isIdle || isCompleted || isError) ? (
                             <button
                                 onClick={() => handleRunAgentClick(agent)}
@@ -795,7 +812,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     >
                         <Terminal className="w-3 h-3" /> Log
                     </button>
-                    {!isGitManager && (isCompleted || isError) && (
+                    {!isSystemAgent && (isCompleted || isError) && (
                         <button
                             onClick={() => handleResetAgent(agent.id)}
                             className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-app-text-label bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-colors"
@@ -1768,8 +1785,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             </span>
                                             <button
                                                 onClick={handleRunAll}
-                                                disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
-                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
+                                                disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0}
+                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0
                                                     ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
                                                     : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
                                                     }`}
@@ -1852,7 +1869,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <details className="group" open>
                                         <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
                                             <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
-                                            View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files created )
+                                            View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files captured)
                                         </summary>
                                         <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-96 overflow-y-auto whitespace-pre-wrap">
                                             {result.generated_code}
