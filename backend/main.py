@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -10,7 +11,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import auth
 import models
@@ -1836,7 +1837,17 @@ from task_service import (
     TaskServiceError,
     TaskServiceTimeoutError,
     TaskServiceConnectionError,
+    TaskServiceHTTPError,
 )
+
+def _raise_task_service_http_exception(e: TaskServiceError, fallback_message: str) -> None:
+    detail = str(e) or fallback_message
+    if isinstance(e, TaskServiceTimeoutError):
+        raise HTTPException(status_code=504, detail=detail)
+    if isinstance(e, TaskServiceConnectionError):
+        raise HTTPException(status_code=502, detail=detail)
+    status_code = e.status_code if 400 <= e.status_code < 500 else 502
+    raise HTTPException(status_code=status_code, detail=detail)
 
 @app.get("/api/agents/")
 async def get_external_agents(
@@ -1921,12 +1932,26 @@ async def create_agent_project(
 class AgentTaskCreate(BaseModel):
     taskName: str
     description: str
-    assignees: List[int]
+    assignees: List[int] = Field(default_factory=list)
     wallet: int
     deadline: str
     startdate: str
     task_type: str
     priority: str
+    sprint: Optional[int] = None
+    milestone: Optional[int] = None
+
+class SprintCreateRequest(BaseModel):
+    name: str
+    summary: Optional[str] = ""
+    start_date: str
+    deadline: str
+
+class MilestoneCreateRequest(BaseModel):
+    name: str
+    sprint_id: int
+    deadline: str
+    start_date: str
 
 class TaskMessageRequest(BaseModel):
     task_id: int
@@ -1958,8 +1983,68 @@ async def create_external_agent_task(
     try:
         result = await task_service.create_task(task.dict(), task_token=x_task_token)
         return result
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to create task")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
+
+
+@app.get("/api/agent/sprints/")
+async def get_agent_sprints(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Fetch sprints from the external task management API."""
+    try:
+        return await task_service.get_sprints(task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch sprints")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch sprints: {e}")
+
+
+@app.post("/api/agent/sprints/")
+async def create_agent_sprint(
+    payload: SprintCreateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Create sprint in the external task management API."""
+    try:
+        return await task_service.create_sprint(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to create sprint")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create sprint: {e}")
+
+
+@app.get("/api/agent/milestones/")
+async def get_agent_milestones(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Fetch milestones from the external task management API."""
+    try:
+        return await task_service.get_milestones(task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch milestones")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch milestones: {e}")
+
+
+@app.post("/api/agent/milestones/")
+async def create_agent_milestone(
+    payload: MilestoneCreateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Create milestone in the external task management API."""
+    try:
+        return await task_service.create_milestone(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to create milestone")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create milestone: {e}")
 
 
 @app.post("/api/agent/messages/")
@@ -2077,6 +2162,9 @@ async def get_agent_dashboard(
 class AutoGenerateRequest(BaseModel):
     project_token: str
     prerequisites: Optional[List[Dict[str, Any]]] = None
+    sprint_id: Optional[int] = None
+    milestone_id: Optional[int] = None
+    auto_create_plan: Optional[bool] = False
 
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
@@ -2089,11 +2177,361 @@ async def auto_generate_project_tasks(
     Auto-generate tasks based on a BRD analysis, 
     using real project deadline and wallet from the external API.
     """
+    def _extract_created_id(payload: Any, entity_key: str) -> Optional[int]:
+        """Extract an integer id from common upstream response shapes."""
+        if not isinstance(payload, dict):
+            return None
+
+        candidates: List[Any] = [
+            payload.get("id"),
+            payload.get(f"{entity_key}_id"),
+        ]
+
+        nested = payload.get(entity_key)
+        if isinstance(nested, dict):
+            candidates.extend([
+                nested.get("id"),
+                nested.get(f"{entity_key}_id"),
+            ])
+
+        for value in candidates:
+            try:
+                if value is None or value == "":
+                    continue
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _parse_date_value(value: Any) -> Optional[datetime.date]:
+        """Parse date-like values from upstream payloads (YYYY-MM-DD or datetime string)."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        # Common case: "YYYY-MM-DD ..." or full ISO datetime.
+        if len(text) >= 10:
+            try:
+                return datetime.strptime(text[:10], "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+
+    def _format_date(date_obj: datetime.date) -> str:
+        return date_obj.strftime("%Y-%m-%d")
+
+    def _clamp_date(
+        value: Any,
+        *,
+        fallback: datetime.date,
+        min_date: datetime.date,
+        max_date: datetime.date,
+    ) -> datetime.date:
+        parsed = _parse_date_value(value) or fallback
+        if parsed < min_date:
+            parsed = min_date
+        if parsed > max_date:
+            parsed = max_date
+        return parsed
+
+    def _ensure_strict_window(
+        start_value: Any,
+        end_value: Any,
+        *,
+        fallback_start: datetime.date,
+        fallback_end: datetime.date,
+        min_date: datetime.date,
+        max_date: datetime.date,
+        label: str,
+    ):
+        """
+        Ensure strict ordering start_date < deadline within [min_date, max_date].
+        Raises a 400 when the allowed window is too narrow to satisfy upstream rules.
+        """
+        start_date = _clamp_date(
+            start_value,
+            fallback=fallback_start,
+            min_date=min_date,
+            max_date=max_date,
+        )
+        end_date = _clamp_date(
+            end_value,
+            fallback=fallback_end,
+            min_date=min_date,
+            max_date=max_date,
+        )
+
+        if end_date > start_date:
+            return start_date, end_date
+
+        # First try extending deadline by 1 day if possible.
+        next_day = start_date + timedelta(days=1)
+        if next_day <= max_date:
+            return start_date, next_day
+
+        # Otherwise try moving start one day back if possible.
+        prev_day = end_date - timedelta(days=1)
+        if prev_day >= min_date and end_date > prev_day:
+            return prev_day, end_date
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid {label} date window: start_date must be before deadline. "
+                f"Allowed range is {_format_date(min_date)} to {_format_date(max_date)}."
+            ),
+        )
+
+    def _ensure_non_strict_window(
+        start_value: Any,
+        end_value: Any,
+        *,
+        fallback_start: datetime.date,
+        fallback_end: datetime.date,
+        min_date: datetime.date,
+        max_date: datetime.date,
+    ):
+        """
+        Ensure ordering start_date <= deadline within [min_date, max_date].
+        Useful where upstream allows same-day start/deadline.
+        """
+        start_date = _clamp_date(
+            start_value,
+            fallback=fallback_start,
+            min_date=min_date,
+            max_date=max_date,
+        )
+        end_date = _clamp_date(
+            end_value,
+            fallback=fallback_end,
+            min_date=min_date,
+            max_date=max_date,
+        )
+        if end_date < start_date:
+            end_date = start_date
+        return start_date, end_date
+
+    def _extract_sprint_deadline_from_error(err_text: str) -> Optional[datetime.date]:
+        if not err_text:
+            return None
+        match = re.search(r"deadline\s*\((\d{4}-\d{2}-\d{2})\)", err_text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        return _parse_date_value(match.group(1))
+
+    async def _resolve_sprint_bounds(
+        sprint_id: int,
+        fallback_start: datetime.date,
+        fallback_deadline: datetime.date,
+        created_payload: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Resolve the authoritative sprint start/deadline.
+        Prefer upstream sprint list (source of truth), with safe fallback.
+        """
+        start_candidate = None
+        deadline_candidate = None
+
+        if isinstance(created_payload, dict):
+            start_candidate = _parse_date_value(created_payload.get("start_date"))
+            deadline_candidate = _parse_date_value(created_payload.get("deadline"))
+
+        try:
+            sprints_payload = await task_service.get_sprints(task_token=x_task_token)
+            sprint_items = []
+            if isinstance(sprints_payload, list):
+                sprint_items = sprints_payload
+            elif isinstance(sprints_payload, dict):
+                if isinstance(sprints_payload.get("sprints"), list):
+                    sprint_items = sprints_payload.get("sprints")
+                elif isinstance(sprints_payload.get("results"), list):
+                    sprint_items = sprints_payload.get("results")
+
+            for sprint_item in sprint_items:
+                sprint_item_id = sprint_item.get("id") or sprint_item.get("sprint_id")
+                if sprint_item_id is None:
+                    continue
+                if str(sprint_item_id) != str(sprint_id):
+                    continue
+                start_candidate = _parse_date_value(
+                    sprint_item.get("start_date") or sprint_item.get("startdate")
+                ) or start_candidate
+                deadline_candidate = _parse_date_value(
+                    sprint_item.get("deadline") or sprint_item.get("end_date")
+                ) or deadline_candidate
+                break
+        except Exception as sprint_read_err:
+            logger.warning(
+                f"Could not fetch authoritative sprint dates for sprint {sprint_id}: {sprint_read_err}"
+            )
+
+        resolved_start = _clamp_date(
+            start_candidate,
+            fallback=fallback_start,
+            min_date=project_start_obj,
+            max_date=project_deadline_obj,
+        )
+        resolved_deadline = _clamp_date(
+            deadline_candidate,
+            fallback=fallback_deadline,
+            min_date=resolved_start,
+            max_date=project_deadline_obj,
+        )
+        return _ensure_strict_window(
+            resolved_start,
+            resolved_deadline,
+            fallback_start=fallback_start,
+            fallback_end=fallback_deadline,
+            min_date=project_start_obj,
+            max_date=project_deadline_obj,
+            label="sprint",
+        )
+
+    async def _create_milestone_with_retry(
+        milestone_payload: Dict[str, Any],
+        *,
+        sprint_id: int,
+        sprint_start_obj: datetime.date,
+        sprint_deadline_obj: datetime.date,
+    ):
+        try:
+            return await task_service.create_milestone(milestone_payload, task_token=x_task_token)
+        except TaskServiceHTTPError as milestone_err:
+            # Upstream sometimes returns a normalized sprint deadline in error text.
+            # Retry once using that exact deadline to avoid timezone/date-boundary drift.
+            sprint_deadline_from_error = _extract_sprint_deadline_from_error(str(milestone_err))
+            if sprint_deadline_from_error is None:
+                raise
+
+            effective_max_deadline = min(sprint_deadline_obj, sprint_deadline_from_error)
+            if effective_max_deadline < sprint_start_obj:
+                effective_max_deadline = sprint_start_obj
+
+            corrected_start, corrected_deadline = _ensure_non_strict_window(
+                milestone_payload.get("start_date"),
+                sprint_deadline_from_error,
+                fallback_start=sprint_start_obj,
+                fallback_end=effective_max_deadline,
+                min_date=sprint_start_obj,
+                max_date=effective_max_deadline,
+            )
+            retry_payload = {
+                **milestone_payload,
+                "start_date": _format_date(corrected_start),
+                "deadline": _format_date(corrected_deadline),
+            }
+            logger.warning(
+                "Retrying milestone create with corrected deadline from upstream error. "
+                f"sprint_id={sprint_id}, retry_deadline={retry_payload['deadline']}"
+            )
+            return await task_service.create_milestone(retry_payload, task_token=x_task_token)
+
+    def _build_sprint_windows(
+        start_date_obj: datetime.date,
+        end_date_obj: datetime.date,
+        *,
+        target_sprint_days: int = 14,
+        max_sprints: int = 8,
+    ):
+        """
+        Build contiguous sprint windows across the project duration.
+        Requires at least a 2-day window due to upstream strict sprint rule.
+        """
+        if end_date_obj <= start_date_obj:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Project date window is too small for sprint creation. "
+                    "Project deadline must be at least one day after project start date."
+                ),
+            )
+
+        windows: List[Dict[str, datetime.date]] = []
+        cursor = start_date_obj
+
+        while cursor < end_date_obj and len(windows) < max_sprints:
+            window_end = min(cursor + timedelta(days=max(2, target_sprint_days) - 1), end_date_obj)
+            if window_end <= cursor:
+                break
+            windows.append({
+                "start_date": cursor,
+                "deadline": window_end,
+            })
+            cursor = window_end + timedelta(days=1)
+
+        if not windows:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not derive sprint windows from project dates.",
+            )
+
+        # Ensure full project tail is covered even when max_sprints cap is hit.
+        if windows[-1]["deadline"] < end_date_obj:
+            windows[-1]["deadline"] = end_date_obj
+
+        # Upstream requires start_date < deadline for sprints.
+        for idx, win in enumerate(windows):
+            if win["deadline"] <= win["start_date"]:
+                if idx == 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Project date window is too small for strict sprint dates. "
+                            "Need at least 2 days."
+                        ),
+                    )
+                windows[idx - 1]["deadline"] = max(windows[idx - 1]["deadline"], win["deadline"])
+                win["start_date"] = win["deadline"]
+
+        return [w for w in windows if w["deadline"] > w["start_date"]]
+
+    def _pick_plan_item_for_task(
+        task_start_obj: datetime.date,
+        task_deadline_obj: datetime.date,
+        plan_items: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not plan_items:
+            return None
+
+        for item in plan_items:
+            if item["start_date"] <= task_start_obj <= item["deadline"]:
+                return item
+        for item in plan_items:
+            if item["start_date"] <= task_deadline_obj <= item["deadline"]:
+                return item
+
+        # Fallback: nearest sprint by deadline distance.
+        return min(plan_items, key=lambda item: abs((item["deadline"] - task_deadline_obj).days))
+
     try:
         # 1. Fetch initial project info from external API
         project_info = await task_service.get_project_info(task_token=x_task_token)
         project_data = project_info.get("project", {})
-        project_deadline = project_data.get("deadline", "2026-12-31")
+        raw_project_start = (
+            project_data.get("start_date")
+            or project_data.get("startdate")
+            or project_data.get("project_start_date")
+        )
+        raw_project_deadline = (
+            project_data.get("deadline")
+            or project_data.get("project_deadline")
+        )
+        project_start_obj = _parse_date_value(raw_project_start) or datetime.utcnow().date()
+        project_deadline_obj = _parse_date_value(raw_project_deadline) or (project_start_obj + timedelta(days=30))
+        if project_deadline_obj < project_start_obj:
+            project_deadline_obj = project_start_obj
+
+        project_start_date = _format_date(project_start_obj)
+        project_deadline = _format_date(project_deadline_obj)
         project_wallet = project_data.get("project_wallet", 100)
 
         # 2. Fetch the governance response and BRD analysis from DB
@@ -2244,6 +2682,17 @@ async def auto_generate_project_tasks(
         project_wallet_int = max(project_wallet_int, 0)
 
         remaining_wallet = max(project_wallet_int - existing_wallet_used, 0)
+        created_sprint = None
+        created_milestone = None
+        created_sprints: List[Dict[str, Any]] = []
+        created_milestones: List[Dict[str, Any]] = []
+        # Auto plan items used for per-task sprint/milestone assignment.
+        auto_plan_items: List[Dict[str, Any]] = []
+        selected_sprint_id = request.sprint_id
+        selected_milestone_id = request.milestone_id
+        resolved_sprint_start_obj = project_start_obj
+        resolved_sprint_deadline_obj = project_deadline_obj
+
         if remaining_wallet <= 0:
             return {
                 "status": "success",
@@ -2258,10 +2707,191 @@ async def auto_generate_project_tasks(
                 "checklists_generated_for": 0,
                 "checklists_attached": 0,
                 "checklist_attach_failures": [],
+                "project_start_date": project_start_date,
                 "project_deadline": project_deadline,
                 "project_wallet": project_wallet_int,
                 "remaining_wallet": remaining_wallet,
+                "sprint_id": selected_sprint_id,
+                "milestone_id": selected_milestone_id,
+                "created_sprint": created_sprint,
+                "created_milestone": created_milestone,
+                "created_sprints": created_sprints,
+                "created_milestones": created_milestones,
             }
+
+        if request.auto_create_plan and selected_sprint_id is None and selected_milestone_id is None:
+            sprint_windows = _build_sprint_windows(project_start_obj, project_deadline_obj)
+
+            for sprint_index, win in enumerate(sprint_windows, start=1):
+                win_start = win["start_date"]
+                win_deadline = win["deadline"]
+                sprint_payload = {
+                    "name": f"Sprint {sprint_index}",
+                    "summary": f"Auto-generated sprint {sprint_index} for {project_name or 'the project'}",
+                    "start_date": _format_date(win_start),
+                    "deadline": _format_date(win_deadline),
+                }
+                sprint_result = await task_service.create_sprint(sprint_payload, task_token=x_task_token)
+                sprint_id = _extract_created_id(sprint_result, "sprint")
+                if sprint_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Sprint {sprint_index} was created but upstream did not return a sprint id.",
+                    )
+
+                resolved_start, resolved_deadline = await _resolve_sprint_bounds(
+                    sprint_id=sprint_id,
+                    fallback_start=win_start,
+                    fallback_deadline=win_deadline,
+                    created_payload=sprint_result if isinstance(sprint_result, dict) else None,
+                )
+                milestone_start_obj, milestone_deadline_obj = _ensure_non_strict_window(
+                    resolved_start,
+                    resolved_deadline,
+                    fallback_start=resolved_start,
+                    fallback_end=resolved_deadline,
+                    min_date=resolved_start,
+                    max_date=resolved_deadline,
+                )
+                milestone_payload = {
+                    "name": f"Sprint {sprint_index} Milestone",
+                    "sprint_id": sprint_id,
+                    "start_date": _format_date(milestone_start_obj),
+                    "deadline": _format_date(milestone_deadline_obj),
+                }
+                milestone_result = await _create_milestone_with_retry(
+                    milestone_payload,
+                    sprint_id=sprint_id,
+                    sprint_start_obj=resolved_start,
+                    sprint_deadline_obj=resolved_deadline,
+                )
+                milestone_id = _extract_created_id(milestone_result, "milestone")
+                if milestone_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Milestone for Sprint {sprint_index} was created but upstream "
+                            "did not return a milestone id."
+                        ),
+                    )
+
+                created_sprints.append(sprint_result)
+                created_milestones.append(milestone_result)
+                auto_plan_items.append({
+                    "sprint_id": sprint_id,
+                    "milestone_id": milestone_id,
+                    "start_date": resolved_start,
+                    "deadline": resolved_deadline,
+                })
+
+            # Keep backward compatibility when only one sprint was created.
+            if len(auto_plan_items) == 1:
+                selected_sprint_id = auto_plan_items[0]["sprint_id"]
+                selected_milestone_id = auto_plan_items[0]["milestone_id"]
+                created_sprint = created_sprints[0]
+                created_milestone = created_milestones[0]
+
+        elif request.auto_create_plan and (selected_sprint_id is None or selected_milestone_id is None):
+            # Backward-compatible branch when one of sprint/milestone is already provided.
+            plan = await ai_service.generate_sprint_milestone_plan(
+                analysis_report=analysis_report,
+                project_name=project_name,
+                project_deadline=project_deadline,
+            )
+            sprint_plan = plan.get("sprint") if isinstance(plan, dict) else {}
+            milestone_plan = plan.get("milestone") if isinstance(plan, dict) else {}
+
+            if selected_sprint_id is None:
+                sprint_start_obj = _clamp_date(
+                    (sprint_plan or {}).get("start_date"),
+                    fallback=project_start_obj,
+                    min_date=project_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                sprint_deadline_obj = _clamp_date(
+                    (sprint_plan or {}).get("deadline"),
+                    fallback=project_deadline_obj,
+                    min_date=sprint_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                sprint_start_obj, sprint_deadline_obj = _ensure_strict_window(
+                    sprint_start_obj,
+                    sprint_deadline_obj,
+                    fallback_start=project_start_obj,
+                    fallback_end=project_deadline_obj,
+                    min_date=project_start_obj,
+                    max_date=project_deadline_obj,
+                    label="sprint",
+                )
+                sprint_payload = {
+                    "name": (sprint_plan or {}).get("name") or "Sprint 1",
+                    "summary": (sprint_plan or {}).get("summary") or f"Initial sprint for {project_name or 'the project'}",
+                    "start_date": _format_date(sprint_start_obj),
+                    "deadline": _format_date(sprint_deadline_obj),
+                }
+                resolved_sprint_start_obj = sprint_start_obj
+                resolved_sprint_deadline_obj = sprint_deadline_obj
+                created_sprint = await task_service.create_sprint(sprint_payload, task_token=x_task_token)
+                selected_sprint_id = _extract_created_id(created_sprint, "sprint")
+                if selected_sprint_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Sprint was created but upstream did not return a sprint id.",
+                    )
+                created_sprints.append(created_sprint)
+
+            if selected_sprint_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot auto-create milestone without a sprint id.",
+                )
+
+            resolved_sprint_start_obj, resolved_sprint_deadline_obj = await _resolve_sprint_bounds(
+                sprint_id=selected_sprint_id,
+                fallback_start=resolved_sprint_start_obj,
+                fallback_deadline=resolved_sprint_deadline_obj,
+                created_payload=created_sprint if isinstance(created_sprint, dict) else None,
+            )
+            if selected_milestone_id is None:
+                milestone_start_obj = _clamp_date(
+                    (milestone_plan or {}).get("start_date"),
+                    fallback=resolved_sprint_start_obj,
+                    min_date=resolved_sprint_start_obj,
+                    max_date=resolved_sprint_deadline_obj,
+                )
+                milestone_deadline_obj = _clamp_date(
+                    (milestone_plan or {}).get("deadline"),
+                    fallback=resolved_sprint_deadline_obj,
+                    min_date=milestone_start_obj,
+                    max_date=resolved_sprint_deadline_obj,
+                )
+                milestone_start_obj, milestone_deadline_obj = _ensure_non_strict_window(
+                    milestone_start_obj,
+                    milestone_deadline_obj,
+                    fallback_start=resolved_sprint_start_obj,
+                    fallback_end=resolved_sprint_deadline_obj,
+                    min_date=resolved_sprint_start_obj,
+                    max_date=resolved_sprint_deadline_obj,
+                )
+                milestone_payload = {
+                    "name": (milestone_plan or {}).get("name") or "Phase 1 Complete",
+                    "sprint_id": selected_sprint_id,
+                    "start_date": _format_date(milestone_start_obj),
+                    "deadline": _format_date(milestone_deadline_obj),
+                }
+                created_milestone = await _create_milestone_with_retry(
+                    milestone_payload,
+                    sprint_id=selected_sprint_id,
+                    sprint_start_obj=resolved_sprint_start_obj,
+                    sprint_deadline_obj=resolved_sprint_deadline_obj,
+                )
+                selected_milestone_id = _extract_created_id(created_milestone, "milestone")
+                if selected_milestone_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Milestone was created but upstream did not return a milestone id.",
+                    )
+                created_milestones.append(created_milestone)
 
         # 5. Generate tasks in incremental batches of up to 5, then attach checklists per batch.
         generation_context = list(existing_tasks_context)
@@ -2301,6 +2931,38 @@ async def auto_generate_project_tasks(
                 if task_name_key in known_task_name_keys:
                     duplicates_skipped += 1
                     continue
+
+                task_start_obj = _clamp_date(
+                    task_data.get("startdate"),
+                    fallback=project_start_obj,
+                    min_date=project_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                task_deadline_obj = _clamp_date(
+                    task_data.get("deadline"),
+                    fallback=project_deadline_obj,
+                    min_date=task_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                task_data["startdate"] = _format_date(task_start_obj)
+                task_data["deadline"] = _format_date(task_deadline_obj)
+
+                assigned_sprint_id = selected_sprint_id
+                assigned_milestone_id = selected_milestone_id
+                if auto_plan_items:
+                    chosen_plan_item = _pick_plan_item_for_task(
+                        task_start_obj=task_start_obj,
+                        task_deadline_obj=task_deadline_obj,
+                        plan_items=auto_plan_items,
+                    )
+                    if chosen_plan_item:
+                        assigned_sprint_id = chosen_plan_item.get("sprint_id")
+                        assigned_milestone_id = chosen_plan_item.get("milestone_id")
+
+                if assigned_sprint_id is not None:
+                    task_data["sprint"] = assigned_sprint_id
+                if assigned_milestone_id is not None:
+                    task_data["milestone"] = assigned_milestone_id
 
                 res = await task_service.create_task(task_data, task_token=x_task_token)
                 if isinstance(res, dict) and "id" in res:
@@ -2364,7 +3026,14 @@ async def auto_generate_project_tasks(
                 break
             batch_number += 1
 
+        plan_message = ""
+        if created_sprints:
+            plan_message = (
+                f"Created {len(created_sprints)} sprint(s) and {len(created_milestones)} milestone(s). "
+            )
+
         message = (
+            f"{plan_message}"
             f"Successfully created {len(created_tasks)} task(s) across {batches_processed} batch(es) of up to 5. "
             f"Skipped {duplicates_skipped} duplicate task suggestion(s). "
         )
@@ -2385,13 +3054,22 @@ async def auto_generate_project_tasks(
              "checklists_generated_for": checklists_generated_for,
              "checklists_attached": checklists_attached,
              "checklist_attach_failures": checklist_attach_failures,
+             "project_start_date": project_start_date,
              "project_deadline": project_deadline,
              "project_wallet": project_wallet_int,
              "remaining_wallet": remaining_wallet,
+             "sprint_id": selected_sprint_id,
+             "milestone_id": selected_milestone_id,
+             "created_sprint": created_sprint,
+             "created_milestone": created_milestone,
+             "created_sprints": created_sprints,
+             "created_milestones": created_milestones,
         }
 
     except HTTPException:
         raise
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Auto-generate failed due to task service error")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

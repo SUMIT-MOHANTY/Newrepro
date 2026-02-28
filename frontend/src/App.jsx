@@ -4,6 +4,7 @@ import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
 import GovernanceForm from './pages/GovernanceForm';
 import PrerequisiteClassification from './pages/PrerequisiteClassification';
+import TaskCreation from './pages/TaskCreation';
 import GitHubCallback from './pages/GitHubCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
@@ -44,6 +45,11 @@ function App() {
         <Route path="/prerequisites" element={
           <AppLayout>
             {(layoutProps) => <PrerequisiteClassification {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/task-creation" element={
+          <AppLayout>
+            {(layoutProps) => <TaskCreation {...layoutProps} />}
           </AppLayout>
         } />
       </Routes>

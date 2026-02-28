@@ -2985,6 +2985,37 @@ def _parse_stats_from_output(stdout: str, agent_type: str) -> Dict[str, Any]:
 async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fetch ALL pages of tasks from the external task management API."""
     from task_service import task_service
+    def _extract_entity_info(raw_value: Any, key: str):
+        entity_id = None
+        entity_name = None
+        if isinstance(raw_value, dict):
+            entity_id = raw_value.get("id") or raw_value.get(f"{key}_id")
+            entity_name = raw_value.get("name") or raw_value.get("title")
+        elif raw_value not in (None, ""):
+            entity_id = raw_value
+        return entity_id, entity_name
+
+    def _to_int(value: Any) -> Optional[int]:
+        try:
+            if value in (None, ""):
+                return None
+            return int(str(value).strip())
+        except Exception:
+            return None
+
+    def _safe_date_key(value: Any) -> str:
+        if value in (None, ""):
+            return "9999-12-31"
+        text = str(value).strip()
+        if len(text) >= 10:
+            candidate = text[:10]
+            try:
+                datetime.strptime(candidate, "%Y-%m-%d")
+                return candidate
+            except Exception:
+                pass
+        return "9999-12-31"
+
     try:
         task_token = get_project_task_token(project_token)
         all_tasks = []
@@ -3025,6 +3056,14 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
 
             task_id = t.get("id", uuid.uuid4().hex[:8])
             external_id = t.get("external_id")
+            sprint_id, sprint_name = _extract_entity_info(t.get("sprint"), "sprint")
+            milestone_id, milestone_name = _extract_entity_info(t.get("milestone"), "milestone")
+            if sprint_id in (None, ""):
+                sprint_id = t.get("sprint_id")
+            if milestone_id in (None, ""):
+                milestone_id = t.get("milestone_id")
+            task_start_date = t.get("startdate") or t.get("start_date")
+            task_deadline = t.get("deadline") or t.get("end_date")
             normalized.append({
                 "id": str(task_id),
                 "external_id": external_id if external_id is not None else task_id,
@@ -3038,8 +3077,28 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
                 "started_at": None,
                 "linked_tasks": t.get("linked_tasks") or [],
                 "checklist": checklist_items,
+                "sprint_id": sprint_id,
+                "sprint_name": sprint_name,
+                "milestone_id": milestone_id,
+                "milestone_name": milestone_name,
+                "startdate": task_start_date,
+                "deadline": task_deadline,
                 "_project_token": project_token,
             })
+
+        def _task_sort_key(task: Dict[str, Any]):
+            sprint_rank = _to_int(task.get("sprint_id"))
+            milestone_rank = _to_int(task.get("milestone_id"))
+            return (
+                sprint_rank if sprint_rank is not None else 10**9,
+                milestone_rank if milestone_rank is not None else 10**9,
+                _safe_date_key(task.get("startdate")),
+                _safe_date_key(task.get("deadline")),
+                str(task.get("title") or "").lower(),
+                str(task.get("id") or ""),
+            )
+
+        normalized.sort(key=_task_sort_key)
         return normalized
     except Exception as e:
         print(f"[agent_service] Failed to fetch external tasks: {e}")

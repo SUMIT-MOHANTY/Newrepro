@@ -15,6 +15,7 @@ const DASHBOARD_ROLES = [
     { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
 ];
 const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
+const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 
 const DEFAULT_ROADMAP = {
     steps: ['Project Setup', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'Agent Execution', 'Complete'],
@@ -37,7 +38,13 @@ export default function AppLayout({ children }) {
     const [user, setUser] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [projects, setProjects] = useState([]);
-    const [selectedProjectKey, setSelectedProjectKey] = useState('');
+    const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
+        try {
+            return localStorage.getItem(PROJECT_STORAGE_KEY) || '';
+        } catch {
+            return '';
+        }
+    });
     const [showSettings, setShowSettings] = useState(false);
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
 
@@ -63,11 +70,24 @@ export default function AppLayout({ children }) {
         }
     }, [selectedRole]);
 
+    useEffect(() => {
+        try {
+            if (selectedProjectKey) {
+                localStorage.setItem(PROJECT_STORAGE_KEY, selectedProjectKey);
+            } else {
+                localStorage.removeItem(PROJECT_STORAGE_KEY);
+            }
+        } catch {
+            // Ignore storage errors in restricted browser contexts.
+        }
+    }, [selectedProjectKey]);
+
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
         : location.pathname === '/governance' ? 'governance'
             : location.pathname === '/prerequisites' ? 'prerequisites'
+                : location.pathname === '/task-creation' ? 'taskCreation'
                 : 'main';
 
     const setCurrentView = useCallback((view) => {
@@ -77,6 +97,8 @@ export default function AppLayout({ children }) {
             navigate('/governance');
         } else if (view === 'prerequisites') {
             navigate('/prerequisites');
+        } else if (view === 'taskCreation') {
+            navigate('/task-creation');
         } else {
             navigate('/dashboard');
         }
@@ -116,6 +138,94 @@ export default function AppLayout({ children }) {
         }, 0);
     }, [generatedProjects, isProjectsError, projectsError, handleLogout]);
 
+    useEffect(() => {
+        if (isNewProjectMode) return;
+        if (!projects || projects.length === 0) {
+            return;
+        }
+
+        const queueProjectSelection = (projectKey) => {
+            setTimeout(() => setSelectedProjectKey(projectKey), 0);
+        };
+
+        const projectTokenFromPath = (() => {
+            const match = location.pathname.match(/^\/a\/([^/?#]+)/);
+            return match ? decodeURIComponent(match[1]) : '';
+        })();
+
+        const byPath = projectTokenFromPath
+            ? projects.find(
+                (project) =>
+                    project.key === projectTokenFromPath ||
+                    project.projectToken === projectTokenFromPath
+            )
+            : null;
+
+        if (byPath && byPath.key !== selectedProjectKey) {
+            queueProjectSelection(byPath.key);
+            return;
+        }
+
+        if (selectedProjectKey && projects.some((project) => project.key === selectedProjectKey)) {
+            return;
+        }
+
+        let governanceContext = null;
+        try {
+            const raw =
+                sessionStorage.getItem('governanceContext') ||
+                localStorage.getItem('governanceContext');
+            if (raw) governanceContext = JSON.parse(raw);
+        } catch {
+            governanceContext = null;
+        }
+
+        const byStored = (() => {
+            try {
+                const storedKey = localStorage.getItem(PROJECT_STORAGE_KEY);
+                if (!storedKey) return null;
+                return projects.find((project) => project.key === storedKey) || null;
+            } catch {
+                return null;
+            }
+        })();
+
+        const byGovToken = governanceContext?.project_token
+            ? projects.find(
+                (project) =>
+                    project.key === String(governanceContext.project_token) ||
+                    project.projectToken === String(governanceContext.project_token)
+            )
+            : null;
+
+        const byGovId = governanceContext?.result_id
+            ? projects.find(
+                (project) =>
+                    String(project.governanceResultId || '') === String(governanceContext.result_id)
+            )
+            : null;
+
+        const byGovName = governanceContext?.project_name
+            ? projects.find(
+                (project) =>
+                    String(project.name || '').trim().toLowerCase() ===
+                    String(governanceContext.project_name || '').trim().toLowerCase()
+            )
+            : null;
+
+        const fallback =
+            byPath ||
+            byStored ||
+            byGovToken ||
+            byGovId ||
+            byGovName ||
+            projects[0];
+
+        if (fallback?.key && fallback.key !== selectedProjectKey) {
+            queueProjectSelection(fallback.key);
+        }
+    }, [projects, selectedProjectKey, location.pathname, isNewProjectMode]);
+
     const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
     let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
 
@@ -129,6 +239,15 @@ export default function AppLayout({ children }) {
             step_statuses: ['completed', 'failed', 'pending', 'pending', 'pending', 'pending']
         };
     }
+
+    const forcedRoadmapStepIndex = (() => {
+        if (!roadmapData?.steps || !Array.isArray(roadmapData.steps)) return null;
+        if (currentView === 'taskCreation' || currentView === 'statusDashboard') {
+            const idx = roadmapData.steps.findIndex((s) => s === 'Agent Execution');
+            return idx >= 0 ? idx : null;
+        }
+        return null;
+    })();
 
     // Backward compatibility for components expecting the old fetch logic
     const fetchRoadmapData = useCallback(() => {
@@ -226,27 +345,33 @@ export default function AppLayout({ children }) {
                                     {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
                                         currentView === 'governance' ? 'Project Requirement Screening' :
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
+                                                currentView === 'taskCreation' ? 'Task Creation Planner' :
                                                 'BRD Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'governance' ? 'Screening & Configuration' :
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
+                                                currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
                                                 'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 
-                            {currentView === 'statusDashboard' && (
+                            {(currentView === 'statusDashboard' || currentView === 'taskCreation') && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
-                                    <div className="w-48">
-                                        <RoleDropdown
-                                            roles={DASHBOARD_ROLES}
-                                            selectedRole={selectedRole}
-                                            onSelect={(roleValue) => setSelectedRole(roleValue)}
-                                            theme="dark"
-                                        />
-                                    </div>
-                                    <div className="w-px h-5 bg-white/20"></div>
+                                    {currentView === 'statusDashboard' && (
+                                        <>
+                                            <div className="w-48">
+                                                <RoleDropdown
+                                                    roles={DASHBOARD_ROLES}
+                                                    selectedRole={selectedRole}
+                                                    onSelect={(roleValue) => setSelectedRole(roleValue)}
+                                                    theme="dark"
+                                                />
+                                            </div>
+                                            <div className="w-px h-5 bg-white/20"></div>
+                                        </>
+                                    )}
                                     <div className="w-48 sm:w-56">
                                         <ProjectDropdown
                                             projects={projects}
@@ -293,6 +418,7 @@ export default function AppLayout({ children }) {
                             currentStep={roadmapData.current_step || 0}
                             stepStatuses={roadmapData.step_statuses || null}
                             failedStep={roadmapData.failed_step ?? null}
+                            activeStepIndex={forcedRoadmapStepIndex}
                         />
                     </div>
                 )}

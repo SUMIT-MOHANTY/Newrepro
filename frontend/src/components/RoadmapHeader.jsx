@@ -80,11 +80,11 @@ const styles = {
 /**
  * RoadmapHeader — Railway-track dotted stepper.
  */
-const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }) => {
+const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null }) => {
     const navigate = useNavigate();
     if (!steps.length) return null;
 
-    const statuses =
+    const baseStatuses =
         stepStatuses && stepStatuses.length === steps.length
             ? stepStatuses
             : steps.map((_, i) => {
@@ -94,10 +94,28 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                 return 'pending';
             });
 
+    const statuses = (() => {
+        if (activeStepIndex === null || activeStepIndex === undefined) {
+            return baseStatuses;
+        }
+        if (activeStepIndex < 0 || activeStepIndex >= steps.length) {
+            return baseStatuses;
+        }
+
+        const next = baseStatuses.map((status, idx) => {
+            if (status === 'failed') return 'failed';
+            if (idx < activeStepIndex) return status === 'pending' ? 'completed' : status;
+            if (idx === activeStepIndex) return 'active';
+            return status === 'active' ? 'pending' : status;
+        });
+        return next;
+    })();
+
     // Map step labels to navigable routes
     const STEP_ROUTES = {
         'Requirement Screening': '/governance',
         'Prerequisite Classification': '/prerequisites',
+        'Task Creation': '/task-creation',
     };
 
     const handleStepClick = (stepLabel, status) => {
@@ -150,7 +168,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
 /**
  * StepNode — A single "station" dot on the railway track.
  */
-const StepNode = ({ index, label, status, icon, labelPosition, clickable, onClick }) => {
+const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) => {
     /**
      * Style map per status.
      */
@@ -223,18 +241,8 @@ const StepNode = ({ index, label, status, icon, labelPosition, clickable, onClic
             lineHeight: '1.25',
         }}>
             <p style={{
-                fontSize: '9px',
-                textTransform: 'uppercase',
-                letterSpacing: '0.06em',
-                margin: 0,
-                color: c.stepColor,
-                fontWeight: '600',
-            }}>
-                Step {index + 1}
-            </p>
-            <p style={{
                 fontSize: '11px',
-                margin: '2px 0 0',
+                margin: 0,
                 color: c.labelColor,
                 fontWeight: c.labelWeight,
             }}>

@@ -7,7 +7,7 @@ from typing import Optional
 from config import settings
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -777,6 +777,171 @@ async def generate_task_batch(
         raise Exception(
             f"[Batch {batch_number}] Task generation failed: {str(e)}\n\nTraceback:\n{error_details}"
         )
+
+
+SPRINT_MILESTONE_PROMPT = """You are an expert Agile Delivery Manager.
+Given BRD analysis and project deadline, propose ONE sprint and ONE milestone to start delivery.
+
+Output ONLY valid JSON with this shape:
+{
+  "sprint": {
+    "name": "string",
+    "summary": "string",
+    "start_date": "YYYY-MM-DD",
+    "deadline": "YYYY-MM-DD"
+  },
+  "milestone": {
+    "name": "string",
+    "start_date": "YYYY-MM-DD",
+    "deadline": "YYYY-MM-DD"
+  }
+}
+
+Rules:
+- milestone dates must be inside sprint dates
+- sprint deadline must be <= project deadline
+- no markdown, no explanations, only JSON
+"""
+
+
+def _safe_date(value: str, fallback: str) -> str:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return value
+    except Exception:
+        return fallback
+
+
+def _default_sprint_milestone_plan(project_name: str, project_deadline: str) -> dict:
+    today = datetime.utcnow().date()
+    today_iso = today.strftime("%Y-%m-%d")
+    safe_project_deadline = _safe_date(project_deadline, (today + timedelta(days=30)).strftime("%Y-%m-%d"))
+    pd = datetime.strptime(safe_project_deadline, "%Y-%m-%d").date()
+    sprint_deadline = min(today + timedelta(days=14), pd)
+    if sprint_deadline < today:
+        sprint_deadline = today
+    milestone_deadline = min(today + timedelta(days=10), sprint_deadline)
+    return {
+        "sprint": {
+            "name": "Sprint 1",
+            "summary": f"Initial sprint for {project_name or 'the project'}",
+            "start_date": today_iso,
+            "deadline": sprint_deadline.strftime("%Y-%m-%d"),
+        },
+        "milestone": {
+            "name": "Phase 1 Complete",
+            "start_date": today_iso,
+            "deadline": milestone_deadline.strftime("%Y-%m-%d"),
+        },
+    }
+
+
+def _normalize_plan_dates(plan: dict, project_deadline: str) -> dict:
+    default_plan = _default_sprint_milestone_plan("", project_deadline)
+    project_deadline_safe = _safe_date(project_deadline, default_plan["sprint"]["deadline"])
+
+    sprint = plan.get("sprint") if isinstance(plan, dict) else {}
+    milestone = plan.get("milestone") if isinstance(plan, dict) else {}
+
+    sprint_start = _safe_date(str(sprint.get("start_date", "")), default_plan["sprint"]["start_date"])
+    sprint_deadline = _safe_date(str(sprint.get("deadline", "")), default_plan["sprint"]["deadline"])
+
+    ss = datetime.strptime(sprint_start, "%Y-%m-%d").date()
+    sd = datetime.strptime(sprint_deadline, "%Y-%m-%d").date()
+    pd = datetime.strptime(project_deadline_safe, "%Y-%m-%d").date()
+    if sd < ss:
+        sd = ss
+    if sd > pd:
+        sd = pd
+    if sd < ss:
+        sd = ss
+
+    milestone_start = _safe_date(str(milestone.get("start_date", "")), sprint_start)
+    milestone_deadline = _safe_date(str(milestone.get("deadline", "")), sd.strftime("%Y-%m-%d"))
+
+    ms = datetime.strptime(milestone_start, "%Y-%m-%d").date()
+    md = datetime.strptime(milestone_deadline, "%Y-%m-%d").date()
+    if ms < ss:
+        ms = ss
+    if ms > sd:
+        ms = ss
+    if md < ms:
+        md = ms
+    if md > sd:
+        md = sd
+
+    return {
+        "sprint": {
+            "name": (sprint.get("name") or default_plan["sprint"]["name"]).strip(),
+            "summary": (sprint.get("summary") or default_plan["sprint"]["summary"]).strip(),
+            "start_date": ss.strftime("%Y-%m-%d"),
+            "deadline": sd.strftime("%Y-%m-%d"),
+        },
+        "milestone": {
+            "name": (milestone.get("name") or default_plan["milestone"]["name"]).strip(),
+            "start_date": ms.strftime("%Y-%m-%d"),
+            "deadline": md.strftime("%Y-%m-%d"),
+        },
+    }
+
+
+async def generate_sprint_milestone_plan(
+    analysis_report: str,
+    project_name: str,
+    project_deadline: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
+    """Generate one sprint and one milestone plan from BRD context."""
+    url = api_url or settings.ai_api_url
+    key = api_key or settings.ai_api_key
+    model_name = model or settings.ai_model
+
+    default_plan = _default_sprint_milestone_plan(project_name, project_deadline)
+    if not key or key == "your-api-key-here":
+        return default_plan
+
+    text_content = (
+        f"Project Name: {project_name or 'Project'}\n"
+        f"Project Deadline: {project_deadline}\n\n"
+        f"BRD ANALYSIS REPORT:\n{analysis_report[:5000]}\n\n"
+        "Create one practical initial sprint and one milestone."
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": SPRINT_MILESTONE_PROMPT},
+            {"role": "user", "content": text_content},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            if "choices" not in data or not data["choices"]:
+                return default_plan
+            content = data["choices"][0].get("message", {}).get("content", "")
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            content = content.replace("```json", "").replace("```", "").strip()
+            start = content.find("{")
+            end = content.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return default_plan
+            parsed = json.loads(content[start:end + 1])
+            return _normalize_plan_dates(parsed, project_deadline)
+    except Exception as e:
+        logger.warning(f"Sprint/milestone AI planning failed, using defaults: {e}")
+        return default_plan
 
 
 # Keep the legacy single-shot function for backward compatibility

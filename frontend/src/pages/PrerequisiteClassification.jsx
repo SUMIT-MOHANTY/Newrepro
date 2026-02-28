@@ -440,9 +440,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
             setSubmitted(true);
 
-            // After a brief success animation, redirect to Status Dashboard
+            // After a brief success animation, redirect to Task Creation
             setTimeout(() => {
-                navigate('/status-dashboard');
+                navigate('/task-creation');
             }, 1500);
         } catch (err) {
             setError('Failed to save prerequisites: ' + err.message);
@@ -488,7 +488,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                         <div className="flex items-center justify-center gap-2 text-sm text-gray-400">
                             <div className="w-4 h-4 border-2 border-gray-300 border-t-emerald-500 rounded-full animate-spin" />
-                            Redirecting to Status Dashboard…
+                            Redirecting to Task Creation…
                         </div>
                     </div>
                 </div>

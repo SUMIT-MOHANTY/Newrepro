@@ -196,6 +196,22 @@ class TaskManagementService:
         """Create a new task in external task management API."""
         return await self._make_request("POST", "/api/agent/tasks/", task_token=task_token, json=task_data)
 
+    async def get_sprints(self, task_token: Optional[str] = None) -> dict:
+        """Fetch sprints from external task management API."""
+        return await self._make_request("GET", "/api/agent/sprints/", task_token=task_token)
+
+    async def create_sprint(self, sprint_data: dict, task_token: Optional[str] = None) -> dict:
+        """Create sprint in external task management API."""
+        return await self._make_request("POST", "/api/agent/sprints/", task_token=task_token, json=sprint_data)
+
+    async def get_milestones(self, task_token: Optional[str] = None) -> dict:
+        """Fetch milestones from external task management API."""
+        return await self._make_request("GET", "/api/agent/milestones/", task_token=task_token)
+
+    async def create_milestone(self, milestone_data: dict, task_token: Optional[str] = None) -> dict:
+        """Create milestone in external task management API."""
+        return await self._make_request("POST", "/api/agent/milestones/", task_token=task_token, json=milestone_data)
+
     async def update_task(self, task_id: int, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update a task in external task management API."""
         return await self._make_request("PATCH", f"/api/agent/tasks/{task_id}/", task_token=task_token, json=payload)

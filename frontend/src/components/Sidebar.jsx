@@ -75,13 +75,13 @@ export default function Sidebar({
                                     <button
                                         key={project.key}
                                         onClick={() => handleSelectProject(project)}
-                                        className={`w-full flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && currentView === 'main'
+                                        className={`w-full flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
                                             ? 'bg-blue-900/40 text-blue-100 border-blue-800'
                                             : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'
                                             }`}
                                         title={project.name}
                                     >
-                                        <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && currentView === 'main' ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
+                                        <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation') ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
                                         <div className="min-w-0">
                                             <p className="truncate">{project.name}</p>
                                             <p className="text-[11px] text-app-text-muted truncate">

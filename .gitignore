@@ -21,3 +21,4 @@ frontend/dist/
 .nmodignore
 backend/.env.example
 frontend/package-lock.json
+backend/rag_storage/

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -78,6 +78,40 @@ function cacheTaskToken(projectKey, token) {
     writeTaskTokenCache(cache);
 }
 
+function extractEntityId(item, key) {
+    const direct = item?.[key];
+    if (direct && typeof direct === 'object') {
+        if (direct.id != null) return direct.id;
+        if (direct[`${key}_id`] != null) return direct[`${key}_id`];
+    }
+    if (direct != null && direct !== '') return direct;
+    const fallback = item?.[`${key}_id`];
+    if (fallback != null && fallback !== '') return fallback;
+    return null;
+}
+
+function getTaskSprintLabel(task) {
+    const sprint = task?.sprint;
+    if (sprint && typeof sprint === 'object') {
+        if (sprint.name) return sprint.name;
+        if (sprint.id != null) return `Sprint #${sprint.id}`;
+    }
+    const sprintId = extractEntityId(task, 'sprint');
+    if (sprintId != null && sprintId !== '') return `Sprint #${sprintId}`;
+    return 'Unassigned';
+}
+
+function toNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function toDateKey(value) {
+    if (!value) return '9999-12-31';
+    const text = String(value).slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '9999-12-31';
+}
+
 export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole }) {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
@@ -114,6 +148,33 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [totalTaskCount, setTotalTaskCount] = useState(0);
     const [nextPageUrl, setNextPageUrl] = useState(null);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+    const sortedTaskList = useMemo(() => {
+        const copy = [...taskList];
+        copy.sort((a, b) => {
+            const aSprint = extractEntityId(a, 'sprint');
+            const bSprint = extractEntityId(b, 'sprint');
+            const aMilestone = extractEntityId(a, 'milestone');
+            const bMilestone = extractEntityId(b, 'milestone');
+            return (
+                toNumber(aSprint) - toNumber(bSprint) ||
+                toNumber(aMilestone) - toNumber(bMilestone) ||
+                toDateKey(a.startdate || a.start_date).localeCompare(toDateKey(b.startdate || b.start_date)) ||
+                toDateKey(a.deadline).localeCompare(toDateKey(b.deadline)) ||
+                String(a.taskName || a.title || '').localeCompare(String(b.taskName || b.title || ''))
+            );
+        });
+        return copy;
+    }, [taskList]);
+
+    const sprintCount = useMemo(() => {
+        const sprints = new Set();
+        sortedTaskList.forEach((task) => {
+            const sprintId = extractEntityId(task, 'sprint');
+            if (sprintId != null && sprintId !== '') sprints.add(String(sprintId));
+        });
+        return sprints.size;
+    }, [sortedTaskList]);
 
     const selectedProjectKeyRef = useRef(selectedProjectKey);
     const dashboardRequestIdRef = useRef(0);
@@ -1833,7 +1894,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <div>
                                             <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
-                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
+                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
                                             </p>
                                         </div>
                                     </div>
@@ -1844,9 +1905,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
 
                                 <div className="hidden md:block bg-app-bg-page/50 border-b border-app-border-light px-6 py-2.5">
-                                    <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">#</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Task Information</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Sprint</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Status</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Priority</div>
@@ -1860,7 +1922,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     {isLoadingTasks && taskList.length === 0 && (
                                         <div className="p-6 space-y-4">
                                             {[0, 1, 2, 3].map((row) => (
-                                                <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_140px_90px_80px_120px_60px_130px] gap-2 items-center">
+                                                <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_120px_140px_90px_80px_120px_60px_130px] gap-2 items-center">
                                                     <Skeleton height={10} width={18} />
                                                     <div>
                                                         <Skeleton height={13} width="52%" />
@@ -1868,6 +1930,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <Skeleton height={10} width="70%" />
                                                         </div>
                                                     </div>
+                                                    <Skeleton height={18} width={90} />
                                                     <Skeleton height={10} width={108} />
                                                     <Skeleton height={18} width={72} />
                                                     <Skeleton height={18} width={64} />
@@ -1895,7 +1958,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     )}
                                     {!isLoadingTasks && taskList.length > 0 && (
                                         <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
-                                            {taskList.map((task, index) => {
+                                            {sortedTaskList.map((task, index) => {
                                                 const priorityStyles = { high: 'bg-app-status-errorBg text-red-700 border-red-200', medium: 'bg-app-status-warningBg text-amber-700 border-amber-200', low: 'bg-app-status-successBg text-green-700 border-green-200' };
                                                 const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-app-primary-light text-app-primary-hover', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-app-bg-muted text-app-text-label', BUG: 'bg-red-100 text-red-700' };
                                                 const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-green-700', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-amber-700', 'Blocked': 'bg-app-status-errorBg text-red-700' };
@@ -1903,10 +1966,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 const taskType = (task.task_type || 'TASK').toUpperCase();
                                                 const progress = task.task_progress || 0;
                                                 const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
+                                                const sprintLabel = getTaskSprintLabel(task);
 
                                                 return (
                                                     <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
-                                                        <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                                        <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
                                                             {/* # */}
                                                             <div className="flex items-center gap-1.5">
                                                                 <span className="text-[10px] font-bold text-app-text-light">{(index + 1).toString().padStart(2, '0')}</span>
@@ -1920,6 +1984,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                     <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
                                                                 </div>
                                                                 <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
+                                                            </div>
+
+                                                            {/* Sprint */}
+                                                            <div>
+                                                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                                                    {sprintLabel}
+                                                                </span>
                                                             </div>
 
                                                             {/* Progress */}
@@ -1981,6 +2052,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                     <span className="font-bold text-app-text-muted">{progress}%</span>
                                                                 </div>
                                                                 <span className="font-bold text-app-primary">${task.task_wallet || 0}</span>
+                                                            </div>
+                                                            <div className="text-[10px] text-app-text-light">
+                                                                Sprint: <span className="font-semibold text-app-text-label">{sprintLabel}</span>
                                                             </div>
                                                         </div>
                                                     </div>
