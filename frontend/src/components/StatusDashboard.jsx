@@ -18,7 +18,7 @@ const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
 const DASHBOARD_ROLES = [
     { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
-    { value: 'project', label: 'Project Dashboard'},
+    { value: 'project', label: 'Project Dashboard' },
 ];
 
 function decodeJwtExpiry(token) {
@@ -182,6 +182,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     // ── Preview Deploy State ─────────────────────────────────────────
     const [previewStatus, setPreviewStatus] = useState({ status: 'none' });
     const [isDeploying, setIsDeploying] = useState(false);
+    const [isFixing, setIsFixing] = useState(false);
     const [showPreviewLogs, setShowPreviewLogs] = useState(false);
     const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
 
@@ -779,6 +780,33 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             alert('Deploy failed: ' + e.message);
         } finally {
             setIsDeploying(false);
+        }
+    };
+
+    const handleFixWithAI = async () => {
+        setIsFixing(true);
+        try {
+            const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
+            const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_FIX}${params}`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({}),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setPreviewStatus(data);
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert(err.detail || 'Fix failed');
+            }
+        } catch (e) {
+            console.error('Fix preview failed', e);
+            alert('Fix failed: ' + e.message);
+        } finally {
+            setIsFixing(false);
         }
     };
 
@@ -2108,14 +2136,24 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             </div>
                                                         </div>
                                                     )}
-                                                    <button
-                                                        onClick={handleDeployPreview}
-                                                        disabled={isDeploying}
-                                                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold text-sm shadow-lg hover:scale-[1.02] transition-all"
-                                                    >
-                                                        <RefreshCw className={`w-4 h-4 ${isDeploying ? 'animate-spin' : ''}`} />
-                                                        Retry Deploy
-                                                    </button>
+                                                    <div className="flex items-center gap-3">
+                                                        <button
+                                                            onClick={handleDeployPreview}
+                                                            disabled={isDeploying || isFixing}
+                                                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-semibold text-sm shadow-lg hover:scale-[1.02] transition-all"
+                                                        >
+                                                            <RefreshCw className={`w-4 h-4 ${isDeploying ? 'animate-spin' : ''}`} />
+                                                            Retry Deploy
+                                                        </button>
+                                                        <button
+                                                            onClick={handleFixWithAI}
+                                                            disabled={isDeploying || isFixing}
+                                                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-semibold text-sm shadow-lg hover:scale-[1.02] transition-all"
+                                                        >
+                                                            {isFixing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
+                                                            Fix with AI
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             ) : (
                                                 <div className="flex flex-col items-center py-6 gap-4">

@@ -2662,6 +2662,15 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         checkout_cmd = ["git", "checkout", "-B", branch_name]
         if repo_empty:
             checkout_cmd = ["git", "checkout", "--orphan", branch_name]
+        else:
+            # Check if it exists remotely
+            check_remote = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "ls-remote", "--heads", "origin", branch_name],
+                capture_output=True, text=True, timeout=15,
+            )
+            if branch_name in check_remote.stdout:
+                # If we are already on the target branch (e.g. main), checkout without -B
+                checkout_cmd = ["git", "checkout", branch_name]
 
         checkout = subprocess.run(
             ["docker", "exec", "-w", "/workspace", container_name, *checkout_cmd],
@@ -3705,7 +3714,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     continuous: bool = False,
                     ignore_running_check: bool = False,
                     project_token: Optional[str] = None,
-                    task_token: Optional[str] = None) -> Dict[str, Any]:
+                    task_token: Optional[str] = None,
+                    force_branch: Optional[str] = None) -> Dict[str, Any]:
     """
     Main function to run an agent WITH automatic retry on failure.
     Retries up to 3 times with increasing delays when the agent encounters
@@ -3745,6 +3755,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 ignore_running_check=ignore_running_check if attempt == 1 else True,
                 project_token=project_token,
                 task_token=task_token,
+                force_branch=force_branch,
             )
 
             if result.get("success") or result.get("reason") == "no_tasks":
@@ -3829,7 +3840,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     continuous: bool = False,
                     ignore_running_check: bool = False,
                     project_token: Optional[str] = None,
-                    task_token: Optional[str] = None) -> Dict[str, Any]:
+                    task_token: Optional[str] = None,
+                    force_branch: Optional[str] = None) -> Dict[str, Any]:
     """
     Single execution attempt for an agent. Called by run_agent with retry wrapper.
     """
@@ -3924,7 +3936,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     agent_id=agent_id,
                     task_title=task.get("title", "Untitled"),
                     task_description=task.get("description", "")[:500],
-                    branch_name=_branch_name_for_task(task) if use_git else None,
+                    branch_name=(force_branch if force_branch else _branch_name_for_task(task)) if use_git else None,
                 )
                 other_active = [
                     aid for aid in live_mem.active_tasks
@@ -4030,7 +4042,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
                 # Clone git repo ONCE on first task
                 if use_git:
-                    first_branch = _branch_name_for_task(task)
+                    first_branch = force_branch if force_branch else _branch_name_for_task(task)
                     agent["progress"] = 15
                     agent["progress_message"] = f"Cloning git repo & creating branch: {first_branch}"
                     agent["output_log"].append({
@@ -4075,7 +4087,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # ── Create task-specific git branch (for 2nd+ tasks) ─────
             branch_name = None
             if use_git:
-                branch_name = _branch_name_for_task(task)
+                branch_name = force_branch if force_branch else _branch_name_for_task(task)
                 if tasks_completed > 1:
                     # Reset any stale index (merge conflicts from previous task)
                     subprocess.run(
@@ -4863,14 +4875,15 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             "type": "info",
                             "message": f"API: progress 95% {'ok' if prog_ok else 'skipped/failed'}"
                         })
-                        await _enqueue_git_merge(
-                            effective_branch,
-                            agent.get("git_repo_url"),
-                            agent.get("git_token"),
-                            agent_id,
-                            task["title"],
-                            project_token=project_token
-                        )
+                        if not force_branch:
+                            await _enqueue_git_merge(
+                                effective_branch,
+                                agent.get("git_repo_url"),
+                                agent.get("git_token"),
+                                agent_id,
+                                task["title"],
+                                project_token=project_token
+                            )
                         if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
                             await _mark_repo_bootstrap_result(
                                 project_token=project_token,
@@ -5340,6 +5353,7 @@ async def deploy_preview(
     git_repo_url: str,
     git_token: str,
     project_token: Optional[str] = None,
+    is_retry: bool = False,
 ) -> Dict[str, Any]:
     """
     Deploy the agent/integration branch into a live Docker container with
@@ -5351,6 +5365,14 @@ async def deploy_preview(
     if pk in _preview_states and _preview_states[pk].get("status") == "running":
         await stop_preview(project_token)
 
+    existing_pstate = _preview_states.get(pk)
+    if is_retry and existing_pstate:
+        logs = existing_pstate.get("logs", [])
+        retries = existing_pstate.get("retries", 0)
+    else:
+        logs = []
+        retries = 0
+
     preview_id = f"preview_{pk[:12]}_{int(time.time())}"
     container_name = preview_id
 
@@ -5359,9 +5381,10 @@ async def deploy_preview(
         "container_name": container_name,
         "host_port": None,
         "preview_url": None,
-        "logs": [],
+        "logs": logs,
         "started_at": datetime.utcnow().isoformat(),
         "stack": None,
+        "retries": retries,
     }
     pstate = _preview_states[pk]
 
@@ -5471,6 +5494,35 @@ async def deploy_preview(
         # 11. Wait a moment for the server to initialize
         await asyncio.sleep(3)
 
+        # Check if the process excited shortly after starting
+        log_check = subprocess.run(
+            ["docker", "exec", container_name, "tail", "-n", "30", "/tmp/preview_server.log"],
+            capture_output=True, text=True, timeout=5,
+        )
+        
+        # Check if the process is currently running
+        ps_check = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c", "ps aux || ps -ef"],
+            capture_output=True, text=True, timeout=5,
+        )
+        ps_out = ps_check.stdout.lower()
+
+        is_crashed = False
+        if stack["type"] == "python" and "python" not in ps_out and "uvicorn" not in ps_out and "flask" not in ps_out:
+            is_crashed = True
+        elif stack["type"] == "node" and "node" not in ps_out and "npm" not in ps_out:
+            is_crashed = True
+        
+        if not is_crashed and log_check.returncode == 0:
+            # Maybe it is alive but spitting critical errors
+            output = log_check.stdout.lower()
+            if "traceback (most recent call last)" in output or "address already in use" in output:
+                is_crashed = True
+                
+        if is_crashed:
+            err_log = log_check.stdout[-1000:] if log_check.returncode == 0 else ""
+            raise RuntimeError(f"Server crashed shortly after starting or failed to start:\n{err_log}")
+
         preview_url = f"http://localhost:{host_port}"
         pstate["status"] = "running"
         pstate["preview_url"] = preview_url
@@ -5495,10 +5547,92 @@ async def deploy_preview(
             _destroy_container(container_name)
         except Exception:
             pass
+
+        max_retries = 2
+        if pstate.get("retries", 0) < max_retries:
+            pstate["retries"] += 1
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": f"🔄 Auto-triggering AI self-heal (attempt {pstate['retries']}/{max_retries})..."
+            })
+            # Trigger repair asynchronously without blocking
+            asyncio.create_task(repair_preview(git_repo_url, git_token, project_token))
+            return {
+                "status": "deploying",
+                "message": f"Deploy failed. Auto-triggering AI self-heal (attempt {pstate['retries']}/{max_retries})."
+            }
+
         return {
             "status": "error",
             "error": str(e),
         }
+
+
+async def repair_preview(
+    git_repo_url: str,
+    git_token: str,
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Triggers an AI agent to fix the current preview error.
+    Then automatically redeploys.
+    """
+    pk = _project_key(project_token)
+    pstate = _preview_states.get(pk)
+    if not pstate:
+        return {"status": "error", "message": "No preview deployment found to repair."}
+
+    logs = "\n".join([log.get("message", "") for log in pstate.get("logs", [])[-30:]])
+    server_log = pstate.get("server_log", "")
+    error_context = logs
+    if server_log:
+        error_context += "\n\nServer Logs:\n" + server_log[-2000:]
+
+    pstate["status"] = "deploying"
+    pstate["logs"].append({
+        "time": datetime.utcnow().isoformat(),
+        "message": "🤖 Starting AI repair process...",
+    })
+
+    async def _repair_bg():
+        try:
+            import uuid
+            task = {
+                "id": f"fix-{uuid.uuid4().hex[:8]}",
+                "title": "Fix Preview Deployment Failure",
+                "description": f"The application failed to start or deploy in the preview environment.\n\nLogs:\n{error_context}\n\nPlease identify the issue and modify the code to fix this deployment error.",
+                "status": "pending"
+            }
+            
+            # Wait for AI to finish
+            res = await run_agent(
+                agent_id=MASTER_AGENT_ID,
+                assigned_task=task,
+                continuous=False,
+                ignore_running_check=True,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                force_branch=GIT_INTEGRATION_BRANCH
+            )
+            
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": f"🤖 AI repair completed (success: {res.get('success')}). Redeploying preview..."
+            })
+            
+            # Redeploy
+            await deploy_preview(git_repo_url, git_token, project_token, is_retry=True)
+            
+        except Exception as e:
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": f"❌ AI repair failed internally: {str(e)}"
+            })
+            pstate["status"] = "error"
+
+    asyncio.create_task(_repair_bg())
+    return {"status": "deploying", "message": "AI is repairing the deployment."}
 
 
 def _recover_preview_from_docker(pk: str) -> Optional[Dict[str, Any]]:
