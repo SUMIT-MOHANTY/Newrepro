@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
@@ -12,6 +12,8 @@ import { API_ENDPOINTS } from '../config';
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
+const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
+const DEFAULT_PROCESS_MODE = 'coexistence';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
 const DASHBOARD_ROLES = [
@@ -78,6 +80,38 @@ function cacheTaskToken(projectKey, token) {
     writeTaskTokenCache(cache);
 }
 
+function readProcessModeMap() {
+    try {
+        const raw = localStorage.getItem(PROCESS_MODE_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeProcessModeMap(map) {
+    try {
+        localStorage.setItem(PROCESS_MODE_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function getProcessModeForProject(projectKey) {
+    if (!projectKey) return DEFAULT_PROCESS_MODE;
+    const map = readProcessModeMap();
+    return map[projectKey] || DEFAULT_PROCESS_MODE;
+}
+
+function setProcessModeForProject(projectKey, mode) {
+    if (!projectKey || !mode) return;
+    const map = readProcessModeMap();
+    map[projectKey] = mode;
+    writeProcessModeMap(map);
+}
+
 function extractEntityId(item, key) {
     const direct = item?.[key];
     if (direct && typeof direct === 'object') {
@@ -114,6 +148,7 @@ function toDateKey(value) {
 
 export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole }) {
     const navigate = useNavigate();
+    const location = useLocation();
     const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
@@ -139,6 +174,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [isSavingAgentName, setIsSavingAgentName] = useState(false);
     const [showAddAgentModal, setShowAddAgentModal] = useState(false);
     const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
+    const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
 
     // ── External Task API State ──────────────────────────────────────
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
@@ -175,6 +211,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         });
         return sprints.size;
     }, [sortedTaskList]);
+    const autoAiAssistRunRef = useRef(new Set());
 
     const selectedProjectKeyRef = useRef(selectedProjectKey);
     const dashboardRequestIdRef = useRef(0);
@@ -255,6 +292,22 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     useEffect(() => {
         selectedProjectKeyRef.current = selectedProjectKey;
     }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setProcessMode(DEFAULT_PROCESS_MODE);
+            return;
+        }
+        const incomingMode = location.state?.processMode;
+        const normalizedMode = ['ai_first', 'ai_assist', 'developer_only', 'coexistence', 'vibe_coding'].includes(incomingMode)
+            ? incomingMode
+            : getProcessModeForProject(selectedProjectKey);
+        setProcessMode(normalizedMode);
+        setProcessModeForProject(selectedProjectKey, normalizedMode);
+    }, [selectedProjectKey, location.state]);
+
+    const isAiAssistMode = processMode === 'ai_assist' || processMode === 'ai_first';
+    const isDeveloperOnlyMode = processMode === 'developer_only';
 
     useEffect(() => {
         if (!selectedProjectKey) {
@@ -538,12 +591,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     // ── Run All Agents ────────────────────────────────────────────────
     const [runningAll, setRunningAll] = useState(false);
 
-    const handleRunAll = async () => {
+    const handleRunAll = useCallback(async (skipMissingConfigPrompt = false) => {
         const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
         if (idleAgents.length === 0) return;
 
         const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
-        if (missingConfig.length > 0) {
+        if (!skipMissingConfigPrompt && missingConfig.length > 0) {
             const initialMap = {};
             const existingRepo = agents.find(a => a.git_repo_url)?.git_repo_url || '';
             missingConfig.forEach(agent => {
@@ -578,7 +631,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         } finally {
             setRunningAll(false);
         }
-    };
+    }, [agents, token, hasValidTaskToken, taskToken, withProjectToken, fetchAgents, fetchTasks]);
+
+    useEffect(() => {
+        if (!isAiAssistMode) return;
+        if (!selectedProjectKey) return;
+        if (isLoadingAgents || runningAll) return;
+        if (!hasValidTaskToken) return;
+        if (agents.some(a => a.status === 'running')) return;
+
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
+        if (idleAgents.length === 0) return;
+
+        const autoKey = `${selectedProjectKey}:${processMode}`;
+        if (autoAiAssistRunRef.current.has(autoKey)) return;
+        autoAiAssistRunRef.current.add(autoKey);
+        handleRunAll(true);
+    }, [isAiAssistMode, selectedProjectKey, isLoadingAgents, runningAll, hasValidTaskToken, agents, processMode, handleRunAll]);
 
     const submitMultiAgentConfig = async () => {
         setGitModalAgent(null);
@@ -1768,6 +1837,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 */}
 
                                 {/* ── AI AGENTS SECTION ── */}
+                                {!isDeveloperOnlyMode && (
                                 <div className="w-full mt-4 lg:col-span-2 min-w-0">
                                     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
                                         <div className="flex items-center flex-wrap">
@@ -1775,6 +1845,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 <Bot className="w-5 h-5" />
                                             </div>
                                             <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
+                                            <span className="ml-3 text-[10px] font-bold text-indigo-700 uppercase tracking-wider bg-indigo-50 px-2 py-0.5 rounded-full">
+                                                {isAiAssistMode ? 'AI-First' : 'Coexistence'}
+                                            </span>
                                             <span className="ml-3 text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-app-bg-muted px-2 py-0.5 rounded-full">
                                                 {agents.filter(a => a.status === 'running').length} Running
                                             </span>
@@ -1784,7 +1857,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
                                             </span>
                                             <button
-                                                onClick={handleRunAll}
+                                                onClick={() => handleRunAll(false)}
                                                 disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0}
                                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0
                                                     ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
@@ -1794,18 +1867,6 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             >
                                                 {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
                                                 {runningAll ? 'Starting...' : 'Run All'}
-                                            </button>
-                                            <button
-                                                onClick={handleGenerateTasks}
-                                                disabled={isGeneratingTasks || !selectedProjectKey}
-                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
-                                                    ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
-                                                    : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
-                                                    }`}
-                                                title="Generate tasks from selected project"
-                                            >
-                                                {isGeneratingTasks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                                {isGeneratingTasks ? 'Mapping...' : 'Create Tasks'}
                                             </button>
                                             <button
                                                 onClick={() => handleAddAgent()}
@@ -1829,6 +1890,20 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         {agents.map(agent => renderAgentCard(agent))}
                                     </div>
                                 </div>
+                                )}
+                                {isDeveloperOnlyMode && (
+                                    <div className="w-full mt-4 lg:col-span-2 min-w-0">
+                                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4">
+                                            <div className="flex items-center gap-2">
+                                                <Cpu className="w-4 h-4 text-slate-600" />
+                                                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide">Developer Only Mode</h3>
+                                            </div>
+                                            <p className="text-xs text-app-text-light mt-2">
+                                                AI agents are hidden for this project in Developer Only mode.
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
                                 {/* Closes CSS grid layout */}
                             </div>
                         </>
@@ -1970,7 +2045,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 <ListTodo className="w-7 h-7 text-app-border" />
                                             </div>
                                             <p className="text-sm font-bold text-app-text-muted">No tasks generated yet</p>
-                                            <p className="text-xs text-app-text-light max-w-xs">Select a project and click "Create Tasks" above to get started.</p>
+                                            <p className="text-xs text-app-text-light max-w-xs">Select a project and start the process from Task Creation to begin.</p>
                                         </div>
                                     )}
                                     {!isLoadingTasks && taskList.length > 0 && (

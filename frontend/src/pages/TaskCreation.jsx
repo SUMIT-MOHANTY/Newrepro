@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
     ArrowRight,
     CalendarDays,
@@ -15,6 +15,40 @@ import { API_ENDPOINTS } from '../config';
 
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
+const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
+const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
+const PROCESS_MODE_OPTIONS = [
+    {
+        id: 'ai_first',
+        title: 'AI-First Mode',
+        description: 'Open Status Dashboard and auto-start all agents.',
+        enabled: true,
+    },
+    {
+        id: 'ai_assist',
+        title: 'AI Assist',
+        description: 'Legacy mode (same behavior as AI-First).',
+        enabled: false,
+    },
+    {
+        id: 'developer_only',
+        title: 'Developer Only',
+        description: 'Open Status Dashboard without showing AI agents.',
+        enabled: false,
+    },
+    {
+        id: 'coexistence',
+        title: 'Coexistence',
+        description: 'Open Status Dashboard with agents available for manual run.',
+        enabled: false,
+    },
+    {
+        id: 'vibe_coding',
+        title: 'Vibe Coding',
+        description: 'Upcoming mode.',
+        enabled: false,
+    },
+];
 
 function decodeJwtExpiry(token) {
     try {
@@ -99,12 +133,41 @@ function getErrorMessage(errorPayload, fallback) {
     return fallback;
 }
 
+function readProcessModeMap() {
+    try {
+        const raw = localStorage.getItem(PROCESS_MODE_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeProcessModeMap(map) {
+    try {
+        localStorage.setItem(PROCESS_MODE_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function saveProcessModeForProject(projectKey, mode) {
+    if (!projectKey || !mode) return;
+    const map = readProcessModeMap();
+    map[projectKey] = mode;
+    writeProcessModeMap(map);
+}
+
 export default function TaskCreation({
     projects = [],
+    projectsLoading = false,
     selectedProjectKey,
     fetchRoadmapData,
+    fetchHistory,
 }) {
     const navigate = useNavigate();
+    const location = useLocation();
     const token = localStorage.getItem('token');
 
     const [taskToken, setTaskToken] = useState(null);
@@ -119,6 +182,11 @@ export default function TaskCreation({
     const [isGenerating, setIsGenerating] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
+    const [creationStageIndex, setCreationStageIndex] = useState(0);
+    const [showProcessModeModal, setShowProcessModeModal] = useState(false);
+    const autoStartRunKeysRef = useRef(new Set());
+    const credentialRefreshAttemptedRef = useRef(new Set());
+    const [isRefreshingCredentials, setIsRefreshingCredentials] = useState(false);
 
     const selectedProject = useMemo(
         () => projects.find((p) => p.key === selectedProjectKey) || null,
@@ -201,23 +269,34 @@ export default function TaskCreation({
             const taskData = taskRes.ok ? await taskRes.json() : { results: [] };
             const projectInfoData = projectInfoRes.ok ? await projectInfoRes.json() : {};
 
-            setSprints(Array.isArray(sprintData?.sprints) ? sprintData.sprints : []);
-            setMilestones(Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : []);
+            const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
+            const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
+            let nextTasks = [];
             if (Array.isArray(taskData)) {
-                setTasks(taskData);
+                nextTasks = taskData;
             } else if (Array.isArray(taskData?.results)) {
-                setTasks(taskData.results);
-            } else {
-                setTasks([]);
+                nextTasks = taskData.results;
             }
 
+            setSprints(nextSprints);
+            setMilestones(nextMilestones);
+            setTasks(nextTasks);
+
+            let normalizedDeadline = '';
             const deadline = projectInfoData?.project?.deadline;
             if (deadline) {
-                const normalized = formatDate(deadline);
-                setProjectDeadline(normalized);
+                normalizedDeadline = formatDate(deadline);
+                setProjectDeadline(normalizedDeadline);
             }
+            return {
+                sprints: nextSprints,
+                milestones: nextMilestones,
+                tasks: nextTasks,
+                projectDeadline: normalizedDeadline,
+            };
         } catch (e) {
             setError(e?.message || 'Failed to load sprint/milestone/task data');
+            return null;
         } finally {
             setIsLoading(false);
         }
@@ -226,6 +305,51 @@ export default function TaskCreation({
     useEffect(() => {
         loadData();
     }, [loadData]);
+
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setIsRefreshingCredentials(false);
+            return;
+        }
+        if (hasProjectCredentials) {
+            setIsRefreshingCredentials(false);
+            return;
+        }
+        if (projectsLoading) {
+            setIsRefreshingCredentials(true);
+            return;
+        }
+        if (typeof fetchHistory !== 'function') {
+            setIsRefreshingCredentials(false);
+            return;
+        }
+        if (credentialRefreshAttemptedRef.current.has(selectedProjectKey)) {
+            setIsRefreshingCredentials(false);
+            return;
+        }
+
+        credentialRefreshAttemptedRef.current.add(selectedProjectKey);
+        setIsRefreshingCredentials(true);
+        fetchHistory();
+        const timer = window.setTimeout(() => {
+            setIsRefreshingCredentials(false);
+        }, 4000);
+        return () => window.clearTimeout(timer);
+    }, [selectedProjectKey, hasProjectCredentials, projectsLoading, fetchHistory]);
+
+    useEffect(() => {
+        if (!isGenerating) {
+            setCreationStageIndex(0);
+            return;
+        }
+        setCreationStageIndex(0);
+        const toMilestone = window.setTimeout(() => setCreationStageIndex(1), 1800);
+        const toTasks = window.setTimeout(() => setCreationStageIndex(2), 3600);
+        return () => {
+            window.clearTimeout(toMilestone);
+            window.clearTimeout(toTasks);
+        };
+    }, [isGenerating]);
 
     const groupedTasks = useMemo(() => {
         const sprintById = new Map(sprints.map((s) => [String(s.id), s]));
@@ -263,7 +387,7 @@ export default function TaskCreation({
         return Array.from(groups.values());
     }, [tasks, sprints, milestones]);
 
-    const handleMasterCreate = async () => {
+    const handleMasterCreate = useCallback(async () => {
         if (!selectedProjectKey) {
             setError('Select a project before creating tasks.');
             return;
@@ -336,6 +460,51 @@ export default function TaskCreation({
         } finally {
             setIsGenerating(false);
         }
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData]);
+
+    useEffect(() => {
+        const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
+        if (!shouldAutoStart) return;
+        if (!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken) return;
+        if (isGenerating) return;
+
+        const runKey = `${selectedProjectKey}:${location.key}`;
+        if (autoStartRunKeysRef.current.has(runKey)) return;
+        autoStartRunKeysRef.current.add(runKey);
+
+        let isCancelled = false;
+        (async () => {
+            const snapshot = await loadData();
+            if (isCancelled) return;
+            if (!snapshot) return;
+            if (Array.isArray(snapshot?.tasks) && snapshot.tasks.length > 0) {
+                setSuccess(`Found ${snapshot.tasks.length} existing task(s).`);
+                return;
+            }
+            await handleMasterCreate();
+        })();
+
+        return () => {
+            isCancelled = true;
+        };
+    }, [
+        location.state,
+        location.key,
+        selectedProjectKey,
+        hasProjectCredentials,
+        hasValidTaskToken,
+        isGenerating,
+        loadData,
+        handleMasterCreate,
+    ]);
+
+    const handleStartProcess = (mode, enabled = true) => {
+        if (!enabled) return;
+        if (selectedProjectKey) {
+            saveProcessModeForProject(selectedProjectKey, mode);
+        }
+        setShowProcessModeModal(false);
+        navigate('/status-dashboard', { state: { processMode: mode } });
     };
 
     return (
@@ -351,10 +520,10 @@ export default function TaskCreation({
                             </p>
                         </div>
                         <button
-                            onClick={() => navigate('/status-dashboard')}
+                            onClick={() => setShowProcessModeModal(true)}
                             className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow hover:shadow-lg transition-all"
                         >
-                            Go to Status Dashboard
+                            Start the Process
                             <ArrowRight className="w-4 h-4" />
                         </button>
                     </div>
@@ -369,7 +538,7 @@ export default function TaskCreation({
                         Master Agent will automatically create a sprint, create a milestone inside it, then generate tasks under that milestone.
                     </p>
                     <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light">
-                        Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span>
+                        Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || (selectedProjectKey && hasValidTaskToken ? 'Loading...' : 'Not available')}</span>
                     </div>
                     <button
                         onClick={handleMasterCreate}
@@ -388,7 +557,12 @@ export default function TaskCreation({
                             No project selected. Select a project from the sidebar or top project dropdown.
                         </p>
                     )}
-                    {selectedProjectKey && !hasProjectCredentials && (
+                    {selectedProjectKey && !hasProjectCredentials && (projectsLoading || isRefreshingCredentials) && (
+                        <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                            Loading project credentials for this project...
+                        </p>
+                    )}
+                    {selectedProjectKey && !hasProjectCredentials && !projectsLoading && !isRefreshingCredentials && (
                         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                             Task API credentials are missing for this project. Open the project in Dashboard and ensure external project credentials are configured.
                         </p>
@@ -467,6 +641,94 @@ export default function TaskCreation({
                     )}
                 </div>
             </div>
+            {isGenerating && (
+                <div className="fixed inset-0 z-[200] bg-slate-950/65 backdrop-blur-sm flex items-center justify-center px-4">
+                    <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 sm:p-7">
+                        <div className="flex items-center gap-3">
+                            <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
+                            <h3 className="text-lg font-extrabold text-slate-900">AI Plan Generation In Progress</h3>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-600">
+                            Creating plan for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>. Please wait.
+                        </p>
+                        <div className="mt-5 space-y-3">
+                            {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
+                                const isDone = idx < creationStageIndex;
+                                const isActive = idx === creationStageIndex;
+                                return (
+                                    <div
+                                        key={stepLabel}
+                                        className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${
+                                            isDone
+                                                ? 'border-emerald-200 bg-emerald-50'
+                                                : isActive
+                                                    ? 'border-indigo-200 bg-indigo-50'
+                                                    : 'border-slate-200 bg-slate-50'
+                                        }`}
+                                    >
+                                        {isDone ? (
+                                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                        ) : isActive ? (
+                                            <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                                        ) : (
+                                            <span className="inline-block w-3 h-3 rounded-full border border-slate-300 bg-white" />
+                                        )}
+                                        <span className={`text-sm font-semibold ${isDone ? 'text-emerald-700' : isActive ? 'text-indigo-700' : 'text-slate-500'}`}>
+                                            {stepLabel}
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <p className="mt-4 text-xs text-slate-500">
+                            Actions are temporarily locked until task plan creation completes.
+                        </p>
+                    </div>
+                </div>
+            )}
+            {showProcessModeModal && (
+                <div className="fixed inset-0 z-[210] bg-slate-950/65 backdrop-blur-sm flex items-center justify-center px-4">
+                    <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6">
+                        <h3 className="text-lg font-extrabold text-slate-900">Choose Execution Mode</h3>
+                        <p className="mt-1 text-sm text-slate-600">
+                            Select how this project should run in Status Dashboard.
+                        </p>
+                        <div className="mt-5 space-y-3">
+                            {PROCESS_MODE_OPTIONS.map((option) => (
+                                <button
+                                    key={option.id}
+                                    type="button"
+                                    disabled={!option.enabled}
+                                    onClick={() => handleStartProcess(option.id, option.enabled)}
+                                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
+                                        option.enabled
+                                            ? 'border-slate-200 bg-white hover:bg-slate-50 hover:border-indigo-300'
+                                            : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                                    }`}
+                                >
+                                    <div className="flex items-center justify-between gap-2">
+                                        <p className={`text-sm font-bold ${option.enabled ? 'text-slate-900' : 'text-slate-500'}`}>{option.title}</p>
+                                        {!option.enabled && (
+                                            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full">
+                                                Disabled
+                                            </span>
+                                        )}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                        <div className="mt-5 flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setShowProcessModeModal(false)}
+                                className="px-4 py-2 text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
