@@ -450,33 +450,6 @@ const Dashboard = ({
                 handleLogout();
             });
 
-        // Fetch server default AI config
-        fetch(API_ENDPOINTS.AI_CONFIG, {
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        })
-            .then(res => {
-                if (res.status === 401) {
-                    handleLogout();
-                    throw new Error('Unauthorized');
-                }
-                return res.ok ? res.json() : null;
-            })
-            .then(data => {
-                if (data) {
-                    setAiConfig({
-                        apiUrl: data.api_url || '',
-                        apiKey: '',
-                        model: data.model || ''
-                    });
-                }
-            })
-            .catch(err => {
-                if (err.message !== 'Unauthorized') {
-                    console.error("Failed to load AI config", err);
-                }
-            });
         fetchHistory();
         fetchGovernanceHistory();
     }, [navigate, fetchHistory, fetchGovernanceHistory, handleLogout]);
