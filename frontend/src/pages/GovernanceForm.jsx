@@ -639,6 +639,9 @@ const GovernanceResult = ({ result, onBack }) => {
         gradient: 'from-gray-400 to-gray-500', bg: 'bg-app-bg-page', border: 'border-app-border',
         text: 'text-app-text-label', badge: 'bg-app-bg-muted text-gray-800', label: classification, emoji: '📋',
     };
+    const isSkipFollowUpCase =
+        classification === 'ENTERPRISE' &&
+        String(classification_description || '').toLowerCase().includes('our it team will reach out to you');
 
 
     return (
@@ -834,10 +837,20 @@ const GovernanceResult = ({ result, onBack }) => {
                                     <AlertCircle className="w-4 h-4" /> Required Processes
                                 </h3>
                                 <ul className="text-app-text-label space-y-2 text-sm">
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> Architecture board review</li>
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> Threat modeling</li>
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> Full security assessment</li>
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> SDLC compliance</li>
+                                    {isSkipFollowUpCase ? (
+                                        <>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Screening answers were skipped</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> IT follow-up is required</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> BRD upload remains disabled until review</li>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Architecture board review</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Threat modeling</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Full security assessment</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> SDLC compliance</li>
+                                        </>
+                                    )}
                                 </ul>
                             </div>
                             <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
@@ -845,10 +858,20 @@ const GovernanceResult = ({ result, onBack }) => {
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
                                 <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
+                                    {isSkipFollowUpCase ? (
+                                        <>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Our IT team will reach out to you</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Wait for IT guidance to continue</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Thanks for connecting with us</li>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
+                                        </>
+                                    )}
                                 </ol>
                             </div>
                         </>
