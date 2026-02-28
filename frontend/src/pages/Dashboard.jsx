@@ -2104,7 +2104,7 @@ const Dashboard = ({
                                     <div className="flex items-center gap-3">
                                         <button
                                             onClick={() => {
-                                                navigate('/task-creation');
+                                                navigate('/task-creation', { state: { autoStartTaskCreation: true } });
                                             }}
                                             className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow-lg shadow-green-500/30 hover:shadow-green-500/50 hover:-translate-y-0.5 transition-all active:scale-95"
                                         >

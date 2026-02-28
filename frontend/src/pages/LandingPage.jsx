@@ -587,26 +587,6 @@ const LandingPage = () => {
             ]
         },
         {
-            key: 'decisive-ask-first',
-            title: 'Decisive / Ask-First Mode',
-            subtitle: 'Governed AI Execution',
-            icon: <Workflow className="h-5 w-5 text-white" />,
-            color: 'from-amber-500 to-orange-500',
-            description: 'AI operates cautiously, asking for approvals before making changes.',
-            brief: 'This model applies automation with explicit checkpoints so AI does not proceed through critical actions without approval. It is useful where change risk is high, dependencies are complex, or compliance controls are strict. Organizations get safer transformation progress while preserving governance and operational stability.',
-            executiveView: [
-                'Strong governance',
-                'Reduced operational risk',
-                'Controlled transformation',
-                'Slower but safer automation'
-            ],
-            bestForPoints: [
-                'Enterprise modernization programs',
-                'Large legacy systems',
-                'Risk-sensitive domains'
-            ]
-        },
-        {
             key: 'coexistence',
             title: 'Co-Existence Mode',
             subtitle: 'Human + AI Collaboration Model',
@@ -650,6 +630,199 @@ const LandingPage = () => {
     ];
 
     const activeMode = platformModes.find((mode) => mode.key === activeModeKey) || platformModes[0];
+    const modeRoleBlueprints = {
+        developer: [
+            {
+                role: 'Project Lead',
+                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
+                icon: <Workflow className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Breaks tickets into manual implementation plans',
+                    'Reviews design and architecture decisions before coding',
+                    'Coordinates handoffs and review milestones'
+                ],
+                authority: 'Final technical approval before implementation',
+                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
+            },
+            {
+                role: 'Developers',
+                persona: 'Individual Contributors',
+                icon: <Code className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Implement code manually and validate correctness',
+                    'Own quality, edge-case handling, and optimization',
+                    'Write and execute tests, then deploy'
+                ],
+                authority: 'Approve/reject implementation quality',
+                mapsTo: 'Software Engineers (all levels)'
+            },
+            {
+                role: 'Product Manager (Optional)',
+                persona: 'Recommended for complex features',
+                icon: <FileText className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Validates implementation against business requirements',
+                    'Ensures acceptance criteria are testable and complete',
+                    'Confirms scope before release'
+                ],
+                authority: 'Business logic approval before release',
+                mapsTo: 'Product Owner or Product Manager'
+            }
+        ],
+        'auto-complete': [
+            {
+                role: 'Project Lead',
+                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
+                icon: <Workflow className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Creates guided prompts from tickets and user stories',
+                    'Reviews AI suggestions for architecture fit',
+                    'Controls where AI assistance is allowed'
+                ],
+                authority: 'Final approval on assisted outputs before merge',
+                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
+            },
+            {
+                role: 'Developers',
+                persona: 'Individual Contributors',
+                icon: <Code className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Use AI suggestions and manually validate every change',
+                    'Handle final refinement and reliability hardening',
+                    'Write tests and ship production-ready code'
+                ],
+                authority: 'Approve/reject AI-assisted code',
+                mapsTo: 'Software Engineers (all levels)'
+            },
+            {
+                role: 'Product Manager (Optional)',
+                persona: 'Recommended for complex features',
+                icon: <FileText className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Checks feature intent against business value',
+                    'Validates acceptance criteria in proposed output',
+                    'Flags scope drift early'
+                ],
+                authority: 'Business logic approval before finalization',
+                mapsTo: 'Product Owner or Product Manager'
+            }
+        ],
+        vibe: [
+            {
+                role: 'Project Lead',
+                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
+                icon: <Workflow className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Creates outcome-focused prompts from tickets and stories',
+                    'Reviews generated AAPs for technical accuracy',
+                    'Coordinates generation rounds and handoffs'
+                ],
+                authority: 'Final approval on AAP before code generation',
+                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
+            },
+            {
+                role: 'Developers',
+                persona: 'Individual Contributors',
+                icon: <Code className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Review generated code for quality and correctness',
+                    'Handle final 20% refinement (edge cases, optimizations)',
+                    'Write additional tests and deploy'
+                ],
+                authority: 'Approve/reject generated code and request regeneration',
+                mapsTo: 'Software Engineers (all levels)'
+            },
+            {
+                role: 'Product Manager (Optional)',
+                persona: 'Recommended for complex features',
+                icon: <FileText className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Validates that AAPs align with business requirements',
+                    'Ensures acceptance criteria are met in the plan',
+                    'Confirms outcome quality before execution'
+                ],
+                authority: 'Business logic approval before code generation',
+                mapsTo: 'Product Owner or Product Manager'
+            }
+        ],
+        coexistence: [
+            {
+                role: 'Project Lead',
+                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
+                icon: <Workflow className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Creates prompts from tickets and user stories',
+                    'Reviews and approves AAPs for technical accuracy',
+                    'Coordinates the generation process and handoffs'
+                ],
+                authority: 'Final approval on AAP before code generation',
+                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
+            },
+            {
+                role: 'Developers',
+                persona: 'Individual Contributors',
+                icon: <Code className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Review generated code for quality and correctness',
+                    'Handle final 20% refinement (edge cases, optimizations)',
+                    'Write additional tests as needed and deploy'
+                ],
+                authority: 'Approve/reject generated code and request regeneration',
+                mapsTo: 'Software Engineers (all levels)'
+            },
+            {
+                role: 'Product Manager (Optional)',
+                persona: 'Recommended for complex features',
+                icon: <FileText className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Validates that AAPs align with business requirements',
+                    'Ensures acceptance criteria are met in the plan',
+                    'Confirms scope and intent before generation'
+                ],
+                authority: 'Business logic approval before code generation',
+                mapsTo: 'Product Owner or Product Manager'
+            }
+        ],
+        sandbox: [
+            {
+                role: 'Project Lead',
+                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
+                icon: <Workflow className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Defines guardrails and boundaries for autonomous runs',
+                    'Approves autonomy scope and safety checkpoints',
+                    'Reviews experiment outcomes and escalation events'
+                ],
+                authority: 'Controls autonomy level and production promotion',
+                mapsTo: 'Tech Lead, Engineering Manager'
+            },
+            {
+                role: 'Developers',
+                persona: 'Individual Contributors',
+                icon: <Code className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Audit AI-generated code and test artifacts',
+                    'Fix reliability/security issues before promotion',
+                    'Own production deployment decisions'
+                ],
+                authority: 'Approve/reject sandbox output for production',
+                mapsTo: 'Software Engineers (all levels)'
+            },
+            {
+                role: 'Product Manager (Optional)',
+                persona: 'Recommended for complex features',
+                icon: <FileText className="h-4 w-4 text-white" />,
+                responsibilities: [
+                    'Checks feature fit against roadmap priorities',
+                    'Validates expected user value from generated output',
+                    'Approves experiment-to-product transitions'
+                ],
+                authority: 'Business approval before production rollout',
+                mapsTo: 'Product Owner or Product Manager'
+            }
+        ],
+    };
+    const activeModeRoles = modeRoleBlueprints[activeMode.key] || modeRoleBlueprints.coexistence;
     const toSentence = (items = []) => {
         if (items.length === 0) return '';
         if (items.length === 1) return items[0];
@@ -753,7 +926,7 @@ const LandingPage = () => {
                             AI-Powered Analysis v1.0
                         </div>
                         <h1 className="text-4xl sm:text-5xl lg:text-7xl font-extrabold tracking-tight leading-tight text-app-text-main">
-                            Transform <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Ideas</span> into Intelligence
+                            Transform <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Ideas</span> with Intelligence
                         </h1>
                         <p className="text-lg sm:text-xl text-app-text-label leading-relaxed max-w-lg mx-auto lg:mx-0">
                             Instantly analyze concepts, ideas, and Business Requirement Documents (BRDs) with advanced AI. Get feasibility checks and technical blueprints in seconds.
@@ -936,6 +1109,58 @@ const LandingPage = () => {
                                 )}
                             </div>
                         </article>
+                    </div>
+
+                    <div key={`who-${activeMode.key}`} className="mt-8 rounded-2xl border border-app-border-light bg-app-bg-card shadow-sm p-5 md:p-6 animate-fade-in-up">
+                        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                            <div>
+                                <h3 className="text-2xl font-bold text-app-text-main">Who Does What</h3>
+                                <p className="text-sm text-app-text-light mt-1">
+                                    During the Blitzy process, roles shift by mode. Current view: <span className="font-semibold text-app-text-main">{activeMode.title}</span>
+                                </p>
+                            </div>
+                            <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold text-white bg-gradient-to-r ${activeMode.color}`}>
+                                {activeMode.title}
+                            </span>
+                        </div>
+
+                        <div className="grid md:grid-cols-3 gap-4">
+                            {activeModeRoles.map((item) => (
+                                <article
+                                    key={`${activeMode.key}-${item.role}`}
+                                    className="rounded-xl border border-app-border-light bg-app-bg-page p-4 hover:shadow-md transition-all duration-300 hover:-translate-y-0.5"
+                                >
+                                    <div className="flex items-start justify-between gap-3 mb-3">
+                                        <div>
+                                            <h4 className="text-base font-bold text-app-text-main">{item.role}</h4>
+                                            <p className="text-xs text-app-text-light mt-0.5">{item.persona}</p>
+                                        </div>
+                                        <div className={`h-8 w-8 rounded-lg bg-gradient-to-br ${activeMode.color} flex items-center justify-center shrink-0`}>
+                                            {item.icon}
+                                        </div>
+                                    </div>
+
+                                    <p className="text-[10px] font-bold tracking-widest uppercase text-app-text-light mb-2">Responsibilities</p>
+                                    <ul className="space-y-1.5 mb-3">
+                                        {item.responsibilities.map((point) => (
+                                            <li key={point} className="flex items-start gap-2 text-xs text-app-text-label leading-relaxed">
+                                                <CheckCircle className="h-3.5 w-3.5 text-app-status-success mt-0.5 shrink-0" />
+                                                <span>{point}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+
+                                    <div className="rounded-lg border border-app-border-light bg-app-bg-card p-2.5 space-y-2">
+                                        <p className="text-xs text-app-text-label leading-relaxed">
+                                            <span className="font-semibold text-app-text-main">Decision Authority:</span> {item.authority}
+                                        </p>
+                                        <p className="text-xs text-app-text-label leading-relaxed">
+                                            <span className="font-semibold text-app-text-main">Maps to:</span> {item.mapsTo}
+                                        </p>
+                                    </div>
+                                </article>
+                            ))}
+                        </div>
                     </div>
                 </div>
             </section>
