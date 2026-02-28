@@ -14,7 +14,7 @@ const STEP_ICONS = {
     'AI Analysis': Brain,
     'Prerequisite Classification': KeyRound,
     'Task Creation': ListChecks,
-    'Agent Execution': Bot,
+    'On Flight': Bot,
     'Complete': Flag,
 };
 

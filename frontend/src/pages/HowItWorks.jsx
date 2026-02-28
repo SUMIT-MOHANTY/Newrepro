@@ -20,16 +20,23 @@ const AnimatedWorkflowDiagram = () => {
 
     const ctx = gsap.context(() => {
       // Clear previous styles/tweens on human elements if context is recreating
-      gsap.set(['.packet-to-human', '.packet-dev-to-human', '.packet-human-to-nxdune', '.path-nxdune-human', '.path-human-nxdune', '.path-dev-human'], { opacity: 0 });
+      gsap.set([
+        '.packet-to-human', '.packet-dev-to-human', '.packet-human-to-nxdune',
+        '.path-nxdune-human', '.path-human-nxdune', '.path-dev-human',
+        '.packet-to-human-test', '.packet-test-to-human', '.packet-human-test-to-nxdune',
+        '.path-nxdune-human-test', '.path-human-test-nxdune', '.path-test-human',
+        '.packet-to-human-deploy', '.packet-deploy-to-human', '.packet-human-deploy-to-nxdune',
+        '.path-nxdune-human-deploy', '.path-human-deploy-nxdune', '.path-deploy-human'
+      ], { opacity: 0 });
 
       const tl = gsap.timeline({ repeat: -1 });
       const isCoex = executionMode === "coexistence";
       const isAskFirst = autonomyMode === "ask_first";
 
       if (isCoex || isAskFirst) {
-        gsap.set('.path-nxdune-human', { opacity: isCoex ? 1 : 0 });
-        gsap.set('.path-dev-human', { opacity: isAskFirst ? 1 : 0 });
-        gsap.set('.path-human-nxdune', { opacity: (isCoex || isAskFirst) ? 1 : 0 });
+        gsap.set(['.path-nxdune-human', '.path-nxdune-human-test', '.path-nxdune-human-deploy'], { opacity: isCoex ? 1 : 0 });
+        gsap.set(['.path-dev-human', '.path-test-human', '.path-deploy-human'], { opacity: isAskFirst ? 1 : 0 });
+        gsap.set(['.path-human-nxdune', '.path-human-test-nxdune', '.path-human-deploy-nxdune'], { opacity: (isCoex || isAskFirst) ? 1 : 0 });
       }
 
       // Step 1: Uploading
@@ -109,36 +116,110 @@ const AnimatedWorkflowDiagram = () => {
       }
 
       // Step 7: Test Task -> Kaktox
-      tl.call(() => setCurrentStepText("7. Appointing Test Task to Test Agent..."))
-        .to('.packet-to-test', { opacity: 1, duration: 0.2 })
-        .to('.packet-to-test', { motionPath: { path: '.path-nxdune-test', align: '.path-nxdune-test', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
-        .to('.agent-ring-test', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
-        .set('.packet-to-test', { opacity: 0 })
+      if (isCoex) {
+        tl.call(() => setCurrentStepText("7. Co-working QA: Appointing Test & QA Human..."))
+          .to(['.packet-to-test', '.packet-to-human-test'], { opacity: 1, duration: 0.2 })
+          .to('.packet-to-test', { motionPath: { path: '.path-nxdune-test', align: '.path-nxdune-test', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "to-test")
+          .to('.packet-to-human-test', { motionPath: { path: '.path-nxdune-human-test', align: '.path-nxdune-human-test', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "to-test")
+          .to(['.agent-ring-test', '.human-qa-ring'], { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set(['.packet-to-test', '.packet-to-human-test'], { opacity: 0 })
 
-        // Test Working
-        .call(() => setCurrentStepText("8. Test Agent running tests... Code passes."))
-        .to('.agent-pulse-test', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 })
-        .to('.packet-return-test', { opacity: 1, duration: 0.2 })
-        .to('.packet-return-test', { motionPath: { path: '.path-test-nxdune', align: '.path-test-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
-        .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
-        .set('.packet-return-test', { opacity: 0 })
+          .call(() => setCurrentStepText("8. Test Agent & QA working... Code passes."))
+          .to(['.agent-pulse-test', '.human-qa-pulse'], { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 });
+      } else {
+        tl.call(() => setCurrentStepText("7. Appointing Test Task to Test Agent..."))
+          .to('.packet-to-test', { opacity: 1, duration: 0.2 })
+          .to('.packet-to-test', { motionPath: { path: '.path-nxdune-test', align: '.path-nxdune-test', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .to('.agent-ring-test', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set('.packet-to-test', { opacity: 0 })
 
-        // Deploy Task -> CloudSpx
-        .call(() => setCurrentStepText("9. Appointing Deploy Task to Deploy Agent..."))
-        .to('.packet-to-deploy', { opacity: 1, duration: 0.2 })
-        .to('.packet-to-deploy', { motionPath: { path: '.path-nxdune-deploy', align: '.path-nxdune-deploy', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
-        .to('.agent-ring-deploy', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
-        .set('.packet-to-deploy', { opacity: 0 })
+          // Test Working
+          .call(() => setCurrentStepText("8. Test Agent running tests... Code passes."))
+          .to('.agent-pulse-test', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 });
+      }
 
-        // Deploy Working
-        .call(() => setCurrentStepText("10. Deploy Agent pushing code... Deployed!"))
-        .to('.agent-pulse-deploy', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 })
-        .to('.packet-return-deploy', { opacity: 1, duration: 0.2 })
-        .to('.packet-return-deploy', { motionPath: { path: '.path-deploy-nxdune', align: '.path-deploy-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
-        .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
-        .set('.packet-return-deploy', { opacity: 0 })
+      if (isAskFirst) {
+        tl.call(() => setCurrentStepText("QA Awaiting Human Approval..."))
+          .to('.packet-test-to-human', { opacity: 1, duration: 0.2 })
+          .to('.packet-test-to-human', { motionPath: { path: '.path-test-human', align: '.path-test-human', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .set('.packet-test-to-human', { opacity: 0 })
+          .to('.human-qa-pulse', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 1 })
 
-        .call(() => setCurrentStepText("Loop completed successfully."))
+          .call(() => setCurrentStepText("QA Action Approved! Returning..."))
+          .to('.packet-human-test-to-nxdune', { opacity: 1, duration: 0.2 })
+          .to('.packet-human-test-to-nxdune', { motionPath: { path: '.path-human-test-nxdune', align: '.path-human-test-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set('.packet-human-test-to-nxdune', { opacity: 0 });
+      } else {
+        if (isCoex) {
+          tl.call(() => setCurrentStepText("Co-work done. Returning..."))
+            .to(['.packet-return-test', '.packet-human-test-to-nxdune'], { opacity: 1, duration: 0.2 })
+            .to('.packet-return-test', { motionPath: { path: '.path-test-nxdune', align: '.path-test-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "return-test")
+            .to('.packet-human-test-to-nxdune', { motionPath: { path: '.path-human-test-nxdune', align: '.path-human-test-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "return-test")
+            .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+            .set(['.packet-return-test', '.packet-human-test-to-nxdune'], { opacity: 0 });
+        } else {
+          tl.call(() => setCurrentStepText("Test Done. Returning..."))
+            .to('.packet-return-test', { opacity: 1, duration: 0.2 })
+            .to('.packet-return-test', { motionPath: { path: '.path-test-nxdune', align: '.path-test-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+            .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+            .set('.packet-return-test', { opacity: 0 });
+        }
+      }
+
+      // Step 9: Deploy Task -> CloudSpx
+      if (isCoex) {
+        tl.call(() => setCurrentStepText("9. Co-working Deploy: Appointing Deploy & DevOps Human..."))
+          .to(['.packet-to-deploy', '.packet-to-human-deploy'], { opacity: 1, duration: 0.2 })
+          .to('.packet-to-deploy', { motionPath: { path: '.path-nxdune-deploy', align: '.path-nxdune-deploy', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "to-deploy")
+          .to('.packet-to-human-deploy', { motionPath: { path: '.path-nxdune-human-deploy', align: '.path-nxdune-human-deploy', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "to-deploy")
+          .to(['.agent-ring-deploy', '.human-deploy-ring'], { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set(['.packet-to-deploy', '.packet-to-human-deploy'], { opacity: 0 })
+
+          .call(() => setCurrentStepText("10. Deploy Agent & DevOps pushing code... Deployed!"))
+          .to(['.agent-pulse-deploy', '.human-deploy-pulse'], { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 });
+      } else {
+        tl.call(() => setCurrentStepText("9. Appointing Deploy Task to Deploy Agent..."))
+          .to('.packet-to-deploy', { opacity: 1, duration: 0.2 })
+          .to('.packet-to-deploy', { motionPath: { path: '.path-nxdune-deploy', align: '.path-nxdune-deploy', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .to('.agent-ring-deploy', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set('.packet-to-deploy', { opacity: 0 })
+
+          // Deploy Working
+          .call(() => setCurrentStepText("10. Deploy Agent pushing code... Deployed!"))
+          .to('.agent-pulse-deploy', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 3 });
+      }
+
+      if (isAskFirst) {
+        tl.call(() => setCurrentStepText("Deploy Awaiting Human Approval..."))
+          .to('.packet-deploy-to-human', { opacity: 1, duration: 0.2 })
+          .to('.packet-deploy-to-human', { motionPath: { path: '.path-deploy-human', align: '.path-deploy-human', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .set('.packet-deploy-to-human', { opacity: 0 })
+          .to('.human-deploy-pulse', { opacity: 1, scale: 1.1, duration: 0.5, yoyo: true, repeat: 1 })
+
+          .call(() => setCurrentStepText("Deploy Action Approved! Returning..."))
+          .to('.packet-human-deploy-to-nxdune', { opacity: 1, duration: 0.2 })
+          .to('.packet-human-deploy-to-nxdune', { motionPath: { path: '.path-human-deploy-nxdune', align: '.path-human-deploy-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+          .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+          .set('.packet-human-deploy-to-nxdune', { opacity: 0 });
+      } else {
+        if (isCoex) {
+          tl.call(() => setCurrentStepText("Co-work done. Returning..."))
+            .to(['.packet-return-deploy', '.packet-human-deploy-to-nxdune'], { opacity: 1, duration: 0.2 })
+            .to('.packet-return-deploy', { motionPath: { path: '.path-deploy-nxdune', align: '.path-deploy-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "return-deploy")
+            .to('.packet-human-deploy-to-nxdune', { motionPath: { path: '.path-human-deploy-nxdune', align: '.path-human-deploy-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" }, "return-deploy")
+            .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+            .set(['.packet-return-deploy', '.packet-human-deploy-to-nxdune'], { opacity: 0 });
+        } else {
+          tl.call(() => setCurrentStepText("Deploy Done. Returning..."))
+            .to('.packet-return-deploy', { opacity: 1, duration: 0.2 })
+            .to('.packet-return-deploy', { motionPath: { path: '.path-deploy-nxdune', align: '.path-deploy-nxdune', alignOrigin: [0.5, 0.5] }, duration: 1.5, ease: "power1.inOut" })
+            .to('.nxdune-ring', { scale: 1.5, opacity: 0, duration: 0.5 }, "-=0.2")
+            .set('.packet-return-deploy', { opacity: 0 });
+        }
+      }
+
+      tl.call(() => setCurrentStepText("Loop completed successfully."))
         .to({}, { duration: 2 }); // Pause before repeat
 
     }, containerRef);
@@ -240,9 +321,17 @@ const AnimatedWorkflowDiagram = () => {
           <path className="path-human-nxdune" d="M 750 250 C 700 250, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
           <path className="path-dev-human" d="M 950 150 C 900 150, 880 250, 850 250" stroke="#f59e0b" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
 
+          <path className="path-nxdune-human-test" d="M 650 350 C 680 350, 700 450, 750 450" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-human-test-nxdune" d="M 750 450 C 700 450, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-test-human" d="M 950 350 C 900 350, 880 450, 850 450" stroke="#ec4899" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+
+          <path className="path-nxdune-human-deploy" d="M 650 350 C 680 350, 700 650, 750 650" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-human-deploy-nxdune" d="M 750 650 C 700 650, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-deploy-human" d="M 950 550 C 900 550, 880 650, 850 650" stroke="#10b981" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+
           {/* Return Paths (Task updates) */}
           <path className="path-dev-nxdune" d="M 950 170 C 800 170, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
-          <path className="path-test-nxdune" d="M 950 370 L 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
+          <path className="path-test-nxdune" d="M 950 370 C 800 370, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
           <path className="path-deploy-nxdune" d="M 950 530 C 800 530, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
 
           {/* Packets */}
@@ -256,6 +345,14 @@ const AnimatedWorkflowDiagram = () => {
           <circle className="packet-to-human" r="5" fill="#f59e0b" filter="url(#glowFlow)" opacity="0" />
           <circle className="packet-dev-to-human" r="5" fill="#f59e0b" filter="url(#glowFlow)" opacity="0" />
           <circle className="packet-human-to-nxdune" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
+
+          <circle className="packet-to-human-test" r="5" fill="#ec4899" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-test-to-human" r="5" fill="#ec4899" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-human-test-to-nxdune" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
+
+          <circle className="packet-to-human-deploy" r="5" fill="#10b981" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-deploy-to-human" r="5" fill="#10b981" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-human-deploy-to-nxdune" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
 
           {/* Return Packets */}
           <circle className="packet-return-dev" r="4" fill="#34d399" filter="url(#glowFlow)" />
@@ -307,6 +404,38 @@ const AnimatedWorkflowDiagram = () => {
                 </svg>
               </div>
               <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">Developer / Approver</span>
+            </div>
+          </div>
+
+          {/* Human QA Node */}
+          <div className={`absolute top-[450px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
+            <div className="human-qa-pulse absolute inset-0 bg-pink-500 rounded-2xl blur-xl opacity-0"></div>
+            <div className="human-qa-ring absolute inset-0 rounded-2xl border-2 border-pink-500/50"></div>
+            <div className="relative w-28 h-20 bg-white border border-pink-500/30 rounded-2xl shadow-[0_0_20px_rgba(236,72,153,0.15)] flex flex-col items-center justify-center p-2">
+              <div className="absolute -top-3 px-2 py-0.5 bg-pink-100 text-pink-700 text-[9px] font-bold rounded-full border border-pink-200 uppercase tracking-wider">Human</div>
+              <div className="w-8 h-8 rounded-full bg-pink-50 border border-pink-200 flex items-center justify-center mb-1">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-pink-600">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+              </div>
+              <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">QA / Approver</span>
+            </div>
+          </div>
+
+          {/* Human DevOps Node */}
+          <div className={`absolute top-[650px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
+            <div className="human-deploy-pulse absolute inset-0 bg-emerald-500 rounded-2xl blur-xl opacity-0"></div>
+            <div className="human-deploy-ring absolute inset-0 rounded-2xl border-2 border-emerald-500/50"></div>
+            <div className="relative w-28 h-20 bg-white border border-emerald-500/30 rounded-2xl shadow-[0_0_20px_rgba(16,185,129,0.15)] flex flex-col items-center justify-center p-2">
+              <div className="absolute -top-3 px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-bold rounded-full border border-emerald-200 uppercase tracking-wider">Human</div>
+              <div className="w-8 h-8 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center mb-1">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-600">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+              </div>
+              <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">DevOps / Approver</span>
             </div>
           </div>
 

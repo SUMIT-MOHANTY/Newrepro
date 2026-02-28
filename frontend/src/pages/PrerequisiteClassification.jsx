@@ -454,7 +454,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             const repo = globalGitRepoUrl.trim();
             const pat = globalGitToken.trim();
             if (!repo) {
-                throw new Error('Global Git repository URL is required.');
+                throw new Error('Git repository URL is required.');
             }
             if (!hasSavedGlobalGitToken && !pat) {
                 throw new Error('Global PAT is required.');
@@ -778,7 +778,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="grid grid-cols-1 gap-4">
                             <div>
                                 <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
-                                    Global Git Repository URL <span className="text-red-500">*</span>
+                                    Git Repository URL <span className="text-red-500">*</span>
                                 </label>
                                 <input
                                     type="text"

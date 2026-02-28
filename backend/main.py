@@ -611,7 +611,7 @@ async def get_project_roadmap_step(
         2 - AI Analysis                  (BRD uploaded & analysis completed)
         3 - Prerequisite Classification  (prerequisites / credentials identified)
         4 - Task Creation                (tasks auto-generated via external API)
-        5 - Agent Execution              (agents working on tasks)
+        5 - On Flight              (agents working on tasks)
         6 - Complete                     (all tasks completed)
 
     Returns a `step_statuses` array with per-step status:
@@ -624,7 +624,7 @@ async def get_project_roadmap_step(
         "AI Analysis",
         "Prerequisite Classification",
         "Task Creation",
-        "Agent Execution",
+        "On Flight",
         "Complete",
     ]
 
@@ -700,7 +700,7 @@ async def get_project_roadmap_step(
 
             if page_results:
                 has_tasks = True
-                current_step = 5  # Tasks created, now at "Agent Execution"
+                current_step = 5  # Tasks created, now at "On Flight"
 
                 # Check if any agent is actively working (has progress or is assigned)
                 any_agent_working = any(
@@ -710,7 +710,7 @@ async def get_project_roadmap_step(
                 )
 
                 if any_agent_working:
-                    current_step = 5  # Still at Agent Execution (active)
+                    current_step = 5  # Still at On Flight (active)
 
                 # Check if ALL tasks are completed
                 all_tasks_complete = all(

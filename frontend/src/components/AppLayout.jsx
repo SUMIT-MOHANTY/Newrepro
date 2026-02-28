@@ -18,7 +18,7 @@ const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 
 const DEFAULT_ROADMAP = {
-    steps: ['Project Setup', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'Agent Execution', 'Complete'],
+    steps: ['Project Setup', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'On Flight', 'Complete'],
     current_step: 0,
     step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
     failed_step: null,
@@ -240,14 +240,8 @@ export default function AppLayout({ children }) {
         };
     }
 
-    const forcedRoadmapStepIndex = (() => {
-        if (!roadmapData?.steps || !Array.isArray(roadmapData.steps)) return null;
-        if (currentView === 'taskCreation' || currentView === 'statusDashboard') {
-            const idx = roadmapData.steps.findIndex((s) => s === 'Agent Execution');
-            return idx >= 0 ? idx : null;
-        }
-        return null;
-    })();
+    // Let backend roadmap state drive the active step; do not force On Flight by page.
+    const forcedRoadmapStepIndex = null;
 
     // Backward compatibility for components expecting the old fetch logic
     const fetchRoadmapData = useCallback(() => {
