@@ -2491,7 +2491,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4"
                                 />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Git Repository URL</label>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL</label>
                                 <input
                                     type="text"
                                     value={editingAgentRepoUrl}
@@ -2545,7 +2545,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </p>
                                 ) : (
                                     <>
-                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Git Repository URL (optional)</label>
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL (optional)</label>
                                         <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
                                         <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token (optional)</label>
@@ -2585,7 +2585,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             {`To run ${gitModalAgent.missingConfig.length} agent(s), provide one global Git repository and PAT. All agents will use this same configuration.`}
                                         </p>
                                         <div className="p-4 border border-indigo-100 bg-app-primary-light/30 rounded-xl">
-                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Git Repository URL <span className="text-red-400">*</span></label>
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
                                             <input
                                                 type="text"
                                                 value={agentsGitConfig.__global__?.git_repo_url || ''}
@@ -2620,7 +2620,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <>
                                         <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, provide global Git settings that all agents in this project will use.</p>
 
-                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Git Repository URL <span className="text-red-400">*</span></label>
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
                                         <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
                                         <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token <span className="text-red-400">*</span></label>
