@@ -150,7 +150,7 @@ function toDateKey(value) {
     return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '9999-12-31';
 }
 
-export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole }) {
+export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole, fetchRoadmapData }) {
     const navigate = useNavigate();
     const location = useLocation();
     const queryClient = useQueryClient();
@@ -269,6 +269,51 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         enabled: !!token,
     });
     const hasGlobalGitConfigured = agents.some(agent => Boolean(agent.git_repo_url && agent.has_git_token));
+    const devAgents = useMemo(() => {
+        const parseAgentNumber = (agentId) => {
+            const match = String(agentId || '').match(/^agent_(\d+)$/i);
+            if (!match) return Number.MAX_SAFE_INTEGER;
+            return Number.parseInt(match[1], 10);
+        };
+
+        return [...agents]
+            .filter(agent => agent.id !== 'agent_03' && agent.id !== 'agent_04')
+            .sort((a, b) => {
+                const aNumber = parseAgentNumber(a.id);
+                const bNumber = parseAgentNumber(b.id);
+                if (aNumber !== bNumber) return aNumber - bNumber;
+                return String(a.id).localeCompare(String(b.id));
+            });
+    }, [agents]);
+
+    const orderedAgents = useMemo(() => {
+        const masterAgent = agents.find(agent => agent.id === 'agent_04');
+        const gitManagerAgent = agents.find(agent => agent.id === 'agent_03');
+
+        return [
+            ...(masterAgent ? [masterAgent] : []),
+            ...(gitManagerAgent ? [gitManagerAgent] : []),
+            ...devAgents,
+        ];
+    }, [agents, devAgents]);
+
+    const agentDisplayNames = useMemo(() => {
+        const names = {
+            agent_04: 'Master Agent',
+            agent_03: 'Git Manager',
+        };
+
+        devAgents.forEach((agent, index) => {
+            names[agent.id] = `Dev Agent ${index + 1}`;
+        });
+
+        return names;
+    }, [devAgents]);
+
+    const getAgentDisplayName = useCallback((agent) => {
+        if (!agent) return 'Agent';
+        return agentDisplayNames[agent.id] || agent.name || agent.id;
+    }, [agentDisplayNames]);
 
     const setAgents = useCallback((updater) => {
         queryClient.setQueryData(['agents', selectedProjectKey], updater);
@@ -408,6 +453,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         queryClient.invalidateQueries({ queryKey: ['agents', selectedProjectKey] });
     }, [queryClient, selectedProjectKey]);
 
+    const refreshRoadmap = useCallback(async () => {
+        if (!fetchRoadmapData || !selectedProjectKey) return;
+        try {
+            await fetchRoadmapData(selectedProjectKey);
+        } catch (e) {
+            console.error('Roadmap refresh failed', e);
+        }
+    }, [fetchRoadmapData, selectedProjectKey]);
+
     // ── Fetch tasks (External API) ───────────────────────────────────
     const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
         if (!hasValidTaskToken) {
@@ -487,9 +541,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const interval = setInterval(() => {
             fetchAgents(true);
             fetchTasks(false, 1, true); // silent reload
+            refreshRoadmap();
         }, 3000);
         return () => clearInterval(interval);
-    }, [agents, fetchAgents, fetchTasks]);
+    }, [agents, fetchAgents, fetchTasks, refreshRoadmap]);
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
@@ -524,6 +579,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
+            await refreshRoadmap();
         } catch (e) {
             console.error('Run failed', e);
         } finally {
@@ -626,12 +682,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
+            await refreshRoadmap();
         } catch (e) {
             console.error('Run all failed', e);
         } finally {
             setRunningAll(false);
         }
-    }, [agents, token, hasValidTaskToken, taskToken, withProjectToken, fetchAgents, fetchTasks, navigate]);
+    }, [agents, token, hasValidTaskToken, taskToken, withProjectToken, fetchAgents, fetchTasks, refreshRoadmap, navigate]);
 
     useEffect(() => {
         if (!isAiAssistMode) return;
@@ -667,6 +724,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
+            await refreshRoadmap();
         } catch (e) {
             console.error('Run all failed with config', e);
         } finally {
@@ -748,6 +806,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             return () => clearInterval(interval);
         }
     }, [previewStatus.status, fetchPreviewStatus]);
+
+    useEffect(() => {
+        const status = (previewStatus?.status || '').toLowerCase();
+        if (!status || status === 'none') return;
+        refreshRoadmap();
+    }, [previewStatus?.status, refreshRoadmap]);
 
     // Check preview status on mount
     useEffect(() => {
@@ -869,6 +933,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const isGitManager = agent.id === 'agent_03';
         const isMasterAgent = agent.id === 'agent_04';
         const isSystemAgent = isGitManager || isMasterAgent;
+        const displayName = getAgentDisplayName(agent);
         const cfg = agentConfig[agent.id] || agentConfig.agent_01;
         const Icon = cfg.icon;
         const isRunning = agent.status === 'running';
@@ -890,7 +955,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <div>
                             <div className="flex items-center gap-2">
                                 <h4 className="text-sm font-bold text-app-text-main">
-                                    {isGitManager ? 'Git Manager' : isMasterAgent ? 'Master Agent' : agent.name}
+                                    {displayName}
                                 </h4>
                                 {!isSystemAgent && (
                                     <button
@@ -983,7 +1048,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     ? `bg-gradient-to-r ${cfg.gradient} hover:shadow-md hover:-translate-y-0.5`
                                     : 'bg-gray-300 cursor-not-allowed'
                                     }`}
-                                title={!canRun ? 'No pending tasks available' : `Run ${agent.name}`}
+                                title={!canRun ? 'No pending tasks available' : `Run ${displayName}`}
                             >
                                 {runningAgent === agent.id ? (<><Loader2 className="w-3 h-3 animate-spin" /> Starting...</>) : (<><Play className="w-3 h-3" /> Run Agent</>)}
                             </button>
@@ -2005,7 +2070,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         </div>
 
                                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                                            {agents.map(agent => renderAgentCard(agent))}
+                                            {orderedAgents.map(agent => renderAgentCard(agent))}
 
                                             {/* ── Preview Deploy Section (Tile Format) ────────────────────── */}
                                             <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow h-full">
@@ -2017,7 +2082,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <Globe className="w-5 h-5 text-white" />
                                                         </div>
                                                         <div>
-                                                            <h4 className="text-sm font-bold text-app-text-main">Live Preview</h4>
+                                                            <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>
                                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">agent/integration</p>
                                                         </div>
                                                     </div>
@@ -2212,7 +2277,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-app-text-label">
                                     <div className="flex items-center gap-3">
                                         <Terminal className="w-5 h-5 text-green-400" />
-                                        <h3 className="font-bold text-white text-sm">{agent.name} — Execution Log</h3>
+                                        <h3 className="font-bold text-white text-sm">{getAgentDisplayName(agent)} — Execution Log</h3>
                                     </div>
                                     <button onClick={() => setShowLogModal(null)} className="text-app-text-light hover:text-white p-1 rounded hover:bg-gray-700 transition-colors">
                                         <X className="w-5 h-5" />
@@ -2651,7 +2716,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </>
                                 ) : (
                                     <>
-                                        <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, provide global Git settings that all agents in this project will use.</p>
+                                        <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{getAgentDisplayName(gitModalAgent)}</b>, provide global Git settings that all agents in this project will use.</p>
 
                                         <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
                                         <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />

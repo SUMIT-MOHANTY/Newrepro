@@ -611,8 +611,8 @@ async def get_project_roadmap_step(
         2 - AI Analysis                  (BRD uploaded & analysis completed)
         3 - Prerequisite Classification  (prerequisites / credentials identified)
         4 - Task Creation                (tasks auto-generated via external API)
-        5 - On Flight              (agents working on tasks)
-        6 - Complete                     (all tasks completed)
+        5 - On Flight                    (agents executing task work)
+        6 - Complete                     (deploy requested/succeeded)
 
     Returns a `step_statuses` array with per-step status:
         "completed" | "active" | "pending" | "failed"
@@ -642,8 +642,9 @@ async def get_project_roadmap_step(
 
     # Step 0 (Project Setup) is always complete once a governance response exists
     # Step 1 (Requirement Screening) is complete: governance submitted
-    current_step = 2  # user is now at "AI Analysis"
+    current_step = 2  # default active step before analysis is completed
     failed_step = None
+    roadmap_project_token = _normalize_project_token(governance.project_token or str(governance.id))
 
     # 2. Find documents linked to this governance result
     project_name = governance.project_name or ""
@@ -676,19 +677,14 @@ async def get_project_roadmap_step(
         has_analysis = any(
             _doc_has_completed_analysis(doc) for doc in linked_docs
         )
-        if has_analysis:
-            current_step = 3  # AI Analysis complete, now at "Prerequisite Classification"
 
-            # Check if prerequisites were acknowledged
-            if governance.prerequisites_completed_at is not None:
-                current_step = 4  # Prerequisites done, now at "Task Creation"
-
-    # 3. Check external task management for task creation & agent execution
+    # 3. Check external task management for task creation & completion
+    prerequisites_done = governance.prerequisites_completed_at is not None
     has_tasks = False
     all_tasks_complete = False
     any_agent_working = False
 
-    if has_analysis and x_task_token:
+    if has_analysis and prerequisites_done and x_task_token:
         try:
             existing_page = await task_service.get_tasks(page=1, task_token=x_task_token)
             if isinstance(existing_page, list):
@@ -700,46 +696,103 @@ async def get_project_roadmap_step(
 
             if page_results:
                 has_tasks = True
-                current_step = 5  # Tasks created, now at "On Flight"
 
-                # Check if any agent is actively working (has progress or is assigned)
-                any_agent_working = any(
-                    (t.get("status") or "").lower() in ("in_progress", "in progress", "working", "assigned", "started")
-                    or (t.get("completion_percentage") or 0) > 0
-                    for t in page_results
-                )
+                active_statuses = {
+                    "in_progress", "in progress", "working", "assigned", "started",
+                    "on going", "ongoing", "in review", "review", "blocked",
+                }
+                done_statuses = {"completed", "done", "closed", "complete", "resolved"}
 
-                if any_agent_working:
-                    current_step = 5  # Still at On Flight (active)
+                def _task_status(task: Dict[str, Any]) -> str:
+                    return str(task.get("status") or task.get("taskStatus") or "").strip().lower()
 
-                # Check if ALL tasks are completed
+                def _task_completion(task: Dict[str, Any]) -> float:
+                    raw = (
+                        task.get("completion_percentage")
+                        if task.get("completion_percentage") is not None
+                        else task.get("progress")
+                    )
+                    try:
+                        return float(raw or 0)
+                    except (TypeError, ValueError):
+                        return 0.0
+
                 all_tasks_complete = all(
-                    (t.get("status") or "").lower() in ("completed", "done", "closed", "complete")
-                    or (t.get("completion_percentage") or 0) >= 100
+                    _task_status(t) in done_statuses or _task_completion(t) >= 100
                     for t in page_results
                 )
-
-                if all_tasks_complete:
-                    current_step = 6  # Complete
         except Exception as e:
             print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
-            # If task check fails, we don't mark it as failed - just stay at current step
+            # If task check fails, keep the last known roadmap state.
 
-    # Build per-step statuses
-    step_statuses = []
-    for i in range(len(STEP_LABELS)):
-        if failed_step is not None and i == failed_step:
-            step_statuses.append("failed")
-        elif i < current_step:
-            step_statuses.append("completed")
-        elif i == current_step:
-            step_statuses.append("active")
+    # 4. Check runtime agent statuses for true "On Flight" execution
+    try:
+        runtime_agents = agent_service.get_all_agents(roadmap_project_token)
+        any_agent_working = any(
+            (a.get("status") or "").lower() == "running" and a.get("id") not in {"agent_03", "agent_04"}
+            for a in runtime_agents
+        )
+    except Exception as e:
+        print(f"Roadmap: Failed to check agent runtime state for {identifier}: {e}")
+
+    # 5. Check preview deploy state to drive "Complete" activation/completion
+    deploy_status = "none"
+    deploy_in_progress = False
+    deploy_success = False
+    deploy_attempted = False
+    try:
+        preview_state = agent_service.get_preview_status(roadmap_project_token)
+        deploy_status = str((preview_state or {}).get("status") or "none").lower()
+        deploy_in_progress = deploy_status == "deploying"
+        deploy_success = deploy_status == "running"
+        deploy_attempted = deploy_status in {"deploying", "running", "error"}
+    except Exception as e:
+        print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
+
+    # Build per-step statuses with explicit stage semantics:
+    # - Task Creation turns green once tasks exist.
+    # - On Flight turns yellow while work is running and green once task work is complete.
+    # - Complete turns yellow on deploy request and green after successful deploy.
+    step_statuses = ["pending"] * len(STEP_LABELS)
+    step_statuses[0] = "completed"
+    step_statuses[1] = "completed"
+
+    if has_analysis:
+        step_statuses[2] = "completed"
+    else:
+        step_statuses[2] = "active"
+
+    if has_analysis:
+        step_statuses[3] = "completed" if prerequisites_done else "active"
+
+    if has_analysis and prerequisites_done:
+        step_statuses[4] = "completed" if has_tasks else "active"
+
+    if has_tasks:
+        on_flight_done = all_tasks_complete and not any_agent_working
+        if on_flight_done or deploy_attempted:
+            step_statuses[5] = "completed"
         else:
-            step_statuses.append("pending")
+            step_statuses[5] = "active"
+
+        if deploy_success:
+            step_statuses[6] = "completed"
+        elif deploy_in_progress or (deploy_attempted and not deploy_success):
+            step_statuses[6] = "active"
+        else:
+            step_statuses[6] = "pending"
+
+    # Derive current step from explicit statuses.
+    active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)
+    if active_step is not None:
+        current_step = active_step
+    else:
+        completed_indices = [idx for idx, status in enumerate(step_statuses) if status == "completed"]
+        current_step = completed_indices[-1] if completed_indices else 0
 
     return {
         "result_id": governance.id,
-        "project_token": governance.project_token or str(governance.id),
+        "project_token": roadmap_project_token or str(governance.id),
         "project_name": governance.project_name,
         "current_step": current_step,
         "current_step_label": STEP_LABELS[current_step] if current_step < len(STEP_LABELS) else "Complete",
