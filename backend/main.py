@@ -686,21 +686,32 @@ async def get_project_roadmap_step(
 
     if has_analysis and prerequisites_done and x_task_token:
         try:
-            existing_page = await task_service.get_tasks(page=1, task_token=x_task_token)
-            if isinstance(existing_page, list):
-                page_results = existing_page
-            elif isinstance(existing_page, dict):
-                page_results = existing_page.get("results") if isinstance(existing_page.get("results"), list) else []
-            else:
-                page_results = []
+            all_page_results: List[Dict[str, Any]] = []
+            page = 1
+            max_pages = 200
 
-            if page_results:
+            while page <= max_pages:
+                existing_page = await task_service.get_tasks(page=page, task_token=x_task_token)
+                if isinstance(existing_page, list):
+                    page_results = existing_page
+                    has_next = False
+                elif isinstance(existing_page, dict):
+                    page_results = existing_page.get("results") if isinstance(existing_page.get("results"), list) else []
+                    has_next = bool(existing_page.get("next"))
+                else:
+                    page_results = []
+                    has_next = False
+
+                if page_results:
+                    all_page_results.extend(page_results)
+
+                if not has_next:
+                    break
+                page += 1
+
+            if all_page_results:
                 has_tasks = True
 
-                active_statuses = {
-                    "in_progress", "in progress", "working", "assigned", "started",
-                    "on going", "ongoing", "in review", "review", "blocked",
-                }
                 done_statuses = {"completed", "done", "closed", "complete", "resolved"}
 
                 def _task_status(task: Dict[str, Any]) -> str:
@@ -719,7 +730,7 @@ async def get_project_roadmap_step(
 
                 all_tasks_complete = all(
                     _task_status(t) in done_statuses or _task_completion(t) >= 100
-                    for t in page_results
+                    for t in all_page_results
                 )
         except Exception as e:
             print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
@@ -752,7 +763,8 @@ async def get_project_roadmap_step(
     # Build per-step statuses with explicit stage semantics:
     # - Task Creation turns green once tasks exist.
     # - On Flight turns yellow while work is running and green once task work is complete.
-    # - Complete turns yellow on deploy request and green after successful deploy.
+    # - Complete is gated by On Flight completion:
+    #   yellow only after deploy click, green only after deploy success.
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[0] = "completed"
     step_statuses[1] = "completed"
@@ -770,15 +782,15 @@ async def get_project_roadmap_step(
 
     if has_tasks:
         on_flight_done = all_tasks_complete and not any_agent_working
-        if on_flight_done or deploy_attempted:
-            step_statuses[5] = "completed"
-        else:
-            step_statuses[5] = "active"
+        step_statuses[5] = "completed" if on_flight_done else "active"
 
-        if deploy_success:
-            step_statuses[6] = "completed"
-        elif deploy_in_progress or (deploy_attempted and not deploy_success):
-            step_statuses[6] = "active"
+        if on_flight_done:
+            if deploy_success:
+                step_statuses[6] = "completed"
+            elif deploy_in_progress or deploy_attempted:
+                step_statuses[6] = "active"
+            else:
+                step_statuses[6] = "pending"
         else:
             step_statuses[6] = "pending"
 

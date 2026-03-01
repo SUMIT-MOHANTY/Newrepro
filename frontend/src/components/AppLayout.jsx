@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
@@ -240,7 +240,40 @@ export default function AppLayout({ children }) {
         };
     }
 
-    // Let backend roadmap state drive the active step; do not force On Flight by page.
+    // Keep "On Flight" emphasis on Status Dashboard.
+    // On Task Creation page, keep the roadmap focused on Task Creation
+    // until deploy stage starts.
+    const roadmapDataForView = useMemo(() => {
+        if (!roadmapData) return roadmapData;
+        if (currentView !== 'taskCreation') return roadmapData;
+
+        const statuses = Array.isArray(roadmapData.step_statuses)
+            ? [...roadmapData.step_statuses]
+            : null;
+        const steps = Array.isArray(roadmapData.steps) && roadmapData.steps.length > 0
+            ? roadmapData.steps
+            : DEFAULT_ROADMAP.steps;
+
+        if (!statuses || statuses.length < 7) return roadmapData;
+
+        const completeStarted = statuses[6] === 'active' || statuses[6] === 'completed';
+        if (completeStarted) return roadmapData;
+
+        if (statuses[5] === 'active' || statuses[5] === 'completed') {
+            statuses[5] = 'pending';
+            statuses[4] = 'active';
+            return {
+                ...roadmapData,
+                current_step: 4,
+                current_step_label: steps[4] || 'Task Creation',
+                step_statuses: statuses,
+            };
+        }
+
+        return roadmapData;
+    }, [roadmapData, currentView]);
+
+    // Let backend roadmap state drive the active step.
     const forcedRoadmapStepIndex = null;
 
     // Backward compatibility for components expecting the old fetch logic
@@ -405,13 +438,13 @@ export default function AppLayout({ children }) {
                 </header>
 
                 {/* ── Project-level Roadmap Stepper — shown on all pages ── */}
-                {roadmapData && (
+                {roadmapDataForView && (
                     <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto">
                         <RoadmapHeader
-                            steps={roadmapData.steps || []}
-                            currentStep={roadmapData.current_step || 0}
-                            stepStatuses={roadmapData.step_statuses || null}
-                            failedStep={roadmapData.failed_step ?? null}
+                            steps={roadmapDataForView.steps || []}
+                            currentStep={roadmapDataForView.current_step || 0}
+                            stepStatuses={roadmapDataForView.step_statuses || null}
+                            failedStep={roadmapDataForView.failed_step ?? null}
                             activeStepIndex={forcedRoadmapStepIndex}
                         />
                     </div>
