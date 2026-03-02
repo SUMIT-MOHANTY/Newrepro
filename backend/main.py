@@ -88,6 +88,9 @@ async def analyze_document_with_ai(
     - model: Model name to use
     - stream: Set to true for streaming response (Server-Sent Events)
     """
+    if _all_answers_skipped_from_governance_context(request.governance_context):
+        raise HTTPException(status_code=403, detail=ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE)
+
     result = await ai_service.analyze_document(
         document_content=request.document_content,
         api_url=request.api_url,
@@ -306,7 +309,8 @@ async def upload_and_analyze_document(
 # ===== GOVERNANCE QUESTIONNAIRE ENDPOINTS =====
 
 ALL_SKIPPED_GOVERNANCE_MESSAGE = "Our IT team will reach out to you. Thanks for connecting."
-ALL_SKIPPED_HARD_STOP = "All governance questions were skipped. IT follow-up is required before BRD upload."
+ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE = "Sandbox is not approved. Our IT team will reach out to you soon."
+ALL_SKIPPED_HARD_STOP = "All governance questions were skipped. IT follow-up is required before BRD analysis."
 ALL_SKIPPED_SCORE = 5.0
 
 
@@ -329,6 +333,24 @@ def _all_answers_skipped_from_payload(payload: Any) -> bool:
             return False
 
     return True
+
+
+def _all_answers_skipped_from_governance_context(governance_context: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(governance_context, dict):
+        return False
+
+    answers = governance_context.get("answers")
+    if isinstance(answers, list):
+        answer_entries = [entry for entry in answers if isinstance(entry, dict)]
+        if not answer_entries or len(answer_entries) != len(answers):
+            return False
+        return all(_is_skip_option_label(entry.get("selected_option")) for entry in answer_entries)
+
+    if isinstance(answers, dict):
+        return _all_answers_skipped_from_payload(answers)
+
+    classification_description = str(governance_context.get("classification_description") or "").strip().lower()
+    return "our it team will reach out to you" in classification_description
 
 
 def _apply_all_skipped_override(scoring_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -520,6 +542,7 @@ async def get_governance_result(
         if all_answers_skipped
         else _classification_description(response.classification)
     )
+    hard_stops = [ALL_SKIPPED_HARD_STOP] if all_answers_skipped else []
 
     return schemas.GovernanceResult(
         id=response.id,
@@ -539,7 +562,7 @@ async def get_governance_result(
         classification_description=classification_description,
         recommendation=response.recommendation,
         pending_revision_reason=response.pending_revision_reason,
-        hard_stops=[],
+        hard_stops=hard_stops,
         answers=answers_list if answers_list else None,
         client_id=response.client_id,
         client_secret=response.client_secret,
@@ -880,7 +903,7 @@ def _generate_recommendation(scoring_result: dict, answers: dict) -> str:
         recommendation += (
             "**Screening Status: Incomplete**\n\n"
             "Our IT team will reach out to you. Thanks for connecting.\n\n"
-            "BRD upload is currently disabled until the IT team completes a follow-up review.\n\n"
+            "AI analysis is blocked until the IT team completes a follow-up review.\n\n"
         )
     elif hard_stops:
         recommendation += f"**⚠️ HARD STOPS TRIGGERED:**\n"

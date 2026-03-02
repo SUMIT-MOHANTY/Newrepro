@@ -878,7 +878,6 @@ const GovernanceResult = ({ result, onBack }) => {
                                         <>
                                             <li className="flex gap-2"><span className="text-red-400">•</span> Screening answers were skipped</li>
                                             <li className="flex gap-2"><span className="text-red-400">•</span> IT follow-up is required</li>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> BRD upload remains disabled until review</li>
                                         </>
                                     ) : (
                                         <>
@@ -925,7 +924,7 @@ const GovernanceResult = ({ result, onBack }) => {
                     >
                         <ChevronLeft className="w-4 h-4" /> Back to Form
                     </button>
-                    {classification !== 'ENTERPRISE' && (
+                    {(classification !== 'ENTERPRISE' || isSkipFollowUpCase) && (
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));

@@ -97,6 +97,8 @@ const isLikelyHtml = (content = '') => {
 const sanitizeHtml = (content = '') => DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
 
 const normalizeProjectName = (name = '') => String(name || '').trim().toLowerCase();
+const ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE = 'Sandbox is not approved. Our IT team will reach out to you soon.';
+const isSkipSelectedOption = (label = '') => String(label || '').trim().toLowerCase() === 'skip';
 
 
 const normalizeDimensionScores = (dimensionScores = {}) => ({
@@ -245,6 +247,20 @@ const Dashboard = ({
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
+    const isAllGovernanceSkippedCase = (() => {
+        if (!governanceContext || typeof governanceContext !== 'object') return false;
+
+        const answerList = Array.isArray(governanceContext.answers) ? governanceContext.answers : [];
+        const allAnswersSkipped = answerList.length > 0
+            && answerList.every((answer) => isSkipSelectedOption(answer?.selected_option));
+
+        const classificationDescription = String(governanceContext.classification_description || '').toLowerCase();
+        const hasSkipFollowUpDescription = classificationDescription.includes('our it team will reach out to you');
+
+        return allAnswersSkipped || hasSkipFollowUpDescription;
+    })();
+    const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
+    const isEnterpriseUploadBlocked = isEnterpriseProject && !isAllGovernanceSkippedCase;
     const getEnterpriseUploadBlockMessage = () => {
         const description = String(governanceContext?.classification_description || '').trim();
         if (description) {
@@ -732,7 +748,7 @@ const Dashboard = ({
             setError('Governance context is missing for the selected project. Please open Governance Assessment.');
             return;
         }
-        if (String(governanceContext.classification || '') === 'ENTERPRISE') {
+        if (isEnterpriseUploadBlocked) {
             setError(getEnterpriseUploadBlockMessage());
             return;
         }
@@ -809,6 +825,15 @@ const Dashboard = ({
                 extractedMarkdown = textInput;
                 filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
                 setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+            }
+
+            if (isAllGovernanceSkippedCase && analyzeWithAi) {
+                setProjectState(taskKey, {
+                    progress: 100,
+                    progressMessage: 'Analysis blocked pending IT approval.',
+                    error: ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE
+                });
+                return;
             }
 
             // Set initial result
@@ -1734,7 +1759,7 @@ const Dashboard = ({
                                                     <p className="text-xs text-emerald-800 mt-1">
                                                         Status: {selectedProject.status === 'analysis_complete' ? 'Analysis Complete (Locked)' : 'Ready for Initial Upload'}
                                                     </p>
-                                                    {selectedProject.classification === 'ENTERPRISE' && (
+                                                    {isEnterpriseUploadBlocked && (
                                                         <p className="text-xs text-red-700 mt-1">
                                                             Upload blocked: {getEnterpriseUploadBlockMessage()}
                                                         </p>
@@ -1766,7 +1791,7 @@ const Dashboard = ({
                                                         <button
                                                             type="button"
                                                             onClick={handleCreateRevision}
-                                                            disabled={selectedProject.classification === 'ENTERPRISE'}
+                                                            disabled={isEnterpriseUploadBlocked}
                                                             className="text-xs font-semibold text-app-primary-hover hover:text-blue-900 disabled:text-app-text-light disabled:cursor-not-allowed"
                                                         >
                                                             Create New Revision
@@ -1824,7 +1849,7 @@ const Dashboard = ({
                                     </div>
 
                                     {activeTab === 'upload' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
                                             <input
                                                 type="file"
                                                 id={`file-upload-${activeTab}`}
@@ -1832,7 +1857,7 @@ const Dashboard = ({
                                                 onChange={handleFileChange}
                                                 accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
                                             <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
                                                 <FileText className="w-12 h-12" />
@@ -1854,7 +1879,7 @@ const Dashboard = ({
                                             </span>
                                         </div>
                                     ) : activeTab === 'linked-doc' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
                                             <input
                                                 type="file"
                                                 id={`file-upload-linked`}
@@ -1862,7 +1887,7 @@ const Dashboard = ({
                                                 onChange={handleFileChange}
                                                 accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
                                             <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
                                                 <FileText className="w-12 h-12" />
@@ -1890,7 +1915,7 @@ const Dashboard = ({
                                                 onChange={handleTextChange}
                                                 placeholder="Write your requirements here..."
                                                 className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
                                         </div>
                                     ) : (
@@ -2012,6 +2037,12 @@ const Dashboard = ({
                                         </div>
                                     )}
 
+                                    {error && (
+                                        <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
+                                            <p className="text-sm font-medium text-red-700">{error}</p>
+                                        </div>
+                                    )}
+
                                     <div className="flex justify-end gap-3 pt-6">
                                         <button
                                             type="button"
@@ -2023,8 +2054,8 @@ const Dashboard = ({
                                         </button>
                                         <button
                                             type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
+                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
                                                 ? 'bg-gray-300 cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
