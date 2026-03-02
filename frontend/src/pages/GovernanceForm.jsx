@@ -435,6 +435,11 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                         <div className="space-y-4">
                                             {activeQuestions.map((question, qIdx) => {
                                                 const answered = answers[question.id] !== undefined;
+                                                const allOptions = getQuestionOptions(question);
+                                                const mainOptions = allOptions.filter((opt) => opt.label !== skipOption.label);
+                                                const skip = allOptions.find((opt) => opt.label === skipOption.label);
+                                                const isSkipped = answers[question.id]?.label === skipOption.label;
+
                                                 return (
                                                     <div
                                                         key={question.id}
@@ -442,19 +447,36 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                                             ? 'border-app-primary-ring/80 bg-gradient-to-br from-blue-50/40 to-indigo-50/30 shadow-sm'
                                                             : 'border-app-border/80 bg-app-bg-card hover:border-app-border'}`}
                                                     >
-                                                        <div className="flex items-start gap-3 mb-4">
-                                                            <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
-                                                                ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
-                                                                : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
-                                                            >
-                                                                {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
-                                                            </span>
-                                                            <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5">{question.question}</h3>
+                                                        <div className="flex items-start justify-between gap-3 mb-4">
+                                                            <div className="flex items-start gap-3">
+                                                                <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
+                                                                    ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
+                                                                    : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
+                                                                >
+                                                                    {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
+                                                                </span>
+                                                                <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5 max-w-xl">
+                                                                    {question.question}
+                                                                </h3>
+                                                            </div>
+                                                            {skip && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleAnswer(question.id, skip)}
+                                                                    className={`text-[11px] font-semibold rounded-full px-3 py-1 border transition-colors duration-200 whitespace-nowrap ${
+                                                                        isSkipped
+                                                                            ? 'border-blue-400 bg-app-primary-light text-blue-800'
+                                                                            : 'border-transparent text-app-text-light hover:text-app-primary hover:border-app-primary-light hover:bg-app-primary-light/20'
+                                                                    }`}
+                                                                >
+                                                                    Skip
+                                                                </button>
+                                                            )}
                                                         </div>
 
-                                                        {/* Options — 2 cols on wider screens */}
+                                                        {/* Options — 2 cols on wider screens (excluding Skip) */}
                                                         <div className="ml-10 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                            {getQuestionOptions(question).map((option) => {
+                                                            {mainOptions.map((option) => {
                                                                 const selected = answers[question.id]?.label === option.label;
                                                                 return (
                                                                     <label
