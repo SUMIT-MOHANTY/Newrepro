@@ -11,7 +11,7 @@ import colors from '../styles/colors';
    STEP INDICATOR  (responsive: vertical on desktop, horizontal on mobile)
    Now accepts a `vertical` prop to switch layout modes.
 ───────────────────────────────────────────────────────── */
-const StepIndicator = ({ steps, currentStep, vertical = false }) => {
+const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber = 1, totalSteps = null }) => {
     // ── VERTICAL LAYOUT (Desktop Sidebar) ──
     if (vertical) {
         return (
@@ -32,7 +32,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
                                         : active ? 'bg-app-bg-card border-2 border-app-primary text-app-primary shadow-lg shadow-blue-100 ring-4 ring-blue-50'
                                             : 'bg-app-bg-muted border border-app-border text-app-text-light group-hover:border-app-border group-hover:text-app-text-muted'}`}
                                 >
-                                    {done ? <Check className="w-3.5 h-3.5" /> : idx + 1}
+                                    {done ? <Check className="w-3.5 h-3.5" /> : startStepNumber + idx}
                                     {active && <span className="absolute inset-0 rounded-full animate-ping bg-blue-400/20" />}
                                 </div>
                                 {/* Label */}
@@ -40,7 +40,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
                                     <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors duration-200
                                         ${active ? 'text-app-primary' : done ? 'text-blue-500/70' : 'text-app-text-light'}`}
                                     >
-                                        Step {idx + 1}
+                                        Step {startStepNumber + idx}
                                     </span>
                                     <span className={`text-[13px] font-semibold transition-colors duration-200 truncate
                                         ${active ? 'text-app-text-main' : done ? 'text-app-text-label' : 'text-app-text-light'}`}
@@ -61,7 +61,9 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
     return (
         <div className="w-full mb-6">
             <div className="flex items-center justify-between text-xs mb-2.5">
-                <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Step {currentStep + 1} of {steps.length}</span>
+                <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
+                    Step {startStepNumber + currentStep} of {totalSteps || steps.length}
+                </span>
                 <span className="text-app-text-label font-semibold truncate ml-2">{steps[currentStep]}</span>
             </div>
             <div className="w-full bg-app-bg-muted rounded-full h-2.5 overflow-hidden shadow-inner">
@@ -84,6 +86,9 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     const location = useLocation();
     const { data: questionsData, isLoading: loading, error: queryError } = useGovernanceQuestions();
     const { mutate: submitGovernance, isPending: submitting } = useSubmitGovernance();
+    const isGovernanceQuestionsPage = location.pathname.endsWith('/governance');
+    const initiationPath = '/new-project';
+    const governancePath = '/new-project/governance';
 
     const questions = questionsData?.questions || [];
 
@@ -91,9 +96,10 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     const [projectName, setProjectName] = useState('');
     const [error, setError] = useState('');
     const [result, setResult] = useState(null);
+    const [isHydrated, setIsHydrated] = useState(false);
     const skipOption = { label: 'Skip', score: 0 };
 
-    // Step state: 0 = Project Name, 1…N = dimension steps, N+1 = review
+    // Step state: 0 = Project Name page, 1…N = dimension steps, N+1 = review
     const [currentStep, setCurrentStep] = useState(0);
 
     /* ── helpers ── */
@@ -132,13 +138,14 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                 setCurrentStep(0);
                 setResult(null);
                 sessionStorage.removeItem('governance_wizard_step_new');
-                navigate(location.pathname, { replace: true });
+                navigate(initiationPath, { replace: true });
+                setIsHydrated(true);
                 return;
             }
 
             if (nameFromUrl) {
                 setProjectName(decodeURIComponent(nameFromUrl));
-                setCurrentStep(1); // Skip Project Name step
+                setCurrentStep(0);
                 // Also store it so it persists on reload
                 sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
                 // Clean up the URL
@@ -160,8 +167,29 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
             const savedResult = getStoredJson('governanceResult');
             if (savedResult) setResult(savedResult);
+
+            const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
+            let persistedStep = 0;
+            try {
+                const rawStep = sessionStorage.getItem(storageKey);
+                if (rawStep) {
+                    const parsedStep = JSON.parse(rawStep);
+                    if (parsedStep && typeof parsedStep.step === 'number') {
+                        persistedStep = parsedStep.step;
+                    }
+                }
+            } catch {
+                persistedStep = 0;
+            }
+
+            if (isGovernanceQuestionsPage) {
+                setCurrentStep(Math.max(1, persistedStep || 1));
+            } else {
+                setCurrentStep(0);
+            }
+            setIsHydrated(true);
         }, 0);
-    }, [location.search, location.pathname, navigate]);
+    }, [location.search, location.pathname, navigate, isGovernanceQuestionsPage, selectedProjectKey]);
 
     // Persist current wizard step so the global tracker can highlight
     // Project Initiation vs Governance appropriately while filling the form.
@@ -182,6 +210,14 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
             }, 0);
         }
     }, [queryError]);
+
+    useEffect(() => {
+        if (!isHydrated) return;
+        if (!isGovernanceQuestionsPage) return;
+        if (projectName.trim()) return;
+        setError('Please complete Project Initiation first.');
+        navigate(initiationPath, { replace: true });
+    }, [isHydrated, isGovernanceQuestionsPage, projectName, navigate]);
 
     const handleAnswer = (questionId, option) =>
         setAnswers((prev) => ({ ...prev, [questionId]: option }));
@@ -284,35 +320,52 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     });
     const dimensions = Object.keys(questionsByDimension);
 
-    // steps: 0 = Project Name, 1..N = dimensions, N+1 = Review & Submit
-    const TOTAL_STEPS = dimensions.length + 2; // +1 project name, +1 review
-    const stepLabels = ['Project', ...dimensions.map((d) => d.split(' ')[0]), 'Review'];
-    const isDimensionStep = currentStep >= 1 && currentStep <= dimensions.length;
-    const isReviewStep = currentStep === dimensions.length + 1;
+    // Cross-page flow:
+    // /new-project -> Project Initiation only
+    // /new-project/governance -> Steps 2..8 (dimensions + review)
+    const TOTAL_STEPS = dimensions.length + 2;
+    const governanceStepLabels = [...dimensions.map((d) => d.split(' ')[0]), 'Review'];
+    const sidebarStepLabels = isGovernanceQuestionsPage ? governanceStepLabels : ['Project Initiation'];
+    const sidebarCurrentStep = isGovernanceQuestionsPage ? Math.max(currentStep - 1, 0) : 0;
+    const sidebarStepOffset = isGovernanceQuestionsPage ? 2 : 1;
+    const isDimensionStep = isGovernanceQuestionsPage && currentStep >= 1 && currentStep <= dimensions.length;
+    const isReviewStep = isGovernanceQuestionsPage && currentStep === dimensions.length + 1;
     const activeDimension = isDimensionStep ? dimensions[currentStep - 1] : null;
     const activeQuestions = activeDimension ? questionsByDimension[activeDimension] : [];
 
 
 
     const canProceed = () => {
-        if (currentStep === 0) return projectName.trim().length > 0;
+        if (!isGovernanceQuestionsPage) return projectName.trim().length > 0;
         if (isDimensionStep) return activeQuestions.every((q) => answers[q.id] !== undefined);
         return true;
     };
 
     const goNext = () => {
         if (!canProceed()) {
-            if (currentStep === 0) setError('Please enter a project name before continuing.');
+            if (!isGovernanceQuestionsPage || currentStep === 0) setError('Please enter a project name before continuing.');
             else setError('Please answer all questions in this section before continuing.');
             return;
         }
         setError('');
+        if (!isGovernanceQuestionsPage) {
+            navigate(governancePath);
+            return;
+        }
         setCurrentStep((s) => Math.min(s + 1, TOTAL_STEPS - 1));
     };
 
     const goPrev = () => {
         setError('');
-        setCurrentStep((s) => Math.max(s - 1, 0));
+        if (!isGovernanceQuestionsPage) {
+            setCurrentStep(0);
+            return;
+        }
+        if (currentStep <= 1) {
+            navigate(initiationPath);
+            return;
+        }
+        setCurrentStep((s) => Math.max(s - 1, 1));
     };
 
 
@@ -354,7 +407,13 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                 <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
                                 Progress
                             </h2>
-                            <StepIndicator steps={stepLabels} currentStep={currentStep} vertical={true} />
+                            <StepIndicator
+                                steps={sidebarStepLabels}
+                                currentStep={sidebarCurrentStep}
+                                vertical={true}
+                                startStepNumber={sidebarStepOffset}
+                                totalSteps={TOTAL_STEPS}
+                            />
                         </div>
                     </aside>
 
@@ -372,7 +431,12 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
                         {/* Mobile Step indicator (horizontal) */}
                         <div className="lg:hidden">
-                            <StepIndicator steps={stepLabels} currentStep={currentStep} />
+                            <StepIndicator
+                                steps={sidebarStepLabels}
+                                currentStep={sidebarCurrentStep}
+                                startStepNumber={sidebarStepOffset}
+                                totalSteps={TOTAL_STEPS}
+                            />
                         </div>
 
                         {/* Wrapper: fixed min-height so nav buttons stay at a consistent position */}
@@ -383,7 +447,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                 <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500" />
 
                                 {/* ── STEP 0: Project Name ── */}
-                                {currentStep === 0 && (
+                                {!isGovernanceQuestionsPage && (
                                     <div className="p-6 sm:p-8">
                                         <div className="mb-6">
                                             <h2 className="text-xl font-bold text-app-text-main mb-1.5 tracking-tight">Project Details</h2>
@@ -570,7 +634,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
                             {/* ── NAV BUTTONS ── */}
                             <div className="flex items-center justify-end gap-3 mt-auto pt-5 px-1">
-                                {currentStep === 0 ? (
+                                {!isGovernanceQuestionsPage ? (
                                     <button type="button" onClick={() => navigate('/dashboard')}
                                         className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
                                     >
@@ -594,7 +658,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                             : 'bg-gray-300 cursor-not-allowed shadow-none'
                                             }`}
                                     >
-                                        {currentStep === dimensions.length ? 'Review' : 'Next'}
+                                        {!isGovernanceQuestionsPage ? 'Continue to Governance' : currentStep === dimensions.length ? 'Review' : 'Next'}
                                         <ChevronRight className="w-4 h-4" />
                                     </button>
                                 )}

@@ -84,7 +84,7 @@ export default function AppLayout({ children }) {
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
-        : location.pathname === '/new-project' ? 'governance'
+        : location.pathname === '/new-project' || location.pathname.startsWith('/new-project/') ? 'governance'
             : location.pathname === '/prerequisites' ? 'prerequisites'
                 : location.pathname === '/task-creation' ? 'taskCreation'
                     : 'main';
@@ -340,7 +340,7 @@ export default function AppLayout({ children }) {
         // Dummy reference to satisfy linter and ensure memo updates on storage event
         const _ = storageNonce;
 
-        if (path === '/new-project') {
+        if (path === '/new-project' || path.startsWith('/new-project/')) {
             let wizardStep = 0;
             let hasResult = false;
             try {
@@ -352,6 +352,10 @@ export default function AppLayout({ children }) {
                 }
                 hasResult = !!sessionStorage.getItem('governanceResult');
             } catch { wizardStep = 0; }
+
+            if (path.startsWith('/new-project/governance')) {
+                return 1;
+            }
 
             // If we have a result, we are in the Screening phase (Step 1 or 2)
             if (hasResult) return 1;

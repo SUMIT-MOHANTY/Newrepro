@@ -43,6 +43,11 @@ function App() {
             {(layoutProps) => <GovernanceForm {...layoutProps} />}
           </AppLayout>
         } />
+        <Route path="/new-project/governance" element={
+          <AppLayout>
+            {(layoutProps) => <GovernanceForm {...layoutProps} />}
+          </AppLayout>
+        } />
         <Route path="/prerequisites" element={
           <AppLayout>
             {(layoutProps) => <PrerequisiteClassification {...layoutProps} />}
