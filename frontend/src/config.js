@@ -14,6 +14,7 @@ export const API_ENDPOINTS = {
     // Documents
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,
     DOCUMENTS_UPLOAD_ANALYZE: `${API_BASE_URL}/documents/upload-and-analyze`,
+    DOCUMENTS_EXTRACT_URL: `${API_BASE_URL}/documents/extract-from-url`,
 
     // AI
     AI_CONFIG: `${API_BASE_URL}/ai/config`,
