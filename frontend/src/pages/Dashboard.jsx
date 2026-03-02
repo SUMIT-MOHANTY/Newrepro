@@ -1025,11 +1025,16 @@ const Dashboard = ({
             }
 
             if (isAllGovernanceSkippedCase && analyzeWithAi) {
+                // Governance was fully skipped and IT follow-up is required.
+                // Do not run BRD analysis; instead jump back to Governance so
+                // the user can see the Sandbox / IT message there.
                 setProjectState(taskKey, {
                     progress: 100,
                     progressMessage: 'Analysis blocked pending IT approval.',
-                    error: ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE
+                    error: ''
                 });
+                // Route to Governance results page within the authenticated layout
+                navigate('/new-project/governance');
                 return;
             }
 

@@ -248,6 +248,9 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
             score: answers[q.id]?.score ?? 0,
             selected_option: answers[q.id]?.label || '',
         }));
+        const allSkipped = formattedAnswers.every(
+            (a) => (a.selected_option || '').toLowerCase() === skipOption.label.toLowerCase()
+        );
 
         const submission = {
             project_name: projectName,
@@ -282,6 +285,11 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                     if (fetchRoadmapData) {
                         const tokenToUse = resultData.project_token || selectedProjectKey;
                         if (tokenToUse) fetchRoadmapData(tokenToUse);
+                    }
+
+                    // If all questions were skipped, jump straight to Requirement Screening (BRD upload)
+                    if (allSkipped && resultData.project_token) {
+                        window.location.href = `/a/${resultData.project_token}`;
                     }
                 } catch (err) {
                     setError('Submission data processing error: ' + err.message);
@@ -327,7 +335,9 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     const governanceStepLabels = [...dimensions.map((d) => d.split(' ')[0]), 'Review'];
     const sidebarStepLabels = isGovernanceQuestionsPage ? governanceStepLabels : ['Project Initiation'];
     const sidebarCurrentStep = isGovernanceQuestionsPage ? Math.max(currentStep - 1, 0) : 0;
-    const sidebarStepOffset = isGovernanceQuestionsPage ? 2 : 1;
+    // Start numbering from 1 on the Governance wizard sidebar.
+    // (User-facing "Step 1" should be Business when on /new-project/governance)
+    const sidebarStepOffset = 1;
     const isDimensionStep = isGovernanceQuestionsPage && currentStep >= 1 && currentStep <= dimensions.length;
     const isReviewStep = isGovernanceQuestionsPage && currentStep === dimensions.length + 1;
     const activeDimension = isDimensionStep ? dimensions[currentStep - 1] : null;
@@ -370,6 +380,10 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
 
     /* ── render ── */
+    const mainContentClass = isGovernanceQuestionsPage
+        ? 'flex-1 min-w-0 max-w-4xl'
+        : 'flex-1 min-w-0 w-full';
+
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
 
@@ -399,26 +413,28 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                 <div className="flex gap-5 items-start">
 
                     {/* ── DESKTOP SIDEBAR (≥1024px) ── */}
-                    <aside className="hidden lg:block w-64 xl:w-72 flex-shrink-0 sticky top-6 self-start">
-                        <div className="bg-app-bg-card/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
-                            {/* Decorative gradient accent */}
-                            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl" />
-                            <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-app-text-light mb-5 mt-1 flex items-center gap-2">
-                                <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
-                                Progress
-                            </h2>
-                            <StepIndicator
-                                steps={sidebarStepLabels}
-                                currentStep={sidebarCurrentStep}
-                                vertical={true}
-                                startStepNumber={sidebarStepOffset}
-                                totalSteps={TOTAL_STEPS}
-                            />
-                        </div>
-                    </aside>
+                    {isGovernanceQuestionsPage && (
+                        <aside className="hidden lg:block w-64 xl:w-72 flex-shrink-0 sticky top-6 self-start">
+                            <div className="bg-app-bg-card/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
+                                {/* Decorative gradient accent */}
+                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl" />
+                                <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-app-text-light mb-5 mt-1 flex items-center gap-2">
+                                    <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
+                                    Progress
+                                </h2>
+                                <StepIndicator
+                                    steps={sidebarStepLabels}
+                                    currentStep={sidebarCurrentStep}
+                                    vertical={true}
+                                    startStepNumber={sidebarStepOffset}
+                                    totalSteps={TOTAL_STEPS}
+                                />
+                            </div>
+                        </aside>
+                    )}
 
                     {/* ── MAIN CONTENT: Step Wizard ── */}
-                    <div className="flex-1 min-w-0 max-w-4xl">
+                    <div className={mainContentClass}>
                         {/* Error banner */}
                         {error && (
                             <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
@@ -430,14 +446,16 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                         )}
 
                         {/* Mobile Step indicator (horizontal) */}
-                        <div className="lg:hidden">
-                            <StepIndicator
-                                steps={sidebarStepLabels}
-                                currentStep={sidebarCurrentStep}
-                                startStepNumber={sidebarStepOffset}
-                                totalSteps={TOTAL_STEPS}
-                            />
-                        </div>
+                        {isGovernanceQuestionsPage && (
+                            <div className="lg:hidden">
+                                <StepIndicator
+                                    steps={sidebarStepLabels}
+                                    currentStep={sidebarCurrentStep}
+                                    startStepNumber={sidebarStepOffset}
+                                    totalSteps={TOTAL_STEPS}
+                                />
+                            </div>
+                        )}
 
                         {/* Wrapper: fixed min-height so nav buttons stay at a consistent position */}
                         <div className="flex flex-col min-h-[calc(100vh-14rem)]">
