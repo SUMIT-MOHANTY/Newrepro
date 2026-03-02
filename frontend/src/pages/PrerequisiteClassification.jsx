@@ -77,6 +77,70 @@ const CATEGORY_CONFIG = {
 };
 
 /* ─────────────────────────────────────────────────────────
+   PROCESS MODE CONFIG
+───────────────────────────────────────────────────────── */
+const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
+
+function readProcessModeMap() {
+    try {
+        const raw = localStorage.getItem(PROCESS_MODE_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeProcessModeMap(map) {
+    try {
+        localStorage.setItem(PROCESS_MODE_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+        // Ignore errors
+    }
+}
+
+function saveProcessModeForProject(projectKey, mode) {
+    if (!projectKey || !mode) return;
+    const map = readProcessModeMap();
+    map[projectKey] = mode;
+    writeProcessModeMap(map);
+}
+
+const PROCESS_MODE_OPTIONS = [
+    {
+        id: 'developer_only',
+        title: 'Developer Only',
+        description: 'Open Status Dashboard without showing AI agents.',
+        enabled: true,
+    },
+    {
+        id: 'ai_assist',
+        title: 'AI Assist',
+        description: 'Legacy mode (same behavior as AI-First).',
+        enabled: true,
+    },
+    {
+        id: 'vibe_coding',
+        title: 'Vibe Coding',
+        description: 'Upcoming mode.',
+        enabled: false,
+    },
+    {
+        id: 'coexistence',
+        title: 'Coexistence',
+        description: 'Open Status Dashboard with agents available for manual run.',
+        enabled: false,
+    },
+    {
+        id: 'ai_first',
+        title: 'AI-First Mode',
+        description: 'Open Status Dashboard and auto-start all agents.',
+        enabled: true,
+    },
+];
+
+/* ─────────────────────────────────────────────────────────
    AI PREREQUISITE EXTRACTION — parses the analysis report
 ───────────────────────────────────────────────────────── */
 const extractPrerequisitesFromAnalysis = (analysisData) => {
@@ -133,7 +197,7 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
         { regex: /(?:ssl|tls)[- ]?(?:certificate|cert)/gi, category: 'credentials', label: 'SSL/TLS Certificate' },
         { regex: /(?:ssh)[- ]?(?:key|access)/gi, category: 'credentials', label: 'SSH Key Access' },
         { regex: /(?:domain|dns)[- ]?(?:name|config|registration)/gi, category: 'infrastructure', label: 'Domain / DNS Configuration' },
-        { regex: /(?:docker|container|kubernetes|k8s)/gi, category: 'infrastructure', label: 'Container/Orchestration Platform' },
+        { regex: /(?:docker|container|kubernetes|k8s)/gi, category: 'infrastructure', label: 'Deployment Platform' },
         { regex: /(?:ci[/ ]cd|jenkins|github[- ]?actions|gitlab[- ]?ci|pipeline)/gi, category: 'infrastructure', label: 'CI/CD Pipeline Access' },
         { regex: /(?:redis|memcache|cache[- ]?server)/gi, category: 'databases', label: 'Cache Server (Redis/Memcache)' },
         { regex: /(?:s3|blob[- ]?storage|object[- ]?storage|file[- ]?storage)/gi, category: 'cloud', label: 'Object / File Storage Service' },
@@ -303,6 +367,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
+    const [processMode, setProcessMode] = useState('ai_first');
     const [projectName, setProjectName] = useState('');
     const [globalGitRepoUrl, setGlobalGitRepoUrl] = useState('');
     const [globalGitToken, setGlobalGitToken] = useState('');
@@ -557,7 +622,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
     const updateNotes = useCallback((id, notes) => {
         setPrerequisites(prev =>
-            prev.map(p => p.id === id ? { ...p, userNotes: notes } : p)
+            prev.map(p => p.id === id ? { ...p, userNotes: notes, provided: notes.trim().length > 0 ? true : p.provided } : p)
         );
     }, []);
 
@@ -595,51 +660,53 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 throw new Error('No project selected.');
             }
 
-            const repo = globalGitRepoUrl.trim();
-            const pat = globalGitToken.trim();
-            if (!repo) {
-                throw new Error('Git repository URL is required.');
-            }
-            if (!hasSavedGlobalGitToken && !pat) {
-                throw new Error('Global PAT is required.');
-            }
+            if (processMode !== 'developer_only') {
+                const repo = globalGitRepoUrl.trim();
+                const pat = globalGitToken.trim();
+                if (!repo) {
+                    throw new Error('Git repository URL is required.');
+                }
+                if (!hasSavedGlobalGitToken && !pat) {
+                    throw new Error('Global PAT is required.');
+                }
 
-            // Save global Git config from prerequisites so all agents reuse it.
-            const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
-            agentsUrl.searchParams.set('project_token', selectedProjectKey);
-            const agentsRes = await fetch(agentsUrl.toString(), {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (!agentsRes.ok) {
-                throw new Error('Failed to load agents for saving global Git config.');
-            }
-            const agentsData = await agentsRes.json().catch(() => ({}));
-            const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
-            const targetAgent =
-                agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
-            if (!targetAgent?.id) {
-                throw new Error('No agent available to save global Git config.');
-            }
+                // Save global Git config from prerequisites so all agents reuse it.
+                const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
+                agentsUrl.searchParams.set('project_token', selectedProjectKey);
+                const agentsRes = await fetch(agentsUrl.toString(), {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!agentsRes.ok) {
+                    throw new Error('Failed to load agents for saving global Git config.');
+                }
+                const agentsData = await agentsRes.json().catch(() => ({}));
+                const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
+                const targetAgent =
+                    agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
+                if (!targetAgent?.id) {
+                    throw new Error('No agent available to save global Git config.');
+                }
 
-            const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
-            updateUrl.searchParams.set('project_token', selectedProjectKey);
-            const gitPayload = { git_repo_url: repo };
-            if (pat) gitPayload.git_token = pat;
+                const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
+                updateUrl.searchParams.set('project_token', selectedProjectKey);
+                const gitPayload = { git_repo_url: repo };
+                if (pat) gitPayload.git_token = pat;
 
-            const updateRes = await fetch(updateUrl.toString(), {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
-                },
-                body: JSON.stringify(gitPayload),
-            });
-            if (!updateRes.ok) {
-                const errData = await updateRes.json().catch(() => ({}));
-                throw new Error(errData?.detail || 'Failed to save  Git config.');
+                const updateRes = await fetch(updateUrl.toString(), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify(gitPayload),
+                });
+                if (!updateRes.ok) {
+                    const errData = await updateRes.json().catch(() => ({}));
+                    throw new Error(errData?.detail || 'Failed to save  Git config.');
+                }
+                setHasSavedGlobalGitToken(true);
+                setGlobalGitToken('');
             }
-            setHasSavedGlobalGitToken(true);
-            setGlobalGitToken('');
 
             // Build the prerequisite summary to persist
             const prerequisiteData = {
@@ -665,6 +732,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 JSON.stringify(prerequisiteData)
             );
 
+            // Save custom rules
+            localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
+
             // Also update the v2 session cache
             sessionStorage.setItem(
                 `prerequisites_v2_${selectedProjectKey}`,
@@ -685,16 +755,26 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 await fetchRoadmapData(selectedProjectKey);
             }
 
-            setSubmitted(true);
+            // Save selected execution mode
+            saveProcessModeForProject(selectedProjectKey, processMode);
 
-            // After a brief success animation, redirect to Task Creation
-            setTimeout(() => {
-                navigate('/task-creation');
-            }, 1500);
+            if (processMode === 'developer_only') {
+                // Redirect immediately without showing the checkmark screen
+                window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
+                return; // Stop execution here so it doesn't clear the submitting state right away
+            } else {
+                setSubmitted(true);
+                // After a brief success animation, redirect to Task Creation
+                setTimeout(() => {
+                    navigate('/task-creation');
+                }, 1500);
+            }
         } catch (err) {
             setError('Failed to save prerequisites: ' + err.message);
         } finally {
-            setSubmitting(false);
+            if (processMode !== 'developer_only') {
+                setSubmitting(false);
+            }
         }
     };
 
@@ -735,7 +815,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                         <div className="flex items-center justify-center gap-2 text-sm text-gray-400">
                             <div className="w-4 h-4 border-2 border-gray-300 border-t-emerald-500 rounded-full animate-spin" />
-                            Redirecting to Task Creation…
+                            {processMode === 'developer_only' ? 'Redirecting to VS Code Extension…' : 'Redirecting to Task Creation…'}
                         </div>
                     </div>
                 </div>
@@ -814,6 +894,45 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     </div>
                 </div>
 
+                {/* ── EXECUTION MODE (Grid View) ── */}
+                <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-6 mb-6">
+                    <h3 className="text-base font-bold text-gray-900 mb-1">Choose Execution Mode</h3>
+                    <p className="text-sm text-gray-500 mb-4">Select how this project should run in Status Dashboard.</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {PROCESS_MODE_OPTIONS.map(option => (
+                            <button
+                                key={option.id}
+                                type="button"
+                                disabled={!option.enabled}
+                                onClick={() => setProcessMode(option.id)}
+                                className={`text-left rounded-xl border p-4 transition-all ${processMode === option.id && option.enabled
+                                    ? 'border-indigo-500 bg-indigo-50 shadow-sm ring-1 ring-indigo-500'
+                                    : option.enabled
+                                        ? 'border-gray-200 bg-white hover:bg-gray-50 hover:border-indigo-300'
+                                        : 'border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed'
+                                    }`}
+                            >
+                                <div className="flex items-center justify-between gap-2 mb-1.5">
+                                    <p className={`text-sm font-bold ${option.enabled ? (processMode === option.id ? 'text-indigo-900' : 'text-gray-900') : 'text-gray-500'}`}>
+                                        {option.title}
+                                    </p>
+                                    {!option.enabled && (
+                                        <span className="text-[9px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">
+                                            Disabled
+                                        </span>
+                                    )}
+                                    {processMode === option.id && option.enabled && (
+                                        <CheckCircle2 className="w-4 h-4 text-indigo-600" />
+                                    )}
+                                </div>
+                                <p className={`text-xs ${processMode === option.id && option.enabled ? 'text-indigo-700' : 'text-gray-500'}`}>
+                                    {option.description}
+                                </p>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
                 {/* ── ERROR ── */}
                 {error && (
                     <div className="rounded-xl bg-red-50/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
@@ -837,80 +956,119 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     </div>
                 </div>
 
-                {/* ── CATEGORY GROUPS ── */}
-                <div className="space-y-5 mb-8">
-                    {Object.entries(grouped).map(([category, items]) => {
-                        const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG.other;
-                        const CategoryIcon = config.icon;
-                        const catProvided = items.filter(i => i.provided).length;
+                {/* ── PREREQUISITES SECTION ── */}
+                {processMode === 'developer_only' ? (
+                    <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-8 text-center mb-8 border-dashed border-blue-200">
+                        <div className="w-16 h-16 mx-auto mb-4 bg-blue-50 rounded-full flex items-center justify-center">
+                            <ArrowRight className="w-8 h-8 text-blue-500" />
+                        </div>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">Direct Developer Workflow</h3>
+                        <p className="text-sm text-gray-600 max-w-lg mx-auto leading-relaxed">
+                            Prerequisite classification is bypassed for <strong>Developer Only</strong> mode.
+                            You will be redirected to VS Code.
+                        </p>
+                    </div>
+                ) : (
+                    /* ── CATEGORY GROUPS ── */
+                    <div className="space-y-5 mb-8">
+                        {Object.entries(grouped).map(([category, items]) => {
+                            const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG.other;
+                            const CategoryIcon = config.icon;
+                            const catProvided = items.filter(i => i.provided).length;
 
-                        return (
-                            <div key={category} className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 overflow-hidden">
-                                {/* Category Header */}
-                                <div className={`flex items-center justify-between px-5 py-3.5 ${config.bg} border-b ${config.border}`}>
-                                    <div className="flex items-center gap-3">
-                                        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${config.gradient} flex items-center justify-center shadow-sm`}>
-                                            <CategoryIcon className="w-4 h-4 text-white" />
-                                        </div>
-                                        <div>
-                                            <h3 className={`text-sm font-bold ${config.text}`}>{config.label}</h3>
-                                            <p className="text-[11px] text-gray-500">{catProvided}/{items.length} confirmed</p>
-                                        </div>
-                                    </div>
-                                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${config.badge}`}>
-                                        {items.length} {items.length === 1 ? 'item' : 'items'}
-                                    </span>
-                                </div>
-
-                                {/* Items */}
-                                <div className="divide-y divide-gray-100">
-                                    {items.map(item => (
-                                        <div
-                                            key={item.id}
-                                            className={`px-5 py-4 flex items-start gap-4 transition-all duration-200 ${item.provided ? 'bg-emerald-50/40' : 'hover:bg-gray-50/50'
-                                                }`}
-                                        >
-                                            {/* Checkbox */}
-                                            <button
-                                                onClick={() => toggleProvided(item.id)}
-                                                className="flex-shrink-0 mt-0.5 transition-transform active:scale-90"
-                                                title={item.provided ? 'Mark as not provided' : 'Mark as provided'}
-                                            >
-                                                {item.provided ? (
-                                                    <CheckCircle2 className="w-6 h-6 text-emerald-500 drop-shadow-sm" />
-                                                ) : (
-                                                    <Circle className="w-6 h-6 text-gray-300 hover:text-gray-400" />
-                                                )}
-                                            </button>
-
-                                            {/* Content */}
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                    <span className={`text-sm font-semibold ${item.provided ? 'text-gray-500 line-through' : 'text-gray-800'}`}>
-                                                        {item.name}
-                                                    </span>
-                                                    <PriorityBadge priority={item.priority} />
-                                                </div>
-                                                <p className="text-xs text-gray-500 leading-relaxed mb-2.5 max-w-2xl">
-                                                    {item.description}
-                                                </p>
-
-                                                {/* Notes field */}
-                                                <textarea
-                                                    value={item.userNotes}
-                                                    onChange={(e) => updateNotes(item.id, e.target.value)}
-                                                    placeholder="Add notes (optional) — e.g., credentials location, contact person…"
-                                                    rows={1}
-                                                    className="w-full text-xs text-gray-600 bg-gray-50/80 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all resize-none"
-                                                />
+                            return (
+                                <div key={category} className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 overflow-hidden">
+                                    {/* Category Header */}
+                                    <div className={`flex items-center justify-between px-5 py-3.5 ${config.bg} border-b ${config.border}`}>
+                                        <div className="flex items-center gap-3">
+                                            <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${config.gradient} flex items-center justify-center shadow-sm`}>
+                                                <CategoryIcon className="w-4 h-4 text-white" />
+                                            </div>
+                                            <div>
+                                                <h3 className={`text-sm font-bold ${config.text}`}>{config.label}</h3>
+                                                <p className="text-[11px] text-gray-500">{catProvided}/{items.length} confirmed</p>
                                             </div>
                                         </div>
-                                    ))}
+                                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${config.badge}`}>
+                                            {items.length} {items.length === 1 ? 'item' : 'items'}
+                                        </span>
+                                    </div>
+
+                                    {/* Items */}
+                                    <div className="divide-y divide-gray-100">
+                                        {items.map(item => (
+                                            <div
+                                                key={item.id}
+                                                className={`px-5 py-4 flex items-start gap-4 transition-all duration-200 ${item.provided ? 'bg-emerald-50/40' : 'hover:bg-gray-50/50'
+                                                    }`}
+                                            >
+                                                {/* Checkbox */}
+                                                <button
+                                                    onClick={() => toggleProvided(item.id)}
+                                                    className="flex-shrink-0 mt-0.5 transition-transform active:scale-90"
+                                                    title={item.provided ? 'Mark as not provided' : 'Mark as provided'}
+                                                >
+                                                    {item.provided ? (
+                                                        <CheckCircle2 className="w-6 h-6 text-emerald-500 drop-shadow-sm" />
+                                                    ) : (
+                                                        <Circle className="w-6 h-6 text-gray-300 hover:text-gray-400" />
+                                                    )}
+                                                </button>
+
+                                                {/* Content */}
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-gray-500' : 'text-gray-800'}`}>
+                                                            {item.name}
+                                                        </span>
+                                                        <PriorityBadge priority={item.priority} />
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 leading-relaxed mb-2.5 max-w-2xl">
+                                                        {item.description}
+                                                    </p>
+
+                                                    {/* Notes field */}
+                                                    <textarea
+                                                        value={item.userNotes}
+                                                        onChange={(e) => updateNotes(item.id, e.target.value)}
+                                                        placeholder="Add notes (optional) — e.g., credentials location, contact person…"
+                                                        rows={1}
+                                                        className="w-full text-xs text-gray-600 bg-gray-50/80 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all resize-none"
+                                                    />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
+                            );
+                        })}
+                    </div>
+                )}
+
+                {/* ── CUSTOM RULES SECTION ── */}
+                {processMode !== 'developer_only' && (
+                    <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-6 mb-6 space-y-4">
+                        <div className="flex items-center gap-2 mb-1">
+                            <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
+                                <Sparkles className="w-4 h-4 text-indigo-600" />
                             </div>
-                        );
-                    })}
-                </div>
+                            <h3 className="text-base font-bold text-gray-900">A.I. Custom Rules</h3>
+                        </div>
+                        <p className="text-sm text-gray-500">
+                            Define specific coding standards, architectural patterns, or task constraints. The AI will follow these instructions when generating the project plan and tasks.
+                        </p>
+                        <textarea
+                            value={customRules}
+                            onChange={(e) => setCustomRules(e.target.value)}
+                            placeholder="e.g. Use functional components for React, follow SOLID principles, all API tasks must include error handling documentation..."
+                            className="w-full min-h-[120px] p-4 text-sm text-gray-900 bg-slate-50 border border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 transition-all outline-none resize-y"
+                        />
+                        <div className="flex items-center gap-2 text-[11px] text-indigo-500 font-medium bg-indigo-50/50 px-3 py-2 rounded-lg italic">
+                            <AlertCircle className="w-3.5 h-3.5" />
+                            Rules are saved automatically for this project.
+                        </div>
+                    </div>
+                )}
 
                 {/* ── SUMMARY + SUBMIT ── */}
                 <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-100/80 p-6 mb-6">
@@ -970,9 +1128,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div>
                             <h3 className="text-base font-bold text-gray-900 mb-1">Ready to proceed?</h3>
                             <p className="text-sm text-gray-500">
-                                {allProvided
-                                    ? '✅ All prerequisites confirmed. You can proceed to task creation.'
-                                    : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
+                                {processMode === 'developer_only'
+                                    ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
+                                    : allProvided
+                                        ? '✅ All prerequisites confirmed. You can proceed to task creation.'
+                                        : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
                                 }
                             </p>
                         </div>
@@ -988,8 +1148,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             {submitting ? (
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                             ) : (
-                                <>{allProvided ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-                                    {allProvided ? 'Confirm & Proceed' : 'Proceed Anyway'}</>
+                                <>{(allProvided || processMode === 'developer_only') ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
+                                    {processMode === 'developer_only' ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
                             )}
                         </button>
                     </div>

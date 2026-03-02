@@ -1415,7 +1415,7 @@ const Dashboard = ({
                 pdf.setFont('helvetica', 'bold');
                 pdf.setFontSize(13);
                 pdf.setTextColor(255, 255, 255);
-                pdf.text('BRD Analysis Report', marginX, 9);
+                pdf.text('Analysis Report', marginX, 9);
 
                 pdf.setFont('helvetica', 'normal');
                 pdf.setFontSize(8);
@@ -1638,7 +1638,7 @@ const Dashboard = ({
             const safeFilename = String(result.filename || 'Report')
                 .replace(/[^a-zA-Z0-9._-]/g, '_')
                 .slice(0, 80);
-            pdf.save(`BRD_Analysis_${safeFilename}.pdf`);
+            pdf.save(`DSuite_Analysis_${safeFilename}.pdf`);
         } catch (err) {
             console.error('PDF generation failed', err);
             setError(`PDF Error: ${err.message || 'Unknown error'}`);
@@ -1772,7 +1772,7 @@ const Dashboard = ({
     };
 
     const goToGovernanceAssessment = () => {
-        navigate('/governance');
+        navigate('/new-project');
     };
 
     if (!user) {

@@ -114,10 +114,14 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
 
     // Map step labels to navigable routes
     const STEP_ROUTES = {
-        'Governance': '/governance',
-        'Requirement Screening': '/governance',
+        'Project Initiation': '/new-project',
+        'Governance': '/new-project',
+        'Requirement Screening': '/dashboard',
+        'AI Analysis': '/dashboard',
         'Prerequisite Classification': '/prerequisites',
         'Task Creation': '/task-creation',
+        'On Flight': '/status-dashboard',
+        'Complete': '/status-dashboard',
     };
 
     const handleStepClick = (stepLabel, status) => {

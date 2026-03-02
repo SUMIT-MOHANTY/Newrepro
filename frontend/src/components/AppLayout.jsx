@@ -85,16 +85,16 @@ export default function AppLayout({ children }) {
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
-        : location.pathname === '/governance' ? 'governance'
+        : location.pathname === '/new-project' ? 'governance'
             : location.pathname === '/prerequisites' ? 'prerequisites'
                 : location.pathname === '/task-creation' ? 'taskCreation'
-                : 'main';
+                    : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
             navigate('/status-dashboard');
         } else if (view === 'governance') {
-            navigate('/governance');
+            navigate('/new-project');
         } else if (view === 'prerequisites') {
             navigate('/prerequisites');
         } else if (view === 'taskCreation') {
@@ -247,14 +247,15 @@ export default function AppLayout({ children }) {
     const roadmapDataForView = useMemo(() => {
         if (!roadmapData) return roadmapData;
 
-        // While in Governance wizard *before* a backend roadmap exists,
-        // drive the top tracker from the wizard step:
-        // - Step 0 (Project): Project Initiation = active, Governance = pending
-        // - Step 1+ (Business/Data/etc): Project Initiation = completed, Governance = active
-        if (currentView === 'governance' && !hasServerRoadmap && selectedProjectKey) {
+        // While in Governance wizard *before* a backend roadmap exists (or for a BRAND NEW project),
+        // drive the top tracker from the local wizard step:
+        // - Step 0 (Project Details): Project Initiation = active, Governance = pending
+        // - Step 1+ (Governance Questions): Project Initiation = completed, Governance = active
+        if (currentView === 'governance' && !hasServerRoadmap) {
+            const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
             let wizardStep = 0;
             try {
-                const raw = sessionStorage.getItem(`governance_wizard_step_${selectedProjectKey}`);
+                const raw = sessionStorage.getItem(storageKey);
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     if (parsed && typeof parsed.step === 'number') {
@@ -271,10 +272,10 @@ export default function AppLayout({ children }) {
             const statuses = Array(steps.length).fill('pending');
 
             if (wizardStep <= 0) {
-                // Still on Project name
+                // Still on Project name entry
                 statuses[0] = 'active';
             } else {
-                // From Business step onward
+                // From the first dimension/question step onward
                 statuses[0] = 'completed';
                 statuses[1] = 'active';
             }
@@ -313,10 +314,42 @@ export default function AppLayout({ children }) {
         }
 
         return roadmapData;
-    }, [roadmapData, currentView]);
+    }, [roadmapData, currentView, hasServerRoadmap, selectedProjectKey]);
 
-    // Let backend roadmap state drive the active step.
-    const forcedRoadmapStepIndex = null;
+    // Drive the active roadmap step from the frontend route (UI-only logic)
+    const forcedRoadmapStepIndex = useMemo(() => {
+        const path = location.pathname;
+
+        if (path === '/new-project') {
+            let wizardStep = 0;
+            try {
+                const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
+                const raw = sessionStorage.getItem(storageKey);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed.step === 'number') wizardStep = parsed.step;
+                }
+            } catch { wizardStep = 0; }
+            return wizardStep <= 0 ? 0 : 1;
+        }
+
+        if (path === '/prerequisites') return 4;
+        if (path === '/task-creation') return 5;
+        if (path === '/status-dashboard') {
+            // If on status dashboard, we are at least at "On Flight" (6)
+            // unless the backend says we're already "Complete" (7)
+            if (roadmapData?.current_step >= 7) return 7;
+            return 6;
+        }
+
+        // Default analyzer dashboard views
+        if (path === '/dashboard' || path.startsWith('/a/')) {
+            const hasAnalysis = !!selectedProject?.latestDocument?.analysis_result;
+            return hasAnalysis ? 3 : 2;
+        }
+
+        return null;
+    }, [location.pathname, selectedProjectKey, selectedProject, roadmapData?.current_step]);
 
     // Backward compatibility for components expecting the old fetch logic
     const fetchRoadmapData = useCallback(() => {
@@ -338,7 +371,7 @@ export default function AppLayout({ children }) {
         localStorage.removeItem('governanceContext');
         sessionStorage.removeItem('governanceResult');
         sessionStorage.removeItem('governanceContext');
-        navigate('/governance?new=' + Date.now());
+        navigate('/new-project?new=' + Date.now());
     }, [navigate]);
 
     const handleSelectProject = (project) => {
@@ -415,14 +448,14 @@ export default function AppLayout({ children }) {
                                         currentView === 'governance' ? 'Project Requirement Screening' :
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
                                                 currentView === 'taskCreation' ? 'Task Creation Planner' :
-                                                'BRD Requirements Analyzer'}
+                                                    'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'governance' ? 'Screening & Configuration' :
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
                                                 currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
-                                                'Project Insight & AI Assessment'}
+                                                    'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 

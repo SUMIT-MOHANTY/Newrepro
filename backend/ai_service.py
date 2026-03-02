@@ -686,6 +686,7 @@ async def generate_task_batch(
     total_project_wallet: int,
     already_created_tasks: list,
     batch_number: int,
+    custom_rules: Optional[str] = None,
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
@@ -745,6 +746,7 @@ async def generate_task_batch(
         f"{context_block}\n"
         f"BRD ANALYSIS REPORT:\n"
         f"{analysis_report}\n\n"
+        f"{'CUSTOM RULES TO FOLLOW:' + chr(10) + custom_rules + chr(10) + chr(10) if custom_rules else ''}"
         f"Generate the NEXT batch of up to 5 tasks. "
         f"The total wallet for this batch must NOT exceed {remaining_wallet}. "
         f"If all tasks are already covered, return an empty array []."

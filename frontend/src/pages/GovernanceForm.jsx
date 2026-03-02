@@ -166,12 +166,9 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     // Project Initiation vs Governance appropriately while filling the form.
     useEffect(() => {
         try {
-            if (!selectedProjectKey) return;
-            const payload = { projectKey: selectedProjectKey, step: currentStep };
-            sessionStorage.setItem(
-                `governance_wizard_step_${selectedProjectKey}`,
-                JSON.stringify(payload)
-            );
+            const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
+            const payload = { projectKey: selectedProjectKey || 'new', step: currentStep };
+            sessionStorage.setItem(storageKey, JSON.stringify(payload));
         } catch {
             // ignore storage errors
         }
@@ -463,11 +460,10 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => handleAnswer(question.id, skip)}
-                                                                    className={`text-[11px] font-semibold rounded-full px-3 py-1 border transition-colors duration-200 whitespace-nowrap ${
-                                                                        isSkipped
+                                                                    className={`text-[11px] font-semibold rounded-full px-3 py-1 border transition-colors duration-200 whitespace-nowrap ${isSkipped
                                                                             ? 'border-blue-400 bg-app-primary-light text-blue-800'
                                                                             : 'border-transparent text-app-text-light hover:text-app-primary hover:border-app-primary-light hover:bg-app-primary-light/20'
-                                                                    }`}
+                                                                        }`}
                                                                 >
                                                                     Skip
                                                                 </button>

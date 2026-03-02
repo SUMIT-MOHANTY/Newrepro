@@ -37,6 +37,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="BRD Analysis API", version="1.0.0", lifespan=lifespan)
+
+# Configure logging with date and time
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 app.add_middleware(
@@ -1803,7 +1810,7 @@ async def deploy_preview(
     project_token: Optional[str] = None,
 ):
     """
-    Deploy the agent/integration branch into a live Docker container.
+    Deploy the agent/integration branch into a live environment.
     Returns a preview URL that opens the running application.
     """
     project_token = _normalize_project_token(project_token)
@@ -1893,7 +1900,7 @@ async def stop_preview(
     current_user: models.User = Depends(auth.get_current_user),
     project_token: Optional[str] = None,
 ):
-    """Stop and destroy the preview container."""
+    """Stop and destroy the preview environment."""
     project_token = _normalize_project_token(project_token)
     return await agent_service.stop_preview(project_token)
 
@@ -2712,6 +2719,7 @@ class AutoGenerateRequest(BaseModel):
     sprint_id: Optional[int] = None
     milestone_id: Optional[int] = None
     auto_create_plan: Optional[bool] = False
+    custom_rules: Optional[str] = None
 
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
@@ -3488,6 +3496,7 @@ async def auto_generate_project_tasks(
                 total_project_wallet=project_wallet_int,
                 already_created_tasks=generation_context,
                 batch_number=batch_number,
+                custom_rules=request.custom_rules,
             )
             if not batch_tasks:
                 break
