@@ -2,6 +2,10 @@
 GitHub Integration Service for BRD Analysis
 Handles OAuth flow & fetching repository data for AI context.
 """
+import io
+import posixpath
+import re
+import zipfile
 import httpx
 from typing import Optional, Dict, Any, List, Tuple
 from config import settings
@@ -135,8 +139,9 @@ async def get_repo_tree(
     requested_branch = (branch or "main").strip() or "main"
 
     headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    cleaned_token = (token or "").strip()
+    if cleaned_token:
+        headers["Authorization"] = f"Bearer {cleaned_token}"
 
     async with httpx.AsyncClient() as client:
         tree_resp = await client.get(
@@ -179,8 +184,9 @@ async def get_file_content(
     """Fetch raw content of a single file from GitHub."""
     owner, repo = normalize_repo_identity(owner, repo)
     headers = {"Accept": "application/vnd.github.raw+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    cleaned_token = (token or "").strip()
+    if cleaned_token:
+        headers["Authorization"] = f"Bearer {cleaned_token}"
         
     async with httpx.AsyncClient() as client:
         resp = await client.get(
@@ -274,3 +280,157 @@ async def build_repo_context(
         "repo": repo,
         "branch": resolved_branch,
     }
+
+
+async def _download_repo_zip(owner: str, repo: str, branch: str) -> bytes:
+    """Download repository source zip from codeload for a specific branch."""
+    owner, repo = normalize_repo_identity(owner, repo)
+    url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{branch}"
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+async def _get_default_branch_from_repo_page(owner: str, repo: str) -> Optional[str]:
+    """Fetch default branch from public GitHub repository page HTML."""
+    owner, repo = normalize_repo_identity(owner, repo)
+    page_url = f"https://github.com/{owner}/{repo}"
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(page_url)
+        if resp.status_code != 200:
+            return None
+        html = resp.text or ""
+
+    match = re.search(r'"defaultBranch":"([^"]+)"', html)
+    if not match:
+        return None
+
+    branch = match.group(1)
+    branch = branch.replace("\\u002F", "/").replace("\\/", "/").strip()
+    return branch or None
+
+
+def _build_repo_context_from_zip_bytes(
+    zip_bytes: bytes,
+    owner: str,
+    repo: str,
+    branch: str,
+) -> Dict[str, str]:
+    """Create the same context payload as API mode using an archive payload."""
+    owner, repo = normalize_repo_identity(owner, repo)
+
+    tree: List[Dict[str, Any]] = []
+    rel_to_archive: Dict[str, str] = {}
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+        names = [name for name in archive.namelist() if not name.endswith("/")]
+        if not names:
+            raise ValueError("Repository archive is empty.")
+
+        # GitHub zips include a root folder like "<repo>-<branch>/".
+        root_prefix = names[0].split("/", 1)[0] + "/"
+
+        for archive_name in names:
+            rel_path = archive_name[len(root_prefix):] if archive_name.startswith(root_prefix) else archive_name
+            rel_path = rel_path.strip("/")
+            if not rel_path:
+                continue
+            info = archive.getinfo(archive_name)
+            tree.append({"path": rel_path, "type": "blob", "size": info.file_size})
+            rel_to_archive[rel_path] = archive_name
+
+        tree_lines = [f"  {item['path']}" for item in tree]
+        tree_text = "\n".join(tree_lines[:200])
+
+        files_to_fetch = [
+            item for item in tree
+            if _should_include_file(item["path"], item.get("size", 0))
+        ]
+
+        priority_names = {
+            "README.md", "readme.md", "README", "package.json", "requirements.txt",
+            "Pipfile", "pyproject.toml", "Dockerfile", "docker-compose.yml",
+            "docker-compose.yaml", ".env.example", "Makefile", "Cargo.toml",
+            "go.mod", "pom.xml", "build.gradle",
+        }
+        files_to_fetch.sort(
+            key=lambda f: (0 if posixpath.basename(f["path"]) in priority_names else 1, f["path"])
+        )
+        files_to_fetch = files_to_fetch[:MAX_FILES_TO_FETCH]
+
+        file_contents: List[str] = []
+        for item in files_to_fetch:
+            archive_name = rel_to_archive.get(item["path"])
+            if not archive_name:
+                continue
+            try:
+                raw = archive.read(archive_name)
+            except KeyError:
+                continue
+            text = raw.decode("utf-8", errors="ignore")
+            if text.strip():
+                file_contents.append(f"--- FILE: {item['path']} ---\n{text}\n")
+
+    contents_text = "\n".join(file_contents)
+    context = (
+        f"GITHUB REPOSITORY CONTEXT\n"
+        f"========================\n"
+        f"Repository: {owner}/{repo} (branch: {branch})\n\n"
+        f"FILE TREE:\n{tree_text}\n\n"
+        f"KEY SOURCE FILES ({len(file_contents)} files):\n"
+        f"{contents_text}\n"
+    )
+    return {
+        "context": context,
+        "owner": owner,
+        "repo": repo,
+        "branch": branch,
+    }
+
+
+async def build_repo_context_from_zip(
+    owner: str,
+    repo: str,
+    branch: str = "main",
+) -> Dict[str, str]:
+    """
+    Build repository context without using GitHub API.
+    Useful fallback when API tokens are invalid or rate-limited.
+    """
+    owner, repo = normalize_repo_identity(owner, repo)
+    requested = (branch or "main").strip() or "main"
+
+    candidates: List[str] = []
+    for candidate in [requested, "main", "master"]:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    # For public repos, HTML page is often still accessible even when API is rate-limited.
+    try:
+        html_default_branch = await _get_default_branch_from_repo_page(owner, repo)
+        if html_default_branch and html_default_branch not in candidates:
+            candidates.insert(1, html_default_branch)
+    except Exception:
+        pass
+
+    last_error: Optional[Exception] = None
+    for candidate_branch in candidates:
+        try:
+            archive_bytes = await _download_repo_zip(owner, repo, candidate_branch)
+            return _build_repo_context_from_zip_bytes(
+                archive_bytes,
+                owner,
+                repo,
+                candidate_branch,
+            )
+        except httpx.HTTPStatusError as e:
+            last_error = e
+            # Try next branch for "not found" only.
+            if e.response is not None and e.response.status_code == 404:
+                continue
+            raise
+
+    if last_error:
+        raise last_error
+    raise ValueError("Unable to build repository context from zip archive.")

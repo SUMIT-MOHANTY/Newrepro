@@ -11,7 +11,7 @@ const AIConfig = ({ onConfigChange, config }) => {
 
     return (
         <div className="bg-app-bg-page p-4 rounded-lg border border-app-border mt-4 mb-4">
-            <h3 className="text-md font-semibold mb-3 text-app-text-label">AI Analysis Configuration (Optional Override)</h3>
+            <h3 className="text-md font-semibold mb-3 text-app-text-label">Agent Analysis Configuration (Optional Override)</h3>
             <div className="grid grid-cols-1 gap-4">
                 <div>
                     <label className="block text-sm font-medium text-app-text-label mb-1">API URL</label>

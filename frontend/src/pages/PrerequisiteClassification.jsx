@@ -251,6 +251,94 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
     return items;
 };
 
+const normalizeGithubRepoPath = (value = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    const asPath = (candidate) => {
+        const cleaned = String(candidate || '')
+            .trim()
+            .replace(/^\/+|\/+$/g, '')
+            .replace(/\.git$/i, '');
+        const parts = cleaned.split('/').filter(Boolean);
+        if (parts.length < 2) return '';
+        return `${parts[0]}/${parts[1]}`;
+    };
+
+    if (/github\.com/i.test(raw)) {
+        try {
+            const normalizedUrl = raw.startsWith('http://') || raw.startsWith('https://')
+                ? raw
+                : `https://${raw}`;
+            const url = new URL(normalizedUrl);
+            return asPath(url.pathname);
+        } catch {
+            // Fallback to direct path parsing below.
+        }
+    }
+
+    return asPath(raw);
+};
+
+const repoPathToGitUrl = (repoPath = '') => (
+    repoPath ? `https://github.com/${repoPath}.git` : ''
+);
+
+const extractRepoSuggestionFromAnalysis = (analysisObj) => {
+    if (!analysisObj || typeof analysisObj !== 'object') return null;
+
+    const possibleSources = [
+        analysisObj.repoContextMeta,
+        analysisObj.repoContext,
+        analysisObj.projectMeta?.repoContext,
+        analysisObj.projectMeta?.repo_context,
+    ].filter(Boolean);
+
+    for (const source of possibleSources) {
+        const repoPath = normalizeGithubRepoPath(
+            source?.repo || source?.full_name || source?.url || source?.git_repo_url || source?.repository
+        );
+        if (!repoPath) continue;
+
+        return {
+            repo: repoPath,
+            branch: String(source?.branch || source?.default_branch || '').trim() || null,
+            url: repoPathToGitUrl(repoPath),
+            source: String(source?.source || 'analysis'),
+        };
+    }
+
+    const analysisText = String(analysisObj.analysis || analysisObj.report || '');
+    const match = analysisText.match(/Repository:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i);
+    if (match?.[1]) {
+        const repoPath = normalizeGithubRepoPath(match[1]);
+        if (repoPath) {
+            return {
+                repo: repoPath,
+                branch: null,
+                url: repoPathToGitUrl(repoPath),
+                source: 'analysis',
+            };
+        }
+    }
+
+    return null;
+};
+
+const extractRepoSuggestionFromStoredMeta = (storedMeta) => {
+    if (!storedMeta || typeof storedMeta !== 'object') return null;
+    const repoPath = normalizeGithubRepoPath(
+        storedMeta.repo || storedMeta.full_name || storedMeta.url || storedMeta.git_repo_url || storedMeta.repository
+    );
+    if (!repoPath) return null;
+    return {
+        repo: repoPath,
+        branch: String(storedMeta.branch || storedMeta.default_branch || '').trim() || null,
+        url: repoPathToGitUrl(repoPath),
+        source: String(storedMeta.source || 'session'),
+    };
+};
+
 /* ─────────────────────────────────────────────────────────
    PRIORITY BADGE
 ───────────────────────────────────────────────────────── */
@@ -284,6 +372,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [globalGitToken, setGlobalGitToken] = useState('');
     const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
+    const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
+
     const [customRules, setCustomRules] = useState(() => {
         if (selectedProjectKey) {
             return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
@@ -303,6 +393,20 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
         }
     }, [selectedProjectKey, customRules]);
+
+    const loadStoredProjectRepoSuggestion = useCallback(() => {
+        if (!selectedProjectKey) return null;
+        try {
+            const storageKey = `repo_context_meta_${selectedProjectKey}`;
+            const raw = sessionStorage.getItem(storageKey) || localStorage.getItem(storageKey);
+            if (raw) {
+                return extractRepoSuggestionFromStoredMeta(JSON.parse(raw));
+            }
+        } catch (e) {
+            console.error('Failed to load repo suggestion', e);
+        }
+        return null;
+    }, [selectedProjectKey]);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -351,7 +455,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const hasToken = agents.some((a) => a?.has_git_token);
                 if (!isMounted) return;
 
-                setGlobalGitRepoUrl(repo);
+                // Do not wipe an already-prefilled repo with an empty backend value.
+                if (repo.trim()) {
+                    setGlobalGitRepoUrl(repo);
+                }
                 setHasSavedGlobalGitToken(Boolean(hasToken));
                 setGlobalGitToken('');
             } catch (e) {
@@ -366,6 +473,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             isMounted = false;
         };
     }, [selectedProjectKey]);
+
+    // Always prefill from the repo selected during BRD analysis for this project.
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        const storedSuggestion = loadStoredProjectRepoSuggestion();
+        if (!storedSuggestion) return;
+
+        setAnalysisRepoSuggestion((prev) => prev || storedSuggestion);
+        setGlobalGitRepoUrl((prev) => prev.trim() || storedSuggestion.url);
+    }, [selectedProjectKey, loadStoredProjectRepoSuggestion]);
 
     // Load analysis data for the selected project
     useEffect(() => {
@@ -397,8 +514,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         const hasHtml = parsed.some(p => /<[a-z][\s\S]*>/i.test(p.description || ''));
                         if (!hasHtml && parsed.length > 0) {
                             setPrerequisites(parsed);
-                            setLoading(false);
-                            return;
                         }
                     } catch { /* fall through */ }
                 }
@@ -455,7 +570,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 });
 
                 if (!projectDoc?.analysis_result) {
-                    setError(`No analysis found for "${projName || selectedProjectKey}". Please complete AI Analysis first.`);
+                    setError(`No analysis found for "${projName || selectedProjectKey}". Please complete Agent Analysis first.`);
                     setPrerequisites([]);
                     setLoading(false);
                     return;
@@ -467,6 +582,15 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     analysisObj = JSON.parse(projectDoc.analysis_result);
                 } catch {
                     analysisObj = null;
+                }
+
+                const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
+                const storedRepo = loadStoredProjectRepoSuggestion();
+
+                const finalRepoSuggestion = detectedRepo || storedRepo;
+                setAnalysisRepoSuggestion(finalRepoSuggestion);
+                if (finalRepoSuggestion?.url) {
+                    setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
                 }
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
@@ -481,7 +605,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
         loadAnalysis();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedProjectKey, navigate, projects]);
+    }, [selectedProjectKey, navigate, projects, loadStoredProjectRepoSuggestion]);
 
     // Save prerequisites to session when they change
     useEffect(() => {
@@ -965,6 +1089,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         placeholder="https://github.com/org/repo.git"
                                         className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
                                     />
+                                    {analysisRepoSuggestion && analysisRepoSuggestion.url !== globalGitRepoUrl && (
+                                        <div className="mt-2 flex items-center gap-2">
+                                            <span className="text-[10px] text-gray-400 font-medium italic">Found in analysis:</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setGlobalGitRepoUrl(analysisRepoSuggestion.url)}
+                                                className="text-[10px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md transition-colors"
+                                            >
+                                                Apply {analysisRepoSuggestion.repo}
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                                 <div>
                                     <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">

@@ -18,7 +18,7 @@ const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 
 const DEFAULT_ROADMAP = {
-    steps: ['Project Initiation', 'Governance', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'On Flight', 'Complete'],
+    steps: ['Project Initiation', 'Governance', 'Requirement Screening', 'Agent Analysis', 'Prerequisite Classification', 'Task Creation', 'On Flight', 'Complete'],
     current_step: 0,
     step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
     failed_step: null,

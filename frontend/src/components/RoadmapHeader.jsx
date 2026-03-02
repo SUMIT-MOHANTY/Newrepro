@@ -12,7 +12,7 @@ const STEP_ICONS = {
     'Project Initiation': FolderOpen,
     'Governance': ShieldCheck,
     'Requirement Screening': ShieldCheck,
-    'AI Analysis': Brain,
+    'Agent Analysis': Brain,
     'Prerequisite Classification': KeyRound,
     'Task Creation': ListChecks,
     'On Flight': Bot,
