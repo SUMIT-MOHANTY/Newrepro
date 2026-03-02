@@ -957,16 +957,6 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <h4 className="text-sm font-bold text-app-text-main">
                                     {displayName}
                                 </h4>
-                                {!isSystemAgent && (
-                                    <button
-                                        type="button"
-                                        onClick={() => startEditingAgentName(agent)}
-                                        className="p-1 rounded-md text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted"
-                                        title="Edit agent settings"
-                                    >
-                                        <Pencil className="w-3.5 h-3.5" />
-                                    </button>
-                                )}
                             </div>
                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
                             {!isSystemAgent && (
@@ -1053,8 +1043,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 {runningAgent === agent.id ? (<><Loader2 className="w-3 h-3 animate-spin" /> Starting...</>) : (<><Play className="w-3 h-3" /> Run Agent</>)}
                             </button>
                         ) : (
-                            <button disabled className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-app-text-light bg-app-bg-muted rounded-lg cursor-not-allowed">
-                                <RefreshCw className="w-3 h-3 animate-spin" /> Running...
+                            <button
+                                onClick={() => handleResetAgent(agent.id)}
+                                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg"
+                                title="Stop agent"
+                            >
+                                <StopCircle className="w-3 h-3" /> Stop
                             </button>
                         )
                     )}
