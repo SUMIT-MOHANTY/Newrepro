@@ -120,6 +120,29 @@ const buildRepoContextMeta = (context) => {
     };
 };
 
+const parseRepoMetaFromUrl = (value = '') => {
+    if (!String(value || '').includes('github.com/')) return null;
+    try {
+        const urlObj = new URL(String(value).trim());
+        const parts = urlObj.pathname.split('/').filter(Boolean);
+        if (parts.length < 2) return null;
+        const owner = parts[0];
+        const repo = parts[1].replace(/\.git$/i, '');
+        if (!owner || !repo) return null;
+        let branch = null;
+        if (parts[2] === 'tree' && parts[3]) {
+            branch = parts[3];
+        }
+        return {
+            repo: `${owner}/${repo}`,
+            branch,
+            fromLink: true,
+        };
+    } catch {
+        return null;
+    }
+};
+
 
 const normalizeDimensionScores = (dimensionScores = {}) => ({
     "Business Value & Urgency": dimensionScores["Business Value & Urgency"] ?? dimensionScores.business_value ?? 0,
@@ -267,6 +290,27 @@ const Dashboard = ({
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
+    const persistRepoContextMetaForProject = useCallback((ctx, projectKey = selectedProjectKey) => {
+        const repoMeta = buildRepoContextMeta(ctx);
+        if (!repoMeta) return;
+        const keyCandidates = [
+            projectKey,
+            selectedProject?.key,
+            selectedProject?.projectToken,
+            selectedProject?.governanceResultId != null ? String(selectedProject.governanceResultId) : null,
+            governanceContext?.project_token,
+            governanceContext?.result_id != null ? String(governanceContext.result_id) : null,
+        ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+
+        const serialized = JSON.stringify(repoMeta);
+        keyCandidates.forEach((key) => {
+            const storageKey = `repo_context_meta_${key}`;
+            sessionStorage.setItem(storageKey, serialized);
+            localStorage.setItem(storageKey, serialized);
+        });
+    }, [selectedProjectKey, selectedProject, governanceContext]);
     const isAllGovernanceSkippedCase = (() => {
         if (!governanceContext || typeof governanceContext !== 'object') return false;
 
@@ -388,9 +432,11 @@ const Dashboard = ({
                 repoContextMeta: repoContextMeta || null,
                 projectMeta: {
                     project_name: (projects.find(p => p.key === taskKey)?.name) || governanceContext?.project_name || 'Project',
+                    project_token: (projects.find(p => p.key === taskKey)?.projectToken) || taskKey || null,
                     governance_result_id: governanceContext?.result_id || (projects.find(p => p.key === taskKey)?.governanceResultId) || null,
                     revision_number: nextRevisionNumber,
                     revision_reason: revisionReason || null,
+                    repo_context: repoContextMeta || null,
                 }
             };
 
@@ -790,6 +836,14 @@ const Dashboard = ({
         if (activeTab === 'text' && !textInput.trim()) {
             setError('Please enter some text');
             return;
+        }
+
+        // Persist repository choice for this project even if user did not click "Fetch Repository".
+        if (activeTab === 'github-link') {
+            const repoFromInput = parseRepoMetaFromUrl(githubLinkUrl);
+            if (repoFromInput) {
+                persistRepoContextMetaForProject(repoFromInput, taskKey);
+            }
         }
 
         setProjectState(taskKey, { processing: true, error: '', result: null, aiQuestions: [], userAnswers: {}, userFeedback: '' });
@@ -1635,12 +1689,14 @@ const Dashboard = ({
 
             const resolvedRepo = data.repo || `${owner}/${repo}`;
             const resolvedBranch = data.branch || branch;
-            setRepoContext({
+            const nextRepoContext = {
                 repo: resolvedRepo,
                 branch: resolvedBranch,
                 context: data.context,
                 fromLink: true
-            });
+            };
+            setRepoContext(nextRepoContext);
+            persistRepoContextMetaForProject(nextRepoContext);
             setGithubLinkError('');
         } catch (e) {
             setGithubLinkError(e.message || 'Failed to parse or load URL');
@@ -1970,6 +2026,7 @@ const Dashboard = ({
                                                         onRepoSelected={() => setIsOAuthRepoSelected(true)}
                                                         onRepoContextReady={(ctx) => {
                                                             setRepoContext(ctx);
+                                                            persistRepoContextMetaForProject(ctx);
                                                             setGithubLinkUrl('');
                                                             setGithubLinkError('');
                                                         }}

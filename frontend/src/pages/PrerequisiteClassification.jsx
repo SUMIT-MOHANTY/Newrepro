@@ -261,6 +261,20 @@ const extractRepoSuggestionFromAnalysis = (analysisObj) => {
     return null;
 };
 
+const extractRepoSuggestionFromStoredMeta = (storedMeta) => {
+    if (!storedMeta || typeof storedMeta !== 'object') return null;
+    const repoPath = normalizeGithubRepoPath(
+        storedMeta.repo || storedMeta.full_name || storedMeta.url || storedMeta.git_repo_url || storedMeta.repository
+    );
+    if (!repoPath) return null;
+    return {
+        repo: repoPath,
+        branch: String(storedMeta.branch || storedMeta.default_branch || '').trim() || null,
+        url: repoPathToGitUrl(repoPath),
+        source: String(storedMeta.source || 'session'),
+    };
+};
+
 /* ─────────────────────────────────────────────────────────
    PRIORITY BADGE
 ───────────────────────────────────────────────────────── */
@@ -295,7 +309,36 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
-    const [repoSuggestionHandled, setRepoSuggestionHandled] = useState(false);
+
+    const loadStoredProjectRepoSuggestion = useCallback(() => {
+        const currentProject = projects?.find((p) => p.key === selectedProjectKey);
+        const projectToken = currentProject?.projectToken || selectedProjectKey;
+        const repoKeys = [
+            selectedProjectKey,
+            currentProject?.projectToken,
+            currentProject?.governanceResultId != null ? String(currentProject.governanceResultId) : null,
+            projectToken,
+        ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+
+        for (const key of repoKeys) {
+            try {
+                const storageKey = `repo_context_meta_${key}`;
+                const raw =
+                    sessionStorage.getItem(storageKey) ||
+                    localStorage.getItem(storageKey);
+                if (!raw) continue;
+                const parsed = extractRepoSuggestionFromStoredMeta(JSON.parse(raw));
+                if (parsed) {
+                    return parsed;
+                }
+            } catch {
+                // ignore malformed storage values and continue trying keys
+            }
+        }
+        return null;
+    }, [projects, selectedProjectKey]);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -344,7 +387,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const hasToken = agents.some((a) => a?.has_git_token);
                 if (!isMounted) return;
 
-                setGlobalGitRepoUrl(repo);
+                // Do not wipe an already-prefilled repo with an empty backend value.
+                if (repo.trim()) {
+                    setGlobalGitRepoUrl(repo);
+                }
                 setHasSavedGlobalGitToken(Boolean(hasToken));
                 setGlobalGitToken('');
             } catch (e) {
@@ -359,6 +405,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             isMounted = false;
         };
     }, [selectedProjectKey]);
+
+    // Always prefill from the repo selected during BRD analysis for this project.
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        const storedSuggestion = loadStoredProjectRepoSuggestion();
+        if (!storedSuggestion) return;
+
+        setAnalysisRepoSuggestion((prev) => prev || storedSuggestion);
+        setGlobalGitRepoUrl((prev) => prev.trim() || storedSuggestion.url);
+    }, [selectedProjectKey, loadStoredProjectRepoSuggestion]);
 
     // Load analysis data for the selected project
     useEffect(() => {
@@ -390,8 +446,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         const hasHtml = parsed.some(p => /<[a-z][\s\S]*>/i.test(p.description || ''));
                         if (!hasHtml && parsed.length > 0) {
                             setPrerequisites(parsed);
-                            setLoading(false);
-                            return;
                         }
                     } catch { /* fall through */ }
                 }
@@ -463,8 +517,13 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 }
 
                 const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
-                setAnalysisRepoSuggestion(detectedRepo);
-                setRepoSuggestionHandled(false);
+                const storedRepo = loadStoredProjectRepoSuggestion();
+
+                const finalRepoSuggestion = detectedRepo || storedRepo;
+                setAnalysisRepoSuggestion(finalRepoSuggestion);
+                if (finalRepoSuggestion?.url) {
+                    setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
+                }
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
                 const extracted = extractPrerequisitesFromAnalysis(analysisObj || projectDoc.analysis_result);
@@ -478,7 +537,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
         loadAnalysis();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedProjectKey, navigate, projects]);
+    }, [selectedProjectKey, navigate, projects, loadStoredProjectRepoSuggestion]);
 
     // Save prerequisites to session when they change
     useEffect(() => {
@@ -518,25 +577,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const allProvided = totalItems > 0 && providedCount === totalItems;
     const shouldShowRepoSuggestion = Boolean(
         analysisRepoSuggestion &&
-        !repoSuggestionHandled &&
-        !globalGitRepoUrl.trim() &&
         !isLoadingGitConfig
     );
     const isGlobalGitConfigValid = Boolean(
         globalGitRepoUrl.trim() && (hasSavedGlobalGitToken || globalGitToken.trim())
     );
-
-    const handleUseSuggestedRepo = useCallback(() => {
-        if (!analysisRepoSuggestion?.url) return;
-        setGlobalGitRepoUrl(analysisRepoSuggestion.url);
-        setRepoSuggestionHandled(true);
-        setTimeout(() => gitRepoInputRef.current?.focus(), 0);
-    }, [analysisRepoSuggestion]);
-
-    const handleUseDifferentRepo = useCallback(() => {
-        setRepoSuggestionHandled(true);
-        setTimeout(() => gitRepoInputRef.current?.focus(), 0);
-    }, []);
 
     const handleSubmit = async () => {
         setSubmitting(true);
@@ -878,25 +923,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/80 p-4">
                                 <p className="text-sm font-semibold text-indigo-900">Repository detected from analysis</p>
                                 <p className="text-xs text-indigo-700 mt-1">
-                                    You already provided <span className="font-semibold">{analysisRepoSuggestion.repo}</span>
-                                    {analysisRepoSuggestion.branch ? ` (${analysisRepoSuggestion.branch})` : ''}. Do you want to use this one?
+                                    Using <span className="font-semibold">{analysisRepoSuggestion.repo}</span>
+                                    {analysisRepoSuggestion.branch ? ` (${analysisRepoSuggestion.branch})` : ''} from BRD section for this project.
+                                    You can change it below if needed.
                                 </p>
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={handleUseSuggestedRepo}
-                                        className="px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
-                                    >
-                                        Use this repository
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={handleUseDifferentRepo}
-                                        className="px-3 py-2 text-xs font-semibold rounded-lg border border-indigo-300 text-indigo-700 bg-white hover:bg-indigo-50 transition-colors"
-                                    >
-                                        Use another repository
-                                    </button>
-                                </div>
                             </div>
                         )}
                         <div className="grid grid-cols-1 gap-4">
