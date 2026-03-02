@@ -971,7 +971,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <p className="text-sm font-semibold text-blue-900 mb-0.5">How this works</p>
                         <p className="text-xs text-blue-700 leading-relaxed">
                             {processMode === 'developer_only'
-                                ? 'In Developer Only mode, prerequisite classification is now required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
+                                ? 'In Developer Only mode, prerequisite classification is not required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
                                 : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Review each item and mark it as "Provided" once you\'ve arranged access. Add notes for your team as needed.'
                             }
                         </p>
@@ -984,7 +984,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="w-16 h-16 mx-auto mb-4 bg-blue-50 rounded-full flex items-center justify-center">
                             <ArrowRight className="w-8 h-8 text-blue-500" />
                         </div>
-                        <h3 className="text-lg font-bold text-gray-900 mb-2">Direct Developer Workflow</h3>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">Developer Workflow.</h3>
                         <p className="text-sm text-gray-600 max-w-lg mx-auto leading-relaxed">
                             Prerequisite classification is bypassed for <strong>Developer Only</strong> mode.
                             You will be redirected to VS Code.
