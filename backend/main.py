@@ -2,6 +2,10 @@ import asyncio
 import logging
 import re
 import uuid
+import html as html_lib
+from html.parser import HTMLParser
+from urllib.parse import urlparse
+import ipaddress
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Annotated, Optional, List, Dict, Any
@@ -71,6 +75,173 @@ class AIConfigUpdate(BaseModel):
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     model: Optional[str] = None
+
+
+class URLIngestRequest(BaseModel):
+    url: str = Field(..., description="Public website URL to fetch")
+
+
+class _RequirementPageParser(HTMLParser):
+    """
+    Lightweight HTML parser for extracting readable requirement-like content
+    without external dependencies.
+    """
+
+    _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    _BLOCK_TAGS = {"p", "li", "section", "article", "div", "blockquote", "td", "th"}
+    _IGNORE_TAGS = {"script", "style", "noscript", "svg", "canvas", "iframe"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_ignored_depth = 0
+        self.in_title = False
+        self.current_tag: Optional[str] = None
+        self.current_text_parts: List[str] = []
+        self.title_parts: List[str] = []
+        self.headings: List[str] = []
+        self.paragraphs: List[str] = []
+        self.list_items: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        tag_l = tag.lower()
+        if tag_l in self._IGNORE_TAGS:
+            self.in_ignored_depth += 1
+            return
+        if self.in_ignored_depth > 0:
+            return
+        if tag_l == "title":
+            self.in_title = True
+            return
+        if tag_l in self._HEADING_TAGS or tag_l in self._BLOCK_TAGS:
+            self.current_tag = tag_l
+            self.current_text_parts = []
+
+    def handle_endtag(self, tag: str):
+        tag_l = tag.lower()
+        if tag_l in self._IGNORE_TAGS and self.in_ignored_depth > 0:
+            self.in_ignored_depth -= 1
+            return
+        if self.in_ignored_depth > 0:
+            return
+        if tag_l == "title":
+            self.in_title = False
+            return
+        if self.current_tag == tag_l:
+            text = " ".join(self.current_text_parts).strip()
+            text = re.sub(r"\s+", " ", text)
+            if text:
+                if tag_l in self._HEADING_TAGS:
+                    self.headings.append(text)
+                elif tag_l == "li":
+                    self.list_items.append(text)
+                else:
+                    self.paragraphs.append(text)
+            self.current_tag = None
+            self.current_text_parts = []
+
+    def handle_data(self, data: str):
+        if self.in_ignored_depth > 0:
+            return
+        clean = re.sub(r"\s+", " ", data or "").strip()
+        if not clean:
+            return
+        if self.in_title:
+            self.title_parts.append(clean)
+        if self.current_tag:
+            self.current_text_parts.append(clean)
+
+    def to_requirement_markdown(self, source_url: str, max_lines: int = 120) -> Dict[str, Any]:
+        page_title = re.sub(r"\s+", " ", " ".join(self.title_parts).strip())
+        heading_lines = [f"## {h}" for h in self.headings[:25]]
+        paragraph_lines = self.paragraphs[:70]
+        bullet_lines = [f"- {item}" for item in self.list_items[:70]]
+
+        lines: List[str] = []
+        if page_title:
+            lines.append(f"# Extracted Requirements - {page_title}")
+        else:
+            lines.append("# Extracted Requirements")
+        lines.append(f"Source URL: {source_url}")
+        lines.append("")
+        lines.append("The following requirements were generated from webpage content.")
+        lines.append("Review and edit before final analysis.")
+        lines.append("")
+        lines.append("## Candidate Requirements")
+
+        if not heading_lines and not paragraph_lines and not bullet_lines:
+            lines.append("- No readable requirement content was detected on this page.")
+        else:
+            lines.extend(heading_lines)
+            if heading_lines and (paragraph_lines or bullet_lines):
+                lines.append("")
+            lines.extend(bullet_lines)
+            if paragraph_lines:
+                lines.append("")
+                lines.extend(paragraph_lines)
+
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines.append("")
+            lines.append("... (truncated)")
+
+        markdown = "\n".join(lines).strip()
+        summary = {
+            "title": page_title or None,
+            "headings_found": len(self.headings),
+            "paragraphs_found": len(self.paragraphs),
+            "list_items_found": len(self.list_items),
+        }
+        return {"markdown": markdown, "summary": summary}
+
+
+def _normalize_and_validate_public_url(raw_url: str) -> str:
+    candidate = str(raw_url or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="URL is required.")
+
+    parsed = urlparse(candidate)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed.")
+
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Invalid URL hostname.")
+
+    blocked_hostnames = {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+        "host.docker.internal",
+        "metadata.google.internal",
+    }
+    if hostname in blocked_hostnames or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="Local/internal URLs are not allowed.")
+
+    try:
+        host_ip = ipaddress.ip_address(hostname)
+        if host_ip.is_loopback or host_ip.is_private or host_ip.is_link_local or host_ip.is_multicast or host_ip.is_reserved:
+            raise HTTPException(status_code=400, detail="Private or local network URLs are not allowed.")
+    except ValueError:
+        # Hostname is a domain name, continue.
+        pass
+
+    # Ignore fragments as they are browser-only and not needed for server fetch.
+    normalized = parsed._replace(fragment="").geturl()
+    return normalized
+
+
+def _strip_html_to_text(value: str, max_chars: int = 300_000) -> str:
+    text = str(value or "")
+    text = re.sub(r"<!--[\s\S]*?-->", " ", text)
+    text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars]
+    return text
 
 # ... (Auth endpoints omitted for brevity, keeping existing) ...
 
@@ -233,6 +404,73 @@ async def upload_document(
     
     print(f"DEBUG: API Response keys: {list(response.keys())}")
     return response
+
+
+@app.post("/documents/extract-from-url")
+async def extract_document_from_url(
+    payload: URLIngestRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch website content and convert it into requirement-style markdown.
+    """
+    source_url = _normalize_and_validate_public_url(payload.url)
+
+    headers = {
+        "User-Agent": "BRD-Analyzer/1.0 (+Requirement-Extraction)",
+        "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(source_url, headers=headers)
+            resp.raise_for_status()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timed out while fetching the URL.")
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code if exc.response is not None else 502
+        if code == 404:
+            detail = "Website page not found (404). Check the URL and try again."
+        elif code in (401, 403):
+            detail = "Website denied access to this URL."
+        else:
+            detail = f"Failed to fetch URL content (HTTP {code})."
+        raise HTTPException(status_code=code, detail=detail)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"URL fetch failed: {exc}")
+
+    content_type = str(resp.headers.get("content-type", "")).lower()
+    raw_text = resp.text or ""
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="Fetched page is empty.")
+
+    parser = _RequirementPageParser()
+    parser.feed(raw_text)
+    parser.close()
+    parsed = parser.to_requirement_markdown(str(resp.url))
+
+    markdown = parsed["markdown"]
+    if not markdown.strip():
+        plain_text = _strip_html_to_text(raw_text)
+        markdown = (
+            f"# Extracted Requirements\n"
+            f"Source URL: {str(resp.url)}\n\n"
+            f"## Candidate Requirements\n"
+            f"{plain_text[:120000] if plain_text else 'No readable content found.'}"
+        )
+
+    filename_source = (parser.title_parts[0] if parser.title_parts else "") or urlparse(str(resp.url)).hostname or "Website_URL"
+    safe_label = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename_source).strip("_") or "Website_URL"
+    generated_filename = f"URL_{safe_label}_{datetime.utcnow().strftime('%Y-%m-%d')}"
+
+    return {
+        "filename": generated_filename,
+        "url": str(resp.url),
+        "content_type": content_type or None,
+        "markdown": markdown,
+        "summary": parsed.get("summary") or {},
+        "user": current_user.email,
+    }
 
 # --- History Endpoints ---
 

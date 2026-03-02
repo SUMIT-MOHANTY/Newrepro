@@ -237,7 +237,9 @@ const Dashboard = ({
             files: [], textInput: '', activeTab: 'upload', processing: false,
             result: null, error: '', userFeedback: '', aiQuestions: [],
             userAnswers: {}, revisionUnlocked: false, revisionReason: '',
-            progress: 0, progressMessage: ''
+            progress: 0, progressMessage: '',
+            urlInput: '', urlRequirements: '', urlSource: '', urlFetchSummary: null,
+            urlFetching: false
         };
 
         const proj = projects.find(p => p.key === key);
@@ -265,13 +267,17 @@ const Dashboard = ({
     const {
         files = [], linkedFiles = [], textInput, activeTab, processing, result, error,
         userFeedback, aiQuestions, userAnswers, revisionUnlocked,
-        revisionReason, progress, progressMessage
+        revisionReason, progress, progressMessage,
+        urlInput = '', urlRequirements = '', urlSource = '', urlFetchSummary = null,
+        urlFetching = false
     } = activeState;
 
     // Helpers to update active project state from UI components natively 
     const setFiles = (v) => setProjectState(selectedProjectKey, { files: typeof v === 'function' ? v(activeState.files || []) : v });
     const setLinkedFiles = (v) => setProjectState(selectedProjectKey, { linkedFiles: typeof v === 'function' ? v(activeState.linkedFiles || []) : v });
     const setTextInput = (v) => setProjectState(selectedProjectKey, { textInput: typeof v === 'function' ? v(activeState.textInput) : v });
+    const setUrlInput = (v) => setProjectState(selectedProjectKey, { urlInput: typeof v === 'function' ? v(activeState.urlInput) : v });
+    const setUrlRequirements = (v) => setProjectState(selectedProjectKey, { urlRequirements: typeof v === 'function' ? v(activeState.urlRequirements) : v });
     const setActiveTab = (v) => setProjectState(selectedProjectKey, { activeTab: typeof v === 'function' ? v(activeState.activeTab) : v });
     const setError = (v) => setProjectState(selectedProjectKey, { error: typeof v === 'function' ? v(activeState.error) : v });
     const setUserFeedback = (v) => setProjectState(selectedProjectKey, { userFeedback: typeof v === 'function' ? v(activeState.userFeedback) : v });
@@ -579,7 +585,7 @@ const Dashboard = ({
     useEffect(() => {
         const params = new URLSearchParams(location.search);
         const requestedTab = params.get('tab');
-        if (requestedTab === 'upload' || requestedTab === 'text') {
+        if (requestedTab === 'upload' || requestedTab === 'text' || requestedTab === 'url') {
             setActiveTab(requestedTab);
         }
 
@@ -819,6 +825,70 @@ const Dashboard = ({
         setTextInput(e.target.value);
     };
 
+    const handleUrlInputChange = (e) => {
+        setUrlInput(e.target.value);
+    };
+
+    const fetchRequirementsFromUrl = async (urlValue, taskKey = selectedProjectKey) => {
+        const token = localStorage.getItem('token');
+        const normalizedUrl = String(urlValue || '').trim();
+        if (!normalizedUrl) {
+            throw new Error('Please enter a website URL.');
+        }
+
+        setProjectState(taskKey, {
+            urlFetching: true,
+            error: '',
+            progress: 20,
+            progressMessage: 'Fetching website requirements...'
+        });
+
+        try {
+            const response = await fetch(API_ENDPOINTS.DOCUMENTS_EXTRACT_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ url: normalizedUrl })
+            });
+
+            if (response.status === 401) {
+                handleLogout();
+                return null;
+            }
+
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.detail || 'Failed to fetch URL requirements');
+            }
+
+            const markdown = String(data.markdown || '').trim();
+            if (!markdown) {
+                throw new Error('No readable requirement content found on that URL.');
+            }
+
+            setProjectState(taskKey, {
+                urlRequirements: markdown,
+                urlSource: String(data.url || normalizedUrl),
+                urlFetchSummary: data.summary || null,
+                progress: 40,
+                progressMessage: 'Website content processed.'
+            });
+            return data;
+        } finally {
+            setProjectState(taskKey, { urlFetching: false });
+        }
+    };
+
+    const handleFetchUrlRequirements = async () => {
+        try {
+            await fetchRequirementsFromUrl(urlInput, selectedProjectKey);
+        } catch (err) {
+            setError(err.message || 'Failed to fetch URL requirements');
+        }
+    };
+
     const handleUpload = async (e) => {
         const taskKey = selectedProjectKey;
         const taskFiles = activeTab === 'linked-doc' ? linkedFiles : files;
@@ -853,6 +923,10 @@ const Dashboard = ({
             setError('Please enter some text');
             return;
         }
+        if (activeTab === 'url' && !urlInput.trim()) {
+            setError('Please enter a website URL');
+            return;
+        }
 
         // Persist repository choice for this project even if user did not click "Fetch Repository".
         if (activeTab === 'github-link') {
@@ -876,7 +950,10 @@ const Dashboard = ({
             let extractedHtml = '';
             let filename = '';
 
-            setProjectState(taskKey, { progress: 10, progressMessage: `Uploading ${taskFiles.length > 0 ? taskFiles.length : ''} documents for ${selectedProject.name}...` });
+            const initialProgressMessage = activeTab === 'url'
+                ? `Preparing website content for ${selectedProject.name}...`
+                : `Uploading ${taskFiles.length > 0 ? taskFiles.length : ''} documents for ${selectedProject.name}...`;
+            setProjectState(taskKey, { progress: 10, progressMessage: initialProgressMessage });
 
 
             if (activeTab === 'upload' || activeTab === 'linked-doc') {
@@ -913,10 +990,38 @@ const Dashboard = ({
                 filename = uploadData.filename; // e.g., "doc1.pdf, doc2.pdf"
 
             } else {
-                // Text Input Mode
-                extractedMarkdown = textInput;
-                filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
-                setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+                if (activeTab === 'text') {
+                    // Text Input Mode
+                    extractedMarkdown = textInput;
+                    filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
+                    setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+                } else if (activeTab === 'url') {
+                    const fetchedData = urlRequirements.trim()
+                        ? {
+                            markdown: urlRequirements,
+                            filename: `URL_${new Date().toISOString().slice(0, 10)}`,
+                            url: urlSource || urlInput.trim(),
+                        }
+                        : await fetchRequirementsFromUrl(urlInput, taskKey);
+
+                    if (!fetchedData) {
+                        throw new Error('Unable to process URL requirements.');
+                    }
+
+                    extractedMarkdown = String(fetchedData.markdown || urlRequirements || '').trim();
+                    filename = fetchedData.filename || 'URL_Requirements_' + new Date().toISOString().slice(0, 10);
+
+                    if (!extractedMarkdown) {
+                        throw new Error('No requirement text generated from URL.');
+                    }
+                    setProjectState(taskKey, {
+                        progress: 40,
+                        progressMessage: 'Website requirements ready for analysis.',
+                        urlSource: fetchedData.url || (urlSource || urlInput.trim()),
+                        urlFetchSummary: fetchedData.summary || urlFetchSummary || null,
+                        urlRequirements: extractedMarkdown
+                    });
+                }
             }
 
             if (isAllGovernanceSkippedCase && analyzeWithAi) {
@@ -1725,6 +1830,11 @@ const Dashboard = ({
         setProjectState(selectedProjectKey, {
             files: [],
             textInput: '',
+            urlInput: '',
+            urlRequirements: '',
+            urlSource: '',
+            urlFetchSummary: null,
+            urlFetching: false,
             processing: false,
             result: null,
             error: '',
@@ -1778,6 +1888,11 @@ const Dashboard = ({
             revisionUnlocked: true,
             files: [],
             textInput: '',
+            urlInput: '',
+            urlRequirements: '',
+            urlSource: '',
+            urlFetchSummary: null,
+            urlFetching: false,
             result: null
         });
     };
@@ -1942,6 +2057,14 @@ const Dashboard = ({
                                         </button>
                                         <button
                                             type="button"
+                                            onClick={() => setActiveTab('url')}
+                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'url' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                            disabled={!selectedProject}
+                                        >
+                                            Upload URL
+                                        </button>
+                                        <button
+                                            type="button"
                                             onClick={() => setActiveTab('github-link')}
                                             className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
                                             disabled={!selectedProject}
@@ -2019,6 +2142,55 @@ const Dashboard = ({
                                                 className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
+                                        </div>
+                                    ) : activeTab === 'url' ? (
+                                        <div className="space-y-4">
+                                            <div className="rounded-xl border border-app-border bg-app-bg-page/50 p-4">
+                                                <label className="block text-sm font-semibold text-app-text-main mb-2">Website URL</label>
+                                                <div className="flex flex-col sm:flex-row gap-2">
+                                                    <input
+                                                        type="url"
+                                                        value={urlInput}
+                                                        onChange={handleUrlInputChange}
+                                                        placeholder="https://example.com/requirements"
+                                                        className="flex-1 px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-card"
+                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleFetchUrlRequirements}
+                                                        disabled={!urlInput.trim() || !selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
+                                                        className="px-4 py-2.5 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
+                                                    >
+                                                        {urlFetching ? 'Fetching...' : 'Fetch URL'}
+                                                    </button>
+                                                </div>
+                                                <p className="mt-2 text-xs text-app-text-muted">
+                                                    Fetches webpage content and converts it into requirement text for analysis.
+                                                </p>
+                                            </div>
+                                            <div className="rounded-xl border border-app-border bg-app-bg-card p-4">
+                                                <div className="flex items-center justify-between gap-2 mb-2">
+                                                    <h3 className="text-sm font-semibold text-app-text-main">Extracted Requirements</h3>
+                                                    {urlSource && (
+                                                        <span className="text-[11px] text-app-text-muted truncate max-w-[60%]" title={urlSource}>
+                                                            Source: {urlSource}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <textarea
+                                                    value={urlRequirements}
+                                                    onChange={(e) => setUrlRequirements(e.target.value)}
+                                                    placeholder="Click 'Fetch URL' to generate requirement text from the webpage."
+                                                    className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
+                                                    disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                                />
+                                                {urlFetchSummary && (
+                                                    <div className="mt-2 text-xs text-app-text-muted">
+                                                        Parsed headings: {urlFetchSummary.headings_found || 0}, paragraphs: {urlFetchSummary.paragraphs_found || 0}, list items: {urlFetchSummary.list_items_found || 0}
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
                                     ) : (
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative mx-auto">
@@ -2157,8 +2329,8 @@ const Dashboard = ({
                                         </button>
                                         <button
                                             type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
+                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching}
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
                                                 ? 'bg-gray-300 cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
