@@ -1,5 +1,4 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
     CheckCircle2, Circle, AlertCircle, Loader2,
     FolderOpen, ShieldCheck, Brain, KeyRound, ListChecks, Bot, Flag
@@ -81,8 +80,7 @@ const styles = {
 /**
  * RoadmapHeader — Railway-track dotted stepper.
  */
-const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null }) => {
-    const navigate = useNavigate();
+const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null, activeStepCompleted = false }) => {
     if (!steps.length) return null;
 
     const baseStatuses =
@@ -105,9 +103,9 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
 
         const next = baseStatuses.map((status, idx) => {
             if (status === 'failed') return 'failed';
-            if (idx < activeStepIndex) return status === 'pending' ? 'completed' : status;
-            if (idx === activeStepIndex) return 'active';
-            return status === 'active' ? 'pending' : status;
+            if (idx < activeStepIndex) return 'completed';
+            if (idx === activeStepIndex) return activeStepCompleted ? 'completedActive' : 'active';
+            return 'pending';
         });
         return next;
     })();
@@ -124,11 +122,9 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Complete': '/status-dashboard',
     };
 
-    const handleStepClick = (stepLabel, status) => {
-        const route = STEP_ROUTES[stepLabel];
-        if (route && (status === 'active' || status === 'completed')) {
-            navigate(route);
-        }
+    const handleStepClick = () => {
+        // Navigation from roadmap is disabled as requested.
+        return;
     };
 
     // percentage of the track that is "filled"
@@ -151,7 +147,6 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
                         const status = statuses[index];
                         const StepIcon = STEP_ICONS[step] || Circle;
                         const labelPosition = index % 2 === 0 ? 'top' : 'bottom';
-                        const isClickable = !!(STEP_ROUTES[step] && (status === 'active' || status === 'completed'));
                         return (
                             <StepNode
                                 key={index}
@@ -160,8 +155,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
                                 status={status}
                                 icon={StepIcon}
                                 labelPosition={labelPosition}
-                                clickable={isClickable}
-                                onClick={() => handleStepClick(step, status)}
+                                clickable={false}
+                                onClick={handleStepClick}
                             />
                         );
                     })}
@@ -219,6 +214,17 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             labelWeight: '700',
             labelColor: '#991b1b',
             stepColor: '#dc2626',
+        },
+        completedActive: {
+            dotSize: 38,
+            bg: '#dcfce7',
+            border: '3px solid #22c55e',
+            iconColor: '#16a34a',
+            shadow: '0 0 0 6px rgba(34,197,94,.2), 0 0 18px rgba(34,197,94,.25)',
+            labelWeight: '700',
+            labelColor: '#111827',
+            stepColor: '#16a34a',
+            glowGreen: true,
         },
     };
 
@@ -306,6 +312,16 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
                         inset: '-5px',
                         borderRadius: '50%',
                         border: '2px solid rgba(239,68,68,.35)',
+                        animation: 'roadmapPulse 2s ease-in-out infinite',
+                    }} />
+                )}
+                {/* Completed-active green glow ring */}
+                {c.glowGreen && (
+                    <span style={{
+                        position: 'absolute',
+                        inset: '-6px',
+                        borderRadius: '50%',
+                        border: '2px solid rgba(34,197,94,.45)',
                         animation: 'roadmapPulse 2s ease-in-out infinite',
                     }} />
                 )}

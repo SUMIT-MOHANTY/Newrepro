@@ -281,6 +281,22 @@ const Dashboard = ({
 
     const currentView = propCurrentView || (location.pathname === '/status' ? 'statusDashboard' : 'main');
 
+    // Signal to AppLayout whether we are showing analysis results or the upload form.
+    // This drives the roadmap highlighting (Requirement Screening vs Agent Analysis).
+    useEffect(() => {
+        if (currentView === 'main') {
+            if (result) {
+                sessionStorage.setItem('dashboard_showing_results', 'true');
+            } else {
+                sessionStorage.removeItem('dashboard_showing_results');
+            }
+        }
+        return () => {
+            // Clean up when leaving the dashboard
+            sessionStorage.removeItem('dashboard_showing_results');
+        };
+    }, [result, currentView]);
+
     const [githubLinkUrl, setGithubLinkUrl] = useState('');
     const [githubLinkToken, setGithubLinkToken] = useState('');
     const [githubLinkParsing, setGithubLinkParsing] = useState(false);
@@ -2248,7 +2264,7 @@ const Dashboard = ({
                                         <div className="lg:col-span-8 space-y-6">
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
                                                 <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-app-border-light">
-                                                    Executive Summary & Analysis
+                                                    Executive Summary & Agent Analysis
                                                 </h3>
                                                 <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
                                                     {(() => {
