@@ -501,7 +501,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
     const updateNotes = useCallback((id, notes) => {
         setPrerequisites(prev =>
-            prev.map(p => p.id === id ? { ...p, userNotes: notes } : p)
+            prev.map(p => p.id === id ? { ...p, userNotes: notes, provided: notes.trim().length > 0 ? true : p.provided } : p)
         );
     }, []);
 
@@ -893,7 +893,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                 {/* Content */}
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-gray-500 line-through' : 'text-gray-800'}`}>
+                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-gray-500' : 'text-gray-800'}`}>
                                                             {item.name}
                                                         </span>
                                                         <PriorityBadge priority={item.priority} />
