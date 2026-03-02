@@ -971,7 +971,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <p className="text-sm font-semibold text-blue-900 mb-0.5">How this works</p>
                         <p className="text-xs text-blue-700 leading-relaxed">
                             {processMode === 'developer_only'
-                                ? 'In Developer Only mode, prerequisite classification is now required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
+                                ? 'In Developer Only mode, prerequisite classification is not required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
                                 : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Review each item and mark it as "Provided" once you\'ve arranged access. Add notes for your team as needed.'
                             }
                         </p>
