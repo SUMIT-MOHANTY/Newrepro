@@ -984,7 +984,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="w-16 h-16 mx-auto mb-4 bg-blue-50 rounded-full flex items-center justify-center">
                             <ArrowRight className="w-8 h-8 text-blue-500" />
                         </div>
-                        <h3 className="text-lg font-bold text-gray-900 mb-2">Developer Only Mode</h3>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">Developer Workflow.</h3>
                         <p className="text-sm text-gray-600 max-w-lg mx-auto leading-relaxed">
                             Prerequisite classification is bypassed for <strong>Developer Only</strong> mode.
                             You will be redirected to VS Code.
