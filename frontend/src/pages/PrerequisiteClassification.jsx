@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import {
@@ -361,7 +361,6 @@ const PriorityBadge = ({ priority }) => {
 ───────────────────────────────────────────────────────── */
 const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, projects }) => {
     const navigate = useNavigate();
-    const gitRepoInputRef = useRef(null);
     const [prerequisites, setPrerequisites] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -404,6 +403,26 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         }
         return null;
     }, [projects, selectedProjectKey]);
+
+    const [customRules, setCustomRules] = useState(() => {
+        if (selectedProjectKey) {
+            return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+        }
+        return '';
+    });
+
+    useEffect(() => {
+        if (selectedProjectKey) {
+            const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+            setCustomRules(saved);
+        }
+    }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (selectedProjectKey) {
+            localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
+        }
+    }, [selectedProjectKey, customRules]);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -511,6 +530,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         const hasHtml = parsed.some(p => /<[a-z][\s\S]*>/i.test(p.description || ''));
                         if (!hasHtml && parsed.length > 0) {
                             setPrerequisites(parsed);
+                            return;
                         }
                     } catch { /* fall through */ }
                 }
@@ -639,12 +659,13 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
     const progress = totalItems > 0 ? Math.round((providedCount / totalItems) * 100) : 0;
-    const allProvided = totalItems > 0 && providedCount === totalItems;
+    const allProvided = processMode === 'developer_only' ? true : (totalItems > 0 && providedCount === totalItems);
     const shouldShowRepoSuggestion = Boolean(
         analysisRepoSuggestion &&
-        !isLoadingGitConfig
+        !isLoadingGitConfig &&
+        processMode !== 'developer_only'
     );
-    const isGlobalGitConfigValid = Boolean(
+    const isGlobalGitConfigValid = processMode === 'developer_only' || Boolean(
         globalGitRepoUrl.trim() && (hasSavedGlobalGitToken || globalGitToken.trim())
     );
 
@@ -1072,57 +1093,58 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── SUMMARY + SUBMIT ── */}
                 <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-100/80 p-6 mb-6">
-                    <div className="mb-6 pb-6 border-b border-gray-100">
-                        <h3 className="text-base font-bold text-gray-900 mb-1">Git Configuration</h3>
-                        <p className="text-sm text-gray-500 mb-4">
-                            Provide one global repository and PAT here. All agents in this project will use these credentials.
-                        </p>
-                        {shouldShowRepoSuggestion && (
-                            <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/80 p-4">
-                                <p className="text-sm font-semibold text-indigo-900">Repository detected from analysis</p>
-                                <p className="text-xs text-indigo-700 mt-1">
-                                    Using <span className="font-semibold">{analysisRepoSuggestion.repo}</span>
-                                    {analysisRepoSuggestion.branch ? ` (${analysisRepoSuggestion.branch})` : ''} from BRD section for this project.
-                                    You can change it below if needed.
-                                </p>
-                            </div>
-                        )}
-                        <div className="grid grid-cols-1 gap-4">
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
-                                    Git Repository URL <span className="text-red-500">*</span>
-                                </label>
-                                <input
-                                    ref={gitRepoInputRef}
-                                    type="text"
-                                    value={globalGitRepoUrl}
-                                    onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
-                                    placeholder="https://github.com/org/repo.git"
-                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
-                                    Personal Access Token {!hasSavedGlobalGitToken && <span className="text-red-500">*</span>}
-                                </label>
-                                <input
-                                    type="password"
-                                    value={globalGitToken}
-                                    onChange={(e) => setGlobalGitToken(e.target.value)}
-                                    placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'ghp_...'}
-                                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
-                                />
-                                <p className="text-xs text-gray-500 mt-2">
-                                    {hasSavedGlobalGitToken
-                                        ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
-                                        : 'PAT is required the first time so agents can clone/push to the global repository.'}
-                                </p>
-                            </div>
-                            {isLoadingGitConfig && (
-                                <p className="text-xs text-gray-500">Loading saved Git config...</p>
+                    {processMode !== 'developer_only' && (
+                        <div className="mb-6 pb-6 border-b border-gray-100">
+                            <h3 className="text-base font-bold text-gray-900 mb-1">Git Configuration</h3>
+                            <p className="text-sm text-gray-500 mb-4">
+                                Provide one global repository and PAT here. All agents in this project will use these credentials.
+                            </p>
+                            {shouldShowRepoSuggestion && (
+                                <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/80 p-4">
+                                    <p className="text-sm font-semibold text-indigo-900">Repository detected from analysis</p>
+                                    <p className="text-xs text-indigo-700 mt-1">
+                                        Using <span className="font-semibold">{analysisRepoSuggestion.repo}</span>
+                                        {analysisRepoSuggestion.branch ? ` (${analysisRepoSuggestion.branch})` : ''} from BRD section for this project.
+                                        You can change it below if needed.
+                                    </p>
+                                </div>
                             )}
+                            <div className="grid grid-cols-1 gap-4">
+                                <div>
+                                    <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
+                                        Git Repository URL <span className="text-red-500">*</span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={globalGitRepoUrl}
+                                        onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
+                                        placeholder="https://github.com/org/repo.git"
+                                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
+                                        Personal Access Token {!hasSavedGlobalGitToken && <span className="text-red-500">*</span>}
+                                    </label>
+                                    <input
+                                        type="password"
+                                        value={globalGitToken}
+                                        onChange={(e) => setGlobalGitToken(e.target.value)}
+                                        placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'ghp_...'}
+                                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                    />
+                                    <p className="text-xs text-gray-500 mt-2">
+                                        {hasSavedGlobalGitToken
+                                            ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
+                                            : 'PAT is required the first time so agents can clone/push to the global repository.'}
+                                    </p>
+                                </div>
+                                {isLoadingGitConfig && (
+                                    <p className="text-xs text-gray-500">Loading saved Git config...</p>
+                                )}
+                            </div>
                         </div>
-                    </div>
+                    )}
 
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                         <div>
