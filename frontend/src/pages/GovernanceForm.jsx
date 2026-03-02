@@ -162,6 +162,21 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
         }, 0);
     }, [location.search, location.pathname, navigate]);
 
+    // Persist current wizard step so the global tracker can highlight
+    // Project Initiation vs Governance appropriately while filling the form.
+    useEffect(() => {
+        try {
+            if (!selectedProjectKey) return;
+            const payload = { projectKey: selectedProjectKey, step: currentStep };
+            sessionStorage.setItem(
+                `governance_wizard_step_${selectedProjectKey}`,
+                JSON.stringify(payload)
+            );
+        } catch {
+            // ignore storage errors
+        }
+    }, [currentStep, selectedProjectKey]);
+
     useEffect(() => {
         if (queryError) {
             setTimeout(() => {
@@ -420,6 +435,11 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                         <div className="space-y-4">
                                             {activeQuestions.map((question, qIdx) => {
                                                 const answered = answers[question.id] !== undefined;
+                                                const allOptions = getQuestionOptions(question);
+                                                const mainOptions = allOptions.filter((opt) => opt.label !== skipOption.label);
+                                                const skip = allOptions.find((opt) => opt.label === skipOption.label);
+                                                const isSkipped = answers[question.id]?.label === skipOption.label;
+
                                                 return (
                                                     <div
                                                         key={question.id}
@@ -427,19 +447,36 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                                             ? 'border-app-primary-ring/80 bg-gradient-to-br from-blue-50/40 to-indigo-50/30 shadow-sm'
                                                             : 'border-app-border/80 bg-app-bg-card hover:border-app-border'}`}
                                                     >
-                                                        <div className="flex items-start gap-3 mb-4">
-                                                            <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
-                                                                ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
-                                                                : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
-                                                            >
-                                                                {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
-                                                            </span>
-                                                            <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5">{question.question}</h3>
+                                                        <div className="flex items-start justify-between gap-3 mb-4">
+                                                            <div className="flex items-start gap-3">
+                                                                <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
+                                                                    ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
+                                                                    : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
+                                                                >
+                                                                    {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
+                                                                </span>
+                                                                <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5 max-w-xl">
+                                                                    {question.question}
+                                                                </h3>
+                                                            </div>
+                                                            {skip && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleAnswer(question.id, skip)}
+                                                                    className={`text-[11px] font-semibold rounded-full px-3 py-1 border transition-colors duration-200 whitespace-nowrap ${
+                                                                        isSkipped
+                                                                            ? 'border-blue-400 bg-app-primary-light text-blue-800'
+                                                                            : 'border-transparent text-app-text-light hover:text-app-primary hover:border-app-primary-light hover:bg-app-primary-light/20'
+                                                                    }`}
+                                                                >
+                                                                    Skip
+                                                                </button>
+                                                            )}
                                                         </div>
 
-                                                        {/* Options — 2 cols on wider screens */}
+                                                        {/* Options — 2 cols on wider screens (excluding Skip) */}
                                                         <div className="ml-10 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                            {getQuestionOptions(question).map((option) => {
+                                                            {mainOptions.map((option) => {
                                                                 const selected = answers[question.id]?.label === option.label;
                                                                 return (
                                                                     <label
@@ -841,7 +878,6 @@ const GovernanceResult = ({ result, onBack }) => {
                                         <>
                                             <li className="flex gap-2"><span className="text-red-400">•</span> Screening answers were skipped</li>
                                             <li className="flex gap-2"><span className="text-red-400">•</span> IT follow-up is required</li>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> BRD upload remains disabled until review</li>
                                         </>
                                     ) : (
                                         <>
@@ -888,7 +924,7 @@ const GovernanceResult = ({ result, onBack }) => {
                     >
                         <ChevronLeft className="w-4 h-4" /> Back to Form
                     </button>
-                    {classification !== 'ENTERPRISE' && (
+                    {(classification !== 'ENTERPRISE' || isSkipFollowUpCase) && (
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));

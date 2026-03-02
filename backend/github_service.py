@@ -3,7 +3,7 @@ GitHub Integration Service for BRD Analysis
 Handles OAuth flow & fetching repository data for AI context.
 """
 import httpx
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from config import settings
 
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
@@ -27,6 +27,15 @@ SKIP_FILES = {
 
 MAX_FILE_SIZE_BYTES = 100_000  # ~100 KB per file
 MAX_FILES_TO_FETCH = 40       # cap context to avoid token overflow
+
+
+def normalize_repo_identity(owner: str, repo: str) -> Tuple[str, str]:
+    """Normalize owner/repo values from user-provided URLs."""
+    normalized_owner = str(owner or "").strip().strip("/")
+    normalized_repo = str(repo or "").strip().strip("/")
+    if normalized_repo.lower().endswith(".git"):
+        normalized_repo = normalized_repo[:-4]
+    return normalized_owner, normalized_repo
 
 
 def get_oauth_url(state: str = "") -> str:
@@ -120,30 +129,55 @@ async def list_repos(token: str, per_page: int = 30, page: int = 1) -> List[Dict
 
 async def get_repo_tree(
     token: Optional[str], owner: str, repo: str, branch: str = "main"
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], str]:
     """Get the full file tree of a repository (recursive)."""
+    owner, repo = normalize_repo_identity(owner, repo)
+    requested_branch = (branch or "main").strip() or "main"
+
     headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-        
+
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/git/trees/{branch}",
+        tree_resp = await client.get(
+            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/git/trees/{requested_branch}",
             params={"recursive": "1"},
             headers=headers,
         )
-        resp.raise_for_status()
-        tree = resp.json().get("tree", [])
-        return [
+        resolved_branch = requested_branch
+
+        # If branch lookup fails (often default branch isn't "main"), retry with repo default branch.
+        if tree_resp.status_code == 404:
+            meta_resp = await client.get(
+                f"{GITHUB_API_BASE}/repos/{owner}/{repo}",
+                headers=headers,
+            )
+            if meta_resp.status_code == 200:
+                default_branch = (meta_resp.json() or {}).get("default_branch")
+                if default_branch and default_branch != requested_branch:
+                    fallback_resp = await client.get(
+                        f"{GITHUB_API_BASE}/repos/{owner}/{repo}/git/trees/{default_branch}",
+                        params={"recursive": "1"},
+                        headers=headers,
+                    )
+                    if fallback_resp.status_code == 200:
+                        tree_resp = fallback_resp
+                        resolved_branch = default_branch
+
+        tree_resp.raise_for_status()
+        tree = tree_resp.json().get("tree", [])
+        normalized_tree = [
             {"path": item["path"], "type": item["type"], "size": item.get("size", 0)}
             for item in tree
         ]
+        return normalized_tree, resolved_branch
 
 
 async def get_file_content(
     token: Optional[str], owner: str, repo: str, path: str, branch: str = "main"
 ) -> Optional[str]:
     """Fetch raw content of a single file from GitHub."""
+    owner, repo = normalize_repo_identity(owner, repo)
     headers = {"Accept": "application/vnd.github.raw+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -181,7 +215,7 @@ def _should_include_file(path: str, size: int) -> bool:
 
 async def build_repo_context(
     token: Optional[str], owner: str, repo: str, branch: str = "main"
-) -> str:
+) -> Dict[str, str]:
     """
     Build a text summary of the repository to feed into the AI model.
     Returns a structured string with:
@@ -189,8 +223,10 @@ async def build_repo_context(
       - File tree
       - Key file contents (capped)
     """
+    owner, repo = normalize_repo_identity(owner, repo)
+
     # 1. File tree
-    tree = await get_repo_tree(token, owner, repo, branch)
+    tree, resolved_branch = await get_repo_tree(token, owner, repo, branch)
 
     # 2. Build tree listing
     tree_lines = [f"  {item['path']}" for item in tree if item["type"] == "blob"]
@@ -217,7 +253,7 @@ async def build_repo_context(
     # 4. Fetch contents
     file_contents = []
     for f in files_to_fetch:
-        content = await get_file_content(token, owner, repo, f["path"], branch)
+        content = await get_file_content(token, owner, repo, f["path"], resolved_branch)
         if content:
             file_contents.append(f"--- FILE: {f['path']} ---\n{content}\n")
 
@@ -227,9 +263,14 @@ async def build_repo_context(
     context = (
         f"GITHUB REPOSITORY CONTEXT\n"
         f"========================\n"
-        f"Repository: {owner}/{repo} (branch: {branch})\n\n"
+        f"Repository: {owner}/{repo} (branch: {resolved_branch})\n\n"
         f"FILE TREE:\n{tree_text}\n\n"
         f"KEY SOURCE FILES ({len(file_contents)} files):\n"
         f"{contents_text}\n"
     )
-    return context
+    return {
+        "context": context,
+        "owner": owner,
+        "repo": repo,
+        "branch": resolved_branch,
+    }

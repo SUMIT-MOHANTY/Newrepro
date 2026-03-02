@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Annotated, Optional, List, Dict, Any
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, Header
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -95,6 +96,9 @@ async def analyze_document_with_ai(
     - model: Model name to use
     - stream: Set to true for streaming response (Server-Sent Events)
     """
+    if _all_answers_skipped_from_governance_context(request.governance_context):
+        raise HTTPException(status_code=403, detail=ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE)
+
     result = await ai_service.analyze_document(
         document_content=request.document_content,
         api_url=request.api_url,
@@ -313,7 +317,8 @@ async def upload_and_analyze_document(
 # ===== GOVERNANCE QUESTIONNAIRE ENDPOINTS =====
 
 ALL_SKIPPED_GOVERNANCE_MESSAGE = "Our IT team will reach out to you. Thanks for connecting."
-ALL_SKIPPED_HARD_STOP = "All governance questions were skipped. IT follow-up is required before BRD upload."
+ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE = "Sandbox is not approved. Our IT team will reach out to you soon."
+ALL_SKIPPED_HARD_STOP = "All governance questions were skipped. IT follow-up is required before BRD analysis."
 ALL_SKIPPED_SCORE = 5.0
 
 
@@ -336,6 +341,24 @@ def _all_answers_skipped_from_payload(payload: Any) -> bool:
             return False
 
     return True
+
+
+def _all_answers_skipped_from_governance_context(governance_context: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(governance_context, dict):
+        return False
+
+    answers = governance_context.get("answers")
+    if isinstance(answers, list):
+        answer_entries = [entry for entry in answers if isinstance(entry, dict)]
+        if not answer_entries or len(answer_entries) != len(answers):
+            return False
+        return all(_is_skip_option_label(entry.get("selected_option")) for entry in answer_entries)
+
+    if isinstance(answers, dict):
+        return _all_answers_skipped_from_payload(answers)
+
+    classification_description = str(governance_context.get("classification_description") or "").strip().lower()
+    return "our it team will reach out to you" in classification_description
 
 
 def _apply_all_skipped_override(scoring_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -527,6 +550,7 @@ async def get_governance_result(
         if all_answers_skipped
         else _classification_description(response.classification)
     )
+    hard_stops = [ALL_SKIPPED_HARD_STOP] if all_answers_skipped else []
 
     return schemas.GovernanceResult(
         id=response.id,
@@ -546,7 +570,7 @@ async def get_governance_result(
         classification_description=classification_description,
         recommendation=response.recommendation,
         pending_revision_reason=response.pending_revision_reason,
-        hard_stops=[],
+        hard_stops=hard_stops,
         answers=answers_list if answers_list else None,
         client_id=response.client_id,
         client_secret=response.client_secret,
@@ -626,7 +650,8 @@ async def get_project_roadmap_step(
     And a `failed_step` index (null if none failed).
     """
     STEP_LABELS = [
-        "Project Setup",
+        "Project Initiation",
+        "Governance",
         "Requirement Screening",
         "AI Analysis",
         "Prerequisite Classification",
@@ -768,38 +793,52 @@ async def get_project_roadmap_step(
         print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
 
     # Build per-step statuses with explicit stage semantics:
-    # - Task Creation turns green once tasks exist.
-    # - On Flight turns yellow while work is running and green once task work is complete.
-    # - Complete is gated by On Flight completion:
-    #   yellow only after deploy click, green only after deploy success.
+    # - On questionnaire pages, the frontend may temporarily override,
+    #   but once a roadmap exists we follow this sequence:
+    #   0 Project Initiation      → always completed once governance exists
+    #   1 Governance              → completed once questionnaire submitted
+    #   2 Requirement Screening   → active while BRD upload/analysis is pending
+    #   3 AI Analysis             → completed once at least one analysis exists
+    #   4 Prerequisite Class.     → active/completed based on prerequisites_done
+    #   5 Task Creation           → active/completed based on external tasks
+    #   6 On Flight               → active/completed while agents work tasks
+    #   7 Complete                → active/completed based on deploy status
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[0] = "completed"
-    step_statuses[1] = "completed"
 
-    if has_analysis:
-        step_statuses[2] = "completed"
-    else:
+    if not has_analysis:
+        # Governance questionnaire already submitted (we're on BRD upload/AI page)
+        step_statuses[1] = "completed"
         step_statuses[2] = "active"
+    else:
+        # Governance + Requirement Screening done; analysis exists.
+        step_statuses[1] = "completed"
+        step_statuses[2] = "completed"
 
-    if has_analysis:
-        step_statuses[3] = "completed" if prerequisites_done else "active"
+        # AI Analysis step
+        step_statuses[3] = "completed"
 
-    if has_analysis and prerequisites_done:
-        step_statuses[4] = "completed" if has_tasks else "active"
+        # Prerequisite Classification
+        step_statuses[4] = "completed" if prerequisites_done else "active"
 
-    if has_tasks:
-        on_flight_done = all_tasks_complete and not any_agent_working
-        step_statuses[5] = "completed" if on_flight_done else "active"
+        # Task Creation
+        if prerequisites_done:
+            step_statuses[5] = "completed" if has_tasks else "active"
 
-        if on_flight_done:
-            if deploy_success:
-                step_statuses[6] = "completed"
-            elif deploy_in_progress or deploy_attempted:
-                step_statuses[6] = "active"
+        # On Flight + Complete depend on tasks existing
+        if has_tasks:
+            on_flight_done = all_tasks_complete and not any_agent_working
+            step_statuses[6] = "completed" if on_flight_done else "active"
+
+            if on_flight_done:
+                if deploy_success:
+                    step_statuses[7] = "completed"
+                elif deploy_in_progress or deploy_attempted:
+                    step_statuses[7] = "active"
+                else:
+                    step_statuses[7] = "pending"
             else:
-                step_statuses[6] = "pending"
-        else:
-            step_statuses[6] = "pending"
+                step_statuses[7] = "pending"
 
     # Derive current step from explicit statuses.
     active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)
@@ -872,7 +911,7 @@ def _generate_recommendation(scoring_result: dict, answers: dict) -> str:
         recommendation += (
             "**Screening Status: Incomplete**\n\n"
             "Our IT team will reach out to you. Thanks for connecting.\n\n"
-            "BRD upload is currently disabled until the IT team completes a follow-up review.\n\n"
+            "AI analysis is blocked until the IT team completes a follow-up review.\n\n"
         )
     elif hard_stops:
         recommendation += f"**⚠️ HARD STOPS TRIGGERED:**\n"
@@ -1030,14 +1069,36 @@ async def github_repo_context(
     try:
         # Prioritize explicitly provided token (for private links), fallback to OAuth token
         token_to_use = payload.token if payload.token else current_user.github_token
+        owner, repo = github_service.normalize_repo_identity(payload.owner, payload.repo)
+        branch = (payload.branch or "main").strip() or "main"
+        if not owner or not repo:
+            raise HTTPException(status_code=400, detail="Invalid GitHub repository URL or owner/repo values.")
 
-        context = await github_service.build_repo_context(
+        repo_data = await github_service.build_repo_context(
             token_to_use,
-            payload.owner,
-            payload.repo,
-            payload.branch,
+            owner,
+            repo,
+            branch,
         )
-        return {"context": context, "repo": f"{payload.owner}/{payload.repo}"}
+        return {
+            "context": repo_data["context"],
+            "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+            "branch": repo_data["branch"],
+        }
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        if status_code == 404:
+            detail = (
+                "Repository or branch was not found. Verify the URL, remove any trailing .git, "
+                "and provide a PAT for private repositories."
+            )
+        elif status_code in (401, 403):
+            detail = "GitHub authentication failed or access denied. Check your PAT/OAuth access."
+        else:
+            detail = f"Failed to fetch repository context from GitHub (HTTP {status_code})."
+        raise HTTPException(status_code=status_code, detail=detail)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
 
