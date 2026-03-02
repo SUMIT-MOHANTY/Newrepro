@@ -18,9 +18,9 @@ const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 
 const DEFAULT_ROADMAP = {
-    steps: ['Project Setup', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'On Flight', 'Complete'],
+    steps: ['Project Initiation', 'Governance', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'On Flight', 'Complete'],
     current_step: 0,
-    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
+    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
     failed_step: null,
 };
 
@@ -227,6 +227,7 @@ export default function AppLayout({ children }) {
     }, [projects, selectedProjectKey, location.pathname, isNewProjectMode]);
 
     const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
+    const hasServerRoadmap = !!roadmapDataResult;
     let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
 
     // Fast-fail the UI stepper if the project classification is Enterprise (meaning it's blocked from task agent workflow)
@@ -245,6 +246,47 @@ export default function AppLayout({ children }) {
     // until deploy stage starts.
     const roadmapDataForView = useMemo(() => {
         if (!roadmapData) return roadmapData;
+
+        // While in Governance wizard *before* a backend roadmap exists,
+        // drive the top tracker from the wizard step:
+        // - Step 0 (Project): Project Initiation = active, Governance = pending
+        // - Step 1+ (Business/Data/etc): Project Initiation = completed, Governance = active
+        if (currentView === 'governance' && !hasServerRoadmap && selectedProjectKey) {
+            let wizardStep = 0;
+            try {
+                const raw = sessionStorage.getItem(`governance_wizard_step_${selectedProjectKey}`);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed.step === 'number') {
+                        wizardStep = parsed.step;
+                    }
+                }
+            } catch {
+                wizardStep = 0;
+            }
+
+            const steps = Array.isArray(roadmapData.steps) && roadmapData.steps.length > 0
+                ? roadmapData.steps
+                : DEFAULT_ROADMAP.steps;
+            const statuses = Array(steps.length).fill('pending');
+
+            if (wizardStep <= 0) {
+                // Still on Project name
+                statuses[0] = 'active';
+            } else {
+                // From Business step onward
+                statuses[0] = 'completed';
+                statuses[1] = 'active';
+            }
+
+            return {
+                ...roadmapData,
+                steps,
+                current_step: wizardStep <= 0 ? 0 : 1,
+                step_statuses: statuses,
+            };
+        }
+
         if (currentView !== 'taskCreation') return roadmapData;
 
         const statuses = Array.isArray(roadmapData.step_statuses)

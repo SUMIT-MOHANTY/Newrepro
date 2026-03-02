@@ -619,7 +619,8 @@ async def get_project_roadmap_step(
     And a `failed_step` index (null if none failed).
     """
     STEP_LABELS = [
-        "Project Setup",
+        "Project Initiation",
+        "Governance",
         "Requirement Screening",
         "AI Analysis",
         "Prerequisite Classification",
@@ -761,38 +762,52 @@ async def get_project_roadmap_step(
         print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
 
     # Build per-step statuses with explicit stage semantics:
-    # - Task Creation turns green once tasks exist.
-    # - On Flight turns yellow while work is running and green once task work is complete.
-    # - Complete is gated by On Flight completion:
-    #   yellow only after deploy click, green only after deploy success.
+    # - On questionnaire pages, the frontend may temporarily override,
+    #   but once a roadmap exists we follow this sequence:
+    #   0 Project Initiation      → always completed once governance exists
+    #   1 Governance              → completed once questionnaire submitted
+    #   2 Requirement Screening   → active while BRD upload/analysis is pending
+    #   3 AI Analysis             → completed once at least one analysis exists
+    #   4 Prerequisite Class.     → active/completed based on prerequisites_done
+    #   5 Task Creation           → active/completed based on external tasks
+    #   6 On Flight               → active/completed while agents work tasks
+    #   7 Complete                → active/completed based on deploy status
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[0] = "completed"
-    step_statuses[1] = "completed"
 
-    if has_analysis:
-        step_statuses[2] = "completed"
-    else:
+    if not has_analysis:
+        # Governance questionnaire already submitted (we're on BRD upload/AI page)
+        step_statuses[1] = "completed"
         step_statuses[2] = "active"
+    else:
+        # Governance + Requirement Screening done; analysis exists.
+        step_statuses[1] = "completed"
+        step_statuses[2] = "completed"
 
-    if has_analysis:
-        step_statuses[3] = "completed" if prerequisites_done else "active"
+        # AI Analysis step
+        step_statuses[3] = "completed"
 
-    if has_analysis and prerequisites_done:
-        step_statuses[4] = "completed" if has_tasks else "active"
+        # Prerequisite Classification
+        step_statuses[4] = "completed" if prerequisites_done else "active"
 
-    if has_tasks:
-        on_flight_done = all_tasks_complete and not any_agent_working
-        step_statuses[5] = "completed" if on_flight_done else "active"
+        # Task Creation
+        if prerequisites_done:
+            step_statuses[5] = "completed" if has_tasks else "active"
 
-        if on_flight_done:
-            if deploy_success:
-                step_statuses[6] = "completed"
-            elif deploy_in_progress or deploy_attempted:
-                step_statuses[6] = "active"
+        # On Flight + Complete depend on tasks existing
+        if has_tasks:
+            on_flight_done = all_tasks_complete and not any_agent_working
+            step_statuses[6] = "completed" if on_flight_done else "active"
+
+            if on_flight_done:
+                if deploy_success:
+                    step_statuses[7] = "completed"
+                elif deploy_in_progress or deploy_attempted:
+                    step_statuses[7] = "active"
+                else:
+                    step_statuses[7] = "pending"
             else:
-                step_statuses[6] = "pending"
-        else:
-            step_statuses[6] = "pending"
+                step_statuses[7] = "pending"
 
     # Derive current step from explicit statuses.
     active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)

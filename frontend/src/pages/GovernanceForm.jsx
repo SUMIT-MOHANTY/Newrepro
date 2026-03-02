@@ -162,6 +162,21 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
         }, 0);
     }, [location.search, location.pathname, navigate]);
 
+    // Persist current wizard step so the global tracker can highlight
+    // Project Initiation vs Governance appropriately while filling the form.
+    useEffect(() => {
+        try {
+            if (!selectedProjectKey) return;
+            const payload = { projectKey: selectedProjectKey, step: currentStep };
+            sessionStorage.setItem(
+                `governance_wizard_step_${selectedProjectKey}`,
+                JSON.stringify(payload)
+            );
+        } catch {
+            // ignore storage errors
+        }
+    }, [currentStep, selectedProjectKey]);
+
     useEffect(() => {
         if (queryError) {
             setTimeout(() => {

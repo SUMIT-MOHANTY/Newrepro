@@ -9,7 +9,8 @@ import {
  * Step icon mapping — maps each step label to a meaningful icon.
  */
 const STEP_ICONS = {
-    'Project Setup': FolderOpen,
+    'Project Initiation': FolderOpen,
+    'Governance': ShieldCheck,
     'Requirement Screening': ShieldCheck,
     'AI Analysis': Brain,
     'Prerequisite Classification': KeyRound,
@@ -113,6 +114,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
 
     // Map step labels to navigable routes
     const STEP_ROUTES = {
+        'Governance': '/governance',
         'Requirement Screening': '/governance',
         'Prerequisite Classification': '/prerequisites',
         'Task Creation': '/task-creation',
