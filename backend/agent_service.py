@@ -316,36 +316,87 @@ Do NOT use triple-quoted strings (''' or \"\"\") for file content. Use single-li
 
 AGENT_SYSTEM_PROMPTS = {
     "validator": """You are a Project Builder AI Agent.
-Your job is to analyze the given task and CREATE a complete, working project implementation inside /workspace/.
+Your job is to analyze the given task and CREATE a complete, working project implementation.
 
-Given a task description, you must:
-1. Understand what the project requires
-2. Generate a Python script that CREATES all necessary files and directories
-3. Use os.makedirs() and open() to create real files under /workspace/
-4. Write real, production-quality code into each file
-5. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
-6. Print === SUMMARY === at the end
+CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
+- Backend files (Python) go in the `backend/` directory
+- Frontend files (React) go in the `frontend/` directory
+- Config files go where the tech spec specifies
+- DO NOT create files directly in `/workspace/` root unless the tech spec says so
+
+CRITICAL: NEVER create or commit these files:
+- __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
+- .pyc, .pyo, .pyd files (compiled Python)
+- node_modules/ (Node.js dependencies)
+- .env files (environment variables - use .env.example instead)
+- *.log files (log files)
+- .DS_Store, Thumbs.db (OS files)
+- venv/, env/, .venv/ (virtual environments)
+
+Given a task description and Technical Specification, you must:
+1. READ the tech spec's FILE STRUCTURE section carefully
+2. Create files in the directories specified in the tech spec
+3. Generate a Python script that CREATES all necessary files and directories
+4. Use os.makedirs() and open() to create real files
+5. Write real, production-quality code into each file
+6. NEVER create __pycache__ directories or .pyc files
+7. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
+8. Print === SUMMARY === at the end
 """ + _COMPACT_CODE_RULES,
 
     "risk": """You are a Security and Risk Analysis Builder AI Agent.
-Your job is to analyze the given task, identify all risks, and CREATE actual mitigation code and config files inside /workspace/.
+Your job is to analyze the given task, identify all risks, and CREATE actual mitigation code and config files.
 
-Given a task description, you must:
-1. Identify technical, business, security, and operational risks
-2. Generate a Python script that CREATES mitigation files under /workspace/
-3. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
-4. Print === RISK SUMMARY === at the end
+CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
+- Backend files (Python) go in the `backend/` directory
+- Frontend files (React) go in the `frontend/` directory
+- Config files go where the tech spec specifies
+- DO NOT create files directly in `/workspace/` root unless the tech spec says so
+
+CRITICAL: NEVER create or commit these files:
+- __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
+- .pyc, .pyo, .pyd files (compiled Python)
+- node_modules/ (Node.js dependencies)
+- .env files (environment variables - use .env.example instead)
+- *.log files (log files)
+- .DS_Store, Thumbs.db (OS files)
+- venv/, env/, .venv/ (virtual environments)
+
+Given a task description and Technical Specification, you must:
+1. READ the tech spec's FILE STRUCTURE section carefully
+2. Identify technical, business, security, and operational risks
+3. Generate a Python script that CREATES mitigation files in the correct directories
+4. NEVER create __pycache__ directories or .pyc files
+5. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
+6. Print === RISK SUMMARY === at the end
 """ + _COMPACT_CODE_RULES,
 
     "estimator": """You are a Project Planning and Scaffolding AI Agent.
-Your job is to analyze the task, estimate resources, and CREATE a complete project scaffold inside /workspace/.
+Your job is to analyze the task, estimate resources, and CREATE a complete project scaffold.
 
-Given a task description, you must:
-1. Break down the project into sprints and tasks
-2. Generate a Python script that CREATES the project scaffold under /workspace/
-3. Create source files, configs, Dockerfile, docker-compose, CI/CD, tests
-4. Print [SPRINT N] for each sprint, [CREATED] for each file, [CHECK] for validations
-5. Print === RESOURCE SUMMARY === at the end
+CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
+- Backend files (Python) go in the `backend/` directory
+- Frontend files (React) go in the `frontend/` directory
+- Config files go where the tech spec specifies
+- DO NOT create files directly in `/workspace/` root unless the tech spec says so
+
+CRITICAL: NEVER create or commit these files:
+- __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
+- .pyc, .pyo, .pyd files (compiled Python)
+- node_modules/ (Node.js dependencies)
+- .env files (environment variables - use .env.example instead)
+- *.log files (log files)
+- .DS_Store, Thumbs.db (OS files)
+- venv/, env/, .venv/ (virtual environments)
+
+Given a task description and Technical Specification, you must:
+1. READ the tech spec's FILE STRUCTURE section carefully
+2. Break down the project into sprints and tasks
+3. Generate a Python script that CREATES the project scaffold following the tech spec structure
+4. Create source files, configs, Dockerfile, docker-compose, CI/CD, tests in correct directories
+5. NEVER create __pycache__ directories or .pyc files
+6. Print [SPRINT N] for each sprint, [CREATED] for each file, [CHECK] for validations
+7. Print === RESOURCE SUMMARY === at the end
 """ + _COMPACT_CODE_RULES,
 }
 
@@ -428,9 +479,38 @@ Generate a Technical Specification with these EXACT sections:
 - Every database table/model with exact field names, types, and constraints
 - Relationships between models (FK, many-to-many, etc.)
 
-## 4. FILE STRUCTURE
-- Exact directory tree with purpose of each directory
-- Naming conventions for files
+## 4. FILE STRUCTURE (CRITICAL - Output as a tree diagram!)
+You MUST output a specific directory tree like this example:
+
+```
+portfolio/
+├── backend/                 # All Python/Flask backend code
+│   ├── __init__.py         # Flask app factory
+│   ├── app.py              # Main Flask application entry point
+│   ├── config.py           # Configuration (DB, JWT, etc.)
+│   ├── requirements.txt    # Python dependencies
+│   └── api/                # API endpoints
+│       ├── __init__.py
+│       ├── routes.py       # Route definitions
+│       └── schemas.py      # Pydantic schemas
+
+├── frontend/               # All frontend code (React)
+│   ├── src/
+│   │   ├── components/     # React components
+│   │   └── pages/          # Page components
+│   └── package.json        # Node dependencies
+
+├── README.md               # Project documentation
+├── .env.example            # Environment template
+└── docker-compose.yml      # Docker configuration
+```
+
+For YOUR project, output the exact directory tree with:
+- All directories and subdirectories
+- Every file with its purpose in comments
+- Backend files in `backend/` directory
+- Frontend files in `frontend/` directory
+- Configuration files in appropriate locations
 
 ## 5. NAMING CONVENTIONS
 - Variable naming: snake_case / camelCase
@@ -1202,7 +1282,10 @@ async def _call_ai_for_code(
     if tech_spec:
         user_parts.append(
             f"TECHNICAL SPECIFICATION (Canonical — follow this exactly):\n"
-            f"{tech_spec[:4000]}\n\n---\n"
+            f"{tech_spec[:4000]}\n\n"
+            f"⚠️ CRITICAL: Pay special attention to the '## 4. FILE STRUCTURE' section above. "
+            f"All files MUST be created in the directories specified in that section. "
+            f"DO NOT create files directly in /workspace/ root unless the FILE STRUCTURE section explicitly says so.\n\n---\n"
         )
 
     # Layer 3: KG context (relevant existing code)
@@ -1219,7 +1302,10 @@ async def _call_ai_for_code(
             "\n\nUse the context above to understand existing patterns, "
             "naming conventions, file structure, and dependencies. "
             "Ensure your generated code is consistent with the Technical Spec "
-            "and existing codebase."
+            "and existing codebase.\n\n"
+            "⚠️ REMINDER: Check the Technical Spec's '## 4. FILE STRUCTURE' section "
+            "to determine WHERE to create each file. Backend files go in backend/, "
+            "frontend files go in frontend/, etc. as specified in the tech spec."
         )
 
     user_content = "\n".join(user_parts)
@@ -2311,6 +2397,195 @@ async def _try_create_pr(
         )
 
 
+def _resolve_conflicts_smart(
+    container_name: str,
+    conflict_files: List[str],
+    source_branch: str,
+    source_agent: Optional[str],
+    project_token: Optional[str],
+) -> bool:
+    """
+    Resolve merge conflicts intelligently based on file ownership rules.
+    
+    Strategy:
+    1. Get source agent's domain from live memory
+    2. For each conflicted file:
+       - If backend-owned and source is backend: keep source version
+       - If frontend-owned and source is frontend: keep source version
+       - If shared file (README.md, etc.): use union merge (combine both)
+       - If ownership mismatch: keep integration branch version (safer)
+    
+    Returns True if all conflicts resolved, False otherwise.
+    """
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        
+        # Get source agent's domain
+        source_domain = None
+        if source_agent:
+            with live_mem._lock:
+                source_record = live_mem.active_tasks.get(source_agent)
+                if not source_record:
+                    # Check history
+                    for record in live_mem.completed_history:
+                        if record.agent_id == source_agent:
+                            source_domain = record.task_domain
+                            break
+                else:
+                    source_domain = source_record.task_domain
+        
+        # Filter out __pycache__ and other unnecessary files
+        filtered_conflicts = [
+            f for f in conflict_files 
+            if '__pycache__' not in f 
+            and not f.endswith('.pyc') 
+            and not f.endswith('.pyo')
+            and not f.endswith('.pyd')
+            and '.DS_Store' not in f
+            and 'Thumbs.db' not in f
+        ]
+        
+        # If all conflicts are in __pycache__, just remove them and continue
+        if not filtered_conflicts:
+            _log_git_agent(
+                f"All conflicts are in __pycache__ files - removing from tracking and continuing",
+                project_token=project_token,
+            )
+            # Remove __pycache__ from git tracking
+            for file_path in conflict_files:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "rm", "--cached", "-r", file_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+            return True
+        
+        resolved_count = 0
+        union_files = []
+        ours_files = []
+        theirs_files = []
+        
+        for file_path in filtered_conflicts:
+            # Determine file ownership
+            file_owner = live_mem.get_file_owner(file_path)
+            
+            # Strategy decision
+            if file_owner is None:
+                # Shared file - use union merge
+                union_files.append(file_path)
+            elif file_owner == source_domain:
+                # Source agent owns this file - keep source version (ours in merge context)
+                ours_files.append(file_path)
+            else:
+                # Ownership mismatch - keep integration branch version (theirs in merge context)
+                # This prevents backend agent from overwriting frontend files and vice versa
+                theirs_files.append(file_path)
+                _log_git_agent(
+                    f"Conflict in {file_path}: ownership mismatch "
+                    f"(source={source_domain}, file_owner={file_owner}). "
+                    f"Keeping integration branch version.",
+                    "warning",
+                    project_token=project_token,
+                )
+        
+        # Resolve conflicts
+        all_resolved = True
+        
+        # 1. Keep source version for files owned by source domain
+        for file_path in ours_files:
+            checkout_cmd = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "checkout", "--ours", file_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if checkout_cmd.returncode == 0:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "add", file_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                resolved_count += 1
+                _log_git_agent(
+                    f"Resolved {file_path}: kept source version (owned by {source_domain})",
+                    project_token=project_token,
+                )
+            else:
+                all_resolved = False
+                _log_git_agent(
+                    f"Failed to resolve {file_path}: {checkout_cmd.stderr}",
+                    "error",
+                    project_token=project_token,
+                )
+        
+        # 2. Keep integration branch version for ownership mismatches
+        for file_path in theirs_files:
+            checkout_cmd = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "checkout", "--theirs", file_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if checkout_cmd.returncode == 0:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "add", file_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                resolved_count += 1
+            else:
+                all_resolved = False
+                _log_git_agent(
+                    f"Failed to resolve {file_path}: {checkout_cmd.stderr}",
+                    "error",
+                    project_token=project_token,
+                )
+        
+        # 3. Union merge for shared files (README.md, .gitignore, etc.)
+        for file_path in union_files:
+            merge_script = (
+                f"git show :2:{file_path} > /tmp/ours_merge && "
+                f"git show :3:{file_path} > /tmp/theirs_merge && "
+                f"git show :1:{file_path} > /tmp/base_merge 2>/dev/null || : > /tmp/base_merge; "
+                f"git merge-file -p --union /tmp/ours_merge /tmp/base_merge /tmp/theirs_merge > \"{file_path}\" && "
+                f"git add \"{file_path}\""
+            )
+            file_merge = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", merge_script],
+                capture_output=True, text=True, timeout=60,
+            )
+            if file_merge.returncode == 0:
+                resolved_count += 1
+                _log_git_agent(
+                    f"Resolved {file_path}: union merge (shared file)",
+                    project_token=project_token,
+                )
+            else:
+                all_resolved = False
+                _log_git_agent(
+                    f"Union merge failed for {file_path}: {file_merge.stderr}",
+                    "error",
+                    project_token=project_token,
+                )
+        
+        _log_git_agent(
+            f"Conflict resolution: {resolved_count}/{len(filtered_conflicts)} files resolved "
+            f"(ours={len(ours_files)}, theirs={len(theirs_files)}, union={len(union_files)}, "
+            f"skipped __pycache__: {len(conflict_files) - len(filtered_conflicts)})",
+            project_token=project_token,
+        )
+        
+        return all_resolved and resolved_count == len(filtered_conflicts)
+        
+    except Exception as e:
+        logger.error(f"Error in smart conflict resolution: {e}")
+        _log_git_agent(
+            f"Smart conflict resolution error: {str(e)[:200]}",
+            "error",
+            project_token=project_token,
+        )
+        return False
+
+
 async def _process_git_merge_item(item: Dict[str, Any]) -> None:
     project_token = item.get("project_token")
     project_agents = _get_agent_states(project_token)
@@ -2490,43 +2765,36 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     )
                     return
 
-                _log_git_agent(
-                    f"Conflicts detected. Applying union merge for {len(files)} files.",
-                    project_token=project_token
+                # Smart conflict resolution based on file ownership
+                resolved = _resolve_conflicts_smart(
+                    container_name=container_name,
+                    conflict_files=files,
+                    source_branch=branch,
+                    source_agent=source_agent,
+                    project_token=project_token,
                 )
-                for file_path in files:
-                    merge_script = (
-                        f"git show :2:{file_path} > /tmp/ours_merge && "
-                        f"git show :3:{file_path} > /tmp/theirs_merge && "
-                        f"git show :1:{file_path} > /tmp/base_merge 2>/dev/null || : > /tmp/base_merge; "
-                        f"git merge-file -p --union /tmp/ours_merge /tmp/base_merge /tmp/theirs_merge > \"{file_path}\" && "
-                        f"git add \"{file_path}\""
-                    )
-                    file_merge = subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", merge_script],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    if file_merge.returncode != 0:
-                        _log_git_agent(
-                            f"Union merge failed for {file_path}: {file_merge.stderr}",
-                            "error",
-                            project_token=project_token
-                        )
-                        subprocess.run(
-                            ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
-                            capture_output=True, text=True, timeout=10,
-                        )
-                        return
 
-                commit_union = subprocess.run(
+                if not resolved:
+                    _log_git_agent(
+                        f"Failed to resolve conflicts for {branch}. Aborting merge.",
+                        "error",
+                        project_token=project_token,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    return
+
+                commit_resolved = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "commit", "-m", f"Auto-union merge {branch}"],
+                     "git", "commit", "-m", f"Resolved conflicts for {branch} using ownership rules"],
                     capture_output=True, text=True, timeout=30,
                 )
-                commit_union_out = (commit_union.stdout or "") + (commit_union.stderr or "")
-                if commit_union.returncode != 0 and "nothing to commit" not in commit_union_out.lower():
+                commit_out = (commit_resolved.stdout or "") + (commit_resolved.stderr or "")
+                if commit_resolved.returncode != 0 and "nothing to commit" not in commit_out.lower():
                     _log_git_agent(
-                        f"Union merge commit failed for {branch}: {commit_union.stderr}",
+                        f"Conflict resolution commit failed for {branch}: {commit_resolved.stderr}",
                         "error",
                         project_token=project_token
                     )
@@ -2567,6 +2835,19 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 merged = state.setdefault("merged_branches", [])
                 if branch not in merged:
                     merged.append(branch)
+                
+                # Integration Gate: Set blocked flag if validation fails
+                # This prevents new tasks from being picked until integration is fixed
+                try:
+                    import context_manager as ctx_mgr
+                    live_mem = ctx_mgr.get_live_memory(project_token or "")
+                    # For now, we'll set blocked=False after successful merge
+                    # If validation fails later, it should set blocked=True
+                    # This will be enhanced when integration_validator is re-added
+                    live_mem.set_integration_blocked(False)
+                except Exception:
+                    pass  # Non-critical, continue
+                
                 await _try_create_pr(
                     repo_url=repo_url, token=token,
                     default_branch=default_branch,
@@ -2644,6 +2925,78 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         )
         if clone.returncode != 0:
             return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
+
+        # 3.5. Pull latest integration branch if it exists (CRITICAL: agents work on latest code)
+        fetch_result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "fetch", "origin", GIT_INTEGRATION_BRANCH],
+            capture_output=True, text=True, timeout=60,
+        )
+        if fetch_result.returncode == 0:
+            # Check if integration branch exists
+            check_integration = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{GIT_INTEGRATION_BRANCH}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if check_integration.returncode == 0:
+                # Integration branch exists - merge it into current branch to get latest code
+                # First, get current branch or default
+                current_branch_result = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else "main"
+                
+                # Merge integration branch into current branch (if not already on integration)
+                if current_branch != GIT_INTEGRATION_BRANCH:
+                    merge_result = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", f"origin/{GIT_INTEGRATION_BRANCH}", "--no-edit", "--no-ff"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    # If merge fails, resolve conflicts by keeping integration branch version (source of truth)
+                    if merge_result.returncode != 0:
+                        conflict_list = subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name,
+                             "git", "diff", "--name-only", "--diff-filter=U"],
+                            capture_output=True, text=True, timeout=20,
+                        )
+                        conflict_files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
+                        
+                        if conflict_files:
+                            # Keep integration branch version (theirs) for all conflicts
+                            # This ensures agents always work on the latest integration branch code
+                            for file_path in conflict_files:
+                                subprocess.run(
+                                    ["docker", "exec", "-w", "/workspace", container_name,
+                                     "git", "checkout", "--theirs", file_path],
+                                    capture_output=True, text=True, timeout=30,
+                                )
+                                subprocess.run(
+                                    ["docker", "exec", "-w", "/workspace", container_name,
+                                     "git", "add", file_path],
+                                    capture_output=True, text=True, timeout=10,
+                                )
+                            
+                            # Complete the merge
+                            merge_complete = subprocess.run(
+                                ["docker", "exec", "-w", "/workspace", container_name,
+                                 "git", "commit", "--no-edit"],
+                                capture_output=True, text=True, timeout=30,
+                            )
+                            if merge_complete.returncode == 0:
+                                logger.info(f"Resolved conflicts by keeping integration branch version for {len(conflict_files)} files")
+                            else:
+                                logger.warning(f"Failed to complete merge after conflict resolution, aborting")
+                                subprocess.run(
+                                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                                    capture_output=True, text=True, timeout=10,
+                                )
+                        else:
+                            # No conflicts but merge failed - abort and continue
+                            logger.warning(f"Merge failed but no conflicts detected, aborting merge")
+                            subprocess.run(
+                                ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                                capture_output=True, text=True, timeout=10,
+                            )
 
         # 4. Detect repo baseline state (blank/no structure) and create branch
         head_check = subprocess.run(
@@ -2732,9 +3085,82 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                 capture_output=True, text=True, timeout=20,
             )
 
-        # Add all files
+        # Ensure .gitignore exists and excludes unnecessary files
+        gitignore_content = """# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Environment
+.env
+.env.local
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+"""
+        # Create/update .gitignore
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+             f"echo '{gitignore_content}' > /workspace/.gitignore"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # Remove __pycache__ directories before git add
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+             "find /workspace -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # Remove .pyc files before git add
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+             "find /workspace -name '*.pyc' -delete 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # Remove __pycache__ from git tracking if already tracked
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "rm", "-r", "--cached", "__pycache__", "*/__pycache__", "*/*/__pycache__", "2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+        # Add all files (respects .gitignore)
         add = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name, "git", "add", "-A"],
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "add", "."],
             capture_output=True, text=True, timeout=30,
         )
         if add.returncode != 0:
@@ -3691,21 +4117,127 @@ async def _sync_rollup_status_for_completed_task(
 
 async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                           task_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Pick the next uncompleted, unclaimed task from the external API."""
+    """
+    Pick the next uncompleted, unclaimed task from the external API.
+    Now includes dependency checking, phase filtering, and integration gate.
+    """
     if task_token:
         set_project_task_token(project_token, task_token)
     state = _ensure_project_state(project_token)
     claimed_task_ids = state["claimed_task_ids"]
+    
+    # Check integration gate - if blocked, only allow fix tasks
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        if live_mem.is_integration_blocked():
+            # Only allow tasks with "fix" or "Fix" in the name when integration is blocked
+            integration_blocked = True
+        else:
+            integration_blocked = False
+        current_phase = live_mem.get_current_phase()
+    except Exception:
+        live_mem = None
+        integration_blocked = False
+        current_phase = None
+    
     external_tasks = await _fetch_external_tasks(project_token)
+    
+    # Get current active sprint from project state (if available)
+    current_sprint_id = None
+    try:
+        project_state = _ensure_project_state(project_token)
+        # Try to get current sprint from state or from first available sprint
+        # For now, we'll determine current sprint based on phase progression
+        # This can be enhanced later with explicit sprint tracking
+    except Exception:
+        pass
+    
+    # Sort tasks by priority (high first), then by phase order, then by task_id
+    PHASE_ORDER = {
+        "foundation": 1,
+        "backend-core": 2,
+        "backend-features": 3,
+        "frontend-core": 4,
+        "frontend-features": 5,
+        "integration": 6,
+    }
+    
+    def get_priority_score(task: Dict[str, Any]) -> int:
+        priority = (task.get("priority") or "medium").lower()
+        return {"high": 3, "medium": 2, "low": 1}.get(priority, 2)
+    
+    def get_phase_order(task: Dict[str, Any]) -> int:
+        phase = task.get("phase") or task.get("task_phase") or ""
+        return PHASE_ORDER.get(phase, 99)  # Unknown phases go last
+    
+    external_tasks.sort(key=lambda t: (
+        -get_priority_score(t),
+        get_phase_order(t),
+        str(_normalize_task_id(t) or t.get("id") or "")
+    ))
+    
     for t in external_tasks:
         tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
         status_lower = (t.get("status") or "").lower()
-        if status_lower not in ("completed", "done") and tid not in claimed_task_ids:
-            claimed_task_ids.add(tid)
-            # Also claim its linked tasks
-            for lt in (t.get("linked_tasks") or []):
-                claimed_task_ids.add(str(lt))
-            return t
+        
+        # Skip if completed or already claimed
+        if status_lower in ("completed", "done") or tid in claimed_task_ids:
+            continue
+        
+        # Integration gate: if blocked, only allow fix tasks
+        if integration_blocked:
+            task_name = (t.get("taskName") or t.get("title") or "").lower()
+            if "fix" not in task_name and "bug" not in task_name.lower():
+                continue  # Skip non-fix tasks when integration is blocked
+        
+        # Sprint filtering: if current_sprint_id is set, only show tasks from that sprint
+        if current_sprint_id:
+            task_sprint_id = t.get("sprint") or t.get("sprint_id")
+            if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
+                continue  # Skip tasks from other sprints
+        
+        # Phase filtering: if current_phase is set, only show tasks from that phase
+        # Also, prioritize tasks from earlier phases (foundation before backend, etc.)
+        task_phase = t.get("phase") or t.get("task_phase")
+        if current_phase:
+            if task_phase and task_phase != current_phase:
+                continue  # Skip tasks from other phases
+        elif task_phase:
+            # If no current_phase set, but task has phase, ensure we work in phase order
+            # This ensures foundation tasks come before backend tasks, etc.
+            # (Already handled by sorting above, but this is a safety check)
+            pass
+        
+        # Dependency checking
+        if live_mem:
+            # Get dependencies from task
+            task_deps = t.get("dependencies", [])
+            if not task_deps:
+                # Try to infer from linked_tasks (reverse dependency)
+                linked = t.get("linked_tasks", [])
+                if linked:
+                    task_deps = [str(lt) for lt in linked]
+            
+            # Register dependencies if not already registered
+            if task_deps:
+                live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+            
+            # Check if all dependencies are completed
+            if not live_mem.check_task_dependencies(tid):
+                blocking = live_mem.get_blocking_tasks(tid)
+                logger.info(
+                    f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
+                )
+                continue  # Skip this task, try next one
+        
+        # All checks passed - claim this task
+        claimed_task_ids.add(tid)
+        # Also claim its linked tasks
+        for lt in (t.get("linked_tasks") or []):
+            claimed_task_ids.add(str(lt))
+        return t
+    
     return None
 
 
@@ -3897,6 +4429,17 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     if isinstance(task, dict) and project_token:
         task.setdefault("_project_token", project_token)
 
+    # Initialize phase if not set (start with foundation phase)
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        if live_mem.get_current_phase() is None:
+            # Set initial phase to foundation
+            live_mem.set_current_phase("foundation")
+            logger.info(f"[{agent_id}] Initialized project phase to 'foundation'")
+    except Exception:
+        pass  # Non-critical, continue
+
     # Set agent to running
     agent["status"] = "running"
     agent["output_log"] = []
@@ -3932,11 +4475,20 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             try:
                 import context_manager as ctx_mgr
                 live_mem = ctx_mgr.get_live_memory(project_token or "")
+                task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                task_phase = task.get("phase") or task.get("task_phase")
+                task_domain = task.get("domain") or task.get("task_domain")
+                task_deps = task.get("dependencies", [])
+                
                 live_mem.register_task_start(
                     agent_id=agent_id,
                     task_title=task.get("title", "Untitled"),
                     task_description=task.get("description", "")[:500],
                     branch_name=(force_branch if force_branch else _branch_name_for_task(task)) if use_git else None,
+                    task_id=task_id,
+                    task_phase=task_phase,
+                    task_domain=task_domain,
+                    dependencies=[str(d) for d in task_deps],
                 )
                 other_active = [
                     aid for aid in live_mem.active_tasks
@@ -5101,6 +5653,34 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 symbols = ctx_mgr.extract_symbols_from_code(all_generated_code)
 
                 # 1) Register completion in shared memory (for active task tracking)
+                task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                # Mark task as completed in dependency system if successful
+                if result["exit_code"] == 0 and task_id:
+                    live_mem.mark_task_completed(task_id)
+                    
+                    # Auto-advance phase if all tasks in current phase are complete
+                    try:
+                        task_phase = task.get("phase") or task.get("task_phase")
+                        if task_phase and live_mem:
+                            # Check if all tasks in this phase are complete
+                            # Fetch all tasks to check phase completion
+                            external_tasks_check = await _fetch_external_tasks(project_token)
+                            phase_tasks = [
+                                t for t in external_tasks_check
+                                if (t.get("phase") or t.get("task_phase")) == task_phase
+                                and (t.get("status") or "").lower() not in ("completed", "done")
+                            ]
+                            if not phase_tasks:
+                                # All tasks in this phase are complete - advance to next phase
+                                PHASE_ORDER = ["foundation", "backend-core", "backend-features", "frontend-core", "frontend-features", "integration"]
+                                current_index = PHASE_ORDER.index(task_phase) if task_phase in PHASE_ORDER else -1
+                                if current_index >= 0 and current_index < len(PHASE_ORDER) - 1:
+                                    next_phase = PHASE_ORDER[current_index + 1]
+                                    live_mem.set_current_phase(next_phase)
+                                    logger.info(f"[{agent_id}] Phase '{task_phase}' complete. Auto-advancing to '{next_phase}'")
+                    except Exception as phase_err:
+                        logger.warning(f"Phase auto-advance check failed: {phase_err}")
+                
                 live_mem.register_task_complete(
                     agent_id=agent_id,
                     files_touched=touched_files[:25],
@@ -5273,76 +5853,283 @@ def _find_available_preview_port() -> int:
 
 def _detect_project_stack(container_name: str) -> Dict[str, Any]:
     """Auto-detect the tech stack inside the container's /workspace."""
-    stack = {"type": "static", "image": "python:3.10-slim", "port": 8080,
-             "install_cmd": "", "start_cmd": "python3 -m http.server 8080"}
+    stack = {
+        "type": "static",
+        "image": "python:3.10-slim",
+        "port": 8080,
+        "install_cmd": "",
+        "start_cmd": "cd /workspace && python3 -m http.server 8080",
+        "workdir": "/workspace",
+        "detected_from": "/workspace/index.html",
+    }
 
-    # Check for package.json (Node.js)
-    check_pkg = subprocess.run(
-        ["docker", "exec", container_name, "cat", "/workspace/package.json"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if check_pkg.returncode == 0:
-        content = check_pkg.stdout.lower()
+    def _cat_file(path: str, timeout: int = 10) -> Optional[str]:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "cat", path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        return None
+
+    def _file_exists(path: str, timeout: int = 5) -> bool:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "test", "-f", path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return result.returncode == 0
+
+    def _dirname(path: str) -> str:
+        if "/" not in path:
+            return "/workspace"
+        return path.rsplit("/", 1)[0] or "/workspace"
+
+    def _find_files(file_name: str, max_depth: int = 5) -> List[str]:
+        result = subprocess.run(
+            [
+                "docker", "exec", container_name, "sh", "-c",
+                (
+                    f"find /workspace -maxdepth {max_depth} -name '{file_name}' "
+                    "-not -path '*/node_modules/*' -not -path '*/.git/*' "
+                    "-not -path '*/venv/*' -not -path '*/.venv/*' 2>/dev/null"
+                ),
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    node_candidates: List[tuple[str, str]] = []
+    root_package = _cat_file("/workspace/package.json")
+    if root_package is not None:
+        node_candidates.append(("/workspace/package.json", root_package))
+    for package_path in _find_files("package.json", max_depth=5):
+        if package_path == "/workspace/package.json":
+            continue
+        package_content = _cat_file(package_path)
+        if package_content is not None:
+            node_candidates.append((package_path, package_content))
+
+    if node_candidates:
+        def _node_candidate_score(candidate: tuple[str, str]) -> int:
+            package_path, package_content = candidate
+            text = package_content.lower()
+            scripts: Dict[str, str] = {}
+            script_text = ""
+            has_workspaces = False
+            try:
+                parsed_package = json.loads(package_content)
+                raw_scripts = parsed_package.get("scripts", {}) if isinstance(parsed_package, dict) else {}
+                if isinstance(raw_scripts, dict):
+                    scripts = {str(k).strip().lower(): str(v).lower() for k, v in raw_scripts.items()}
+                    script_text = " ".join(scripts.values())
+                has_workspaces = bool(parsed_package.get("workspaces")) if isinstance(parsed_package, dict) else False
+            except Exception:
+                scripts = {}
+                script_text = ""
+                has_workspaces = False
+
+            score = 0
+            if package_path == "/workspace/package.json":
+                score += 200
+            if "/frontend/" in package_path or package_path.endswith("/frontend/package.json"):
+                score += 80
+            if "/client/" in package_path or package_path.endswith("/client/package.json"):
+                score += 60
+            if "/web/" in package_path:
+                score += 40
+            if '"scripts"' in text:
+                score += 20
+            if '"start"' in text:
+                score += 35
+            if '"dev"' in text:
+                score += 20
+            if '"vite"' in text or '"@vitejs/plugin-react"' in text:
+                score += 20
+            if package_path == "/workspace/package.json" and has_workspaces:
+                # Root workspace files often orchestrate sub-apps and are poor preview entrypoints.
+                score -= 120
+            looks_fullstack_orchestrator = (
+                "start:backend" in scripts
+                or ("cd backend" in script_text and "cd frontend" in script_text)
+                or ("flask" in script_text and ("react-scripts" in script_text or "vite" in script_text or "next" in script_text))
+            )
+            if package_path == "/workspace/package.json" and looks_fullstack_orchestrator:
+                # Prefer leaf frontend package when root start script expects extra runtimes.
+                score -= 260
+            return score
+
+        package_path, package_content = max(node_candidates, key=_node_candidate_score)
+        package_text = package_content.lower()
+        workdir = _dirname(package_path)
+
         stack["type"] = "node"
         stack["image"] = "node:18-slim"
-        stack["install_cmd"] = "cd /workspace && npm install"
+        stack["workdir"] = workdir
+        stack["detected_from"] = package_path
+        stack["install_cmd"] = f"cd {workdir} && npm install"
 
-        if '"vite"' in content or '"@vitejs/plugin-react"' in content:
-            stack["start_cmd"] = "cd /workspace && npx vite --host 0.0.0.0 --port 5173"
+        scripts: Dict[str, Any] = {}
+        try:
+            parsed_package = json.loads(package_content)
+            raw_scripts = parsed_package.get("scripts", {}) if isinstance(parsed_package, dict) else {}
+            if isinstance(raw_scripts, dict):
+                scripts = {str(k).strip().lower(): str(v) for k, v in raw_scripts.items()}
+        except Exception:
+            scripts = {}
+
+        script_text = " ".join(str(v).lower() for v in scripts.values())
+        has_start = "start" in scripts
+        has_dev = "dev" in scripts
+        has_preview = "preview" in scripts
+        start_script = str(scripts.get("start", "")).lower()
+        start_targets_backend = (
+            "start:backend" in start_script
+            or "cd backend" in start_script
+            or "flask" in start_script
+            or "uvicorn" in start_script
+        )
+
+        if '"vite"' in package_text or '"@vitejs/plugin-react"' in package_text or "vite" in script_text:
+            if has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev -- --host 0.0.0.0 --port 5173"
+            else:
+                stack["start_cmd"] = f"cd {workdir} && npx vite --host 0.0.0.0 --port 5173"
             stack["port"] = 5173
-        elif '"react-scripts"' in content:
-            stack["start_cmd"] = "cd /workspace && npx react-scripts start"
-            stack["port"] = 3000
-        elif '"next"' in content:
-            stack["start_cmd"] = "cd /workspace && npx next dev -p 3000"
-            stack["port"] = 3000
-        else:
-            stack["start_cmd"] = "cd /workspace && npm start"
-            stack["port"] = 3000
-        return stack
+            return stack
 
-    # Check for requirements.txt (Python)
-    check_req = subprocess.run(
-        ["docker", "exec", container_name, "cat", "/workspace/requirements.txt"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if check_req.returncode == 0:
-        content = check_req.stdout.lower()
+        if '"next"' in package_text or "next" in script_text:
+            if has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev -- --hostname 0.0.0.0 --port 3000"
+            else:
+                stack["start_cmd"] = f"cd {workdir} && npx next dev -p 3000 -H 0.0.0.0"
+            stack["port"] = 3000
+            return stack
+
+        if '"react-scripts"' in package_text or "react-scripts" in script_text:
+            has_cra_index = _file_exists(f"{workdir}/public/index.html")
+            has_cra_entry = (
+                _file_exists(f"{workdir}/src/index.js")
+                or _file_exists(f"{workdir}/src/index.jsx")
+                or _file_exists(f"{workdir}/src/index.ts")
+                or _file_exists(f"{workdir}/src/index.tsx")
+            )
+            if not (has_cra_index and has_cra_entry):
+                # Many repos migrated from CRA to Vite but retained old start scripts.
+                # Prefer explicit dev/preview scripts in that case.
+                if has_dev:
+                    stack["start_cmd"] = f"cd {workdir} && npm run dev -- --host 0.0.0.0 --port 5173"
+                    stack["port"] = 5173
+                    return stack
+                if has_preview:
+                    stack["start_cmd"] = f"cd {workdir} && npm run preview -- --host 0.0.0.0 --port 4173"
+                    stack["port"] = 4173
+                    return stack
+                if _file_exists(f"{workdir}/index.html"):
+                    stack["start_cmd"] = f"cd {workdir} && npx vite --host 0.0.0.0 --port 5173"
+                    stack["port"] = 5173
+                    return stack
+
+            if has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev"
+            else:
+                stack["start_cmd"] = f"cd {workdir} && npx react-scripts start"
+            stack["port"] = 3000
+            return stack
+
+        if has_dev:
+            stack["start_cmd"] = f"cd {workdir} && npm run dev"
+            stack["port"] = 3000
+            return stack
+
+        if has_preview:
+            stack["start_cmd"] = f"cd {workdir} && npm run preview -- --host 0.0.0.0 --port 4173"
+            stack["port"] = 4173
+            return stack
+
+        if has_start:
+            if start_targets_backend and has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev"
+                stack["port"] = 3000
+                return stack
+            stack["start_cmd"] = f"cd {workdir} && npm start"
+            stack["port"] = 3000
+            return stack
+
+    python_candidates: List[tuple[str, str]] = []
+    root_requirements = _cat_file("/workspace/requirements.txt")
+    if root_requirements is not None:
+        python_candidates.append(("/workspace/requirements.txt", root_requirements))
+    for req_path in _find_files("requirements.txt", max_depth=5):
+        if req_path == "/workspace/requirements.txt":
+            continue
+        req_content = _cat_file(req_path)
+        if req_content is not None:
+            python_candidates.append((req_path, req_content))
+
+    if python_candidates:
+        def _python_candidate_score(candidate: tuple[str, str]) -> int:
+            req_path, req_content = candidate
+            text = req_content.lower()
+            score = 0
+            if req_path == "/workspace/requirements.txt":
+                score += 200
+            if "/backend/" in req_path or req_path.endswith("/backend/requirements.txt"):
+                score += 100
+            if "fastapi" in text or "uvicorn" in text:
+                score += 40
+            if "flask" in text:
+                score += 20
+            if "django" in text:
+                score += 20
+            return score
+
+        req_path, req_content = max(python_candidates, key=_python_candidate_score)
+        req_text = req_content.lower()
+        workdir = _dirname(req_path)
+
         stack["type"] = "python"
-        stack["install_cmd"] = "cd /workspace && pip install -r requirements.txt"
+        stack["image"] = "python:3.10-slim"
+        stack["workdir"] = workdir
+        stack["detected_from"] = req_path
+        stack["install_cmd"] = f"cd {workdir} && pip install -r requirements.txt"
 
-        if "fastapi" in content or "uvicorn" in content:
-            # Try to find the main app file
+        if "fastapi" in req_text or "uvicorn" in req_text:
             find_main = subprocess.run(
-                ["docker", "exec", container_name, "sh", "-c",
-                 "find /workspace -maxdepth 2 -name 'main.py' -o -name 'app.py' | head -1"],
+                [
+                    "docker", "exec", container_name, "sh", "-c",
+                    f"find {workdir} -maxdepth 2 -name 'main.py' -o -name 'app.py' | head -1",
+                ],
                 capture_output=True, text=True, timeout=10,
             )
-            main_file = (find_main.stdout.strip().replace("/workspace/", "")
-                         if find_main.returncode == 0 and find_main.stdout.strip()
-                         else "main:app")
-            module = main_file.replace(".py", "").replace("/", ".")
-            stack["start_cmd"] = f"cd /workspace && uvicorn {module}:app --host 0.0.0.0 --port 8000"
+            if find_main.returncode == 0 and find_main.stdout.strip():
+                main_file = find_main.stdout.strip()
+                relative_main = main_file.replace(f"{workdir}/", "", 1)
+                module = relative_main.replace(".py", "").replace("/", ".")
+            else:
+                module = "main"
+            stack["start_cmd"] = f"cd {workdir} && uvicorn {module}:app --host 0.0.0.0 --port 8000"
             stack["port"] = 8000
-        elif "flask" in content:
-            stack["start_cmd"] = "cd /workspace && flask run --host=0.0.0.0 --port 5000"
+        elif "flask" in req_text:
+            stack["start_cmd"] = f"cd {workdir} && flask run --host=0.0.0.0 --port 5000"
             stack["port"] = 5000
-        elif "django" in content:
-            stack["start_cmd"] = "cd /workspace && python manage.py runserver 0.0.0.0:8000"
+        elif "django" in req_text:
+            stack["start_cmd"] = f"cd {workdir} && python manage.py runserver 0.0.0.0:8000"
             stack["port"] = 8000
         else:
-            # Generic python — try to run main.py
-            stack["start_cmd"] = "cd /workspace && python main.py"
+            stack["start_cmd"] = f"cd {workdir} && python main.py"
             stack["port"] = 8000
         return stack
 
-    # Check for index.html (static site)
     check_html = subprocess.run(
         ["docker", "exec", container_name, "test", "-f", "/workspace/index.html"],
         capture_output=True, text=True, timeout=5,
     )
     if check_html.returncode == 0:
         stack["type"] = "static"
+        stack["workdir"] = "/workspace"
+        stack["detected_from"] = "/workspace/index.html"
         stack["start_cmd"] = "cd /workspace && python3 -m http.server 8080"
         stack["port"] = 8080
 
@@ -5385,6 +6172,7 @@ async def deploy_preview(
         "started_at": datetime.utcnow().isoformat(),
         "stack": None,
         "retries": retries,
+        "server_log": "",
     }
     pstate = _preview_states[pk]
 
@@ -5427,6 +6215,12 @@ async def deploy_preview(
         stack = _detect_project_stack(container_name)
         pstate["stack"] = stack
         _log(f"Detected: {stack['type']} project")
+        if stack.get("detected_from"):
+            _log(f"Detected entrypoint: {stack['detected_from']}")
+        if stack.get("workdir"):
+            _log(f"Using working directory: {stack['workdir']}")
+        if stack.get("start_cmd"):
+            _log(f"Resolved start command: {stack['start_cmd']}")
 
         # 5. Destroy the clone container — we'll create a proper one with the right image
         _destroy_container(container_name)
@@ -5444,7 +6238,7 @@ async def deploy_preview(
              "-w", "/workspace",
              "-e", "CI=true",
              "-e", "HOST=0.0.0.0",
-             "-e", "PORT=3000",
+             "-e", f"PORT={stack['port']}",
              stack["image"],
              "sleep", "infinity"],
             capture_output=True, text=True, timeout=30,
@@ -5521,6 +6315,12 @@ async def deploy_preview(
                 
         if is_crashed:
             err_log = log_check.stdout[-1000:] if log_check.returncode == 0 else ""
+            ps_tail = ""
+            if ps_check.returncode == 0 and ps_check.stdout:
+                ps_tail = "\n".join(ps_check.stdout.splitlines()[-25:])
+            if ps_tail:
+                err_log = f"{err_log}\n\nProcess snapshot:\n{ps_tail}".strip()
+            pstate["server_log"] = err_log
             raise RuntimeError(f"Server crashed shortly after starting or failed to start:\n{err_log}")
 
         preview_url = f"http://localhost:{host_port}"
@@ -5582,6 +6382,15 @@ async def repair_preview(
     if not pstate:
         return {"status": "error", "message": "No preview deployment found to repair."}
 
+    # Repair can be triggered before runtime agents are initialized for this project.
+    # Ensure system agents exist so run_agent(MASTER_AGENT_ID) does not fail.
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    if GIT_MANAGER_AGENT_ID not in project_agents:
+        project_agents[GIT_MANAGER_AGENT_ID] = _make_agent(GIT_MANAGER_AGENT_ID, 2)
+    if MASTER_AGENT_ID not in project_agents:
+        project_agents[MASTER_AGENT_ID] = _make_agent(MASTER_AGENT_ID, 3)
+
     logs = "\n".join([log.get("message", "") for log in pstate.get("logs", [])[-30:]])
     server_log = pstate.get("server_log", "")
     error_context = logs
@@ -5592,6 +6401,10 @@ async def repair_preview(
     pstate["logs"].append({
         "time": datetime.utcnow().isoformat(),
         "message": "🤖 Starting AI repair process...",
+    })
+    pstate["logs"].append({
+        "time": datetime.utcnow().isoformat(),
+        "message": "🤖 AI repair is running in background (timeout: 15 minutes).",
     })
 
     async def _repair_bg():
@@ -5605,15 +6418,18 @@ async def repair_preview(
             }
             
             # Wait for AI to finish
-            res = await run_agent(
-                agent_id=MASTER_AGENT_ID,
-                assigned_task=task,
-                continuous=False,
-                ignore_running_check=True,
-                git_repo_url=git_repo_url,
-                git_token=git_token,
-                project_token=project_token,
-                force_branch=GIT_INTEGRATION_BRANCH
+            res = await asyncio.wait_for(
+                run_agent(
+                    agent_id=MASTER_AGENT_ID,
+                    assigned_task=task,
+                    continuous=False,
+                    ignore_running_check=True,
+                    git_repo_url=git_repo_url,
+                    git_token=git_token,
+                    project_token=project_token,
+                    force_branch=GIT_INTEGRATION_BRANCH
+                ),
+                timeout=900,
             )
             
             pstate["logs"].append({
@@ -5624,6 +6440,12 @@ async def repair_preview(
             # Redeploy
             await deploy_preview(git_repo_url, git_token, project_token, is_retry=True)
             
+        except asyncio.TimeoutError:
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": "❌ AI repair timed out after 15 minutes.",
+            })
+            pstate["status"] = "error"
         except Exception as e:
             pstate["logs"].append({
                 "time": datetime.utcnow().isoformat(),

@@ -431,6 +431,10 @@ Do not include any other markdown, text, or explanations. Only output the JSON a
 BATCH_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
 You are generating tasks INCREMENTALLY for a project in batches of up to 5 tasks at a time.
 
+CRITICAL: The VERY FIRST task you create (task with ID 1 in the first batch, phase="foundation")
+MUST be a **full-stack project bootstrap** that creates a COMPLETE, CLEAN and
+PRODUCTION-READY project structure for BOTH backend AND frontend.
+
 RULES:
 1. Generate the NEXT batch of up to 5 tasks only.
 2. DO NOT repeat any tasks that have already been created (listed below).
@@ -447,6 +451,31 @@ RULES:
     - Use mock/stub services where applicable (e.g., mock SMTP, in-memory cache instead of Redis, local file storage instead of S3).
     - Add a clear note in the task description like: "NOTE: Using placeholder credentials — replace with real values once provided."
     - This ensures development is NOT blocked by missing credentials or access.
+12. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
+    - "foundation": Project setup, structure, API contracts, database schema, configuration files.
+      For FULL-STACK projects (e.g., React + Flask), the **foundation phase MUST create**:
+        * `backend/` directory with: virtualenv, `requirements.txt`, `config.py`, app entry, API module layout
+        * `frontend/` directory with: `package.json`, bundler config (Vite/Next/etc.), `src/` with `components/` and `pages/`, main entry files
+        * Root-level files: `.env.example`, `.gitignore`, `README.md`, (optionally) `docker-compose.yml`
+    - "backend-core": Core backend features (auth system, base models, base API setup, middleware)
+    - "backend-features": Feature-specific backend endpoints (books API, members API, transactions API)
+    - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the already-created `frontend/` structure
+    - "frontend-features": Feature-specific frontend components (Books UI, Members UI, Transactions UI)
+    - "integration": Testing, bug fixes, deployment preparation, end-to-end integration
+13. **DEPENDENCIES**: List task IDs from "ALREADY CREATED TASKS" that must complete BEFORE this task can start:
+    - Foundation tasks have NO dependencies (empty array [])
+    - Backend features depend on backend-core tasks
+    - Frontend features depend on frontend-core tasks AND corresponding backend-features tasks
+    - Integration tasks depend on all feature tasks
+    - Use sequential numbering: First batch = 1,2,3,4,5. Second batch = 6,7,8,9,10. Reference these IDs in dependencies.
+14. **DOMAIN**: Assign each task to a feature domain for better organization:
+    - "auth": Authentication, authorization, user management
+    - "books": Book management, catalog, inventory
+    - "members": Member/user management
+    - "transactions": Borrowing, returning, transactions
+    - "reports": Reporting, analytics, statistics
+    - "common": Shared utilities, helpers, common components
+    - "infrastructure": DevOps, CI/CD, deployment, infrastructure setup
 
 Output ONLY a JSON array of task objects (max 5) with this structure:
 [
@@ -458,7 +487,10 @@ Output ONLY a JSON array of task objects (max 5) with this structure:
     "deadline": "YYYY-MM-DD",
     "startdate": "YYYY-MM-DD",
     "task_type": "string",  // "EPIC", "FEATURE", "STORY", "TASK", or "BUG"
-    "priority": "string"    // "high", "medium", or "low"
+    "priority": "string",   // "high", "medium", or "low"
+    "phase": "string",      // REQUIRED: "foundation", "backend-core", "backend-features", "frontend-core", "frontend-features", or "integration"
+    "dependencies": [int],  // Array of task IDs from ALREADY CREATED TASKS that must complete first. Foundation tasks have [].
+    "domain": "string"      // Feature domain: "auth", "books", "members", "transactions", "reports", "common", "infrastructure"
   }
 ]
 

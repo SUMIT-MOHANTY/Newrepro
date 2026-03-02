@@ -3129,15 +3129,43 @@ async def auto_generate_project_tasks(
                 "created_milestones": created_milestones,
             }
 
+        # Phase to Sprint mapping (for phase-based task assignment)
+        PHASE_TO_SPRINT_MAP = {
+            "foundation": 1,
+            "backend-core": 2,
+            "backend-features": 3,
+            "frontend-core": 4,
+            "frontend-features": 5,
+            "integration": 6,
+        }
+        PHASE_NAMES = {
+            "foundation": "Foundation",
+            "backend-core": "Backend Core",
+            "backend-features": "Backend Features",
+            "frontend-core": "Frontend Core",
+            "frontend-features": "Frontend Features",
+            "integration": "Integration",
+        }
+
         if request.auto_create_plan and selected_sprint_id is None and selected_milestone_id is None:
             sprint_windows = _build_sprint_windows(project_start_obj, project_deadline_obj)
 
             for sprint_index, win in enumerate(sprint_windows, start=1):
                 win_start = win["start_date"]
                 win_deadline = win["deadline"]
+                # Map sprint index to phase name (if within 6 sprints)
+                phase_name = None
+                for phase, phase_sprint_num in PHASE_TO_SPRINT_MAP.items():
+                    if phase_sprint_num == sprint_index:
+                        phase_name = PHASE_NAMES[phase]
+                        break
+                
+                sprint_name = f"Sprint {sprint_index}" + (f" - {phase_name}" if phase_name else "")
+                sprint_summary = f"Auto-generated sprint {sprint_index}" + (f" ({phase_name})" if phase_name else "") + f" for {project_name or 'the project'}"
+                
                 sprint_payload = {
-                    "name": f"Sprint {sprint_index}",
-                    "summary": f"Auto-generated sprint {sprint_index} for {project_name or 'the project'}",
+                    "name": sprint_name,
+                    "summary": sprint_summary,
                     "start_date": _format_date(win_start),
                     "deadline": _format_date(win_deadline),
                 }
@@ -3359,7 +3387,29 @@ async def auto_generate_project_tasks(
 
                 assigned_sprint_id = selected_sprint_id
                 assigned_milestone_id = selected_milestone_id
-                if auto_plan_items:
+                
+                # Phase-based sprint assignment: Assign tasks to sprints based on their phase
+                task_phase = task_data.get("phase") or task_data.get("task_phase")
+                if task_phase and auto_plan_items:
+                    # Map phase to sprint number
+                    phase_sprint_num = PHASE_TO_SPRINT_MAP.get(task_phase)
+                    if phase_sprint_num and phase_sprint_num <= len(auto_plan_items):
+                        # Assign to the sprint corresponding to this phase
+                        chosen_plan_item = auto_plan_items[phase_sprint_num - 1]
+                        assigned_sprint_id = chosen_plan_item.get("sprint_id")
+                        assigned_milestone_id = chosen_plan_item.get("milestone_id")
+                    elif auto_plan_items:
+                        # Fallback: if phase not mapped or sprint doesn't exist, use date-based assignment
+                        chosen_plan_item = _pick_plan_item_for_task(
+                            task_start_obj=task_start_obj,
+                            task_deadline_obj=task_deadline_obj,
+                            plan_items=auto_plan_items,
+                        )
+                        if chosen_plan_item:
+                            assigned_sprint_id = chosen_plan_item.get("sprint_id")
+                            assigned_milestone_id = chosen_plan_item.get("milestone_id")
+                elif auto_plan_items:
+                    # No phase specified: use date-based assignment (backward compatibility)
                     chosen_plan_item = _pick_plan_item_for_task(
                         task_start_obj=task_start_obj,
                         task_deadline_obj=task_deadline_obj,

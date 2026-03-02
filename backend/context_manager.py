@@ -43,6 +43,10 @@ class AgentTaskRecord:
     task_title: str
     task_description: str
     status: str  # "in_progress", "completed", "failed"
+    task_id: Optional[str] = None
+    task_phase: Optional[str] = None
+    task_domain: Optional[str] = None
+    dependencies: List[str] = field(default_factory=list)
     files_touched: List[str] = field(default_factory=list)
     symbols_created: List[str] = field(default_factory=list)
     symbols_modified: List[str] = field(default_factory=list)
@@ -69,6 +73,114 @@ class ProjectLiveMemory:
         # file_path -> set of agent_ids currently editing it
         self.file_locks: Dict[str, Set[str]] = {}
         self._max_history = 50
+        # task_id -> Set[task_id] (dependencies)
+        self._task_dependencies: Dict[str, Set[str]] = {}
+        # Set of completed task IDs
+        self._completed_task_ids: Set[str] = set()
+        # Current active phase
+        self._current_phase: Optional[str] = None
+        # Integration validation status
+        self._integration_blocked: bool = False
+        # File ownership tracking: file_path -> agent_id (primary owner)
+        self._file_ownership: Dict[str, str] = {}
+        # Shared files that require coordination
+        self._shared_files: Set[str] = set()
+        # Initialize file partitioning rules
+        self._init_file_partitioning_rules()
+
+    def _init_file_partitioning_rules(self):
+        """Define clear ownership rules for files based on domain."""
+        # Backend-owned files (exclusive)
+        self._backend_files = {
+            # Python backend files
+            "**/app.py", "**/models.py", "**/database.py", "**/config.py",
+            "**/schemas.py", "**/auth.py", "**/api/**/*.py",
+            "**/backend/**/*.py", "**/routes/**/*.py", "**/services/**/*.py",
+            # Backend config
+            "**/requirements.txt", "**/Pipfile", "**/pyproject.toml",
+            "**/.env*", "**/docker-compose*.yml", "**/Dockerfile",
+            # Database & migration
+            "**/migrations/**", "**/alembic/**", "**/*.sql",
+        }
+
+        # Frontend-owned files (exclusive)
+        self._frontend_files = {
+            # React/Vue/Angular files
+            "**/frontend/src/**", "**/client/src/**", "**/src/**",
+            "**/public/**", "**/static/**",
+            # Frontend config
+            "**/package.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+            "**/tsconfig*.json", "**/vite.config.*", "**/webpack.config.*",
+            "**/.eslintrc*", "**/.prettierrc*",
+        }
+
+        # Shared files (require coordination)
+        self._shared_files = {
+            "**/README.md", "**/CONTRIBUTING.md", "**/LICENSE",
+            "**/.gitignore", "**/.dockerignore",
+            "**/docker-compose*.yml",  # Both backend and frontend might need to edit
+            "**/.env.example",  # Both backend and frontend env vars
+        }
+
+    def get_file_owner(self, file_path: str) -> Optional[str]:
+        """Determine which domain should own a file based on its path."""
+        import fnmatch
+
+        # Check backend ownership
+        for pattern in self._backend_files:
+            if fnmatch.fnmatch(file_path, pattern):
+                return "backend"
+
+        # Check frontend ownership
+        for pattern in self._frontend_files:
+            if fnmatch.fnmatch(file_path, pattern):
+                return "frontend"
+
+        # Default to shared (requires coordination)
+        return None
+
+    def can_agent_edit_file(self, agent_domain: str, file_path: str) -> tuple[bool, str]:
+        """
+        Check if an agent can edit a file based on domain ownership.
+        Returns (allowed, reason).
+        """
+        import fnmatch
+
+        # Check if it's a shared file
+        for pattern in self._shared_files:
+            if fnmatch.fnmatch(file_path, pattern):
+                # Shared files need coordination - check if anyone else is editing
+                editors = self.file_locks.get(file_path, set())
+                if editors:
+                    return False, f"Shared file '{file_path}' currently being edited by: {editors}"
+                return True, "Shared file - coordination required"
+
+        # Check backend ownership
+        for pattern in self._backend_files:
+            if fnmatch.fnmatch(file_path, pattern):
+                if agent_domain == "backend":
+                    return True, "Backend-owned file"
+                else:
+                    return False, f"File '{file_path}' is owned by backend domain"
+
+        # Check frontend ownership
+        for pattern in self._frontend_files:
+            if fnmatch.fnmatch(file_path, pattern):
+                if agent_domain == "frontend":
+                    return True, "Frontend-owned file"
+                else:
+                    return False, f"File '{file_path}' is owned by frontend domain"
+
+        # Unknown file - allow but log warning
+        return True, "Unknown file type - allowing edit"
+
+    def register_file_intent(self, agent_id: str, file_paths: List[str]):
+        """Register that an agent intends to touch certain files."""
+        with self._lock:
+            for fp in file_paths:
+                if fp not in self.file_locks:
+                    self.file_locks[fp] = set()
+                self.file_locks[fp].add(agent_id)
 
     def register_task_start(
         self,
@@ -76,6 +188,10 @@ class ProjectLiveMemory:
         task_title: str,
         task_description: str,
         branch_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+        task_phase: Optional[str] = None,
+        task_domain: Optional[str] = None,
+        dependencies: Optional[List[str]] = None,
     ):
         """Called when an agent picks up a task."""
         with self._lock:
@@ -86,6 +202,10 @@ class ProjectLiveMemory:
                 status="in_progress",
                 branch_name=branch_name,
                 started_at=datetime.utcnow().isoformat(),
+                task_id=task_id,
+                task_phase=task_phase,
+                task_domain=task_domain,
+                dependencies=dependencies or [],
             )
             self.active_tasks[agent_id] = record
 
@@ -145,6 +265,39 @@ class ProjectLiveMemory:
                     conflicts[fp] = list(others)
             return conflicts
 
+    def get_agent_domain(self, agent_id: str) -> Optional[str]:
+        """Get the domain (backend/frontend) of an agent from their current or recent tasks."""
+        with self._lock:
+            # Check active tasks
+            record = self.active_tasks.get(agent_id)
+            if record and record.task_domain:
+                return record.task_domain
+            
+            # Check history
+            for record in self.completed_history:
+                if record.agent_id == agent_id and record.task_domain:
+                    return record.task_domain
+            
+            return None
+
+    def validate_file_access(self, agent_id: str, file_paths: List[str]) -> tuple[bool, List[str]]:
+        """
+        Validate that an agent can edit the given files based on domain ownership.
+        Returns (allowed, list_of_blocked_files_with_reasons).
+        """
+        agent_domain = self.get_agent_domain(agent_id)
+        if not agent_domain:
+            # If agent domain unknown, allow but warn
+            return True, []
+        
+        blocked = []
+        for file_path in file_paths:
+            allowed, reason = self.can_agent_edit_file(agent_domain, file_path)
+            if not allowed:
+                blocked.append(f"{file_path}: {reason}")
+        
+        return len(blocked) == 0, blocked
+
     def build_cross_agent_context(self, requesting_agent_id: str) -> str:
         """
         Build a concise text summary of what all OTHER agents are doing
@@ -165,11 +318,15 @@ class ProjectLiveMemory:
                 lines.append("\n⚡ AGENTS CURRENTLY WORKING:")
                 for r in active:
                     branch_info = f" on branch '{r.branch_name}'" if r.branch_name else ""
-                    lines.append(f"  • {r.agent_id}: \"{r.task_title}\"{branch_info}")
+                    domain_info = f" [{r.task_domain}]" if r.task_domain else ""
+                    lines.append(f"  • {r.agent_id}: \"{r.task_title}\"{domain_info}{branch_info}")
                     lines.append(f"    Description: {r.task_description[:200]}")
+                    if r.files_touched:
+                        lines.append(f"    Files they're editing: {', '.join(r.files_touched[:5])}")
 
             # File conflicts (files being edited by others RIGHT NOW)
             conflict_files = {}
+            requesting_domain = self.get_agent_domain(requesting_agent_id)
             for fpath, agents in self.file_locks.items():
                 others = agents - {requesting_agent_id}
                 if others:
@@ -183,6 +340,20 @@ class ProjectLiveMemory:
                     "  → If you need to modify these files, ONLY APPEND new code. "
                     "Do NOT overwrite or restructure existing code in these files."
                 )
+            
+            # File ownership rules reminder
+            if requesting_domain:
+                has_content = True
+                lines.append(f"\n📋 FILE OWNERSHIP RULES (Your domain: {requesting_domain}):")
+                if requesting_domain == "backend":
+                    lines.append("  • You OWN: backend/**/*.py, requirements.txt, Dockerfile, migrations/**")
+                    lines.append("  • You CANNOT edit: frontend/src/**, package.json, frontend config files")
+                    lines.append("  • SHARED files (README.md, .gitignore): coordinate with others")
+                elif requesting_domain == "frontend":
+                    lines.append("  • You OWN: frontend/src/**, package.json, frontend config files")
+                    lines.append("  • You CANNOT edit: backend/**/*.py, requirements.txt, backend config files")
+                    lines.append("  • SHARED files (README.md, .gitignore): coordinate with others")
+                lines.append("  → Violating ownership rules will cause merge conflicts!")
 
             # Recently completed tasks (last 10)
             recent = self.completed_history[:10]
@@ -211,6 +382,50 @@ class ProjectLiveMemory:
 
             lines.append("\n=== END CROSS-AGENT AWARENESS ===")
             return "\n".join(lines)
+
+    def register_task_dependencies(self, task_id: str, dependencies: List[str]):
+        """Register dependencies for a task."""
+        with self._lock:
+            self._task_dependencies[task_id] = set(str(d) for d in dependencies)
+
+    def mark_task_completed(self, task_id: str):
+        """Mark a task as completed."""
+        with self._lock:
+            self._completed_task_ids.add(str(task_id))
+
+    def check_task_dependencies(self, task_id: str) -> bool:
+        """Check if all dependencies for a task are completed."""
+        with self._lock:
+            deps = self._task_dependencies.get(str(task_id), set())
+            if not deps:
+                return True  # No dependencies, can proceed
+            return deps.issubset(self._completed_task_ids)
+
+    def get_blocking_tasks(self, task_id: str) -> List[str]:
+        """Get list of task IDs that are blocking this task."""
+        with self._lock:
+            deps = self._task_dependencies.get(str(task_id), set())
+            return list(deps - self._completed_task_ids)
+
+    def set_current_phase(self, phase: Optional[str]):
+        """Set the current active phase."""
+        with self._lock:
+            self._current_phase = phase
+
+    def get_current_phase(self) -> Optional[str]:
+        """Get the current active phase."""
+        with self._lock:
+            return self._current_phase
+
+    def set_integration_blocked(self, blocked: bool):
+        """Set integration blocked status (blocks new tasks if validation failed)."""
+        with self._lock:
+            self._integration_blocked = blocked
+
+    def is_integration_blocked(self) -> bool:
+        """Check if integration is blocked (validation failed)."""
+        with self._lock:
+            return self._integration_blocked
 
 
 # project_token -> ProjectLiveMemory

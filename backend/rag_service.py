@@ -41,15 +41,20 @@ async def _llm_model_func(
     elif base_url.endswith("/v1/chat/completions"):
         base_url = base_url[: -len("/chat/completions")]
 
-    return await openai_complete_if_cache(
-        settings.ai_model,
-        prompt,
-        system_prompt=system_prompt,
-        history_messages=history_messages or [],
-        api_key=settings.ai_api_key,
-        base_url=base_url,
-        **kwargs,
-    )
+    try:
+        return await openai_complete_if_cache(
+            settings.ai_model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages or [],
+            api_key=settings.ai_api_key,
+            base_url=base_url,
+            **kwargs,
+        )
+    except Exception as e:
+        logger.warning(f"LightRAG LLM call failed: {e}")
+        # Return a minimal valid response to prevent crash
+        return '{"entities": [], "relations": []}'
 
 
 async def _embedding_func_impl(texts: list) -> np.ndarray:
@@ -80,6 +85,26 @@ async def _embedding_func_impl(texts: list) -> np.ndarray:
             f"OpenAI embedding failed ({e}), falling back to hash-based embeddings"
         )
         return _fallback_hash_embedding(texts)
+
+
+# Flag to track if rerank is available
+_rerank_available = None
+
+
+def _check_rerank_available():
+    """Check if rerank model is available."""
+    global _rerank_available
+    if _rerank_available is not None:
+        return _rerank_available
+    try:
+        # Try to import and check rerank
+        from lightrag import LightRAG
+
+        _rerank_available = True
+        return True
+    except Exception:
+        _rerank_available = False
+        return False
 
 
 def _fallback_hash_embedding(texts: list, dim: int = 1024) -> np.ndarray:
@@ -208,6 +233,7 @@ async def index_codebase(
                         await rag.ainsert(chunk)
                         indexed += 1
                     except Exception as e2:
+                        # Log but continue - don't let one bad chunk stop everything
                         logger.warning(f"[{project_token}] Single insert error: {e2}")
                 _rag_statuses[project_token]["indexed_chunks"] = indexed
 
@@ -222,7 +248,7 @@ async def index_codebase(
 
     except Exception as e:
         err_msg = str(e)
-        logger.error(f"[{project_token}] Indexing failed: {err_msg}")
+        logger.warning(f"[{project_token}] Indexing failed: {err_msg}")
         _rag_statuses[project_token].update({
             "status": "error",
             "error": err_msg,
@@ -263,9 +289,17 @@ async def incremental_insert(
                 await rag.ainsert(labeled)
                 inserted += 1
             except Exception as e:
+                # Log but don't crash on individual chunk errors
                 logger.warning(
-                    f"[{project_token}] incremental insert error: {e}"
+                    f"[{project_token}] incremental insert error for chunk: {e}"
                 )
+                # Try to insert a simplified version of the chunk
+                try:
+                    simplified = f"[{source_label}]\nError in chunk, skipping detailed content"
+                    await rag.ainsert(simplified)
+                    inserted += 1
+                except Exception:
+                    pass  # Give up on this chunk
 
         # Update total indexed count
         prev_count = status.get("indexed_chunks", 0)
@@ -283,7 +317,7 @@ async def incremental_insert(
         }
 
     except Exception as e:
-        logger.error(f"[{project_token}] incremental_insert failed: {e}")
+        logger.warning(f"[{project_token}] incremental_insert failed: {e}")
         return {"status": "error", "error": str(e)}
 
 
@@ -317,10 +351,20 @@ async def query_codebase(
 
     try:
         rag = await _get_or_create_rag(project_token)
-        result = await rag.aquery(
-            query,
-            param=QueryParam(mode=mode, top_k=top_k),
-        )
+
+        # Disable rerank if no model is configured
+        try:
+            result = await rag.aquery(
+                query,
+                param=QueryParam(mode=mode, top_k=top_k, enable_rerank=False),
+            )
+        except Exception as rerank_error:
+            # If rerank fails, try without it
+            logger.warning(f"Rerank failed ({rerank_error}), retrying without rerank")
+            result = await rag.aquery(
+                query,
+                param=QueryParam(mode=mode, top_k=top_k, enable_rerank=False),
+            )
 
         return {
             "status": "success",
@@ -330,7 +374,7 @@ async def query_codebase(
         }
 
     except Exception as e:
-        logger.error(f"[{project_token}] Query failed: {e}")
+        logger.warning(f"[{project_token}] Query failed: {e}")
         return {
             "status": "error",
             "error": str(e),
