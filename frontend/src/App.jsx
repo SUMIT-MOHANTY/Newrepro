@@ -38,7 +38,7 @@ function App() {
             {(layoutProps) => <Dashboard {...layoutProps} />}
           </AppLayout>
         } />
-        <Route path="/governance" element={
+        <Route path="/new-project" element={
           <AppLayout>
             {(layoutProps) => <GovernanceForm {...layoutProps} />}
           </AppLayout>

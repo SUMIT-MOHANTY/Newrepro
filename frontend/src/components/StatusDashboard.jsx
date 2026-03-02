@@ -650,7 +650,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     const handleCreateProject = () => {
         if (!newProjectName.trim()) return;
-        navigate(`/governance?projectName=${encodeURIComponent(newProjectName.trim())}`);
+        navigate(`/new-project?projectName=${encodeURIComponent(newProjectName.trim())}`);
     };
 
     // ── Run All Agents ────────────────────────────────────────────────
@@ -2280,12 +2280,32 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5">
                                     {logs.length === 0 ? (
                                         <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
-                                    ) : logs.map((log, idx) => (
-                                        <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
-                                            <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
-                                            <span className="break-all">{log.message}</span>
-                                        </div>
-                                    ))}
+                                    ) : logs.map((log, idx) => {
+                                        const isInfoOrWarning = log.type === 'info' || log.type === 'warning';
+                                        let formattedTime = null;
+                                        if (log.time) {
+                                            const d = new Date(log.time);
+                                            const year = d.getFullYear();
+                                            const month = String(d.getMonth() + 1).padStart(2, '0');
+                                            const day = String(d.getDate()).padStart(2, '0');
+                                            const hours = String(d.getHours()).padStart(2, '0');
+                                            const minutes = String(d.getMinutes()).padStart(2, '0');
+                                            const seconds = String(d.getSeconds()).padStart(2, '0');
+                                            formattedTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                                        }
+
+                                        return (
+                                            <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
+                                                {isInfoOrWarning && formattedTime && (
+                                                    <span className="text-gray-500 flex-shrink-0 select-none opacity-80" title={log.time}>
+                                                        [{formattedTime}]
+                                                    </span>
+                                                )}
+                                                <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
+                                                <span className="break-all">{log.message}</span>
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                                 {result?.generated_code && (
                                     <div className="border-t border-gray-700">

@@ -85,16 +85,16 @@ export default function AppLayout({ children }) {
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
-        : location.pathname === '/governance' ? 'governance'
+        : location.pathname === '/new-project' ? 'governance'
             : location.pathname === '/prerequisites' ? 'prerequisites'
                 : location.pathname === '/task-creation' ? 'taskCreation'
-                : 'main';
+                    : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
             navigate('/status-dashboard');
         } else if (view === 'governance') {
-            navigate('/governance');
+            navigate('/new-project');
         } else if (view === 'prerequisites') {
             navigate('/prerequisites');
         } else if (view === 'taskCreation') {
@@ -296,7 +296,7 @@ export default function AppLayout({ children }) {
         localStorage.removeItem('governanceContext');
         sessionStorage.removeItem('governanceResult');
         sessionStorage.removeItem('governanceContext');
-        navigate('/governance?new=' + Date.now());
+        navigate('/new-project?new=' + Date.now());
     }, [navigate]);
 
     const handleSelectProject = (project) => {
@@ -373,14 +373,14 @@ export default function AppLayout({ children }) {
                                         currentView === 'governance' ? 'Project Requirement Screening' :
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
                                                 currentView === 'taskCreation' ? 'Task Creation Planner' :
-                                                'BRD Requirements Analyzer'}
+                                                    'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'governance' ? 'Screening & Configuration' :
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
                                                 currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
-                                                'Project Insight & AI Assessment'}
+                                                    'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 

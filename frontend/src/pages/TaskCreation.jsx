@@ -17,38 +17,6 @@ const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
-const PROCESS_MODE_OPTIONS = [
-    {
-        id: 'ai_first',
-        title: 'AI-First Mode',
-        description: 'Open Status Dashboard and auto-start all agents.',
-        enabled: true,
-    },
-    {
-        id: 'ai_assist',
-        title: 'AI Assist',
-        description: 'Legacy mode (same behavior as AI-First).',
-        enabled: false,
-    },
-    {
-        id: 'developer_only',
-        title: 'Developer Only',
-        description: 'Open Status Dashboard without showing AI agents.',
-        enabled: false,
-    },
-    {
-        id: 'coexistence',
-        title: 'Coexistence',
-        description: 'Open Status Dashboard with agents available for manual run.',
-        enabled: false,
-    },
-    {
-        id: 'vibe_coding',
-        title: 'Vibe Coding',
-        description: 'Upcoming mode.',
-        enabled: false,
-    },
-];
 
 function decodeJwtExpiry(token) {
     try {
@@ -144,20 +112,6 @@ function readProcessModeMap() {
     }
 }
 
-function writeProcessModeMap(map) {
-    try {
-        localStorage.setItem(PROCESS_MODE_STORAGE_KEY, JSON.stringify(map));
-    } catch {
-        // Ignore storage errors.
-    }
-}
-
-function saveProcessModeForProject(projectKey, mode) {
-    if (!projectKey || !mode) return;
-    const map = readProcessModeMap();
-    map[projectKey] = mode;
-    writeProcessModeMap(map);
-}
 
 export default function TaskCreation({
     projects = [],
@@ -183,16 +137,26 @@ export default function TaskCreation({
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [creationStageIndex, setCreationStageIndex] = useState(0);
-    const [showProcessModeModal, setShowProcessModeModal] = useState(false);
     const autoStartRunKeysRef = useRef(new Set());
     const credentialRefreshAttemptedRef = useRef(new Set());
     const [isRefreshingCredentials, setIsRefreshingCredentials] = useState(false);
+    const [customRules, setCustomRules] = useState(() => {
+        if (selectedProjectKey) {
+            return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+        }
+        return '';
+    });
 
     const selectedProject = useMemo(
         () => projects.find((p) => p.key === selectedProjectKey) || null,
         [projects, selectedProjectKey]
     );
     const hasProjectCredentials = Boolean(selectedProject?.client_id && selectedProject?.client_secret);
+
+    const processMode = useMemo(() => {
+        const map = readProcessModeMap();
+        return selectedProjectKey ? map[selectedProjectKey] || 'ai_first' : 'ai_first';
+    }, [selectedProjectKey]);
 
     useEffect(() => {
         if (!selectedProjectKey) return;
@@ -205,6 +169,19 @@ export default function TaskCreation({
             setTaskTokenProjectKey(null);
         }
     }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (selectedProjectKey) {
+            const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+            setCustomRules(saved);
+        }
+    }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (selectedProjectKey) {
+            localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
+        }
+    }, [selectedProjectKey, customRules]);
 
     useEffect(() => {
         let isMounted = true;
@@ -421,6 +398,7 @@ export default function TaskCreation({
             const generatePayload = {
                 project_token: selectedProjectKey,
                 auto_create_plan: true,
+                custom_rules: customRules,
             };
             if (prerequisites && prerequisites.length > 0) {
                 generatePayload.prerequisites = prerequisites;
@@ -460,7 +438,7 @@ export default function TaskCreation({
         } finally {
             setIsGenerating(false);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData]);
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData, customRules]);
 
     useEffect(() => {
         const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
@@ -498,13 +476,12 @@ export default function TaskCreation({
         handleMasterCreate,
     ]);
 
-    const handleStartProcess = (mode, enabled = true) => {
-        if (!enabled) return;
-        if (selectedProjectKey) {
-            saveProcessModeForProject(selectedProjectKey, mode);
+    const handleStartProcess = () => {
+        if (processMode === 'ai_assist') {
+            window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
+        } else {
+            navigate('/status-dashboard', { state: { processMode } });
         }
-        setShowProcessModeModal(false);
-        navigate('/status-dashboard', { state: { processMode: mode } });
     };
 
     return (
@@ -518,9 +495,15 @@ export default function TaskCreation({
                             <p className="text-sm text-app-text-muted mt-2">
                                 Project: <span className="font-semibold text-app-text-main">{selectedProject?.name || 'Not selected'}</span>
                             </p>
+                            {processMode === 'ai_assist' && (
+                                <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-xs font-semibold text-indigo-700">
+                                    <Sparkles className="w-3.5 h-3.5" />
+                                    <span>AI Assist Active: You will be redirected to VS Code's N-Mod Ext.</span>
+                                </div>
+                            )}
                         </div>
                         <button
-                            onClick={() => setShowProcessModeModal(true)}
+                            onClick={handleStartProcess}
                             className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow hover:shadow-lg transition-all"
                         >
                             Start the Process
@@ -543,11 +526,10 @@ export default function TaskCreation({
                     <button
                         onClick={handleMasterCreate}
                         disabled={!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating}
-                        className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${
-                            (!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating)
-                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
-                        }`}
+                        className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating)
+                            ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                            : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
+                            }`}
                     >
                         {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                         {isGenerating ? 'Creating Plan...' : 'Create Tasks (AI Auto Plan)'}
@@ -582,6 +564,8 @@ export default function TaskCreation({
                         </p>
                     )}
                 </div>
+
+
 
                 <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
                     <div className="flex items-center justify-between mb-4">
@@ -658,13 +642,12 @@ export default function TaskCreation({
                                 return (
                                     <div
                                         key={stepLabel}
-                                        className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${
-                                            isDone
-                                                ? 'border-emerald-200 bg-emerald-50'
-                                                : isActive
-                                                    ? 'border-indigo-200 bg-indigo-50'
-                                                    : 'border-slate-200 bg-slate-50'
-                                        }`}
+                                        className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${isDone
+                                            ? 'border-emerald-200 bg-emerald-50'
+                                            : isActive
+                                                ? 'border-indigo-200 bg-indigo-50'
+                                                : 'border-slate-200 bg-slate-50'
+                                            }`}
                                     >
                                         {isDone ? (
                                             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
@@ -683,49 +666,6 @@ export default function TaskCreation({
                         <p className="mt-4 text-xs text-slate-500">
                             Actions are temporarily locked until task plan creation completes.
                         </p>
-                    </div>
-                </div>
-            )}
-            {showProcessModeModal && (
-                <div className="fixed inset-0 z-[210] bg-slate-950/65 backdrop-blur-sm flex items-center justify-center px-4">
-                    <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6">
-                        <h3 className="text-lg font-extrabold text-slate-900">Choose Execution Mode</h3>
-                        <p className="mt-1 text-sm text-slate-600">
-                            Select how this project should run in Status Dashboard.
-                        </p>
-                        <div className="mt-5 space-y-3">
-                            {PROCESS_MODE_OPTIONS.map((option) => (
-                                <button
-                                    key={option.id}
-                                    type="button"
-                                    disabled={!option.enabled}
-                                    onClick={() => handleStartProcess(option.id, option.enabled)}
-                                    className={`w-full text-left rounded-xl border px-4 py-3 transition-colors ${
-                                        option.enabled
-                                            ? 'border-slate-200 bg-white hover:bg-slate-50 hover:border-indigo-300'
-                                            : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
-                                    }`}
-                                >
-                                    <div className="flex items-center justify-between gap-2">
-                                        <p className={`text-sm font-bold ${option.enabled ? 'text-slate-900' : 'text-slate-500'}`}>{option.title}</p>
-                                        {!option.enabled && (
-                                            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full">
-                                                Disabled
-                                            </span>
-                                        )}
-                                    </div>
-                                </button>
-                            ))}
-                        </div>
-                        <div className="mt-5 flex justify-end">
-                            <button
-                                type="button"
-                                onClick={() => setShowProcessModeModal(false)}
-                                className="px-4 py-2 text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg"
-                            >
-                                Cancel
-                            </button>
-                        </div>
                     </div>
                 </div>
             )}
