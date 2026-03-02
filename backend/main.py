@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Annotated, Optional, List, Dict, Any
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, Header
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -1061,14 +1062,36 @@ async def github_repo_context(
     try:
         # Prioritize explicitly provided token (for private links), fallback to OAuth token
         token_to_use = payload.token if payload.token else current_user.github_token
+        owner, repo = github_service.normalize_repo_identity(payload.owner, payload.repo)
+        branch = (payload.branch or "main").strip() or "main"
+        if not owner or not repo:
+            raise HTTPException(status_code=400, detail="Invalid GitHub repository URL or owner/repo values.")
 
-        context = await github_service.build_repo_context(
+        repo_data = await github_service.build_repo_context(
             token_to_use,
-            payload.owner,
-            payload.repo,
-            payload.branch,
+            owner,
+            repo,
+            branch,
         )
-        return {"context": context, "repo": f"{payload.owner}/{payload.repo}"}
+        return {
+            "context": repo_data["context"],
+            "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+            "branch": repo_data["branch"],
+        }
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        if status_code == 404:
+            detail = (
+                "Repository or branch was not found. Verify the URL, remove any trailing .git, "
+                "and provide a PAT for private repositories."
+            )
+        elif status_code in (401, 403):
+            detail = "GitHub authentication failed or access denied. Check your PAT/OAuth access."
+        else:
+            detail = f"Failed to fetch repository context from GitHub (HTTP {status_code})."
+        raise HTTPException(status_code=status_code, detail=detail)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
 

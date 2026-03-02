@@ -1580,10 +1580,13 @@ const Dashboard = ({
             if (parts.length < 2) throw new Error('Invalid repo URL structure');
 
             const owner = parts[0];
-            const repo = parts[1];
+            const repo = parts[1].replace(/\.git$/i, '');
             let branch = 'main';
             if (parts[2] === 'tree' && parts[3]) {
                 branch = parts[3];
+            }
+            if (!owner || !repo) {
+                throw new Error('Invalid GitHub URL. Use format: https://github.com/owner/repo');
             }
 
             setGithubLinkParsing(true);
@@ -1605,9 +1608,11 @@ const Dashboard = ({
                 throw new Error(errMessage);
             }
 
+            const resolvedRepo = data.repo || `${owner}/${repo}`;
+            const resolvedBranch = data.branch || branch;
             setRepoContext({
-                repo: `${owner}/${repo}`,
-                branch,
+                repo: resolvedRepo,
+                branch: resolvedBranch,
                 context: data.context,
                 fromLink: true
             });
