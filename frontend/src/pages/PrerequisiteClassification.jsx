@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import {
@@ -187,6 +187,80 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
     return items;
 };
 
+const normalizeGithubRepoPath = (value = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    const asPath = (candidate) => {
+        const cleaned = String(candidate || '')
+            .trim()
+            .replace(/^\/+|\/+$/g, '')
+            .replace(/\.git$/i, '');
+        const parts = cleaned.split('/').filter(Boolean);
+        if (parts.length < 2) return '';
+        return `${parts[0]}/${parts[1]}`;
+    };
+
+    if (/github\.com/i.test(raw)) {
+        try {
+            const normalizedUrl = raw.startsWith('http://') || raw.startsWith('https://')
+                ? raw
+                : `https://${raw}`;
+            const url = new URL(normalizedUrl);
+            return asPath(url.pathname);
+        } catch {
+            // Fallback to direct path parsing below.
+        }
+    }
+
+    return asPath(raw);
+};
+
+const repoPathToGitUrl = (repoPath = '') => (
+    repoPath ? `https://github.com/${repoPath}.git` : ''
+);
+
+const extractRepoSuggestionFromAnalysis = (analysisObj) => {
+    if (!analysisObj || typeof analysisObj !== 'object') return null;
+
+    const possibleSources = [
+        analysisObj.repoContextMeta,
+        analysisObj.repoContext,
+        analysisObj.projectMeta?.repoContext,
+        analysisObj.projectMeta?.repo_context,
+    ].filter(Boolean);
+
+    for (const source of possibleSources) {
+        const repoPath = normalizeGithubRepoPath(
+            source?.repo || source?.full_name || source?.url || source?.git_repo_url || source?.repository
+        );
+        if (!repoPath) continue;
+
+        return {
+            repo: repoPath,
+            branch: String(source?.branch || source?.default_branch || '').trim() || null,
+            url: repoPathToGitUrl(repoPath),
+            source: String(source?.source || 'analysis'),
+        };
+    }
+
+    const analysisText = String(analysisObj.analysis || analysisObj.report || '');
+    const match = analysisText.match(/Repository:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i);
+    if (match?.[1]) {
+        const repoPath = normalizeGithubRepoPath(match[1]);
+        if (repoPath) {
+            return {
+                repo: repoPath,
+                branch: null,
+                url: repoPathToGitUrl(repoPath),
+                source: 'analysis',
+            };
+        }
+    }
+
+    return null;
+};
+
 /* ─────────────────────────────────────────────────────────
    PRIORITY BADGE
 ───────────────────────────────────────────────────────── */
@@ -209,6 +283,7 @@ const PriorityBadge = ({ priority }) => {
 ───────────────────────────────────────────────────────── */
 const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, projects }) => {
     const navigate = useNavigate();
+    const gitRepoInputRef = useRef(null);
     const [prerequisites, setPrerequisites] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -219,6 +294,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [globalGitToken, setGlobalGitToken] = useState('');
     const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
+    const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
+    const [repoSuggestionHandled, setRepoSuggestionHandled] = useState(false);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -371,7 +448,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 });
 
                 if (!projectDoc?.analysis_result) {
-                    setError(`No analysis found for "${projName || selectedProjectKey}". Please complete AI Analysis first.`);
+                    setError(`No analysis found for "${projName || selectedProjectKey}". Please complete Agent Analysis first.`);
                     setPrerequisites([]);
                     setLoading(false);
                     return;
@@ -384,6 +461,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 } catch {
                     analysisObj = null;
                 }
+
+                const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
+                setAnalysisRepoSuggestion(detectedRepo);
+                setRepoSuggestionHandled(false);
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
                 const extracted = extractPrerequisitesFromAnalysis(analysisObj || projectDoc.analysis_result);
@@ -435,9 +516,27 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const providedCount = prerequisites.filter(p => p.provided).length;
     const progress = totalItems > 0 ? Math.round((providedCount / totalItems) * 100) : 0;
     const allProvided = totalItems > 0 && providedCount === totalItems;
+    const shouldShowRepoSuggestion = Boolean(
+        analysisRepoSuggestion &&
+        !repoSuggestionHandled &&
+        !globalGitRepoUrl.trim() &&
+        !isLoadingGitConfig
+    );
     const isGlobalGitConfigValid = Boolean(
         globalGitRepoUrl.trim() && (hasSavedGlobalGitToken || globalGitToken.trim())
     );
+
+    const handleUseSuggestedRepo = useCallback(() => {
+        if (!analysisRepoSuggestion?.url) return;
+        setGlobalGitRepoUrl(analysisRepoSuggestion.url);
+        setRepoSuggestionHandled(true);
+        setTimeout(() => gitRepoInputRef.current?.focus(), 0);
+    }, [analysisRepoSuggestion]);
+
+    const handleUseDifferentRepo = useCallback(() => {
+        setRepoSuggestionHandled(true);
+        setTimeout(() => gitRepoInputRef.current?.focus(), 0);
+    }, []);
 
     const handleSubmit = async () => {
         setSubmitting(true);
@@ -775,12 +874,38 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <p className="text-sm text-gray-500 mb-4">
                             Provide one global repository and PAT here. All agents in this project will use these credentials.
                         </p>
+                        {shouldShowRepoSuggestion && (
+                            <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/80 p-4">
+                                <p className="text-sm font-semibold text-indigo-900">Repository detected from analysis</p>
+                                <p className="text-xs text-indigo-700 mt-1">
+                                    You already provided <span className="font-semibold">{analysisRepoSuggestion.repo}</span>
+                                    {analysisRepoSuggestion.branch ? ` (${analysisRepoSuggestion.branch})` : ''}. Do you want to use this one?
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={handleUseSuggestedRepo}
+                                        className="px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+                                    >
+                                        Use this repository
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleUseDifferentRepo}
+                                        className="px-3 py-2 text-xs font-semibold rounded-lg border border-indigo-300 text-indigo-700 bg-white hover:bg-indigo-50 transition-colors"
+                                    >
+                                        Use another repository
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                         <div className="grid grid-cols-1 gap-4">
                             <div>
                                 <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
                                     Git Repository URL <span className="text-red-500">*</span>
                                 </label>
                                 <input
+                                    ref={gitRepoInputRef}
                                     type="text"
                                     value={globalGitRepoUrl}
                                     onChange={(e) => setGlobalGitRepoUrl(e.target.value)}

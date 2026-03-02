@@ -646,7 +646,7 @@ async def get_project_roadmap_step(
         "Project Initiation",
         "Governance",
         "Requirement Screening",
-        "AI Analysis",
+        "Agent Analysis",
         "Prerequisite Classification",
         "Task Creation",
         "On Flight",
@@ -1059,37 +1059,113 @@ async def github_repo_context(
     Fetch repository source code and return a structured text context
     suitable for feeding into the AI model alongside the BRD.
     """
-    try:
-        # Prioritize explicitly provided token (for private links), fallback to OAuth token
-        token_to_use = payload.token if payload.token else current_user.github_token
-        owner, repo = github_service.normalize_repo_identity(payload.owner, payload.repo)
-        branch = (payload.branch or "main").strip() or "main"
-        if not owner or not repo:
-            raise HTTPException(status_code=400, detail="Invalid GitHub repository URL or owner/repo values.")
+    provided_token = (payload.token or "").strip() or None
+    saved_oauth_token = (current_user.github_token or "").strip() or None
+    token_to_use = provided_token if provided_token else saved_oauth_token
 
-        repo_data = await github_service.build_repo_context(
-            token_to_use,
+    owner, repo = github_service.normalize_repo_identity(payload.owner, payload.repo)
+    branch = (payload.branch or "main").strip() or "main"
+    if not owner or not repo:
+        raise HTTPException(status_code=400, detail="Invalid GitHub repository URL or owner/repo values.")
+
+    async def _build_context(token_value: Optional[str]) -> Dict[str, str]:
+        return await github_service.build_repo_context(
+            token_value,
             owner,
             repo,
             branch,
         )
+
+    async def _build_context_from_zip() -> Dict[str, str]:
+        return await github_service.build_repo_context_from_zip(
+            owner,
+            repo,
+            branch,
+        )
+
+    def _is_rate_limited(err: httpx.HTTPStatusError) -> bool:
+        if err.response is None:
+            return False
+        if err.response.status_code != 403:
+            return False
+        try:
+            message = str((err.response.json() or {}).get("message") or "").lower()
+        except Exception:
+            message = str(err.response.text or "").lower()
+        return "rate limit" in message
+
+    def _raise_repo_context_error(err: httpx.HTTPStatusError) -> None:
+        status_code = err.response.status_code if err.response is not None else 502
+        response_msg = ""
+        if err.response is not None:
+            try:
+                response_msg = str((err.response.json() or {}).get("message") or "").strip()
+            except Exception:
+                response_msg = str(err.response.text or "").strip()
+        response_msg_lc = response_msg.lower()
+
+        if status_code == 404:
+            detail = (
+                "Repository or branch was not found. Verify the URL, remove any trailing .git, "
+                "and provide a PAT for private repositories."
+            )
+        elif status_code == 403 and "rate limit" in response_msg_lc:
+            detail = "GitHub API rate limit exceeded. Add a valid PAT or reconnect GitHub OAuth and try again."
+        elif status_code in (401, 403):
+            detail = "GitHub authentication failed or access denied. Check your PAT/OAuth access."
+        else:
+            detail = f"Failed to fetch repository context from GitHub (HTTP {status_code})."
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    try:
+        repo_data = await _build_context(token_to_use)
         return {
             "context": repo_data["context"],
             "repo": f"{repo_data['owner']}/{repo_data['repo']}",
             "branch": repo_data["branch"],
         }
     except httpx.HTTPStatusError as e:
+        if _is_rate_limited(e):
+            try:
+                repo_data = await _build_context_from_zip()
+                return {
+                    "context": repo_data["context"],
+                    "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+                    "branch": repo_data["branch"],
+                }
+            except httpx.HTTPStatusError:
+                # If zip fallback also fails, continue to the regular error path below.
+                pass
+
+        # If saved OAuth token is stale/invalid and no PAT was explicitly provided,
+        # retry without auth so public repositories still work.
         status_code = e.response.status_code if e.response is not None else 502
-        if status_code == 404:
-            detail = (
-                "Repository or branch was not found. Verify the URL, remove any trailing .git, "
-                "and provide a PAT for private repositories."
-            )
-        elif status_code in (401, 403):
-            detail = "GitHub authentication failed or access denied. Check your PAT/OAuth access."
-        else:
-            detail = f"Failed to fetch repository context from GitHub (HTTP {status_code})."
-        raise HTTPException(status_code=status_code, detail=detail)
+        should_retry_without_auth = (
+            status_code in (401, 403)
+            and provided_token is None
+            and saved_oauth_token is not None
+        )
+        if should_retry_without_auth:
+            try:
+                repo_data = await _build_context(None)
+                return {
+                    "context": repo_data["context"],
+                    "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+                    "branch": repo_data["branch"],
+                }
+            except httpx.HTTPStatusError as retry_err:
+                if _is_rate_limited(retry_err):
+                    try:
+                        repo_data = await _build_context_from_zip()
+                        return {
+                            "context": repo_data["context"],
+                            "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+                            "branch": repo_data["branch"],
+                        }
+                    except httpx.HTTPStatusError:
+                        pass
+                _raise_repo_context_error(retry_err)
+        _raise_repo_context_error(e)
     except HTTPException:
         raise
     except Exception as e:

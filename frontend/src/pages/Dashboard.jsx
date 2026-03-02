@@ -99,6 +99,26 @@ const sanitizeHtml = (content = '') => DOMPurify.sanitize(content, { USE_PROFILE
 const normalizeProjectName = (name = '') => String(name || '').trim().toLowerCase();
 const ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE = 'Sandbox is not approved. Our IT team will reach out to you soon.';
 const isSkipSelectedOption = (label = '') => String(label || '').trim().toLowerCase() === 'skip';
+const buildRepoContextMeta = (context) => {
+    const rawRepo = String(context?.repo || '').trim();
+    if (!rawRepo) return null;
+
+    const normalizedRepo = rawRepo
+        .replace(/^https?:\/\/github\.com\//i, '')
+        .replace(/\.git$/i, '')
+        .replace(/^\/+|\/+$/g, '');
+
+    if (!normalizedRepo || !normalizedRepo.includes('/')) {
+        return null;
+    }
+
+    return {
+        repo: normalizedRepo,
+        branch: String(context?.branch || '').trim() || null,
+        source: context?.fromLink ? 'link' : 'oauth',
+        url: `https://github.com/${normalizedRepo}.git`,
+    };
+};
 
 
 const normalizeDimensionScores = (dimensionScores = {}) => ({
@@ -361,9 +381,11 @@ const Dashboard = ({
         try {
             const token = localStorage.getItem('token');
             const nextRevisionNumber = ((projects.find(p => p.key === taskKey)?.documents?.length) || 0) + 1;
+            const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(repoContext);
             const storedAnalysis = {
                 ...(newResult.analysis || {}),
                 governanceContext: governanceContext || null,
+                repoContextMeta: repoContextMeta || null,
                 projectMeta: {
                     project_name: (projects.find(p => p.key === taskKey)?.name) || governanceContext?.project_name || 'Project',
                     governance_result_id: governanceContext?.result_id || (projects.find(p => p.key === taskKey)?.governanceResultId) || null,
@@ -921,7 +943,8 @@ const Dashboard = ({
                     prerequisites: prerequisites,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
-                    governanceContext: governanceContext
+                    governanceContext: governanceContext,
+                    repoContextMeta: buildRepoContextMeta(repoContext),
                 }
             };
             setProjectState(taskKey, { result: finalResult, progress: 100, progressMessage: 'Analysis complete!' });
@@ -1144,6 +1167,7 @@ const Dashboard = ({
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: governanceContext,
+                    repoContextMeta: buildRepoContextMeta(repoContext),
                     reasoning: aiReasoning,
                     model: payload.model || 'Streaming...'
                 }
@@ -1591,13 +1615,14 @@ const Dashboard = ({
 
             setGithubLinkParsing(true);
             const token = localStorage.getItem('token');
+            const providedPat = githubLinkToken.trim();
             const resp = await fetch(API_ENDPOINTS.GITHUB_REPO_CONTEXT, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ owner, repo, branch, token: githubLinkToken || null })
+                body: JSON.stringify({ owner, repo, branch, token: providedPat || null })
             });
             const data = await resp.json();
             if (!resp.ok) {
