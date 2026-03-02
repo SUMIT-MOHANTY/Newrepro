@@ -131,6 +131,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                 setAnswers({});
                 setCurrentStep(0);
                 setResult(null);
+                sessionStorage.removeItem('governance_wizard_step_new');
                 navigate(location.pathname, { replace: true });
                 return;
             }
@@ -461,8 +462,8 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                                                     type="button"
                                                                     onClick={() => handleAnswer(question.id, skip)}
                                                                     className={`text-[11px] font-semibold rounded-full px-3 py-1 border transition-colors duration-200 whitespace-nowrap ${isSkipped
-                                                                            ? 'border-blue-400 bg-app-primary-light text-blue-800'
-                                                                            : 'border-transparent text-app-text-light hover:text-app-primary hover:border-app-primary-light hover:bg-app-primary-light/20'
+                                                                        ? 'border-blue-400 bg-app-primary-light text-blue-800'
+                                                                        : 'border-transparent text-app-text-light hover:text-app-primary hover:border-app-primary-light hover:bg-app-primary-light/20'
                                                                         }`}
                                                                 >
                                                                     Skip

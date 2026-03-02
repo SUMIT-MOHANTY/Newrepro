@@ -59,7 +59,6 @@ export default function AppLayout({ children }) {
 
     useEffect(() => {
         if (!DASHBOARD_ROLES.some((r) => r.value === selectedRole)) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
             setSelectedRole('project');
             return;
         }
@@ -316,12 +315,34 @@ export default function AppLayout({ children }) {
         return roadmapData;
     }, [roadmapData, currentView, hasServerRoadmap, selectedProjectKey]);
 
+    const [storageNonce, forceUpdate] = React.useReducer(x => x + 1, 0);
+
+    // Watch for storage changes to keep roadmap synced with the governance wizard on /new-project
+    useEffect(() => {
+        const handleStorage = () => forceUpdate();
+        window.addEventListener('storage', handleStorage);
+        // Custom event for same-tab storage changes (sessionStorage doesn't trigger 'storage' in same tab)
+        const originalSetItem = sessionStorage.setItem;
+        sessionStorage.setItem = function () {
+            originalSetItem.apply(this, arguments);
+            handleStorage();
+        };
+        return () => {
+            window.removeEventListener('storage', handleStorage);
+            sessionStorage.setItem = originalSetItem;
+        };
+    }, []);
+
     // Drive the active roadmap step from the frontend route (UI-only logic)
     const forcedRoadmapStepIndex = useMemo(() => {
         const path = location.pathname;
 
+        // Dummy reference to satisfy linter and ensure memo updates on storage event
+        const _ = storageNonce;
+
         if (path === '/new-project') {
             let wizardStep = 0;
+            let hasResult = false;
             try {
                 const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
                 const raw = sessionStorage.getItem(storageKey);
@@ -329,27 +350,42 @@ export default function AppLayout({ children }) {
                     const parsed = JSON.parse(raw);
                     if (parsed && typeof parsed.step === 'number') wizardStep = parsed.step;
                 }
+                hasResult = !!sessionStorage.getItem('governanceResult');
             } catch { wizardStep = 0; }
-            return wizardStep <= 0 ? 0 : 1;
+
+            // If we have a result, we are in the Screening phase (Step 1 or 2)
+            if (hasResult) return 1;
+            return wizardStep > 0 ? 1 : 0;
         }
 
         if (path === '/prerequisites') return 4;
         if (path === '/task-creation') return 5;
         if (path === '/status-dashboard') {
-            // If on status dashboard, we are at least at "On Flight" (6)
-            // unless the backend says we're already "Complete" (7)
             if (roadmapData?.current_step >= 7) return 7;
             return 6;
         }
 
-        // Default analyzer dashboard views
         if (path === '/dashboard' || path.startsWith('/a/')) {
-            const hasAnalysis = !!selectedProject?.latestDocument?.analysis_result;
-            return hasAnalysis ? 3 : 2;
+            const showingResults = !!sessionStorage.getItem('dashboard_showing_results');
+            // Upload form → Requirement Screening (2); Analysis results → Agent Analysis (3)
+            return showingResults ? 3 : 2;
         }
 
         return null;
-    }, [location.pathname, selectedProjectKey, selectedProject, roadmapData?.current_step]);
+    }, [location.pathname, selectedProjectKey, roadmapData?.current_step, storageNonce]);
+
+    // When the focused step is already done, render it green+highlighted instead of yellow
+    const forcedStepCompleted = useMemo(() => {
+        const path = location.pathname;
+        if (path === '/dashboard' || path.startsWith('/a/')) {
+            const showingResults = !!sessionStorage.getItem('dashboard_showing_results');
+            if (showingResults) return true; // Agent Analysis completed
+            // On upload form: if project already has analysis, screening is done too
+            const hasExistingAnalysis = !!selectedProject?.latestDocument?.analysis_result;
+            return hasExistingAnalysis;
+        }
+        return false;
+    }, [location.pathname, selectedProject, storageNonce]);
 
     // Backward compatibility for components expecting the old fetch logic
     const fetchRoadmapData = useCallback(() => {
@@ -521,6 +557,7 @@ export default function AppLayout({ children }) {
                             stepStatuses={roadmapDataForView.step_statuses || null}
                             failedStep={roadmapDataForView.failed_step ?? null}
                             activeStepIndex={forcedRoadmapStepIndex}
+                            activeStepCompleted={forcedStepCompleted}
                         />
                     </div>
                 )}
