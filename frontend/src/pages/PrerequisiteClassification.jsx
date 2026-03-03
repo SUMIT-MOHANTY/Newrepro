@@ -143,6 +143,19 @@ const PROCESS_MODE_OPTIONS = [
 /* ─────────────────────────────────────────────────────────
    AI PREREQUISITE EXTRACTION — parses the analysis report
 ───────────────────────────────────────────────────────── */
+const inferFieldTypeFromRequirement = (name = '', description = '') => {
+    const lower = `${name} ${description}`.toLowerCase();
+    if (
+        /\b(pdf|docx?|xlsx?|pptx?|txt|md|png|jpe?g|webp|gif|image|screenshot|diagram|attachment|document|file|upload)\b/.test(lower)
+    ) {
+        return 'file';
+    }
+    if (/\burl\b|\blink\b|\bwebsite\b|\bendpoint\b|\buri\b/.test(lower)) {
+        return 'url';
+    }
+    return 'text';
+};
+
 const extractPrerequisitesFromAnalysis = (analysisData) => {
     if (!analysisData) return [];
 
@@ -168,15 +181,23 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
 
     // If AI already returns structured prerequisites
     if (analysisData.prerequisites && Array.isArray(analysisData.prerequisites)) {
-        return analysisData.prerequisites.map((p, idx) => ({
-            id: idx + 1,
-            name: stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`),
-            description: stripHtml(p.description || p.details || ''),
-            category: p.category || 'other',
-            priority: p.priority || 'medium',
-            provided: false,
-            userNotes: '',
-        }));
+        return analysisData.prerequisites.map((p, idx) => {
+            const name = stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`);
+            const description = stripHtml(p.description || p.details || '');
+            const fieldType = inferFieldTypeFromRequirement(name, description);
+            return {
+                id: idx + 1,
+                name,
+                description,
+                category: p.category || 'other',
+                priority: p.priority || 'medium',
+                fieldType,
+                provided: false,
+                containsSecret: false,
+                userValue: '',
+                userFileName: '',
+            };
+        });
     }
 
     // Smart extraction from analysis text
@@ -233,8 +254,11 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
                 description: context || `Identified from BRD analysis — ${label} may be required for this project.`,
                 category,
                 priority: category === 'credentials' ? 'high' : 'medium',
+                fieldType: inferFieldTypeFromRequirement(label, context),
                 provided: false,
-                userNotes: '',
+                containsSecret: false,
+                userValue: '',
+                userFileName: '',
             });
         }
     });
@@ -242,13 +266,64 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
     // If nothing was found, add generic ones based on common project needs
     if (items.length === 0) {
         items.push(
-            { id: 1, name: 'Environment Configuration', description: 'Set up development, staging, and production environments.', category: 'infrastructure', priority: 'high', provided: false, userNotes: '' },
-            { id: 2, name: 'Access Credentials', description: 'Provide necessary credentials for services identified in the BRD.', category: 'credentials', priority: 'high', provided: false, userNotes: '' },
-            { id: 3, name: 'Third-Party Integrations', description: 'Confirm access to external APIs and services mentioned in the requirements.', category: 'apis', priority: 'medium', provided: false, userNotes: '' },
+            { id: 1, name: 'Environment Configuration', description: 'Set up development, staging, and production environments.', category: 'infrastructure', priority: 'high', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
+            { id: 2, name: 'Access Credentials', description: 'Provide necessary credentials for services identified in the BRD.', category: 'credentials', priority: 'high', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
+            { id: 3, name: 'Third-Party Integrations', description: 'Confirm access to external APIs and services mentioned in the requirements.', category: 'apis', priority: 'medium', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
         );
     }
 
     return items;
+};
+
+const normalizePrerequisiteItem = (item = {}, idx = 0) => {
+    const name = String(item.name || item.title || `Prerequisite ${idx + 1}`).trim();
+    const description = String(item.description || item.details || '').trim();
+    const inferredFieldType = inferFieldTypeFromRequirement(name, description);
+    const rawType = String(item.fieldType || '').trim().toLowerCase();
+    const fieldType = rawType === 'text' || rawType === 'url' || rawType === 'file'
+        ? rawType
+        : inferredFieldType;
+
+    const userValue = String(item.userValue || '').trim();
+    const userFileName = String(item.userFileName || item.userFile || '').trim();
+    const hasAnswer = Boolean(userValue || userFileName);
+
+    return {
+        id: item.id ?? (idx + 1),
+        name: name || `Prerequisite ${idx + 1}`,
+        description,
+        category: String(item.category || 'other').trim() || 'other',
+        priority: String(item.priority || 'medium').trim() || 'medium',
+        fieldType,
+        provided: typeof item.provided === 'boolean' ? item.provided : hasAnswer,
+        containsSecret: Boolean(item.containsSecret),
+        userValue,
+        userFileName,
+    };
+};
+
+const sanitizePrerequisiteForAiPayload = (item = {}) => {
+    const safe = {
+        name: String(item.name || '').trim() || 'Unknown',
+        description: String(item.description || '').trim(),
+        category: String(item.category || 'other').trim() || 'other',
+        priority: String(item.priority || 'medium').trim() || 'medium',
+        fieldType: String(item.fieldType || 'text').trim() || 'text',
+        provided: Boolean(item.provided),
+    };
+
+    // Never pass secret-marked user-entered content to AI generation payloads.
+    const isSecret = Boolean(item.containsSecret);
+    safe.containsSecret = isSecret;
+
+    const value = String(item.userValue || '').trim();
+    const fileName = String(item.userFileName || '').trim();
+    if (!isSecret) {
+        if (value) safe.userValue = value;
+        if (fileName) safe.userFileName = fileName;
+    }
+
+    return safe;
 };
 
 const normalizeGithubRepoPath = (value = '') => {
@@ -529,7 +604,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         // Validate: reject cache if any description contains HTML tags
                         const hasHtml = parsed.some(p => /<[a-z][\s\S]*>/i.test(p.description || ''));
                         if (!hasHtml && parsed.length > 0) {
-                            setPrerequisites(parsed);
+                            setPrerequisites(parsed.map((p, idx) => normalizePrerequisiteItem(p, idx)));
                             return;
                         }
                     } catch { /* fall through */ }
@@ -612,7 +687,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
                 const extracted = extractPrerequisitesFromAnalysis(analysisObj || projectDoc.analysis_result);
-                setPrerequisites(extracted);
+                setPrerequisites(extracted.map((p, idx) => normalizePrerequisiteItem(p, idx)));
             } catch (err) {
                 setError('Failed to load analysis data: ' + err.message);
             } finally {
@@ -640,9 +715,40 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         );
     }, []);
 
-    const updateNotes = useCallback((id, notes) => {
+    // Toggle secret flag - secret-marked answers are excluded from AI payloads.
+    const toggleSecret = useCallback((id) => {
         setPrerequisites(prev =>
-            prev.map(p => p.id === id ? { ...p, userNotes: notes, provided: notes.trim().length > 0 ? true : p.provided } : p)
+            prev.map(p => p.id === id ? { ...p, containsSecret: !p.containsSecret } : p)
+        );
+    }, []);
+
+    // Update free‑form value for text/url fields
+    const updateValue = useCallback((id, val) => {
+        setPrerequisites(prev =>
+            prev.map((p) => {
+                if (p.id !== id) return p;
+                const normalized = String(val || '');
+                return {
+                    ...p,
+                    userValue: normalized,
+                    provided: normalized.trim().length > 0,
+                };
+            })
+        );
+    }, []);
+
+    // Store selected file (only name is kept for simplicity)
+    const updateFile = useCallback((id, file) => {
+        setPrerequisites(prev =>
+            prev.map((p) => {
+                if (p.id !== id) return p;
+                const fileName = file?.name ? String(file.name) : '';
+                return {
+                    ...p,
+                    userFileName: fileName,
+                    provided: Boolean(fileName),
+                };
+            })
         );
     }, []);
 
@@ -737,14 +843,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 progress,
                 totalItems,
                 providedCount,
-                items: prerequisites.map(p => ({
-                    name: p.name,
-                    description: p.description,
-                    category: p.category,
-                    priority: p.priority,
-                    provided: p.provided,
-                    userNotes: p.userNotes,
-                })),
+                items: prerequisites.map((p) => sanitizePrerequisiteForAiPayload(p)),
             };
 
             // Save to localStorage (persistent) so task generation can use it
@@ -972,7 +1071,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <p className="text-xs text-blue-700 leading-relaxed">
                             {processMode === 'developer_only'
                                 ? 'In Developer Only mode, prerequisite classification is not required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
-                                : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Review each item and mark it as "Provided" once you\'ve arranged access. Add notes for your team as needed.'
+                                : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Each prerequisite asks for the expected answer type (text, URL, or file upload).'
                             }
                         </p>
                     </div>
@@ -1049,14 +1148,71 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                         {item.description}
                                                     </p>
 
-                                                    {/* Notes field */}
-                                                    <textarea
-                                                        value={item.userNotes}
-                                                        onChange={(e) => updateNotes(item.id, e.target.value)}
-                                                        placeholder="Add notes (optional) — e.g., credentials location, contact person…"
-                                                        rows={1}
-                                                        className="w-full text-xs text-gray-600 bg-gray-50/80 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all resize-none"
-                                                    />
+                                                    {/* Field type specific input */}
+                                                    {item.fieldType === 'text' && (
+                                                        <div className="mt-2">
+                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: Text</p>
+                                                            <input
+                                                                type="text"
+                                                                placeholder="Type your answer"
+                                                                value={item.userValue || ''}
+                                                                onChange={(e) => updateValue(item.id, e.target.value)}
+                                                                className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+                                                            />
+                                                        </div>
+                                                    )}
+                                                    {item.fieldType === 'url' && (
+                                                        <div className="mt-2">
+                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: URL</p>
+                                                            <input
+                                                                type="url"
+                                                                placeholder="https://example.com"
+                                                                value={item.userValue || ''}
+                                                                onChange={(e) => updateValue(item.id, e.target.value)}
+                                                                className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+                                                            />
+                                                        </div>
+                                                    )}
+                                                    {item.fieldType === 'file' && (
+                                                        <div className="mt-2">
+                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: File upload</p>
+                                                            <input
+                                                                type="file"
+                                                                onChange={(e) => updateFile(item.id, e.target.files[0])}
+                                                                className="w-full text-sm"
+                                                            />
+                                                            {item.userFileName && (
+                                                                <div className="mt-2 flex items-center gap-2">
+                                                                    <span className="text-xs text-gray-600">Selected: {item.userFileName}</span>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => updateFile(item.id, null)}
+                                                                        className="text-[11px] text-red-600 hover:text-red-700 font-medium"
+                                                                    >
+                                                                        Remove
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {/* Secret flag toggle */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleSecret(item.id)}
+                                                        className={`mt-2 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
+                                                            ? 'border-red-200 bg-red-50 text-red-700'
+                                                            : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'
+                                                            }`}
+                                                        title="Mark as sensitive (will be excluded from AI payload)"
+                                                    >
+                                                        {item.containsSecret ? (
+                                                            <CheckCircle2 className="w-3.5 h-3.5 text-red-600" />
+                                                        ) : (
+                                                            <Circle className="w-3.5 h-3.5 text-gray-400" />
+                                                        )}
+                                                        Sensitive (exclude from AI)
+                                                    </button>
                                                 </div>
                                             </div>
                                         ))}

@@ -3372,10 +3372,21 @@ async def auto_generate_project_tasks(
                             priority = p.get("priority", "medium")
                             provided = p.get("provided", False)
                             status_str = "PROVIDED" if provided else "NOT YET PROVIDED"
-                            notes = p.get("userNotes", "")
+                            is_secret = bool(p.get("containsSecret", False))
+                            user_inputs = []
+                            if not is_secret:
+                                user_value = str(p.get("userValue", "")).strip()
+                                user_file = str(p.get("userFileName", "")).strip()
+                                notes = str(p.get("userNotes", "")).strip()
+                                if user_value:
+                                    user_inputs.append(f"Value: {user_value}")
+                                if user_file:
+                                    user_inputs.append(f"File: {user_file}")
+                                if notes:
+                                    user_inputs.append(f"Notes: {notes}")
                             prereq_lines.append(
                                 f"- [{status_str}] {name} ({cat}, {priority}): {desc}"
-                                + (f" — Notes: {notes}" if notes else "")
+                                + (f" - Team Input: {' | '.join(user_inputs)}" if user_inputs else "")
                             )
                         prerequisites_context = "\n".join(prereq_lines)
 
@@ -3400,10 +3411,21 @@ async def auto_generate_project_tasks(
                 priority = p.get("priority", "medium")
                 provided = p.get("provided", False)
                 status_str = "PROVIDED" if provided else "NOT YET PROVIDED"
-                notes = p.get("userNotes", "")
+                is_secret = bool(p.get("containsSecret", False))
+                user_inputs = []
+                if not is_secret:
+                    user_value = str(p.get("userValue", "")).strip()
+                    user_file = str(p.get("userFileName", "")).strip()
+                    notes = str(p.get("userNotes", "")).strip()
+                    if user_value:
+                        user_inputs.append(f"Value: {user_value}")
+                    if user_file:
+                        user_inputs.append(f"File: {user_file}")
+                    if notes:
+                        user_inputs.append(f"Notes: {notes}")
                 prereq_lines.append(
                     f"- [{status_str}] {name} ({cat}, {priority}): {desc}"
-                    + (f" — Notes: {notes}" if notes else "")
+                    + (f" - Team Input: {' | '.join(user_inputs)}" if user_inputs else "")
                 )
             analysis_report += "\n".join(prereq_lines)
 

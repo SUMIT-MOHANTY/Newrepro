@@ -150,6 +150,29 @@ function toDateKey(value) {
     return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '9999-12-31';
 }
 
+function sanitizePrerequisiteForAiPayload(item = {}) {
+    const safe = {
+        name: String(item.name || '').trim() || 'Unknown',
+        description: String(item.description || '').trim(),
+        category: String(item.category || 'other').trim() || 'other',
+        priority: String(item.priority || 'medium').trim() || 'medium',
+        fieldType: String(item.fieldType || 'text').trim() || 'text',
+        provided: Boolean(item.provided),
+    };
+
+    const isSecret = Boolean(item.containsSecret);
+    safe.containsSecret = isSecret;
+
+    const value = String(item.userValue || '').trim();
+    const fileName = String(item.userFileName || '').trim();
+    if (!isSecret) {
+        if (value) safe.userValue = value;
+        if (fileName) safe.userFileName = fileName;
+    }
+
+    return safe;
+}
+
 export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole, fetchRoadmapData }) {
     const navigate = useNavigate();
     const location = useLocation();
@@ -1092,7 +1115,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 const savedPrereqs = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
                 if (savedPrereqs) {
                     const parsed = JSON.parse(savedPrereqs);
-                    prerequisitesPayload = parsed.items || [];
+                    const parsedItems = Array.isArray(parsed?.items) ? parsed.items : [];
+                    prerequisitesPayload = parsedItems
+                        .map((item) => sanitizePrerequisiteForAiPayload(item))
+                        .filter((item) => item.name || item.description);
                 }
             } catch { /* ignore */ }
 

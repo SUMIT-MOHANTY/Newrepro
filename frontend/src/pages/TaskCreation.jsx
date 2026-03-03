@@ -101,6 +101,29 @@ function getErrorMessage(errorPayload, fallback) {
     return fallback;
 }
 
+function sanitizePrerequisiteForAiPayload(item = {}) {
+    const safe = {
+        name: String(item.name || '').trim() || 'Unknown',
+        description: String(item.description || '').trim(),
+        category: String(item.category || 'other').trim() || 'other',
+        priority: String(item.priority || 'medium').trim() || 'medium',
+        fieldType: String(item.fieldType || 'text').trim() || 'text',
+        provided: Boolean(item.provided),
+    };
+
+    const isSecret = Boolean(item.containsSecret);
+    safe.containsSecret = isSecret;
+
+    const value = String(item.userValue || '').trim();
+    const fileName = String(item.userFileName || '').trim();
+    if (!isSecret) {
+        if (value) safe.userValue = value;
+        if (fileName) safe.userFileName = fileName;
+    }
+
+    return safe;
+}
+
 function readProcessModeMap() {
     try {
         const raw = localStorage.getItem(PROCESS_MODE_STORAGE_KEY);
@@ -389,7 +412,10 @@ export default function TaskCreation({
                 const saved = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
                 if (saved) {
                     const parsed = JSON.parse(saved);
-                    prerequisites = Array.isArray(parsed?.items) ? parsed.items : null;
+                    const items = Array.isArray(parsed?.items) ? parsed.items : [];
+                    prerequisites = items
+                        .map((item) => sanitizePrerequisiteForAiPayload(item))
+                        .filter((item) => item.name || item.description);
                 }
             } catch {
                 prerequisites = null;
