@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Plus, History, Activity, Settings, User, LogOut } from 'lucide-react';
+import { X, Plus, History, Activity, Settings, User, LogOut, Trash2 } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
 export default function Sidebar({
@@ -14,11 +14,12 @@ export default function Sidebar({
     setCurrentView,
     setShowSettings,
     user,
-    handleLogout
+    handleLogout,
+    handleDeleteProject,
+    deletingProjectKey,
 }) {
     return (
         <>
-            {/* Mobile Overlay */}
             {isSidebarOpen && (
                 <button
                     type="button"
@@ -28,15 +29,12 @@ export default function Sidebar({
                 />
             )}
 
-            {/* Main Desktop Spacer to push the layout smoothly without squishing the sidebar content */}
             <div className={`hidden md:block transition-[width] duration-300 ease-in-out flex-shrink-0 ${isSidebarOpen ? 'w-72' : 'w-0'}`} />
 
-            {/* Animated Sidebar */}
             <div
                 className={`fixed inset-y-0 left-0 z-40 w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
                     }`}
             >
-                {/* Header */}
                 <div className="h-16 flex items-center px-2 border-b border-gray-800 bg-app-text-main shrink-0">
                     <div className="flex items-center justify-between w-full">
                         <div className="flex items-center min-w-0">
@@ -55,7 +53,6 @@ export default function Sidebar({
                     </div>
                 </div>
 
-                {/* Main scrollable area */}
                 <div className="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar">
                     <button
                         onClick={handleNewProject}
@@ -71,33 +68,52 @@ export default function Sidebar({
                             {projects.length === 0 ? (
                                 <p className="text-xs text-app-text-label px-2 italic">No projects yet.</p>
                             ) : (
-                                projects.map((project) => (
-                                    <button
-                                        key={project.key}
-                                        onClick={() => handleSelectProject(project)}
-                                        className={`w-full flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
-                                            ? 'bg-blue-900/40 text-blue-100 border-blue-800'
-                                            : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'
-                                            }`}
-                                        title={project.name}
-                                    >
-                                        <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation') ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
-                                        <div className="min-w-0">
-                                            <p className="truncate">{project.name}</p>
-                                            <p className="text-[11px] text-app-text-muted truncate">
-                                                {project.status === 'analysis_complete'
-                                                    ? `Locked • ${getProjectSidebarSubtitle(project)}`
-                                                    : getProjectSidebarSubtitle(project)}
-                                            </p>
-                                        </div>
-                                    </button>
-                                ))
+                                projects.map((project) => {
+                                    const canDelete = Boolean(project.projectToken || project.governanceResultId);
+                                    return (
+                                    <div key={project.key} className="flex items-center gap-1">
+                                        <button
+                                            onClick={() => handleSelectProject(project)}
+                                            className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
+                                                ? 'bg-blue-900/40 text-blue-100 border-blue-800'
+                                                : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'
+                                                }`}
+                                            title={project.name}
+                                        >
+                                            <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation') ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
+                                            <div className="min-w-0">
+                                                <p className="truncate">{project.name}</p>
+                                                <p className="text-[11px] text-app-text-muted truncate">
+                                                    {project.status === 'analysis_complete'
+                                                        ? `Locked - ${getProjectSidebarSubtitle(project)}`
+                                                        : getProjectSidebarSubtitle(project)}
+                                                </p>
+                                            </div>
+                                        </button>
+                                        {typeof handleDeleteProject === 'function' && canDelete && (
+                                            <button
+                                                type="button"
+                                                onClick={() => handleDeleteProject(project)}
+                                                disabled={deletingProjectKey === project.key}
+                                                className={`p-2 rounded-md border transition-colors ${
+                                                    deletingProjectKey === project.key
+                                                        ? 'text-app-text-muted border-gray-700 cursor-not-allowed'
+                                                        : 'text-red-400 border-transparent hover:text-red-300 hover:bg-red-500/10'
+                                                }`}
+                                                title={deletingProjectKey === project.key ? 'Deleting project...' : `Delete ${project.name || 'project'}`}
+                                                aria-label={`Delete ${project.name || 'project'}`}
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        )}
+                                    </div>
+                                    );
+                                })
                             )}
                         </div>
                     </div>
                 </div>
 
-                {/* Footer area */}
                 <div className="p-4 border-t border-gray-800 bg-app-text-main shrink-0">
                     <button
                         onClick={() => {

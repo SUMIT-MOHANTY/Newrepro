@@ -32,6 +32,20 @@ const getCachedTaskToken = (projectKey) => {
     }
 };
 
+const removeCachedTaskToken = (projectKey) => {
+    if (!projectKey) return;
+    try {
+        const raw = localStorage.getItem(TASK_TOKEN_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || !parsed[projectKey]) return;
+        delete parsed[projectKey];
+        localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(parsed));
+    } catch {
+        // Ignore cache cleanup failures.
+    }
+};
+
 export const fetchProjectsData = async () => {
     const headers = getAuthHeaders();
     if (!headers.Authorization.includes('null') && !headers.Authorization.includes('undefined')) {
@@ -60,4 +74,30 @@ export const fetchRoadmapStep = async (projectKey) => {
     const res = await fetch(API_ENDPOINTS.GOVERNANCE_ROADMAP_STEP(projectKey), { headers });
     if (!res.ok) throw new Error('Failed to fetch roadmap step');
     return res.json();
+};
+
+export const deleteProjectByIdentifier = async (identifier) => {
+    if (!identifier) throw new Error('Project identifier is required');
+
+    const headers = getAuthHeaders();
+    const res = await fetch(API_ENDPOINTS.GOVERNANCE_DELETE(identifier), {
+        method: 'DELETE',
+        headers,
+    });
+
+    if (res.status === 401) {
+        throw new Error('Unauthorized');
+    }
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(payload?.detail || 'Failed to delete project');
+    }
+
+    removeCachedTaskToken(identifier);
+    if (payload?.project_token && payload.project_token !== identifier) {
+        removeCachedTaskToken(payload.project_token);
+    }
+
+    return payload;
 };

@@ -15,7 +15,7 @@ import { API_ENDPOINTS } from '../config';
 
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
-const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
+const PLAN_CREATION_STEPS = ['Onboarding', 'Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
 
 function decodeJwtExpiry(token) {
@@ -506,7 +506,7 @@ export default function TaskCreation({
         if (processMode === 'ai_assist') {
             window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
         } else {
-            navigate('/status-dashboard', { state: { processMode } });
+            navigate('/resource-onboarding', { state: { processMode } });
         }
     };
 

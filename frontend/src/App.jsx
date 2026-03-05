@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
+import ResourceOnboarding from './pages/ResourceOnboarding';
 import GovernanceForm from './pages/GovernanceForm';
 import PrerequisiteClassification from './pages/PrerequisiteClassification';
 import TaskCreation from './pages/TaskCreation';
@@ -31,6 +32,11 @@ function App() {
         <Route path="/status-dashboard" element={
           <AppLayout>
             {(layoutProps) => <Dashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/resource-onboarding" element={
+          <AppLayout>
+            {(layoutProps) => <ResourceOnboarding {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/a/:projectToken" element={

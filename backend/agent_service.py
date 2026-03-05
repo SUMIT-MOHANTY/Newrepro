@@ -172,6 +172,17 @@ def set_project_task_token(project_token: Optional[str], task_token: Optional[st
 def get_project_task_token(project_token: Optional[str]) -> Optional[str]:
     return _ensure_project_state(project_token).get("task_token")
 
+
+def clear_project_runtime_state(project_token: Optional[str]) -> None:
+    """Clear in-memory runtime state for a single project token."""
+    key = _project_key(project_token)
+    _project_states.pop(key, None)
+    _preview_states.pop(key, None)
+
+    token = (project_token or "").strip()
+    if token:
+        _project_tech_specs.pop(token, None)
+
 def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
     atype = _AGENT_TYPES[idx % len(_AGENT_TYPES)]

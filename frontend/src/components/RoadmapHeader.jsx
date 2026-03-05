@@ -1,7 +1,7 @@
 import React from 'react';
 import {
     CheckCircle2, Circle, AlertCircle, Loader2,
-    FolderOpen, ShieldCheck, Brain, KeyRound, ListChecks, Bot, Flag
+    FolderOpen, ShieldCheck, Brain, KeyRound, ListChecks, Bot, Flag, UserPlus
 } from 'lucide-react';
 
 /**
@@ -14,6 +14,7 @@ const STEP_ICONS = {
     'Agent Analysis': Brain,
     'Prerequisite Classification': KeyRound,
     'Task Creation': ListChecks,
+    'Resource Onboarding': UserPlus,
     'On Flight': Bot,
     'Complete': Flag,
 };
@@ -116,8 +117,10 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Governance': '/new-project',
         'Requirement Screening': '/dashboard',
         'AI Analysis': '/dashboard',
+        'Agent Analysis': '/dashboard',
         'Prerequisite Classification': '/prerequisites',
         'Task Creation': '/task-creation',
+        'Resource Onboarding': '/resource-onboarding',
         'On Flight': '/status-dashboard',
         'Complete': '/status-dashboard',
     };

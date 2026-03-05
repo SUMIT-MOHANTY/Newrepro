@@ -26,6 +26,7 @@ export const API_ENDPOINTS = {
     GOVERNANCE_SUBMIT: `${API_BASE_URL}/governance/submit`,
     GOVERNANCE_HISTORY: `${API_BASE_URL}/governance/history`,
     GOVERNANCE_RESULT: (id) => `${API_BASE_URL}/governance/result/${id}`,
+    GOVERNANCE_DELETE: (id) => `${API_BASE_URL}/governance/${id}`,
     GOVERNANCE_REVISION_REASON: (id) => `${API_BASE_URL}/governance/${id}/revision-reason`,
     GOVERNANCE_ROADMAP_STEP: (id) => `${API_BASE_URL}/governance/${id}/roadmap-step`,
     GOVERNANCE_PREREQUISITES_COMPLETE: (id) => `${API_BASE_URL}/governance/${id}/prerequisites-complete`,

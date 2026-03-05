@@ -816,6 +816,99 @@ async def get_governance_result(
     )
 
 
+@app.delete("/governance/{identifier}")
+async def delete_governance_project(
+    identifier: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Permanently delete a project and all locally stored project-scoped data.
+    """
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_token = _normalize_project_token(governance.project_token or str(governance.id))
+    user_documents = db.query(models.Document).filter(
+        models.Document.owner_id == current_user.id
+    ).all()
+    linked_document_ids = [
+        doc.id for doc in user_documents if _is_document_linked_to_governance(doc, governance)
+    ]
+
+    deleted_documents = 0
+    if linked_document_ids:
+        deleted_documents = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id,
+            models.Document.id.in_(linked_document_ids),
+        ).delete(synchronize_session=False)
+
+    deleted_agent_credentials = 0
+    deleted_agent_records = 0
+
+    if project_token:
+        deleted_agent_credentials = db.query(models.AgentCredential).filter(
+            models.AgentCredential.owner_id == current_user.id,
+            models.AgentCredential.project_token == project_token,
+        ).delete(synchronize_session=False)
+
+        deleted_agent_records = db.query(models.Agent).filter(
+            models.Agent.project_token == project_token
+        ).delete(synchronize_session=False)
+
+    deleted_project_name = governance.project_name or "Untitled Project"
+    deleted_project_token = governance.project_token or str(governance.id)
+    deleted_result_id = governance.id
+
+    db.delete(governance)
+    db.commit()
+
+    cleanup_warnings: List[str] = []
+    if project_token:
+        try:
+            await agent_service.stop_preview(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Preview cleanup failed: {exc}")
+
+        try:
+            agent_service.clear_project_runtime_state(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Agent runtime cleanup failed: {exc}")
+
+        try:
+            context_manager.clear_project_runtime_context(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Context cleanup failed: {exc}")
+
+        try:
+            await rag_service.delete_index(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Knowledge graph cleanup failed: {exc}")
+
+    response: Dict[str, Any] = {
+        "status": "deleted",
+        "result_id": deleted_result_id,
+        "project_token": deleted_project_token,
+        "project_name": deleted_project_name,
+        "deleted_documents": deleted_documents,
+        "deleted_agent_credentials": deleted_agent_credentials,
+        "deleted_agent_records": deleted_agent_records,
+    }
+    if cleanup_warnings:
+        response["warnings"] = cleanup_warnings
+
+    return response
+
+
 @app.post("/governance/{identifier}/revision-reason")
 async def update_revision_reason(
     identifier: str,
@@ -865,6 +958,56 @@ async def mark_prerequisites_complete(
 
     return {"status": "ok", "completed_at": governance.prerequisites_completed_at.isoformat()}
 
+
+def _extract_document_analysis_context(doc: models.Document) -> Optional[Dict[str, Any]]:
+    """Parse stored analysis JSON and extract project-linking metadata."""
+    if not doc.analysis_result:
+        return None
+
+    try:
+        import json
+        analysis = json.loads(doc.analysis_result)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+    if not isinstance(analysis, dict):
+        return None
+
+    gov_ctx = analysis.get("governanceContext") if isinstance(analysis.get("governanceContext"), dict) else {}
+    proj_meta = analysis.get("projectMeta") if isinstance(analysis.get("projectMeta"), dict) else {}
+
+    return {
+        "analysis": analysis,
+        "result_id": proj_meta.get("governance_result_id") or gov_ctx.get("result_id"),
+        "project_token": proj_meta.get("project_token") or gov_ctx.get("project_token"),
+        "project_name": str(
+            proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
+        ).strip().lower(),
+    }
+
+
+def _is_document_linked_to_governance(
+    doc: models.Document,
+    governance: models.GovernanceResponse,
+) -> bool:
+    """Return True when a document belongs to the given governance project."""
+    ctx = _extract_document_analysis_context(doc)
+    if not ctx:
+        return False
+
+    governance_token = str(governance.project_token or "").strip()
+    governance_name = str(governance.project_name or "").strip().lower()
+
+    if ctx["result_id"] is not None and str(ctx["result_id"]) == str(governance.id):
+        return True
+    if governance_token and ctx["project_token"] and str(ctx["project_token"]) == governance_token:
+        return True
+    if governance_name and ctx["project_name"] == governance_name:
+        return True
+
+    return False
+
+
 @app.get("/governance/{identifier}/roadmap-step")
 async def get_project_roadmap_step(
     identifier: str,
@@ -876,13 +1019,15 @@ async def get_project_roadmap_step(
     Get the current roadmap step for a project.
 
     Steps:
-        0 - Project Setup                (project named)
-        1 - Requirement Screening        (governance assessment completed)
-        2 - AI Analysis                  (BRD uploaded & analysis completed)
-        3 - Prerequisite Classification  (prerequisites / credentials identified)
-        4 - Task Creation                (tasks auto-generated via external API)
-        5 - On Flight                    (agents executing task work)
-        6 - Complete                     (deploy requested/succeeded)
+        0 - Project Initiation           (project created)
+        1 - Governance                   (governance questionnaire submitted)
+        2 - Requirement Screening        (awaiting BRD analysis)
+        3 - Agent Analysis               (BRD analysis completed)
+        4 - Prerequisite Classification  (prerequisites / credentials identified)
+        5 - Task Creation                (tasks auto-generated via external API)
+        6 - Resource Onboarding          (agents configured for execution)
+        7 - On Flight                    (agents executing task work)
+        8 - Complete                     (deploy requested/succeeded)
 
     Returns a `step_statuses` array with per-step status:
         "completed" | "active" | "pending" | "failed"
@@ -895,6 +1040,7 @@ async def get_project_roadmap_step(
         "Agent Analysis",
         "Prerequisite Classification",
         "Task Creation",
+        "Resource Onboarding",
         "On Flight",
         "Complete",
     ]
@@ -911,37 +1057,21 @@ async def get_project_roadmap_step(
     if not governance:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Step 0 (Project Setup) is always complete once a governance response exists
-    # Step 1 (Requirement Screening) is complete: governance submitted
+    # Step 0 (Project Initiation) is always complete once governance exists.
+    # Step 1 (Governance) is complete once questionnaire is submitted.
     current_step = 2  # default active step before analysis is completed
     failed_step = None
     roadmap_project_token = _normalize_project_token(governance.project_token or str(governance.id))
 
     # 2. Find documents linked to this governance result
-    project_name = governance.project_name or ""
     user_documents = db.query(models.Document).filter(
         models.Document.owner_id == current_user.id,
     ).all()
 
     linked_docs = []
     for doc in user_documents:
-        if not doc.analysis_result:
-            continue
-        try:
-            import json
-            analysis = json.loads(doc.analysis_result)
-            gov_ctx = analysis.get("governanceContext") or {}
-            proj_meta = analysis.get("projectMeta") or {}
-            doc_result_id = proj_meta.get("governance_result_id") or gov_ctx.get("result_id")
-            doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
-            doc_project_name = proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
-
-            if (doc_result_id is not None and str(doc_result_id) == str(governance.id)) or \
-               (doc_token_id and str(doc_token_id) == str(governance.project_token)) or \
-               (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
-                linked_docs.append(doc)
-        except (json.JSONDecodeError, AttributeError):
-            continue
+        if _is_document_linked_to_governance(doc, governance):
+            linked_docs.append(doc)
 
     has_analysis = False
     if linked_docs:
@@ -1031,53 +1161,53 @@ async def get_project_roadmap_step(
     except Exception as e:
         print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
 
-    # Build per-step statuses with explicit stage semantics:
-    # - On questionnaire pages, the frontend may temporarily override,
-    #   but once a roadmap exists we follow this sequence:
-    #   0 Project Initiation      → always completed once governance exists
-    #   1 Governance              → completed once questionnaire submitted
-    #   2 Requirement Screening   → active while BRD upload/analysis is pending
-    #   3 AI Analysis             → completed once at least one analysis exists
-    #   4 Prerequisite Class.     → active/completed based on prerequisites_done
-    #   5 Task Creation           → active/completed based on external tasks
-    #   6 On Flight               → active/completed while agents work tasks
-    #   7 Complete                → active/completed based on deploy status
+    # Backend roadmap progression:
+    # Project Initiation -> Governance -> Requirement Screening -> Agent Analysis ->
+    # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
+    # On Flight -> Complete
+    PROJECT_INIT_IDX = 0
+    GOVERNANCE_IDX = 1
+    REQUIREMENT_SCREENING_IDX = 2
+    AGENT_ANALYSIS_IDX = 3
+    PREREQ_IDX = 4
+    TASK_CREATION_IDX = 5
+    RESOURCE_ONBOARDING_IDX = 6
+    ON_FLIGHT_IDX = 7
+    COMPLETE_IDX = 8
+
     step_statuses = ["pending"] * len(STEP_LABELS)
-    step_statuses[0] = "completed"
+    step_statuses[PROJECT_INIT_IDX] = "completed"
 
     if not has_analysis:
-        # Governance questionnaire already submitted (we're on BRD upload/AI page)
-        step_statuses[1] = "completed"
-        step_statuses[2] = "active"
+        step_statuses[GOVERNANCE_IDX] = "completed"
+        step_statuses[REQUIREMENT_SCREENING_IDX] = "active"
     else:
-        # Governance + Requirement Screening done; analysis exists.
-        step_statuses[1] = "completed"
-        step_statuses[2] = "completed"
+        step_statuses[GOVERNANCE_IDX] = "completed"
+        step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
+        step_statuses[AGENT_ANALYSIS_IDX] = "completed"
+        step_statuses[PREREQ_IDX] = "completed" if prerequisites_done else "active"
 
-        # AI Analysis step
-        step_statuses[3] = "completed"
-
-        # Prerequisite Classification
-        step_statuses[4] = "completed" if prerequisites_done else "active"
-
-        # Task Creation
         if prerequisites_done:
-            step_statuses[5] = "completed" if has_tasks else "active"
+            step_statuses[TASK_CREATION_IDX] = "completed" if has_tasks else "active"
 
-        # On Flight + Complete depend on tasks existing
         if has_tasks:
-            on_flight_done = all_tasks_complete and not any_agent_working
-            step_statuses[6] = "completed" if on_flight_done else "active"
+            onboarding_complete = any_agent_working or all_tasks_complete or deploy_attempted
+            step_statuses[RESOURCE_ONBOARDING_IDX] = "completed" if onboarding_complete else "active"
 
-            if on_flight_done:
-                if deploy_success:
-                    step_statuses[7] = "completed"
-                elif deploy_in_progress or deploy_attempted:
-                    step_statuses[7] = "active"
-                else:
-                    step_statuses[7] = "pending"
-            else:
-                step_statuses[7] = "pending"
+            if onboarding_complete:
+                on_flight_done = all_tasks_complete and not any_agent_working
+
+                if on_flight_done:
+                    step_statuses[ON_FLIGHT_IDX] = "completed"
+                    if deploy_success:
+                        step_statuses[COMPLETE_IDX] = "completed"
+                    elif deploy_in_progress or deploy_attempted:
+                        step_statuses[COMPLETE_IDX] = "active"
+                    else:
+                        step_statuses[COMPLETE_IDX] = "pending"
+                elif any_agent_working:
+                    step_statuses[ON_FLIGHT_IDX] = "active"
+                    step_statuses[COMPLETE_IDX] = "pending"
 
     # Derive current step from explicit statuses.
     active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)

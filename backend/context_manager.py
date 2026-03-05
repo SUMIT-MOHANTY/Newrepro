@@ -439,6 +439,15 @@ def get_live_memory(project_token: str) -> ProjectLiveMemory:
     return _project_live_memories[project_token]
 
 
+def clear_project_runtime_context(project_token: Optional[str]) -> None:
+    """Drop in-memory context and live memory for a project token."""
+    token = (project_token or "").strip()
+    if not token:
+        return
+    _project_contexts.pop(token, None)
+    _project_live_memories.pop(token, None)
+
+
 def extract_files_from_workspace_tree(workspace_tree: str) -> List[str]:
     """
     Extract file paths from the workspace tree string captured by the

@@ -18,9 +18,19 @@ const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 
 const DEFAULT_ROADMAP = {
-    steps: ['Project Initiation', 'Governance', 'Requirement Screening', 'Agent Analysis', 'Prerequisite Classification', 'Task Creation', 'On Flight', 'Complete'],
+    steps: [
+        'Project Initiation',
+        'Governance',
+        'Requirement Screening',
+        'Agent Analysis',
+        'Prerequisite Classification',
+        'Task Creation',
+        'Resource Onboarding',
+        'On Flight',
+        'Complete',
+    ],
     current_step: 0,
-    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
+    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
     failed_step: null,
 };
 
@@ -87,7 +97,8 @@ export default function AppLayout({ children }) {
         : location.pathname === '/new-project' || location.pathname.startsWith('/new-project/') ? 'governance'
             : location.pathname === '/prerequisites' ? 'prerequisites'
                 : location.pathname === '/task-creation' ? 'taskCreation'
-                    : 'main';
+                    : location.pathname === '/resource-onboarding' ? 'resourceOnboarding'
+                        : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
@@ -98,6 +109,8 @@ export default function AppLayout({ children }) {
             navigate('/prerequisites');
         } else if (view === 'taskCreation') {
             navigate('/task-creation');
+        } else if (view === 'resourceOnboarding') {
+            navigate('/resource-onboarding');
         } else {
             navigate('/dashboard');
         }
@@ -236,7 +249,7 @@ export default function AppLayout({ children }) {
             ...roadmapData,
             current_step: 1,
             failed_step: 1,
-            step_statuses: ['completed', 'failed', 'pending', 'pending', 'pending', 'pending']
+            step_statuses: ['completed', 'failed', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending']
         };
     }
 
@@ -296,19 +309,37 @@ export default function AppLayout({ children }) {
             ? roadmapData.steps
             : DEFAULT_ROADMAP.steps;
 
-        if (!statuses || statuses.length < 7) return roadmapData;
+        if (!statuses || !steps.length) return roadmapData;
 
-        const completeStarted = statuses[6] === 'active' || statuses[6] === 'completed';
+        const onFlightIndex = steps.indexOf('On Flight');
+        if (onFlightIndex === -1 || statuses.length <= onFlightIndex) {
+            return roadmapData;
+        }
+
+        const completeStarted = statuses[onFlightIndex] === 'active' || statuses[onFlightIndex] === 'completed';
         if (completeStarted) return roadmapData;
 
-        if (statuses[5] === 'active' || statuses[5] === 'completed') {
-            statuses[5] = 'pending';
-            statuses[4] = 'active';
+        const taskIndex = steps.indexOf('Task Creation');
+        const prereqIndex = steps.indexOf('Prerequisite Classification');
+
+        if (
+            taskIndex === -1 ||
+            prereqIndex === -1 ||
+            statuses.length <= taskIndex ||
+            statuses.length <= prereqIndex
+        ) {
+            return roadmapData;
+        }
+
+        if (statuses[taskIndex] === 'active' || statuses[taskIndex] === 'completed') {
+            const nextStatuses = [...statuses];
+            nextStatuses[taskIndex] = 'pending';
+            nextStatuses[prereqIndex] = 'active';
             return {
                 ...roadmapData,
-                current_step: 4,
-                current_step_label: steps[4] || 'Task Creation',
-                step_statuses: statuses,
+                current_step: prereqIndex,
+                current_step_label: steps[prereqIndex] || 'Task Creation',
+                step_statuses: nextStatuses,
             };
         }
 
@@ -340,6 +371,15 @@ export default function AppLayout({ children }) {
         // Dummy reference to satisfy linter and ensure memo updates on storage event
         const _ = storageNonce;
 
+        const steps = Array.isArray(roadmapData?.steps) && roadmapData.steps.length > 0
+            ? roadmapData.steps
+            : DEFAULT_ROADMAP.steps;
+
+        const idx = (label) => {
+            const i = steps.indexOf(label);
+            return i === -1 ? null : i;
+        };
+
         if (path === '/new-project' || path.startsWith('/new-project/')) {
             let wizardStep = 0;
             let hasResult = false;
@@ -354,29 +394,39 @@ export default function AppLayout({ children }) {
             } catch { wizardStep = 0; }
 
             if (path.startsWith('/new-project/governance')) {
-                return 1;
+                return idx('Governance') ?? 1;
             }
 
-            // If we have a result, we are in the Screening phase (Step 1 or 2)
-            if (hasResult) return 1;
-            return wizardStep > 0 ? 1 : 0;
+            // If we have a result, we are in the Screening phase (Requirement Screening)
+            if (hasResult) return idx('Requirement Screening') ?? 2;
+            return wizardStep > 0 ? (idx('Governance') ?? 1) : (idx('Project Initiation') ?? 0);
         }
 
-        if (path === '/prerequisites') return 4;
-        if (path === '/task-creation') return 5;
+        if (path === '/prerequisites') return idx('Prerequisite Classification') ?? 4;
+        if (path === '/task-creation') return idx('Task Creation') ?? 5;
+        if (path === '/resource-onboarding') return idx('Resource Onboarding') ?? 6;
         if (path === '/status-dashboard') {
-            if (roadmapData?.current_step >= 7) return 7;
-            return 6;
+            const completeIndex = idx('Complete');
+            const onFlightIndex = idx('On Flight');
+            if (
+                completeIndex !== null &&
+                roadmapData?.current_step >= completeIndex
+            ) {
+                return completeIndex;
+            }
+            return onFlightIndex ?? completeIndex ?? (steps.length - 1);
         }
 
         if (path === '/dashboard' || path.startsWith('/a/')) {
             const showingResults = !!sessionStorage.getItem('dashboard_showing_results');
-            // Upload form → Requirement Screening (2); Analysis results → Agent Analysis (3)
-            return showingResults ? 3 : 2;
+            // Upload form → Requirement Screening; Analysis results → Agent Analysis
+            const reqIdx = idx('Requirement Screening') ?? 2;
+            const agentIdx = idx('Agent Analysis') ?? 3;
+            return showingResults ? agentIdx : reqIdx;
         }
 
         return null;
-    }, [location.pathname, selectedProjectKey, roadmapData?.current_step, storageNonce]);
+    }, [location.pathname, selectedProjectKey, roadmapData?.current_step, roadmapData?.steps, storageNonce]);
 
     // When the focused step is already done, render it green+highlighted instead of yellow
     const forcedStepCompleted = useMemo(() => {
@@ -488,18 +538,20 @@ export default function AppLayout({ children }) {
                                         currentView === 'governance' ? 'Project Requirement Screening' :
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
                                                 currentView === 'taskCreation' ? 'Task Creation Planner' :
-                                                    'Requirements Analyzer'}
+                                                    currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
+                                                        'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'governance' ? 'Screening & Configuration' :
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
                                                 currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
-                                                    'Project Insight & AI Assessment'}
+                                                    currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
+                                                        'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 
-                            {(currentView === 'statusDashboard' || currentView === 'taskCreation') && (
+                            {(currentView === 'statusDashboard' || currentView === 'taskCreation' || currentView === 'resourceOnboarding') && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                     {currentView === 'statusDashboard' && (
                                         <>

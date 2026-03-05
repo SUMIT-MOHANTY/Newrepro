@@ -170,12 +170,12 @@ async def analyze_document(
         If stream=False: dict with analysis results or error
         If stream=True: async generator yielding partial response chunks
     """
-    # Use provided values or fall back to settings
-    url = api_url or settings.ai_api_url
+    use_brn_llama = bool(getattr(settings, "use_brn_llama", False))
+    url = api_url or (settings.brn_llama_url if use_brn_llama else settings.ai_api_url)
     key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
-    
-    if not key or key == "your-api-key-here":
+    model_name = model or (settings.brn_model if use_brn_llama else settings.ai_model)
+
+    if not use_brn_llama and (not key or key == "your-api-key-here"):
         error = "API key not configured. Please set AI_API_KEY in your environment or provide it in the request."
         return {"status": "error", "error": error}
     
@@ -223,8 +223,8 @@ async def analyze_document(
         
         final_user_content = content_blocks
 
-    # Prepare the request payload (OpenAI-compatible format)
-    payload = {
+    # Prepare request payloads
+    openai_payload = {
         "model": model_name,
         "messages": [
             {
@@ -241,16 +241,62 @@ async def analyze_document(
             "thinking": False
         }
     }
-    
-    headers = {
+
+    if isinstance(final_user_content, list):
+        brn_user_prompt = "\n\n".join(
+            block.get("text", "")
+            for block in final_user_content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ).strip()
+    else:
+        brn_user_prompt = str(final_user_content)
+    brn_prompt = f"{BRD_ANALYSIS_PROMPT}\n\n{brn_user_prompt}"
+
+    brn_payload = {
+        "model": model_name,
+        "prompt": brn_prompt,
+        "stream": False,
+        "agent_id": settings.brn_agent_id,
+        "platform_id": settings.brn_platform_id,
+        "max_tokens": settings.brn_max_tokens,
+        "temperature": settings.brn_temperature,
+    }
+
+    openai_headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {key}"
+    }
+    brn_headers = {
+        "Content-Type": "application/json"
     }
 
     try:
         client = httpx.AsyncClient(timeout=120.0)
         
         if stream:
+            if use_brn_llama:
+                async def stream_response():
+                    try:
+                        response = await client.post(url, json=brn_payload, headers=brn_headers)
+                        response.raise_for_status()
+                        data = response.json()
+                        content = data.get('response', data.get('text', data.get('content', '')))
+                        response_chunk = {
+                            "choices": [{
+                                "delta": {
+                                    "content": content if content else None,
+                                    "reasoning_content": None
+                                }
+                            }]
+                        }
+                        yield f"data: {json.dumps(response_chunk)}\n\n"
+                        yield "data: [DONE]\n\n"
+                    except Exception as e:
+                        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    finally:
+                        await client.aclose()
+                return stream_response()
+
             async def stream_response():
                 try:
                     # State machine to handle <think> tags embedded in content
@@ -258,7 +304,7 @@ async def analyze_document(
                     _inside_think = False
                     _think_buffer = ""
 
-                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    async with client.stream("POST", url, json=openai_payload, headers=openai_headers) as response:
                         response.raise_for_status()
                         async for line in response.aiter_lines():
                             if line.startswith("data: "):
@@ -332,11 +378,24 @@ async def analyze_document(
         else:
             # Non-streaming implementation
             try:
-                response = await client.post(url, json=payload, headers=headers)
+                if use_brn_llama:
+                    response = await client.post(url, json=brn_payload, headers=brn_headers)
+                else:
+                    response = await client.post(url, json=openai_payload, headers=openai_headers)
                 response.raise_for_status()
                 
                 data = response.json()
-                
+
+                if use_brn_llama:
+                    content = data.get('response', data.get('text', data.get('content', '')))
+                    return {
+                        "status": "success",
+                        "analysis": content,
+                        "reasoning": None,
+                        "model": data.get("model", model_name),
+                        "usage": data.get("usage", {})
+                    }
+
                 # Extract the assistant's response
                 if "choices" in data and len(data["choices"]) > 0:
                     message = data["choices"][0].get("message", {})
@@ -388,16 +447,19 @@ async def analyze_document(
 
 async def get_ai_config() -> dict:
     """Get current AI configuration (without exposing the full API key)."""
+    use_brn_llama = bool(getattr(settings, "use_brn_llama", False))
     key = settings.ai_api_key
     masked_key = None
     if key and key != "your-api-key-here":
         masked_key = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "***"
     
     return {
-        "api_url": settings.ai_api_url,
-        "api_key_configured": bool(key and key != "your-api-key-here"),
-        "api_key_masked": masked_key,
-        "model": settings.ai_model
+        "provider": "brn_llama" if use_brn_llama else "nvidia_openai_compatible",
+        "use_brn_llama": use_brn_llama,
+        "api_url": settings.brn_llama_url if use_brn_llama else settings.ai_api_url,
+        "api_key_configured": True if use_brn_llama else bool(key and key != "your-api-key-here"),
+        "api_key_masked": None if use_brn_llama else masked_key,
+        "model": settings.brn_model if use_brn_llama else settings.ai_model
     }
 
 TASK_GENERATION_PROMPT = """You are an expert Project Manager and Agile Practitioner.

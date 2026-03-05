@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     ai_api_key: Optional[str] = None
     # ai_model: str = "qwen/qwen3.5-397b-a17b"
     ai_model: str = "minimaxai/minimax-m2.5"
+    # If true, /ai/analyze will call BRN Llama endpoint instead of AI_API_URL.
+    use_brn_llama: bool = False
+    brn_llama_url: str = "https://brn-llama.bourntec.com/api/process"
+    brn_model: str = "BournAI"
+    brn_agent_id: str = "uhli23jn3oiuhgo847yyjvdhtrdy3tgfe8gfgoe87rugekuuyjommjferhjgo5go49uoi3uyrp938ry"
+    brn_platform_id: str = "DSuite"
+    brn_max_tokens: int = 4000
+    brn_temperature: float = 0.7
 
     # GitHub OAuth
     github_client_id: Optional[str] = None
