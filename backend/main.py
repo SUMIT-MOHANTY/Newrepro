@@ -25,6 +25,7 @@ import ingestion
 import ai_service
 import governance_scoring
 import github_service
+import azure_devops_service
 import agent_service
 import rag_service
 import context_manager
@@ -1293,6 +1294,14 @@ class RepoContextRequest(BaseModel):
     repo: str
     branch: str = "main"
     token: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+class AzureDevOpsRepoContextRequest(BaseModel):
+    repo_url: str
+    token: Optional[str] = None
+    branch: Optional[str] = None
 
 
 @app.post("/github/repo-context")
@@ -1305,6 +1314,14 @@ async def github_repo_context(
     suitable for feeding into the AI model alongside the BRD.
     """
     provided_token = (payload.token or "").strip() or None
+    provided_username = (payload.username or "").strip() or None
+    provided_password = str(payload.password or "") if payload.password is not None else None
+    has_basic_credentials = bool(provided_username or (provided_password is not None and provided_password != ""))
+    if has_basic_credentials and not (provided_username and provided_password):
+        raise HTTPException(status_code=400, detail="Provide both GitHub username and password.")
+    if provided_token and has_basic_credentials:
+        raise HTTPException(status_code=400, detail="Use either PAT or username/password, not both.")
+
     saved_oauth_token = (current_user.github_token or "").strip() or None
     token_to_use = provided_token if provided_token else saved_oauth_token
 
@@ -1313,12 +1330,18 @@ async def github_repo_context(
     if not owner or not repo:
         raise HTTPException(status_code=400, detail="Invalid GitHub repository URL or owner/repo values.")
 
-    async def _build_context(token_value: Optional[str]) -> Dict[str, str]:
+    async def _build_context(
+        token_value: Optional[str],
+        username_value: Optional[str] = None,
+        password_value: Optional[str] = None,
+    ) -> Dict[str, str]:
         return await github_service.build_repo_context(
             token_value,
             owner,
             repo,
             branch,
+            username=username_value,
+            password=password_value,
         )
 
     async def _build_context_from_zip() -> Dict[str, str]:
@@ -1357,13 +1380,16 @@ async def github_repo_context(
         elif status_code == 403 and "rate limit" in response_msg_lc:
             detail = "GitHub API rate limit exceeded. Add a valid PAT or reconnect GitHub OAuth and try again."
         elif status_code in (401, 403):
-            detail = "GitHub authentication failed or access denied. Check your PAT/OAuth access."
+            detail = "GitHub authentication failed or access denied. Check your PAT, username/password, or OAuth access."
         else:
             detail = f"Failed to fetch repository context from GitHub (HTTP {status_code})."
         raise HTTPException(status_code=status_code, detail=detail)
 
     try:
-        repo_data = await _build_context(token_to_use)
+        username_to_use = provided_username if has_basic_credentials else None
+        password_to_use = provided_password if has_basic_credentials else None
+        token_for_primary = None if has_basic_credentials else token_to_use
+        repo_data = await _build_context(token_for_primary, username_to_use, password_to_use)
         return {
             "context": repo_data["context"],
             "repo": f"{repo_data['owner']}/{repo_data['repo']}",
@@ -1388,6 +1414,7 @@ async def github_repo_context(
         should_retry_without_auth = (
             status_code in (401, 403)
             and provided_token is None
+            and not has_basic_credentials
             and saved_oauth_token is not None
         )
         if should_retry_without_auth:
@@ -1415,6 +1442,61 @@ async def github_repo_context(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
+
+@app.post("/azure-devops/repo-context")
+async def azure_devops_repo_context(
+    payload: AzureDevOpsRepoContextRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch Azure DevOps repository source and return a structured context
+    suitable for feeding into the AI model alongside BRD content.
+    """
+    provided_token = (payload.token or "").strip() or None
+    branch = (payload.branch or "").strip() or None
+
+    try:
+        repo_data = await azure_devops_service.build_repo_context_from_url(
+            repo_url=payload.repo_url,
+            pat=provided_token,
+            branch=branch,
+        )
+        return {
+            "context": repo_data["context"],
+            "repo": repo_data["repo"],
+            "branch": repo_data["branch"],
+            "provider": "azure-devops",
+            "url": repo_data["url"],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        response_msg = ""
+        if e.response is not None:
+            try:
+                response_msg = str((e.response.json() or {}).get("message") or "").strip()
+            except Exception:
+                response_msg = str(e.response.text or "").strip()
+        response_msg_lc = response_msg.lower()
+
+        if status_code == 404:
+            detail = (
+                "Azure DevOps repository or branch was not found. Verify organization/project/repository URL "
+                "and branch name."
+            )
+        elif status_code in (401, 403):
+            if "pat" in response_msg_lc or "token" in response_msg_lc:
+                detail = "Azure DevOps authentication failed. Check your PAT permissions."
+            else:
+                detail = "Azure DevOps authentication failed or access denied. Provide a valid PAT."
+        else:
+            detail = f"Failed to fetch repository context from Azure DevOps (HTTP {status_code})."
+        raise HTTPException(status_code=status_code, detail=detail)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build Azure DevOps repo context: {e}")
 
 
 # ═════════════════════════ KNOWLEDGE GRAPH + RAG ═════════════════════════════
@@ -3949,3 +4031,4 @@ if __name__ == "__main__":
         port=settings.port,
         reload=False,
     )
+

@@ -2256,17 +2256,26 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
                 break
 
         if not fixed:
-            # ── Blitzy Pattern: Don't block merge on test failure ─────
-            # Record the failure for PR body, but still push the merge.
-            # Human reviews the PR and decides whether to merge.
+            # Tests still failing after auto-fix attempts — record and let
+            # the caller decide whether to allow the merge.
             _log_git_agent(
-                f"⚠️ Tests still failing after fixes: {cmd} — "
-                f"will push anyway (Blitzy pattern: human reviews in PR)",
+                f"⚠️ Tests still failing after fixes: {cmd}",
                 "warning",
-                project_token=project_token
+                project_token=project_token,
             )
             test_failures.append(cmd)
+            # We still commit local fixes so logs reflect what was tried,
+            # but the overall gate result will be False.
             _commit_if_dirty(container_name, f"Push with test warnings ({branch})")
+
+    # Gate result: only pass when no test command ultimately failed.
+    if test_failures:
+        _log_git_agent(
+            f"Test gate failed for {branch}: {', '.join(test_failures)}",
+            "error",
+            project_token=project_token,
+        )
+        return False
 
     return True
 
@@ -2809,16 +2818,27 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             except Exception as test_err:
                 _log_git_agent(
                     f"Test runner error after merging {branch}: {str(test_err)[:200]}",
-                    "warning",
+                    "error",
                     project_token=project_token,
                 )
-                tests_ok = True
+                tests_ok = False
             if not tests_ok:
                 _log_git_agent(
-                    f"Tests failed after merge for {branch}. Proceeding without test gate.",
-                    "warning",
+                    f"❌ Tests/validation failed after merge for {branch}. Aborting merge and leaving "
+                    f"{GIT_INTEGRATION_BRANCH} at last known-good state.",
+                    "error",
                     project_token=project_token,
                 )
+                # Mark integration as blocked so only fix tasks are allowed until it is green again.
+                try:
+                    import context_manager as ctx_mgr
+                    live_mem = ctx_mgr.get_live_memory(project_token or "")
+                    live_mem.set_integration_blocked(True)
+                except Exception:
+                    pass
+
+                # Do not push this broken merge; retry loop will end and container will be destroyed.
+                return
 
             push = subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
@@ -3084,6 +3104,34 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                  "git cherry-pick --abort >/dev/null 2>&1 || true"],
                 capture_output=True, text=True, timeout=20,
             )
+
+        # Optional structural guard: if a canonical backend/ project exists,
+        # prevent agents from introducing competing Django roots at repo root.
+        try:
+            probe_backend = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "sh", "-c", "test -d backend && echo yes || echo no"],
+                capture_output=True, text=True, timeout=5,
+            )
+            has_backend = (probe_backend.returncode == 0 and
+                           (probe_backend.stdout or "").strip() == "yes")
+            if has_backend:
+                # Disallow common stray Django-style roots at /workspace/*
+                disallowed_roots = [
+                    "api", "books", "catalog", "project", "core",
+                    "notifications", "reservation_system", "reservations",
+                    "users", "rest_framework",
+                ]
+                for name in disallowed_roots:
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "sh", "-c", f"[ -d {name} ] && rm -rf {name} || true"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+        except Exception:
+            # Non-critical: if this guard fails, we still proceed with commit,
+            # but Git Manager tests will catch any structural breakage.
+            pass
 
         # Ensure .gitignore exists and excludes unnecessary files
         gitignore_content = """# Python

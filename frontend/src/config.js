@@ -37,6 +37,7 @@ export const API_ENDPOINTS = {
     GITHUB_DISCONNECT: `${API_BASE_URL}/github/disconnect`,
     GITHUB_REPOS: `${API_BASE_URL}/github/repos`,
     GITHUB_REPO_CONTEXT: `${API_BASE_URL}/github/repo-context`,
+    AZURE_DEVOPS_REPO_CONTEXT: `${API_BASE_URL}/azure-devops/repo-context`,
 
     // AI Agents (Backend Docker Execution)
     AGENTS: `${API_BASE_URL}/agents`,

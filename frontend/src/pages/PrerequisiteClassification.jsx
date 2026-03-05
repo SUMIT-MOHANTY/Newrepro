@@ -326,18 +326,23 @@ const sanitizePrerequisiteForAiPayload = (item = {}) => {
     return safe;
 };
 
-const normalizeGithubRepoPath = (value = '') => {
+const parseRepoMetaSuggestion = (value = '') => {
     const raw = String(value || '').trim();
-    if (!raw) return '';
+    if (!raw) return null;
 
-    const asPath = (candidate) => {
+    const asGithubPath = (candidate) => {
         const cleaned = String(candidate || '')
             .trim()
             .replace(/^\/+|\/+$/g, '')
             .replace(/\.git$/i, '');
         const parts = cleaned.split('/').filter(Boolean);
-        if (parts.length < 2) return '';
-        return `${parts[0]}/${parts[1]}`;
+        if (parts.length < 2) return null;
+        const path = `${parts[0]}/${parts[1]}`;
+        return {
+            repo: path,
+            provider: 'github',
+            url: `https://github.com/${path}.git`,
+        };
     };
 
     if (/github\.com/i.test(raw)) {
@@ -346,18 +351,53 @@ const normalizeGithubRepoPath = (value = '') => {
                 ? raw
                 : `https://${raw}`;
             const url = new URL(normalizedUrl);
-            return asPath(url.pathname);
+            return asGithubPath(url.pathname);
         } catch {
             // Fallback to direct path parsing below.
         }
     }
 
-    return asPath(raw);
-};
+    if (/dev\.azure\.com|\.visualstudio\.com/i.test(raw)) {
+        try {
+            const normalizedUrl = raw.startsWith('http://') || raw.startsWith('https://')
+                ? raw
+                : `https://${raw}`;
+            const url = new URL(normalizedUrl);
+            const host = url.hostname.toLowerCase();
+            const parts = url.pathname.split('/').filter(Boolean).map((p) => decodeURIComponent(p));
 
-const repoPathToGitUrl = (repoPath = '') => (
-    repoPath ? `https://github.com/${repoPath}.git` : ''
-);
+            let org = '';
+            let project = '';
+            let repo = '';
+
+            if (host.endsWith('dev.azure.com')) {
+                if (parts.length >= 4 && parts[2].toLowerCase() === '_git') {
+                    [org, project] = parts;
+                    repo = parts[3];
+                }
+            } else if (host.endsWith('.visualstudio.com')) {
+                org = host.split('.visualstudio.com')[0];
+                if (parts.length >= 3 && parts[1].toLowerCase() === '_git') {
+                    project = parts[0];
+                    repo = parts[2];
+                }
+            }
+
+            repo = String(repo || '').replace(/\.git$/i, '').trim();
+            if (org && project && repo) {
+                return {
+                    repo: `${org}/${project}/${repo}`,
+                    provider: 'azure-devops',
+                    url: `https://dev.azure.com/${org}/${project}/_git/${repo}`,
+                };
+            }
+        } catch {
+            // fall through
+        }
+    }
+
+    return asGithubPath(raw);
+};
 
 const extractRepoSuggestionFromAnalysis = (analysisObj) => {
     if (!analysisObj || typeof analysisObj !== 'object') return null;
@@ -370,29 +410,31 @@ const extractRepoSuggestionFromAnalysis = (analysisObj) => {
     ].filter(Boolean);
 
     for (const source of possibleSources) {
-        const repoPath = normalizeGithubRepoPath(
+        const parsed = parseRepoMetaSuggestion(
             source?.repo || source?.full_name || source?.url || source?.git_repo_url || source?.repository
         );
-        if (!repoPath) continue;
+        if (!parsed) continue;
 
         return {
-            repo: repoPath,
+            repo: parsed.repo,
             branch: String(source?.branch || source?.default_branch || '').trim() || null,
-            url: repoPathToGitUrl(repoPath),
+            url: parsed.url,
             source: String(source?.source || 'analysis'),
+            provider: parsed.provider,
         };
     }
 
     const analysisText = String(analysisObj.analysis || analysisObj.report || '');
     const match = analysisText.match(/Repository:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i);
     if (match?.[1]) {
-        const repoPath = normalizeGithubRepoPath(match[1]);
-        if (repoPath) {
+        const parsed = parseRepoMetaSuggestion(match[1]);
+        if (parsed) {
             return {
-                repo: repoPath,
+                repo: parsed.repo,
                 branch: null,
-                url: repoPathToGitUrl(repoPath),
+                url: parsed.url,
                 source: 'analysis',
+                provider: parsed.provider,
             };
         }
     }
@@ -402,15 +444,16 @@ const extractRepoSuggestionFromAnalysis = (analysisObj) => {
 
 const extractRepoSuggestionFromStoredMeta = (storedMeta) => {
     if (!storedMeta || typeof storedMeta !== 'object') return null;
-    const repoPath = normalizeGithubRepoPath(
+    const parsed = parseRepoMetaSuggestion(
         storedMeta.repo || storedMeta.full_name || storedMeta.url || storedMeta.git_repo_url || storedMeta.repository
     );
-    if (!repoPath) return null;
+    if (!parsed) return null;
     return {
-        repo: repoPath,
+        repo: parsed.repo,
         branch: String(storedMeta.branch || storedMeta.default_branch || '').trim() || null,
-        url: repoPathToGitUrl(repoPath),
+        url: String(storedMeta.url || parsed.url || '').trim() || parsed.url,
         source: String(storedMeta.source || 'session'),
+        provider: String(storedMeta.provider || parsed.provider || 'github'),
     };
 };
 

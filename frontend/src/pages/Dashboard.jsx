@@ -99,28 +99,8 @@ const sanitizeHtml = (content = '') => DOMPurify.sanitize(content, { USE_PROFILE
 const normalizeProjectName = (name = '') => String(name || '').trim().toLowerCase();
 const ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE = 'Sandbox is not approved. Our IT team will reach out to you soon.';
 const isSkipSelectedOption = (label = '') => String(label || '').trim().toLowerCase() === 'skip';
-const buildRepoContextMeta = (context) => {
-    const rawRepo = String(context?.repo || '').trim();
-    if (!rawRepo) return null;
 
-    const normalizedRepo = rawRepo
-        .replace(/^https?:\/\/github\.com\//i, '')
-        .replace(/\.git$/i, '')
-        .replace(/^\/+|\/+$/g, '');
-
-    if (!normalizedRepo || !normalizedRepo.includes('/')) {
-        return null;
-    }
-
-    return {
-        repo: normalizedRepo,
-        branch: String(context?.branch || '').trim() || null,
-        source: context?.fromLink ? 'link' : 'oauth',
-        url: `https://github.com/${normalizedRepo}.git`,
-    };
-};
-
-const parseRepoMetaFromUrl = (value = '') => {
+const parseGithubRepoMetaFromUrl = (value = '') => {
     if (!String(value || '').includes('github.com/')) return null;
     try {
         const urlObj = new URL(String(value).trim());
@@ -137,10 +117,103 @@ const parseRepoMetaFromUrl = (value = '') => {
             repo: `${owner}/${repo}`,
             branch,
             fromLink: true,
+            provider: 'github',
+            url: `https://github.com/${owner}/${repo}.git`,
         };
     } catch {
         return null;
     }
+};
+
+const parseAzureRepoMetaFromUrl = (value = '', explicitBranch = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+
+    try {
+        const normalized = raw.includes('://') ? raw : `https://${raw}`;
+        const urlObj = new URL(normalized);
+        const host = urlObj.hostname.toLowerCase();
+        const parts = urlObj.pathname.split('/').filter(Boolean).map((p) => decodeURIComponent(p));
+
+        let organization = '';
+        let project = '';
+        let repo = '';
+
+        if (host.endsWith('dev.azure.com')) {
+            if (parts.length < 4 || parts[2].toLowerCase() !== '_git') return null;
+            organization = parts[0];
+            project = parts[1];
+            repo = parts[3];
+        } else if (host.endsWith('.visualstudio.com')) {
+            organization = host.split('.visualstudio.com')[0];
+            if (parts.length < 3 || parts[1].toLowerCase() !== '_git') return null;
+            project = parts[0];
+            repo = parts[2];
+        } else {
+            return null;
+        }
+
+        repo = repo.replace(/\.git$/i, '').trim();
+        if (!organization || !project || !repo) return null;
+
+        const queryVersion = urlObj.searchParams.get('version') || urlObj.searchParams.get('versionDescriptor.version') || '';
+        const queryBranch = queryVersion.startsWith('GB') ? queryVersion.slice(2) : queryVersion;
+        const branch = String(explicitBranch || queryBranch || '').trim() || null;
+
+        return {
+            repo: `${organization}/${project}/${repo}`,
+            branch,
+            fromLink: true,
+            provider: 'azure-devops',
+            url: `https://dev.azure.com/${organization}/${project}/_git/${repo}`,
+        };
+    } catch {
+        return null;
+    }
+};
+
+const buildRepoContextMeta = (context) => {
+    const provider = String(context?.provider || 'github').trim().toLowerCase();
+    const rawRepo = String(context?.repo || '').trim();
+    if (!rawRepo) return null;
+
+    if (provider === 'azure-devops') {
+        const normalizedRepo = rawRepo.replace(/^\/+|\/+$/g, '');
+        if (!normalizedRepo || normalizedRepo.split('/').filter(Boolean).length < 3) {
+            return null;
+        }
+        const fallbackMeta = parseAzureRepoMetaFromUrl(String(context?.url || '').trim(), context?.branch || '');
+        const cloneUrl = String(context?.url || fallbackMeta?.url || '').trim();
+        if (!cloneUrl) return null;
+        return {
+            repo: normalizedRepo,
+            branch: String(context?.branch || '').trim() || null,
+            source: 'link',
+            provider: 'azure-devops',
+            url: cloneUrl,
+        };
+    }
+
+    const normalizedRepo = rawRepo
+        .replace(/^https?:\/\/github\.com\//i, '')
+        .replace(/\.git$/i, '')
+        .replace(/^\/+|\/+$/g, '');
+
+    if (!normalizedRepo || !normalizedRepo.includes('/')) {
+        return null;
+    }
+
+    return {
+        repo: normalizedRepo,
+        branch: String(context?.branch || '').trim() || null,
+        source: context?.fromLink ? 'link' : 'oauth',
+        provider: 'github',
+        url: `https://github.com/${normalizedRepo}.git`,
+    };
+};
+
+const parseRepoMetaFromUrl = (value = '') => {
+    return parseGithubRepoMetaFromUrl(value) || parseAzureRepoMetaFromUrl(value);
 };
 
 
@@ -305,8 +378,17 @@ const Dashboard = ({
 
     const [githubLinkUrl, setGithubLinkUrl] = useState('');
     const [githubLinkToken, setGithubLinkToken] = useState('');
+    const [githubAuthMode, setGithubAuthMode] = useState('pat');
+    const [githubLinkUsername, setGithubLinkUsername] = useState('');
+    const [githubLinkPassword, setGithubLinkPassword] = useState('');
     const [githubLinkParsing, setGithubLinkParsing] = useState(false);
     const [githubLinkError, setGithubLinkError] = useState('');
+    const [repoLinkProvider, setRepoLinkProvider] = useState('github');
+    const [azureLinkUrl, setAzureLinkUrl] = useState('');
+    const [azureLinkToken, setAzureLinkToken] = useState('');
+    const [azureLinkBranch, setAzureLinkBranch] = useState('');
+    const [azureLinkParsing, setAzureLinkParsing] = useState(false);
+    const [azureLinkError, setAzureLinkError] = useState('');
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
@@ -930,7 +1012,9 @@ const Dashboard = ({
 
         // Persist repository choice for this project even if user did not click "Fetch Repository".
         if (activeTab === 'github-link') {
-            const repoFromInput = parseRepoMetaFromUrl(githubLinkUrl);
+            const repoFromInput = repoLinkProvider === 'azure-devops'
+                ? parseAzureRepoMetaFromUrl(azureLinkUrl, azureLinkBranch)
+                : parseRepoMetaFromUrl(githubLinkUrl);
             if (repoFromInput) {
                 persistRepoContextMetaForProject(repoFromInput, taskKey);
             }
@@ -1773,9 +1857,18 @@ const Dashboard = ({
 
     const handleLoadGithubUrl = async () => {
         setGithubLinkError('');
+        setAzureLinkError('');
         if (!githubLinkUrl.includes('github.com/')) {
             setGithubLinkError('Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)');
             return;
+        }
+        if (githubAuthMode === 'basic') {
+            const username = String(githubLinkUsername || '').trim();
+            const password = String(githubLinkPassword || '');
+            if (!username || !password) {
+                setGithubLinkError('Enter both GitHub username and password, or switch to PAT mode.');
+                return;
+            }
         }
 
         try {
@@ -1795,14 +1888,23 @@ const Dashboard = ({
 
             setGithubLinkParsing(true);
             const token = localStorage.getItem('token');
-            const providedPat = githubLinkToken.trim();
+            const providedPat = githubAuthMode === 'pat' ? githubLinkToken.trim() : '';
+            const providedUsername = githubAuthMode === 'basic' ? String(githubLinkUsername || '').trim() : '';
+            const providedPassword = githubAuthMode === 'basic' ? String(githubLinkPassword || '') : '';
             const resp = await fetch(API_ENDPOINTS.GITHUB_REPO_CONTEXT, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ owner, repo, branch, token: providedPat || null })
+                body: JSON.stringify({
+                    owner,
+                    repo,
+                    branch,
+                    token: providedPat || null,
+                    username: providedUsername || null,
+                    password: providedPassword || null,
+                })
             });
             const data = await resp.json();
             if (!resp.ok) {
@@ -1819,15 +1921,79 @@ const Dashboard = ({
                 repo: resolvedRepo,
                 branch: resolvedBranch,
                 context: data.context,
-                fromLink: true
+                fromLink: true,
+                provider: 'github',
+                url: `https://github.com/${resolvedRepo}.git`,
             };
             setRepoContext(nextRepoContext);
             persistRepoContextMetaForProject(nextRepoContext);
+            if (githubAuthMode === 'basic') {
+                setGithubLinkPassword('');
+            }
             setGithubLinkError('');
         } catch (e) {
             setGithubLinkError(e.message || 'Failed to parse or load URL');
         } finally {
             setGithubLinkParsing(false);
+        }
+    };
+
+    const handleLoadAzureDevOpsUrl = async () => {
+        setAzureLinkError('');
+        setGithubLinkError('');
+
+        const rawUrl = String(azureLinkUrl || '').trim();
+        if (!rawUrl) {
+            setAzureLinkError('Please enter an Azure DevOps repository URL.');
+            return;
+        }
+        if (!/dev\.azure\.com|\.visualstudio\.com/i.test(rawUrl)) {
+            setAzureLinkError('Please enter a valid Azure DevOps URL (dev.azure.com or *.visualstudio.com).');
+            return;
+        }
+
+        try {
+            setAzureLinkParsing(true);
+            const token = localStorage.getItem('token');
+            const providedPat = azureLinkToken.trim();
+            const branch = String(azureLinkBranch || '').trim();
+
+            const resp = await fetch(API_ENDPOINTS.AZURE_DEVOPS_REPO_CONTEXT, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: rawUrl,
+                    token: providedPat || null,
+                    branch: branch || null,
+                }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                let errMessage = 'Failed to fetch Azure DevOps repository';
+                if (data.detail) {
+                    errMessage = Array.isArray(data.detail) ? data.detail.map((e) => e.msg).join(', ') : data.detail;
+                }
+                throw new Error(errMessage);
+            }
+
+            const nextRepoContext = {
+                repo: data.repo,
+                branch: data.branch,
+                context: data.context,
+                fromLink: true,
+                provider: 'azure-devops',
+                url: data.url || rawUrl,
+            };
+            setRepoContext(nextRepoContext);
+            persistRepoContextMetaForProject(nextRepoContext);
+            setAzureLinkError('');
+        } catch (e) {
+            setAzureLinkError(e.message || 'Failed to parse or load Azure DevOps URL');
+        } finally {
+            setAzureLinkParsing(false);
         }
     };
 
@@ -2074,7 +2240,7 @@ const Dashboard = ({
                                             className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
                                             disabled={!selectedProject}
                                         >
-                                            GitHub
+                                            Repositories
                                         </button>
                                     </div>
 
@@ -2201,7 +2367,7 @@ const Dashboard = ({
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative mx-auto">
                                             {/* OPTION 1: GitHub Connect */}
                                             <div className="relative border border-app-border rounded-xl p-5 bg-app-bg-card shadow-sm flex flex-col justify-start overflow-hidden">
-                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (githubLinkUsername && githubLinkUsername.trim().length > 0) || (githubLinkPassword && githubLinkPassword.trim().length > 0) || (azureLinkUrl && azureLinkUrl.trim().length > 0) || (azureLinkToken && azureLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Link Option</span>
                                                 </div>
                                                 <div className="mb-4">
@@ -2218,9 +2384,22 @@ const Dashboard = ({
                                                         repoContext={repoContext}
                                                         onRepoSelected={() => setIsOAuthRepoSelected(true)}
                                                         onRepoContextReady={(ctx) => {
-                                                            setRepoContext(ctx);
-                                                            persistRepoContextMetaForProject(ctx);
+                                                            const nextCtx = {
+                                                                ...ctx,
+                                                                provider: 'github',
+                                                                url: `https://github.com/${String(ctx?.repo || '').replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '')}.git`,
+                                                            };
+                                                            setRepoContext(nextCtx);
+                                                            persistRepoContextMetaForProject(nextCtx);
                                                             setGithubLinkUrl('');
+                                                            setGithubLinkToken('');
+                                                            setGithubAuthMode('pat');
+                                                            setGithubLinkUsername('');
+                                                            setGithubLinkPassword('');
+                                                            setAzureLinkUrl('');
+                                                            setAzureLinkToken('');
+                                                            setAzureLinkBranch('');
+                                                            setAzureLinkError('');
                                                             setGithubLinkError('');
                                                         }}
                                                         onClearRepo={() => {
@@ -2231,7 +2410,7 @@ const Dashboard = ({
                                                 </div>
                                             </div>
 
-                                            {/* OPTION 2: Repository URL */}
+                                            {/* OPTION 2: Repository URL (GitHub / Azure DevOps) */}
                                             <div className="relative border border-app-border rounded-xl bg-app-bg-card shadow-sm p-5 flex flex-col justify-start overflow-hidden">
                                                 <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || (repoContext && !repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Connected Account</span>
@@ -2242,44 +2421,142 @@ const Dashboard = ({
                                                         <h3 className="text-sm font-bold text-app-text-main">Paste Repository Link</h3>
                                                     </div>
                                                     <p className="text-xs text-app-text-muted mb-2">
-                                                        Provide a direct link to a GitHub repository. For private repositories, include a Personal Access Token (PAT).
+                                                        Provide a repository link from GitHub or Azure DevOps. For private repositories, use PAT, or for GitHub you can also use username and password.
                                                     </p>
                                                 </div>
+                                                <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => { setRepoLinkProvider('github'); setAzureLinkError(''); }}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    >
+                                                        GitHub
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => { setRepoLinkProvider('azure-devops'); setGithubLinkError(''); }}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    >
+                                                        Azure DevOps
+                                                    </button>
+                                                </div>
+                                                {repoLinkProvider === 'github' && (
+                                                    <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => { setGithubAuthMode('pat'); setGithubLinkError(''); }}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        >
+                                                            Use PAT
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => { setGithubAuthMode('basic'); setGithubLinkError(''); }}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        >
+                                                            Username + Password
+                                                        </button>
+                                                    </div>
+                                                )}
                                                 <div className="flex flex-col gap-3 mt-auto">
                                                     <input
                                                         type="text"
-                                                        value={githubLinkUrl}
+                                                        value={repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl}
                                                         onChange={e => {
-                                                            setGithubLinkUrl(e.target.value);
+                                                            if (repoLinkProvider === 'azure-devops') {
+                                                                setAzureLinkUrl(e.target.value);
+                                                            } else {
+                                                                setGithubLinkUrl(e.target.value);
+                                                            }
                                                             if (repoContext) setRepoContext(null);
                                                         }}
-                                                        placeholder="https://github.com/owner/repo"
+                                                        placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo' : 'https://github.com/owner/repo'}
                                                         className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                     />
-                                                    <input
-                                                        type="password"
-                                                        value={githubLinkToken}
-                                                        onChange={e => {
-                                                            setGithubLinkToken(e.target.value);
-                                                            if (repoContext) setRepoContext(null);
-                                                        }}
-                                                        placeholder="Optional PAT for private repos..."
-                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
-                                                    />
+                                                    {repoLinkProvider === 'azure-devops' && (
+                                                        <input
+                                                            type="text"
+                                                            value={azureLinkBranch}
+                                                            onChange={e => {
+                                                                setAzureLinkBranch(e.target.value);
+                                                                if (repoContext) setRepoContext(null);
+                                                            }}
+                                                            placeholder="Optional branch (e.g., main)"
+                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                        />
+                                                    )}
+                                                    {repoLinkProvider === 'azure-devops' ? (
+                                                        <input
+                                                            type="password"
+                                                            value={azureLinkToken}
+                                                            onChange={e => {
+                                                                setAzureLinkToken(e.target.value);
+                                                                if (repoContext) setRepoContext(null);
+                                                            }}
+                                                            placeholder="Optional Azure DevOps PAT..."
+                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                        />
+                                                    ) : githubAuthMode === 'pat' ? (
+                                                        <input
+                                                            type="password"
+                                                            value={githubLinkToken}
+                                                            onChange={e => {
+                                                                setGithubLinkToken(e.target.value);
+                                                                if (repoContext) setRepoContext(null);
+                                                            }}
+                                                            placeholder="Optional GitHub PAT for private repos..."
+                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                        />
+                                                    ) : (
+                                                        <>
+                                                            <input
+                                                                type="text"
+                                                                value={githubLinkUsername}
+                                                                onChange={e => {
+                                                                    setGithubLinkUsername(e.target.value);
+                                                                    if (repoContext) setRepoContext(null);
+                                                                }}
+                                                                placeholder="GitHub username"
+                                                                className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                            />
+                                                            <input
+                                                                type="password"
+                                                                value={githubLinkPassword}
+                                                                onChange={e => {
+                                                                    setGithubLinkPassword(e.target.value);
+                                                                    if (repoContext) setRepoContext(null);
+                                                                }}
+                                                                placeholder="GitHub password"
+                                                                className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                            />
+                                                        </>
+                                                    )}
                                                     <div className="flex items-center gap-2">
                                                         <button
                                                             type="button"
-                                                            onClick={handleLoadGithubUrl}
-                                                            disabled={!githubLinkUrl || githubLinkParsing}
+                                                            onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
+                                                            disabled={repoLinkProvider === 'azure-devops' ? (!azureLinkUrl || azureLinkParsing) : (!githubLinkUrl || githubLinkParsing)}
                                                             className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
                                                         >
-                                                            {githubLinkParsing ? (
+                                                            {(repoLinkProvider === 'azure-devops' ? azureLinkParsing : githubLinkParsing) ? (
                                                                 <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
                                                             ) : 'Fetch Repository'}
                                                         </button>
                                                         {repoContext && repoContext.fromLink && (
                                                             <button
-                                                                onClick={() => { setRepoContext(null); setGithubLinkUrl(''); setGithubLinkToken(''); setGithubLinkError(''); }}
+                                                                onClick={() => {
+                                                                    setRepoContext(null);
+                                                                    setGithubLinkUrl('');
+                                                                    setGithubLinkToken('');
+                                                                    setGithubAuthMode('pat');
+                                                                    setGithubLinkUsername('');
+                                                                    setGithubLinkPassword('');
+                                                                    setGithubLinkError('');
+                                                                    setAzureLinkUrl('');
+                                                                    setAzureLinkToken('');
+                                                                    setAzureLinkBranch('');
+                                                                    setAzureLinkError('');
+                                                                }}
                                                                 className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-red-100 text-sm font-semibold h-10 transition-colors"
                                                                 title="Clear repository"
                                                             >
@@ -2289,7 +2566,9 @@ const Dashboard = ({
                                                     </div>
                                                 </div>
 
-                                                {githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{githubLinkError}</p>}
+                                                {repoLinkProvider === 'azure-devops'
+                                                    ? (azureLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{azureLinkError}</p>)
+                                                    : (githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{githubLinkError}</p>)}
                                                 {repoContext && repoContext.fromLink && (
                                                     <div className="mt-3 p-2.5 bg-app-status-successBg border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
                                                         <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-app-status-success" />
