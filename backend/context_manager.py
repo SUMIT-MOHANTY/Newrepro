@@ -11,7 +11,9 @@ Layer 4 — Cross-Agent Awareness: Live shared memory of what other agents
 """
 
 import logging
+import os
 import threading
+import json
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field
@@ -27,6 +29,452 @@ logger = logging.getLogger(__name__)
 
 # project_token -> { graph, repo_path, global_context, project_rules }
 _project_contexts: Dict[str, Dict[str, Any]] = {}
+
+_SOURCE_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".go", ".rs", ".rb",
+    ".php", ".cs", ".swift", ".vue", ".svelte", ".css", ".scss", ".sass",
+}
+_FRONTEND_EXTENSIONS = {
+    ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".css", ".scss", ".sass", ".less", ".html",
+}
+_COMMON_SAFE_TOP_LEVEL_DIRS = {
+    ".github", ".vscode", ".idea", "docs", "doc", "scripts", "tests", "test",
+    "migrations", "alembic", "infra", "ops", "deploy", "k8s", "config", "configs",
+    "public", "static", "assets", "examples", "fixtures",
+}
+_COMMON_MODULE_SAFE_DIRS = {
+    "tests", "test", "docs", "scripts", "migrations", "alembic", "public", "static", "assets",
+}
+_MANIFEST_BASENAMES = {
+    "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "yarn.lock", "package-lock.json",
+    "vite.config.js", "vite.config.ts", "next.config.js", "next.config.mjs",
+    "webpack.config.js", "tsconfig.json", "tailwind.config.js", "tailwind.config.ts",
+    "postcss.config.js", "angular.json", "nx.json", "turbo.json",
+    "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "Pipfile",
+    "manage.py", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts",
+    "settings.gradle", "settings.gradle.kts", "composer.json",
+}
+
+
+def _normalize_contract_path(path: str) -> str:
+    candidate = str(path or "").strip().replace("\\", "/")
+    while candidate.startswith("./"):
+        candidate = candidate[2:]
+    candidate = candidate.strip("/")
+    return candidate or "."
+
+
+def _path_is_under(path: str, prefix: str) -> bool:
+    norm_path = _normalize_contract_path(path)
+    norm_prefix = _normalize_contract_path(prefix)
+    if norm_prefix == ".":
+        return True
+    return norm_path == norm_prefix or norm_path.startswith(norm_prefix + "/")
+
+
+def _relative_to_root(path: str, root: str) -> str:
+    norm_path = _normalize_contract_path(path)
+    norm_root = _normalize_contract_path(root)
+    if norm_root == ".":
+        return norm_path
+    if norm_path == norm_root:
+        return "."
+    return norm_path[len(norm_root) + 1:]
+
+
+def _join_contract_root(root: str, rel: str) -> str:
+    norm_root = _normalize_contract_path(root)
+    norm_rel = _normalize_contract_path(rel)
+    if norm_rel == ".":
+        return norm_root
+    if norm_root == ".":
+        return norm_rel
+    return f"{norm_root}/{norm_rel}"
+
+
+def _is_config_like_path(path: str) -> bool:
+    base = os.path.basename(_normalize_contract_path(path))
+    if base in _MANIFEST_BASENAMES:
+        return True
+    prefixes = (
+        ".eslintrc", ".prettierrc", "vite.config", "webpack.config", "next.config",
+        "nuxt.config", "tailwind.config", "postcss.config", "babel.config", "jest.config",
+        "tsconfig", "jsconfig", "eslint.config", "docker-compose", "Dockerfile",
+        "README", "LICENSE", ".gitignore", ".dockerignore", ".env",
+    )
+    return any(base.startswith(prefix) for prefix in prefixes)
+
+
+def _is_source_like_path(path: str) -> bool:
+    norm = _normalize_contract_path(path)
+    if norm == ".":
+        return False
+    if _is_config_like_path(norm):
+        return False
+    _, ext = os.path.splitext(norm)
+    return ext.lower() in _SOURCE_EXTENSIONS
+
+
+def _is_frontend_like_path(path: str) -> bool:
+    norm = _normalize_contract_path(path)
+    if norm == ".":
+        return False
+    base = os.path.basename(norm)
+    if base in {
+        "package.json", "vite.config.js", "vite.config.ts", "next.config.js", "next.config.mjs",
+        "webpack.config.js", "tsconfig.json", "eslint.config.js",
+    }:
+        return True
+    _, ext = os.path.splitext(norm)
+    return ext.lower() in _FRONTEND_EXTENSIONS
+
+
+def _collect_repo_file_paths(repo_path: Optional[str]) -> List[str]:
+    if not repo_path or not os.path.isdir(repo_path):
+        return []
+
+    ignored_dirs = {
+        ".git", "node_modules", "dist", "build", ".next", ".turbo",
+        "__pycache__", ".venv", "venv", ".pytest_cache",
+    }
+    paths: List[str] = []
+    for root, dirs, filenames in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in ignored_dirs]
+        for name in filenames:
+            full_path = os.path.join(root, name)
+            rel_path = os.path.relpath(full_path, repo_path)
+            paths.append(_normalize_contract_path(rel_path))
+    return sorted(set(paths))
+
+
+def _collect_graph_file_paths(graph: Optional[kg_service.CodeKnowledgeGraph]) -> List[str]:
+    if not graph:
+        return []
+    paths = []
+    for node in getattr(graph, "nodes", {}).values():
+        if getattr(node, "node_type", None) != "file":
+            continue
+        file_path = _normalize_contract_path(getattr(node, "file_path", "") or "")
+        if file_path and file_path != ".":
+            paths.append(file_path)
+    return sorted(set(paths))
+
+
+def _discover_module_roots(file_paths: List[str]) -> List[str]:
+    roots = set()
+    for file_path in file_paths:
+        norm = _normalize_contract_path(file_path)
+        base = os.path.basename(norm)
+        if base not in _MANIFEST_BASENAMES and not base.endswith((".csproj", ".sln")):
+            continue
+        dirname = os.path.dirname(norm).replace("\\", "/").strip("/")
+        roots.add(dirname or ".")
+
+    if not roots:
+        for file_path in file_paths:
+            norm = _normalize_contract_path(file_path)
+            if not _is_source_like_path(norm):
+                continue
+            parts = norm.split("/")
+            if len(parts) > 1:
+                roots.add(parts[0])
+            else:
+                roots.add(".")
+
+    return sorted(roots, key=lambda item: (item != ".", item))
+
+
+def _infer_module_kind(module_root: str, file_paths: List[str]) -> str:
+    manifests = {
+        os.path.basename(path)
+        for path in file_paths
+        if _path_is_under(path, module_root) and _is_config_like_path(path)
+    }
+    if manifests & {
+        "package.json", "vite.config.js", "vite.config.ts", "next.config.js", "next.config.mjs",
+        "webpack.config.js", "tsconfig.json", "angular.json", "nx.json", "turbo.json",
+    }:
+        return "frontend"
+    if manifests & {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "manage.py"}:
+        return "backend"
+    if manifests & {"pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"}:
+        return "java"
+    if manifests & {"go.mod"}:
+        return "go"
+    if manifests & {"Cargo.toml"}:
+        return "rust"
+
+    frontend_count = 0
+    backend_count = 0
+    for path in file_paths:
+        if not _path_is_under(path, module_root):
+            continue
+        _, ext = os.path.splitext(path)
+        ext = ext.lower()
+        if ext in _FRONTEND_EXTENSIONS:
+            frontend_count += 1
+        elif ext == ".py":
+            backend_count += 1
+    if frontend_count and frontend_count >= backend_count:
+        return "frontend"
+    if backend_count:
+        return "backend"
+    return "generic"
+
+
+def _derive_source_roots_for_module(module_root: str, module_kind: str, file_paths: List[str]) -> List[str]:
+    candidates = set()
+    for path in file_paths:
+        if not _path_is_under(path, module_root) or not _is_source_like_path(path):
+            continue
+
+        rel_path = _relative_to_root(path, module_root)
+        parts = [p for p in rel_path.split("/") if p and p != "."]
+        if not parts:
+            candidates.add(_normalize_contract_path(module_root))
+            continue
+
+        if module_kind == "frontend":
+            markers = ("src", "app")
+        elif module_kind == "backend":
+            markers = ("src", "app", "server", "api", "backend")
+        else:
+            markers = ("src", "app", "lib", "cmd", "internal", "pkg")
+
+        chosen = "."
+        for marker in markers:
+            if marker in parts:
+                idx = parts.index(marker)
+                chosen = "/".join(parts[:idx + 1])
+                break
+
+        if chosen == "." and len(parts) > 1 and parts[0] in {
+            "components", "pages", "hooks", "utils", "styles", "context",
+            "routes", "models", "schemas", "controllers", "services",
+        }:
+            chosen = "."
+        elif chosen == "." and len(parts) > 1:
+            chosen = parts[0]
+
+        candidates.add(_join_contract_root(module_root, chosen))
+
+    if not candidates:
+        candidates.add(_normalize_contract_path(module_root))
+
+    return sorted(candidates)
+
+
+def _build_workspace_contract_from_file_paths(
+    project_token: str,
+    file_paths: List[str],
+    source: str = "detected",
+) -> Dict[str, Any]:
+    normalized_paths = sorted({
+        _normalize_contract_path(path)
+        for path in (file_paths or [])
+        if _normalize_contract_path(path) != "."
+    })
+
+    top_level_dirs = set()
+    root_files = set()
+    for path in normalized_paths:
+        parts = path.split("/")
+        if len(parts) == 1:
+            root_files.add(parts[0])
+        elif parts[0]:
+            top_level_dirs.add(parts[0])
+
+    module_roots = _discover_module_roots(normalized_paths)
+    modules = []
+    allowed_source_roots = set()
+    for root in module_roots:
+        kind = _infer_module_kind(root, normalized_paths)
+        source_roots = _derive_source_roots_for_module(root, kind, normalized_paths)
+        manifests = [
+            path for path in normalized_paths
+            if _path_is_under(path, root) and _is_config_like_path(path)
+        ][:15]
+        modules.append({
+            "root": root,
+            "kind": kind,
+            "source_roots": source_roots,
+            "manifests": manifests,
+        })
+        allowed_source_roots.update(source_roots)
+
+    canonical_frontend_roots = sorted({
+        source_root
+        for module in modules if module["kind"] == "frontend"
+        for source_root in module["source_roots"]
+    })
+    canonical_backend_roots = sorted({
+        source_root
+        for module in modules if module["kind"] == "backend"
+        for source_root in module["source_roots"]
+    })
+
+    has_source_or_modules = bool(modules) or any(_is_source_like_path(path) for path in normalized_paths)
+    status = "ready" if has_source_or_modules else "insufficient"
+    return {
+        "project_token": project_token,
+        "status": status,
+        "source": source,
+        "detected_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "modules": modules,
+        "allowed_top_level_dirs": sorted(top_level_dirs),
+        "root_files": sorted(root_files),
+        "allowed_source_roots": sorted(allowed_source_roots),
+        "canonical_frontend_roots": canonical_frontend_roots,
+        "canonical_backend_roots": canonical_backend_roots,
+    }
+
+
+def get_workspace_contract(project_token: str, refresh: bool = False) -> Dict[str, Any]:
+    token = (project_token or "").strip()
+    project_ctx = _project_contexts.setdefault(token, {})
+    cached = project_ctx.get("workspace_contract")
+    if cached and not refresh:
+        return cached
+
+    file_paths: List[str] = []
+    repo_path = project_ctx.get("repo_path")
+    if repo_path:
+        file_paths = _collect_repo_file_paths(repo_path)
+    if not file_paths:
+        file_paths = _collect_graph_file_paths(project_ctx.get("graph"))
+
+    contract = _build_workspace_contract_from_file_paths(
+        token,
+        file_paths,
+        source="repo_index" if file_paths else "insufficient",
+    )
+    project_ctx["workspace_contract"] = contract
+    return contract
+
+
+def update_workspace_contract_from_workspace_tree(project_token: str, workspace_tree: str) -> Dict[str, Any]:
+    token = (project_token or "").strip()
+    project_ctx = _project_contexts.setdefault(token, {})
+    existing = project_ctx.get("workspace_contract") or {}
+    if existing.get("status") == "ready":
+        return existing
+
+    file_paths = sorted(_parse_workspace_to_file_dict(workspace_tree).keys())
+    contract = _build_workspace_contract_from_file_paths(
+        token,
+        file_paths,
+        source="workspace_tree",
+    )
+    project_ctx["workspace_contract"] = contract
+    return contract
+
+
+def build_workspace_contract_context(project_token: str) -> str:
+    contract = get_workspace_contract(project_token)
+    if contract.get("status") != "ready":
+        return (
+            "=== WORKSPACE CONTRACT ===\n"
+            "Contract status: bootstrap mode.\n"
+            "Do not create new top-level application roots unless the repo already contains them.\n"
+            "Prefer extending the current integration branch structure instead of introducing alternate layouts.\n"
+            "=== END WORKSPACE CONTRACT ==="
+        )
+
+    lines = ["=== WORKSPACE CONTRACT ==="]
+    lines.append(
+        "Existing top-level directories: "
+        + ", ".join(contract.get("allowed_top_level_dirs") or ["(none)"])
+    )
+
+    modules = contract.get("modules") or []
+    if modules:
+        lines.append("Allowed module/source roots:")
+        for module in modules[:8]:
+            root = module.get("root") or "."
+            kind = module.get("kind") or "generic"
+            source_roots = module.get("source_roots") or [root]
+            lines.append(
+                f"  - {root} [{kind}] -> {', '.join(source_roots[:6])}"
+            )
+
+    lines.append(
+        "Rules: do not create new top-level code roots or parallel source trees outside these paths."
+    )
+    lines.append("If a matching file already exists in an allowed source root, extend it instead of recreating it elsewhere.")
+    lines.append("=== END WORKSPACE CONTRACT ===")
+    return "\n".join(lines)
+
+
+def validate_paths_against_workspace_contract(
+    project_token: str,
+    file_paths: List[str],
+    task_domain: Optional[str] = None,
+) -> Dict[str, Any]:
+    contract = get_workspace_contract(project_token)
+    normalized_paths = [
+        _normalize_contract_path(path)
+        for path in (file_paths or [])
+        if _normalize_contract_path(path) not in {"", "."}
+    ]
+    if contract.get("status") != "ready" or not normalized_paths:
+        return {"allowed": True, "violations": [], "contract_ready": contract.get("status") == "ready"}
+
+    allowed_top_level_dirs = set(contract.get("allowed_top_level_dirs") or [])
+    modules = contract.get("modules") or []
+    violations = []
+
+    for path in normalized_paths:
+        parts = path.split("/")
+        top_level = parts[0]
+        if len(parts) > 1 and top_level not in allowed_top_level_dirs and top_level not in _COMMON_SAFE_TOP_LEVEL_DIRS:
+            violations.append(
+                f"{path}: creates new top-level directory '{top_level}' outside the workspace contract"
+            )
+            continue
+
+        if _is_config_like_path(path):
+            continue
+
+        if not _is_source_like_path(path):
+            continue
+
+        matching_modules = [m for m in modules if _path_is_under(path, m.get("root") or ".")]
+        if not matching_modules:
+            if len(parts) > 1 and top_level in _COMMON_SAFE_TOP_LEVEL_DIRS:
+                continue
+            if len(parts) > 1 and top_level not in allowed_top_level_dirs:
+                violations.append(f"{path}: not under any known module root")
+            continue
+
+        module = max(matching_modules, key=lambda item: len(_normalize_contract_path(item.get("root") or ".")))
+        rel_path = _relative_to_root(path, module.get("root") or ".")
+        rel_first = rel_path.split("/")[0] if rel_path and rel_path != "." else "."
+        if rel_first in _COMMON_MODULE_SAFE_DIRS:
+            continue
+
+        source_roots = module.get("source_roots") or [module.get("root") or "."]
+        if any(_path_is_under(path, source_root) for source_root in source_roots):
+            continue
+
+        module_kind = module.get("kind") or "generic"
+        if task_domain == "frontend" or (task_domain is None and _is_frontend_like_path(path)):
+            violations.append(
+                f"{path}: frontend-like file is outside allowed source roots for module "
+                f"'{module.get('root') or '.'}' ({', '.join(source_roots[:6])})"
+            )
+            continue
+
+        violations.append(
+            f"{path}: outside allowed source roots for module "
+            f"'{module.get('root') or '.'}' ({', '.join(source_roots[:6])})"
+        )
+
+    return {
+        "allowed": len(violations) == 0,
+        "violations": violations[:20],
+        "contract_ready": True,
+        "contract": contract,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -174,14 +622,6 @@ class ProjectLiveMemory:
         # Unknown file - allow but log warning
         return True, "Unknown file type - allowing edit"
 
-    def register_file_intent(self, agent_id: str, file_paths: List[str]):
-        """Register that an agent intends to touch certain files."""
-        with self._lock:
-            for fp in file_paths:
-                if fp not in self.file_locks:
-                    self.file_locks[fp] = set()
-                self.file_locks[fp].add(agent_id)
-
     def register_task_start(
         self,
         agent_id: str,
@@ -246,11 +686,43 @@ class ProjectLiveMemory:
 
     def register_file_intent(self, agent_id: str, file_paths: List[str]):
         """Register that an agent intends to touch certain files."""
+        normalized_paths = []
+        seen = set()
+        for file_path in file_paths or []:
+            candidate = str(file_path or "").strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized_paths.append(candidate)
+
+        if not normalized_paths:
+            return
+
         with self._lock:
-            for fp in file_paths:
+            for fp in normalized_paths:
                 if fp not in self.file_locks:
                     self.file_locks[fp] = set()
                 self.file_locks[fp].add(agent_id)
+
+            record = self.active_tasks.get(agent_id)
+            if record:
+                current = list(record.files_touched or [])
+                for fp in normalized_paths:
+                    if fp not in current:
+                        current.append(fp)
+                record.files_touched = current[:50]
+
+    def release_file_intent(self, agent_id: str, file_paths: Optional[List[str]] = None):
+        """Release file intent locks for a specific agent."""
+        with self._lock:
+            targets = list(file_paths or self.file_locks.keys())
+            for fp in list(targets):
+                editors = self.file_locks.get(fp)
+                if not editors:
+                    continue
+                editors.discard(agent_id)
+                if not editors:
+                    del self.file_locks[fp]
 
     def get_file_conflicts(self, agent_id: str, target_files: List[str]) -> Dict[str, List[str]]:
         """
@@ -663,6 +1135,189 @@ async def get_task_context(
     return f"=== RELEVANT CODE CONTEXT (retrieved just-in-time) ===\n{context}\n=== END CODE CONTEXT ==="
 
 
+def _note_scope_key(project_token: str) -> str:
+    return (project_token or "").strip() or "__default__"
+
+
+def _note_title_for_prefix(prefix: str, project_token: str) -> str:
+    return f"{prefix}::{_note_scope_key(project_token)}::"
+
+
+def _parse_note_payload(raw_content: Any) -> Dict[str, Any]:
+    text = str(raw_content or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {"summary": text}
+
+
+def _coerce_note_entries(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    entries = payload.get("entries")
+    if isinstance(entries, list):
+        normalized = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                normalized.append(entry)
+        if normalized:
+            return normalized
+
+    legacy_entry = {}
+    for key in (
+        "task_id",
+        "task_title",
+        "status",
+        "branch",
+        "planned_files",
+        "completed_files",
+        "symbols_created",
+        "symbols_modified",
+        "next_agent_should",
+        "summary",
+        "started_at",
+        "updated_at",
+        "completed_at",
+    ):
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            legacy_entry[key] = value
+    return [legacy_entry] if legacy_entry else []
+
+
+async def get_agent_notes_context(
+    project_token: str,
+    agent_id: Optional[str] = None,
+    task_token: Optional[str] = None,
+    max_notes: int = 8,
+) -> str:
+    """
+    Retrieve structured agent status/handoff notes from the external task API
+    and convert them into a concise prompt-friendly summary.
+    """
+    effective_token = str(task_token or "").strip()
+    if not effective_token:
+        return ""
+
+    try:
+        from task_service import task_service
+    except Exception:
+        return ""
+
+    try:
+        notes = await task_service.list_notes(task_token=effective_token)
+    except Exception as e:
+        logger.warning(f"[{project_token}] Failed to list agent notes: {e}")
+        return ""
+
+    if not isinstance(notes, list):
+        return ""
+
+    status_prefix = _note_title_for_prefix("STATUS", project_token)
+
+    relevant = []
+    for note in notes:
+        title = str((note or {}).get("title") or "").strip()
+        if title.startswith(status_prefix):
+            relevant.append(note)
+        if len(relevant) >= max_notes * 2:
+            break
+
+    if not relevant:
+        return ""
+
+    live_entries = []
+    history_entries = []
+
+    for note in relevant:
+        note_id = (note or {}).get("id") or (note or {}).get("note_id")
+        if not note_id:
+            continue
+        try:
+            detail = await task_service.get_note_detail(int(note_id), task_token=effective_token)
+        except Exception:
+            continue
+        title = str(detail.get("title") or note.get("title") or "").strip()
+        payload = _parse_note_payload(detail.get("content"))
+        payload["title"] = title
+        note_agent_id = str(payload.get("agent_id") or "").strip()
+        if note_agent_id and note_agent_id == agent_id:
+            continue
+
+        entries = _coerce_note_entries(payload)
+        if not entries:
+            continue
+
+        for entry in entries:
+            entry["agent_id"] = entry.get("agent_id") or note_agent_id or "unknown"
+
+        active_entry = None
+        for entry in reversed(entries):
+            if str(entry.get("status") or "").lower() in {"in_progress", "running", "started"}:
+                active_entry = entry
+                break
+        if active_entry:
+            live_entries.append(active_entry)
+
+        for entry in reversed(entries):
+            status_value = str(entry.get("status") or "").lower()
+            if status_value not in {"completed", "failed"}:
+                continue
+            history_entries.append(entry)
+            if len(history_entries) >= max_notes * 3:
+                break
+
+    lines = ["=== STRUCTURED AGENT NOTES ==="]
+    has_content = False
+
+    live_entries.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
+    history_entries.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
+
+    if live_entries:
+        has_content = True
+        lines.append("\nLIVE STATUS NOTES:")
+        for entry in live_entries[:max_notes]:
+            lines.append(
+                f"  - {entry.get('agent_id', 'unknown')} | "
+                f"{entry.get('status', 'unknown')} | "
+                f"{entry.get('task_title', entry.get('task_id', 'unknown task'))}"
+            )
+            planned = entry.get("planned_files") or []
+            if planned:
+                lines.append(f"    Planned files: {', '.join(planned[:6])}")
+            next_step = entry.get("next_agent_should") or entry.get("summary")
+            if next_step:
+                lines.append(f"    Context: {str(next_step)[:220]}")
+
+    if history_entries:
+        has_content = True
+        lines.append("\nRECENT TASK HISTORY:")
+        for entry in history_entries[:max_notes]:
+            lines.append(
+                f"  - {entry.get('agent_id', 'unknown')} | "
+                f"{entry.get('status', 'unknown')} | "
+                f"{entry.get('task_title', entry.get('task_id', 'Untitled'))}"
+            )
+            completed = entry.get("completed_files") or []
+            if completed:
+                lines.append(f"    Completed files: {', '.join(completed[:6])}")
+            symbols = entry.get("symbols_created") or []
+            if symbols:
+                lines.append(f"    Symbols created: {', '.join(symbols[:8])}")
+            next_step = entry.get("next_agent_should") or entry.get("summary")
+            if next_step:
+                lines.append(f"    Next step: {str(next_step)[:260]}")
+
+    if not has_content:
+        return ""
+
+    lines.append("\n=== END STRUCTURED AGENT NOTES ===")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 #  Combined Context Assembly
 # ---------------------------------------------------------------------------
@@ -674,6 +1329,7 @@ async def get_full_agent_context(
     brd_analysis: Optional[str] = None,
     governance_context: Optional[Dict[str, Any]] = None,
     agent_id: Optional[str] = None,
+    task_token: Optional[str] = None,
     max_context_length: int = 18000,
 ) -> str:
     """
@@ -697,6 +1353,10 @@ async def get_full_agent_context(
     )
     parts.append(project_rules)
 
+    workspace_contract_ctx = build_workspace_contract_context(project_token)
+    if workspace_contract_ctx:
+        parts.append(workspace_contract_ctx)
+
     # Layer 3 — On-Demand Snippets (JIT from LightRAG)
     rag_status = rag_service.get_indexing_status(project_token)
     if rag_status.get("status") == "ready":
@@ -717,6 +1377,14 @@ async def get_full_agent_context(
         requesting_agent_id=agent_id or "unknown"
     )
     parts.append(cross_agent_ctx)
+
+    notes_ctx = await get_agent_notes_context(
+        project_token=project_token,
+        agent_id=agent_id,
+        task_token=task_token,
+    )
+    if notes_ctx:
+        parts.append(notes_ctx)
 
     full_context = "\n\n".join(parts)
 
@@ -792,6 +1460,11 @@ async def index_project_repository(
         result["steps"]["rag_indexing"] = rag_result
 
         # Step 5: Store project context
+        workspace_contract = _build_workspace_contract_from_file_paths(
+            project_token,
+            _collect_repo_file_paths(repo_path),
+            source="repo_index",
+        )
         _project_contexts[project_token] = {
             "graph": graph,
             "repo_path": repo_path,
@@ -800,6 +1473,7 @@ async def index_project_repository(
                 brd_analysis=brd_analysis,
                 governance_context=governance_context,
             ),
+            "workspace_contract": workspace_contract,
         }
         result["steps"]["context_store"] = {"status": "done"}
 
@@ -1011,6 +1685,11 @@ async def update_kg_with_agent_output(
                 "repo_path": None,
                 "global_context": "",
                 "project_rules": "",
+                "workspace_contract": _build_workspace_contract_from_file_paths(
+                    project_token,
+                    list(file_dict.keys()) if 'file_dict' in locals() else [],
+                    source="workspace_tree",
+                ),
             }
             _project_contexts[project_token] = project_ctx
             bootstrapped = True
@@ -1019,6 +1698,7 @@ async def update_kg_with_agent_output(
 
         # 1. Parse workspace tree into file dict
         file_dict = _parse_workspace_to_file_dict(workspace_tree)
+        update_workspace_contract_from_workspace_tree(project_token, workspace_tree)
 
         # Filter to actual code files (skip binaries, configs, etc.)
         code_extensions = {

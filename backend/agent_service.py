@@ -4,8 +4,10 @@ Agents create ephemeral Docker containers, build real project code inside them,
 self-heal until everything works, capture the workspace, then clean up.
 """
 import asyncio
+import ast
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -152,6 +154,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "completed_sprints_synced": set(),
             "project_status_synced": None,
             "status_sync_lock": asyncio.Lock(),
+            "note_title_cache": {},
         }
         _project_states[key] = state
     else:
@@ -159,6 +162,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state.setdefault("completed_sprints_synced", set())
         state.setdefault("project_status_synced", None)
         state.setdefault("status_sync_lock", asyncio.Lock())
+        state.setdefault("note_title_cache", {})
     return state
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
@@ -2070,6 +2074,27 @@ def _check_path_ownership_gate(
     if not changed_files:
         return {"allowed": True, "changed_files": [], "conflicts": []}
 
+    try:
+        source_domain = live_mem.get_agent_domain(source_agent) if source_agent else None
+        contract_validation = ctx_mgr.validate_paths_against_workspace_contract(
+            project_token or "",
+            changed_files,
+            task_domain=source_domain,
+        )
+        if not contract_validation.get("allowed", True):
+            return {
+                "allowed": False,
+                "changed_files": changed_files,
+                "conflicts": [{
+                    "agent_id": "workspace-contract",
+                    "branch": "(contract)",
+                    "overlap": contract_validation.get("violations") or [],
+                }],
+                "reason_type": "workspace_contract",
+            }
+    except Exception:
+        pass
+
     changed_set = set(changed_files)
     conflicts: List[Dict[str, Any]] = []
 
@@ -2113,6 +2138,7 @@ def _check_path_ownership_gate(
         "allowed": len(conflicts) == 0,
         "changed_files": changed_files,
         "conflicts": conflicts,
+        "reason_type": "overlap" if conflicts else None,
     }
 
 
@@ -2361,6 +2387,25 @@ async def _git_merge_worker(project_token: Optional[str] = None) -> None:
             git_agent["progress_message"] = "Git manager idle"
 
 
+async def wait_for_git_merge_drain(
+    project_token: Optional[str] = None,
+    timeout_seconds: float = 300.0,
+    poll_interval: float = 1.0,
+) -> bool:
+    """Wait until the git merge queue and in-flight work are drained."""
+    deadline = time.time() + max(1.0, timeout_seconds)
+    while time.time() < deadline:
+        state = _ensure_project_state(project_token)
+        if (
+            not state.get("git_merge_running")
+            and not state.get("git_merge_queue")
+            and not state.get("git_merge_inflight")
+        ):
+            return True
+        await asyncio.sleep(max(0.2, poll_interval))
+    return False
+
+
 async def _try_create_pr(
     repo_url: str,
     token: str,
@@ -2417,6 +2462,318 @@ async def _try_create_pr(
         )
 
 
+def _read_merge_stage_file(container_name: str, file_path: str, stage: int) -> str:
+    result = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name, "git", "show", f":{stage}:{file_path}"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout or ""
+
+
+def _write_workspace_file_to_container(container_name: str, file_path: str, content: str) -> bool:
+    local_tmp = None
+    remote_tmp = f"/tmp/ai_merge_{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            delete=False,
+            encoding="utf-8",
+            prefix="ai_merge_",
+            suffix=".tmp",
+        ) as handle:
+            handle.write(content)
+            local_tmp = handle.name
+
+        copy_res = subprocess.run(
+            ["docker", "cp", local_tmp, f"{container_name}:{remote_tmp}"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if copy_res.returncode != 0:
+            return False
+
+        target_dir = os.path.dirname(file_path) or "."
+        write_script = (
+            f"mkdir -p {shlex.quote(target_dir)} && "
+            f"cat {shlex.quote(remote_tmp)} > {shlex.quote(file_path)} && "
+            f"rm -f {shlex.quote(remote_tmp)}"
+        )
+        write_res = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", write_script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        return write_res.returncode == 0
+    finally:
+        if local_tmp and os.path.exists(local_tmp):
+            try:
+                os.unlink(local_tmp)
+            except OSError:
+                pass
+        subprocess.run(
+            ["docker", "exec", container_name, "rm", "-f", remote_tmp],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+
+def _validate_ai_merged_file(container_name: str, file_path: str) -> tuple[bool, str]:
+    rel_path = str(file_path or "").strip()
+    if not rel_path:
+        return False, "missing file path"
+
+    marker_check = subprocess.run(
+        [
+            "docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+            f"grep -n '<<<<<<<\\|=======\\|>>>>>>>' {shlex.quote(rel_path)} >/dev/null 2>&1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if marker_check.returncode == 0:
+        return False, "conflict markers remain"
+
+    lower = rel_path.lower()
+    if lower.endswith(".py"):
+        check = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "python3", "-m", "py_compile", rel_path],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if check.returncode != 0:
+            return False, check.stderr or check.stdout or "python syntax check failed"
+    elif lower.endswith(".json"):
+        check = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "python3", "-m", "json.tool", rel_path],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if check.returncode != 0:
+            return False, check.stderr or check.stdout or "json validation failed"
+
+    return True, ""
+
+
+def _normalize_ai_merged_content(content: str) -> str:
+    merged = str(content or "").strip()
+    if not merged:
+        return ""
+
+    if merged.startswith("```"):
+        lines = merged.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        merged = "\n".join(lines).strip()
+
+    # Sometimes the model returns the entire file as a quoted string literal.
+    if len(merged) >= 2 and merged[0] == merged[-1] and merged[0] in {"'", '"'}:
+        try:
+            decoded = ast.literal_eval(merged)
+            if isinstance(decoded, str) and decoded:
+                merged = decoded
+        except Exception:
+            pass
+
+    # Handle escaped whole-file output such as "import x;\\nconst y = 1;..."
+    if "\\n" in merged and "\n" not in merged:
+        merged = (
+            merged
+            .replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+        )
+        if '\\"' in merged and merged.count('"') == 0:
+            merged = merged.replace('\\"', '"')
+        if "\\'" in merged and merged.count("'") == 0:
+            merged = merged.replace("\\'", "'")
+
+    return merged.strip()
+
+
+async def _call_ai_for_merge_resolution(
+    *,
+    file_path: str,
+    base_content: str,
+    ours_content: str,
+    theirs_content: str,
+    source_branch: str,
+    source_agent: Optional[str],
+    task_title: str,
+) -> str:
+    if not settings.ai_api_key or settings.ai_api_key == "your-api-key-here":
+        return ""
+
+    prompt = f"""You are resolving a git merge conflict for a software repository.
+Return ONLY the final merged file content for `{file_path}`.
+Do not wrap the answer in markdown fences. Do not explain your reasoning.
+
+Merge context:
+- Source branch being merged: {source_branch}
+- Source agent: {source_agent or "unknown"}
+- Task title: {task_title or "unknown"}
+
+Rules:
+1. Preserve behavior from both versions whenever they are compatible.
+2. Prefer the target/integration branch structure if the source branch is incomplete.
+3. Remove all conflict markers.
+4. Keep imports, typing, and formatting valid.
+5. If this is a code file, ensure the file is syntactically valid.
+
+BASE VERSION:
+<<<BASE
+{base_content[:12000]}
+BASE>>>
+
+SOURCE BRANCH VERSION:
+<<<OURS
+{ours_content[:12000]}
+OURS>>>
+
+INTEGRATION BRANCH VERSION:
+<<<THEIRS
+{theirs_content[:12000]}
+THEIRS>>>"""
+
+    payload = {
+        "model": settings.ai_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are an expert git merge assistant. Output only merged file contents.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings.ai_api_key}",
+    }
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        response = await client.post(settings.ai_api_url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    if "choices" not in data or not data["choices"]:
+        return ""
+
+    content = data["choices"][0].get("message", {}).get("content", "") or ""
+    return _normalize_ai_merged_content(content)
+
+
+async def _resolve_conflicts_with_ai(
+    *,
+    container_name: str,
+    conflict_files: List[str],
+    source_branch: str,
+    source_agent: Optional[str],
+    task_title: str,
+    project_token: Optional[str],
+) -> bool:
+    unresolved = [f for f in conflict_files if f]
+    if not unresolved:
+        return True
+
+    _log_git_agent(
+        f"Attempting AI merge resolution for {len(unresolved)} file(s): {', '.join(unresolved[:5])}",
+        project_token=project_token,
+    )
+
+    for file_path in unresolved:
+        base_content = _read_merge_stage_file(container_name, file_path, 1)
+        ours_content = _read_merge_stage_file(container_name, file_path, 2)
+        theirs_content = _read_merge_stage_file(container_name, file_path, 3)
+
+        merged = await _call_ai_for_merge_resolution(
+            file_path=file_path,
+            base_content=base_content,
+            ours_content=ours_content,
+            theirs_content=theirs_content,
+            source_branch=source_branch,
+            source_agent=source_agent,
+            task_title=task_title,
+        )
+        if not merged:
+            _log_git_agent(
+                f"AI merge returned empty content for {file_path}",
+                "error",
+                project_token=project_token,
+            )
+            return False
+
+        if not _write_workspace_file_to_container(container_name, file_path, merged + "\n"):
+            _log_git_agent(
+                f"Failed to write AI-merged file {file_path} into the merge container",
+                "error",
+                project_token=project_token,
+            )
+            return False
+
+        valid, validation_error = _validate_ai_merged_file(container_name, file_path)
+        if not valid:
+            _log_git_agent(
+                f"AI merge validation failed for {file_path}: {validation_error}",
+                "error",
+                project_token=project_token,
+            )
+            return False
+
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "add", file_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    remaining = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    unresolved_after = [f.strip() for f in (remaining.stdout or "").splitlines() if f.strip()]
+    if unresolved_after:
+        _log_git_agent(
+            f"AI merge left unresolved conflicts: {', '.join(unresolved_after[:5])}",
+            "error",
+            project_token=project_token,
+        )
+        return False
+
+    _log_git_agent(
+        f"AI merge resolution succeeded for {len(unresolved)} file(s).",
+        project_token=project_token,
+    )
+    return True
+
+
+def _filter_merge_conflict_files(conflict_files: List[str]) -> List[str]:
+    return [
+        f for f in (conflict_files or [])
+        if f
+        and "__pycache__" not in f
+        and not f.endswith(".pyc")
+        and not f.endswith(".pyo")
+        and not f.endswith(".pyd")
+        and ".DS_Store" not in f
+        and "Thumbs.db" not in f
+    ]
+
+
 def _resolve_conflicts_smart(
     container_name: str,
     conflict_files: List[str],
@@ -2456,15 +2813,7 @@ def _resolve_conflicts_smart(
                     source_domain = source_record.task_domain
         
         # Filter out __pycache__ and other unnecessary files
-        filtered_conflicts = [
-            f for f in conflict_files 
-            if '__pycache__' not in f 
-            and not f.endswith('.pyc') 
-            and not f.endswith('.pyo')
-            and not f.endswith('.pyd')
-            and '.DS_Store' not in f
-            and 'Thumbs.db' not in f
-        ]
+        filtered_conflicts = _filter_merge_conflict_files(conflict_files)
         
         # If all conflicts are in __pycache__, just remove them and continue
         if not filtered_conflicts:
@@ -2723,6 +3072,16 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     compact.append(f"{who}/{peer_branch}: {', '.join(overlap[:3])}")
                 conflict_msg = " | ".join(compact) if compact else "overlapping ownership"
 
+                if ownership_gate.get("reason_type") == "workspace_contract":
+                    _log_git_agent(
+                        f"Workspace contract blocked merge for {branch}"
+                        f"{f' ({task_title})' if task_title else ''}: {conflict_msg}. "
+                        "Branch introduces files outside the canonical repository structure.",
+                        "error",
+                        project_token=project_token,
+                    )
+                    return
+
                 if ownership_retries < max_ownership_retries:
                     ownership_retries += 1
                     wait_seconds = min(90, 8 * ownership_retries)
@@ -2785,18 +3144,87 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     )
                     return
 
-                # Smart conflict resolution based on file ownership
-                resolved = _resolve_conflicts_smart(
-                    container_name=container_name,
-                    conflict_files=files,
-                    source_branch=branch,
-                    source_agent=source_agent,
-                    project_token=project_token,
-                )
+                initial_conflicts = _filter_merge_conflict_files(files)
 
-                if not resolved:
+                if initial_conflicts:
+                    await _resolve_conflicts_with_ai(
+                        container_name=container_name,
+                        conflict_files=initial_conflicts,
+                        source_branch=branch,
+                        source_agent=source_agent,
+                        task_title=task_title,
+                        project_token=project_token,
+                    )
+
+                remaining_conflicts = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                raw_unresolved_files = [
+                    f.strip()
+                    for f in (remaining_conflicts.stdout or "").splitlines()
+                    if f.strip()
+                ]
+                unresolved_files = _filter_merge_conflict_files(raw_unresolved_files)
+
+                if raw_unresolved_files:
                     _log_git_agent(
-                        f"Failed to resolve conflicts for {branch}. Aborting merge.",
+                        f"AI merge left {len(raw_unresolved_files)} unresolved file(s); applying ownership fallback.",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    _resolve_conflicts_smart(
+                        container_name=container_name,
+                        conflict_files=raw_unresolved_files,
+                        source_branch=branch,
+                        source_agent=source_agent,
+                        project_token=project_token,
+                    )
+
+                remaining_conflicts = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                raw_unresolved_files = [
+                    f.strip()
+                    for f in (remaining_conflicts.stdout or "").splitlines()
+                    if f.strip()
+                ]
+                unresolved_files = _filter_merge_conflict_files(raw_unresolved_files)
+
+                if unresolved_files:
+                    _log_git_agent(
+                        f"Ownership fallback left {len(unresolved_files)} unresolved file(s); retrying with AI.",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    await _resolve_conflicts_with_ai(
+                        container_name=container_name,
+                        conflict_files=unresolved_files,
+                        source_branch=branch,
+                        source_agent=source_agent,
+                        task_title=task_title,
+                        project_token=project_token,
+                    )
+
+                remaining_conflicts = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                unresolved_files = [
+                    f.strip()
+                    for f in (remaining_conflicts.stdout or "").splitlines()
+                    if f.strip()
+                ]
+                if unresolved_files:
+                    _log_git_agent(
+                        f"Failed to resolve conflicts for {branch}: {', '.join(unresolved_files[:5])}. Aborting merge.",
                         "error",
                         project_token=project_token,
                     )
@@ -2808,7 +3236,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
 
                 commit_resolved = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "commit", "-m", f"Resolved conflicts for {branch} using ownership rules"],
+                     "git", "commit", "-m", f"Resolved conflicts for {branch} using AI-assisted merge logic"],
                     capture_output=True, text=True, timeout=30,
                 )
                 commit_out = (commit_resolved.stdout or "") + (commit_resolved.stderr or "")
@@ -3689,6 +4117,641 @@ def _normalize_task_id(task: Dict[str, Any]):
         return tid
 
 
+def _note_scope_key(project_token: Optional[str]) -> str:
+    return _project_key(project_token)
+
+
+def _note_title(prefix: str, project_token: Optional[str], scope: str) -> str:
+    return f"{prefix}::{_note_scope_key(project_token)}::{scope}"
+
+
+def _note_user_for_agent(agent_id: str) -> str:
+    match = _re.match(r"agent_0*([0-9]+)$", str(agent_id or "").strip())
+    if match:
+        return f"agent{int(match.group(1))}"
+    sanitized = _re.sub(r"[^a-zA-Z0-9_-]+", "", str(agent_id or "").strip())
+    return sanitized or "agent"
+
+
+def _note_timestamp() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _parse_agent_note_content(raw_content: Any) -> Dict[str, Any]:
+    text = str(raw_content or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {"entries": [{"summary": text}]}
+
+
+def _coerce_note_entries(existing_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    entries = existing_payload.get("entries")
+    if isinstance(entries, list):
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+    legacy_entry = {}
+    for key in (
+        "task_id",
+        "task_title",
+        "status",
+        "branch",
+        "planned_files",
+        "completed_files",
+        "symbols_created",
+        "symbols_modified",
+        "next_agent_should",
+        "summary",
+        "started_at",
+        "updated_at",
+        "completed_at",
+    ):
+        value = existing_payload.get(key)
+        if value not in (None, "", [], {}):
+            legacy_entry[key] = value
+    return [legacy_entry] if legacy_entry else []
+
+
+async def _get_existing_note_payload(
+    *,
+    title: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    effective_token = task_token or get_project_task_token(project_token)
+    if not effective_token:
+        return {}
+
+    note_id = await _find_note_id_by_title(
+        title,
+        project_token=project_token,
+        task_token=effective_token,
+    )
+    if note_id is None:
+        return {}
+
+    try:
+        from task_service import task_service
+
+        detail = await task_service.get_note_detail(note_id, task_token=effective_token)
+        return _parse_agent_note_content((detail or {}).get("content"))
+    except Exception:
+        return {}
+
+
+def _merge_agent_note_entry(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(existing or {})
+
+    for key in ("task_id", "task_title", "status", "branch", "next_agent_should", "summary", "updated_at"):
+        value = incoming.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+
+    for key in ("planned_files", "completed_files", "symbols_created", "symbols_modified"):
+        value = incoming.get(key)
+        if isinstance(value, list):
+            merged[key] = value[:25]
+
+    merged["started_at"] = existing.get("started_at") or incoming.get("started_at") or incoming.get("updated_at")
+
+    status_value = str(incoming.get("status") or merged.get("status") or "").lower()
+    if status_value in {"completed", "failed"}:
+        merged["completed_at"] = incoming.get("completed_at") or existing.get("completed_at") or incoming.get("updated_at")
+    else:
+        merged.pop("completed_at", None)
+
+    return merged
+
+
+def _build_agent_note_payload(
+    *,
+    existing_payload: Dict[str, Any],
+    agent_id: str,
+    project_token: Optional[str],
+    entry: Dict[str, Any],
+) -> Dict[str, Any]:
+    entries = _coerce_note_entries(existing_payload)
+    target_idx = None
+    entry_task_id = str(entry.get("task_id") or "").strip()
+
+    for idx in range(len(entries) - 1, -1, -1):
+        candidate_task_id = str((entries[idx] or {}).get("task_id") or "").strip()
+        if candidate_task_id and candidate_task_id == entry_task_id:
+            target_idx = idx
+            break
+
+    if target_idx is None:
+        entries.append(entry)
+    else:
+        entries[target_idx] = _merge_agent_note_entry(entries[target_idx], entry)
+
+    return {
+        "project_token": _note_scope_key(project_token),
+        "agent_id": agent_id,
+        "updated_at": entry.get("updated_at") or _note_timestamp(),
+        "entries": entries[-20:],
+    }
+
+
+def _extract_note_id_from_response(data: Any) -> Optional[int]:
+    if isinstance(data, dict):
+        for key in ("id", "note_id"):
+            value = data.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return int(value)
+            except Exception:
+                continue
+    return None
+
+
+async def _find_note_id_by_title(
+    title: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Optional[int]:
+    effective_token = task_token or get_project_task_token(project_token)
+    if not effective_token:
+        return None
+
+    state = _ensure_project_state(project_token)
+    cache = state.setdefault("note_title_cache", {})
+    cached = cache.get(title)
+    if cached:
+        return cached
+
+    try:
+        from task_service import task_service
+
+        notes = await task_service.list_notes(task_token=effective_token)
+    except Exception:
+        return None
+
+    if not isinstance(notes, list):
+        return None
+
+    for note in notes:
+        if str((note or {}).get("title") or "").strip() != title:
+            continue
+        note_id = _extract_note_id_from_response(note)
+        if note_id is not None:
+            cache[title] = note_id
+            return note_id
+
+    return None
+
+
+async def _upsert_agent_note(
+    *,
+    title: str,
+    content_payload: Dict[str, Any],
+    user: Optional[str],
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    effective_token = task_token or get_project_task_token(project_token)
+    if not effective_token:
+        return {"success": False, "skipped": True, "reason": "missing_task_token"}
+
+    try:
+        from task_service import task_service
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+    note_id = await _find_note_id_by_title(
+        title,
+        project_token=project_token,
+        task_token=effective_token,
+    )
+
+    payload = {
+        "title": title,
+        "content": json.dumps(content_payload, ensure_ascii=True, sort_keys=True, indent=2),
+    }
+    if note_id is not None:
+        payload["note_id"] = note_id
+    if user:
+        payload["user"] = user
+
+    try:
+        result = await task_service.upsert_note(payload, task_token=effective_token)
+        resolved_note_id = _extract_note_id_from_response(result) or note_id
+        if resolved_note_id is None:
+            resolved_note_id = await _find_note_id_by_title(
+                title,
+                project_token=project_token,
+                task_token=effective_token,
+            )
+        if resolved_note_id is not None:
+            _ensure_project_state(project_token).setdefault("note_title_cache", {})[title] = resolved_note_id
+        return {
+            "success": True,
+            "note_id": resolved_note_id,
+            "result": result,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def _publish_agent_status_note(
+    *,
+    agent_id: str,
+    task: Dict[str, Any],
+    status: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    planned_files: Optional[List[str]] = None,
+    completed_files: Optional[List[str]] = None,
+    symbols_created: Optional[List[str]] = None,
+    symbols_modified: Optional[List[str]] = None,
+    next_agent_should: str = "",
+    summary: str = "",
+) -> Dict[str, Any]:
+    task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "unknown")
+    title = _note_title("STATUS", project_token, agent_id)
+    timestamp = _note_timestamp()
+    existing_payload = await _get_existing_note_payload(
+        title=title,
+        project_token=project_token,
+        task_token=task_token,
+    )
+    entry = {
+        "task_id": task_id,
+        "task_title": task.get("title") or task.get("taskName") or "Untitled task",
+        "status": status,
+        "branch": branch_name or "",
+        "planned_files": list(planned_files or [])[:25],
+        "completed_files": list(completed_files or [])[:25],
+        "symbols_created": list(symbols_created or [])[:25],
+        "symbols_modified": list(symbols_modified or [])[:25],
+        "next_agent_should": next_agent_should,
+        "summary": summary or _to_single_line(task.get("description") or ""),
+        "started_at": timestamp,
+        "updated_at": timestamp,
+    }
+    if str(status).lower() in {"completed", "failed"}:
+        entry["completed_at"] = timestamp
+
+    payload = _build_agent_note_payload(
+        existing_payload=existing_payload,
+        agent_id=agent_id,
+        project_token=project_token,
+        entry=entry,
+    )
+    return await _upsert_agent_note(
+        title=title,
+        content_payload=payload,
+        user=_note_user_for_agent(agent_id),
+        project_token=project_token,
+        task_token=task_token,
+    )
+
+
+async def _publish_task_handoff_note(
+    *,
+    agent_id: str,
+    task: Dict[str, Any],
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    completed_files: Optional[List[str]] = None,
+    symbols_created: Optional[List[str]] = None,
+    symbols_modified: Optional[List[str]] = None,
+    summary: str = "",
+) -> Dict[str, Any]:
+    completed = list(completed_files or [])[:25]
+    next_agent_should = (
+        f"Continue from these files: {', '.join(completed[:5])}. "
+        "Do not recreate the same feature in alternate directories."
+        if completed
+        else "Use the latest merged branch artifacts and extend them instead of recreating them."
+    )
+    return await _publish_agent_status_note(
+        agent_id=agent_id,
+        task=task,
+        status="completed",
+        project_token=project_token,
+        task_token=task_token,
+        branch_name=branch_name,
+        completed_files=completed,
+        symbols_created=symbols_created,
+        symbols_modified=symbols_modified,
+        next_agent_should=next_agent_should,
+        summary=summary,
+    )
+
+
+_TASK_PHASE_ORDER = {
+    "foundation": 1,
+    "backend-core": 2,
+    "backend-features": 3,
+    "frontend-core": 4,
+    "frontend-features": 5,
+    "integration": 6,
+}
+
+
+def _get_task_priority_score(task: Dict[str, Any]) -> int:
+    priority = str(task.get("priority") or "medium").lower()
+    return {"high": 3, "medium": 2, "low": 1}.get(priority, 2)
+
+
+def _get_task_phase_order(task: Dict[str, Any]) -> int:
+    phase = str(task.get("phase") or task.get("task_phase") or "").lower().strip()
+    return _TASK_PHASE_ORDER.get(phase, 99)
+
+
+def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered = list(tasks or [])
+    ordered.sort(
+        key=lambda task: (
+            -_get_task_priority_score(task),
+            _get_task_phase_order(task),
+            str(_normalize_task_id(task) or task.get("id") or ""),
+        )
+    )
+    return ordered
+
+
+def _normalize_task_domain(task: Dict[str, Any]) -> Optional[str]:
+    raw_domain = str(task.get("domain") or task.get("task_domain") or "").lower().strip()
+    if raw_domain in {"backend", "frontend", "integration", "foundation"}:
+        return raw_domain
+
+    phase = str(task.get("phase") or task.get("task_phase") or "").lower().strip()
+    if phase.startswith("backend"):
+        return "backend"
+    if phase.startswith("frontend"):
+        return "frontend"
+    if phase == "integration":
+        return "integration"
+    if phase == "foundation":
+        return "foundation"
+
+    text = " ".join(
+        str(task.get(part) or "")
+        for part in ("title", "taskName", "description")
+    ).lower()
+    if any(token in text for token in ("react", "frontend", "ui", "component", "vite", "css", "jsx", "tsx")):
+        return "frontend"
+    if any(token in text for token in ("backend", "api", "database", "schema", "sql", "fastapi", "python")):
+        return "backend"
+
+    return raw_domain or None
+
+
+def _extract_task_paths_from_text(text: str) -> List[str]:
+    content = str(text or "")
+    if not content:
+        return []
+
+    patterns = [
+        r"`([^`\n]+\.[A-Za-z0-9]+)`",
+        r"([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+)",
+        r"((?:backend|frontend|src|app|api|routes|services|components)/[A-Za-z0-9_./-]+)",
+        r"\b([A-Za-z0-9_.-]+\.(?:py|js|jsx|ts|tsx|json|yml|yaml|md|sql|css|scss|html))\b",
+    ]
+
+    matches: List[str] = []
+    for pattern in patterns:
+        matches.extend(_re.findall(pattern, content))
+
+    normalized = []
+    seen = set()
+    for item in matches:
+        candidate = str(item or "").strip().strip(".,:;()[]{}<>\"'")
+        if not candidate:
+            continue
+        candidate = candidate.replace("\\", "/")
+        if candidate.startswith("/workspace/"):
+            candidate = candidate[len("/workspace/"):]
+        if candidate.startswith("./"):
+            candidate = candidate[2:]
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _extend_paths_from_value(target: List[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        target.extend(_extract_task_paths_from_text(value))
+        return
+    if isinstance(value, dict):
+        for nested in value.values():
+            _extend_paths_from_value(target, nested)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _extend_paths_from_value(target, nested)
+
+
+def _predict_task_file_intents(task: Dict[str, Any]) -> List[str]:
+    predicted = list(task.get("_predicted_files") or [])
+    if predicted:
+        return predicted
+
+    candidates: List[str] = []
+    for key in (
+        "affected_files",
+        "file_paths",
+        "files",
+        "target_files",
+        "paths",
+        "touch_files",
+        "artifacts",
+        "deliverables",
+    ):
+        _extend_paths_from_value(candidates, task.get(key))
+
+    _extend_paths_from_value(candidates, task.get("title"))
+    _extend_paths_from_value(candidates, task.get("taskName"))
+    _extend_paths_from_value(candidates, task.get("description"))
+    _extend_paths_from_value(candidates, task.get("summary"))
+    _extend_paths_from_value(candidates, task.get("acceptance_criteria"))
+    _extend_paths_from_value(candidates, task.get("checklist"))
+
+    normalized: List[str] = []
+    seen = set()
+    for path in candidates:
+        candidate = str(path or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+
+    task["_predicted_files"] = normalized[:25]
+    return task["_predicted_files"]
+
+
+def _task_is_fix_task(task: Dict[str, Any]) -> bool:
+    task_name = str(task.get("taskName") or task.get("title") or "").lower()
+    return "fix" in task_name or "bug" in task_name
+
+
+def _check_task_conflicts(
+    agent_id: str,
+    task: Dict[str, Any],
+    live_mem: Any,
+    project_token: Optional[str] = None,
+) -> tuple[bool, str]:
+    task_domain = _normalize_task_domain(task)
+    predicted_files = _predict_task_file_intents(task)
+    if task_domain:
+        task["_resolved_task_domain"] = task_domain
+
+    if not live_mem:
+        return False, ""
+
+    if predicted_files:
+        if project_token:
+            try:
+                import context_manager as ctx_mgr
+
+                contract_validation = ctx_mgr.validate_paths_against_workspace_contract(
+                    project_token,
+                    predicted_files,
+                    task_domain=task_domain,
+                )
+                if not contract_validation.get("allowed", True):
+                    violations = contract_validation.get("violations") or []
+                    return True, "; ".join(violations[:5])
+            except Exception:
+                pass
+
+        blocked = []
+        if task_domain in {"backend", "frontend"}:
+            for file_path in predicted_files:
+                allowed, reason = live_mem.can_agent_edit_file(task_domain, file_path)
+                if not allowed:
+                    blocked.append(f"{file_path}: {reason}")
+        if blocked:
+            return True, "; ".join(blocked[:5])
+
+        conflict_map = live_mem.get_file_conflicts(agent_id, predicted_files)
+        if conflict_map:
+            compact = [
+                f"{path} -> {', '.join(sorted(editors))}"
+                for path, editors in sorted(conflict_map.items())
+            ]
+            return True, "; ".join(compact[:5])
+    elif task_domain in {"backend", "frontend"}:
+        with live_mem._lock:
+            for other_agent_id, record in live_mem.active_tasks.items():
+                if other_agent_id == agent_id:
+                    continue
+                if record.task_domain == task_domain and not record.files_touched:
+                    return True, (
+                        f"domain '{task_domain}' already busy by {other_agent_id} "
+                        f"for '{record.task_title}'"
+                    )
+
+    return False, ""
+
+
+async def _claim_initial_task_assignments(
+    agents_config: Dict[str, Dict[str, str]] = None,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Prepare the initial batch of tasks for the supervisor workflow.
+    Uses the same task-picking rules as the continuous agent loop.
+    """
+    state = _ensure_project_state(project_token)
+    if task_token:
+        state["task_token"] = task_token
+    project_agents = state["agent_states"]
+
+    idle_agents = [
+        a for a in project_agents.values()
+        if a["status"] == "idle" and not _is_system_agent_id(a["id"])
+    ]
+    if not idle_agents:
+        raise ValueError("No idle agents. Reset agents or add new ones.")
+
+    for agent in idle_agents:
+        agent["status"] = "running"
+        agent["progress"] = 0
+        agent["output_log"] = []
+        agent["progress_message"] = "Supervisor is planning work..."
+
+    try:
+        external_tasks = await _fetch_external_tasks(project_token)
+        if not external_tasks:
+            raise ValueError("No tasks available from the external task API. Generate tasks first.")
+    except Exception as exc:
+        for agent in idle_agents:
+            agent["status"] = "idle"
+            agent["progress"] = 0
+            agent["progress_message"] = ""
+            agent["error"] = str(exc)
+        raise
+
+    if agents_config:
+        for agent in idle_agents:
+            agent_cfg = agents_config.get(agent["id"]) or {}
+            repo_val = agent_cfg.get("git_repo_url")
+            token_val = agent_cfg.get("git_token")
+            if repo_val:
+                agent["git_repo_url"] = repo_val.strip()
+            if token_val:
+                agent["git_token"] = token_val.strip()
+
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
+    except Exception:
+        live_mem = None
+        workspace_contract = {"status": "insufficient"}
+
+    bootstrap_mode = workspace_contract.get("status") != "ready"
+    planning_agents = idle_agents
+    if bootstrap_mode:
+        planning_agents = sorted(idle_agents, key=lambda item: item["id"])[:1]
+        for agent in idle_agents:
+            if agent not in planning_agents:
+                agent["status"] = "idle"
+                agent["progress"] = 0
+                agent["progress_message"] = "Waiting for workspace contract bootstrap"
+
+    assignments = []
+    for agent in planning_agents:
+        task = await _pick_next_task(
+            agent["id"],
+            project_token=project_token,
+            task_token=task_token,
+        )
+        if task:
+            predicted_files = _predict_task_file_intents(task)
+            if live_mem and predicted_files:
+                live_mem.register_file_intent(agent["id"], predicted_files)
+            assignments.append((agent["id"], task))
+        else:
+            agent["status"] = "idle"
+            agent["progress"] = 0
+            agent["progress_message"] = "No tasks available"
+
+    if not assignments:
+        raise ValueError("No unclaimed tasks available.")
+
+    return {
+        "idle_agents": [agent["id"] for agent in idle_agents],
+        "assignments": assignments,
+    }
+
+
 async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
     """Post task message with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
@@ -4189,6 +5252,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     try:
         import context_manager as ctx_mgr
         live_mem = ctx_mgr.get_live_memory(project_token or "")
+        workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
         if live_mem.is_integration_blocked():
             # Only allow tasks with "fix" or "Fix" in the name when integration is blocked
             integration_blocked = True
@@ -4197,8 +5261,21 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         current_phase = live_mem.get_current_phase()
     except Exception:
         live_mem = None
+        workspace_contract = {"status": "insufficient"}
         integration_blocked = False
         current_phase = None
+
+    if live_mem and workspace_contract.get("status") != "ready":
+        with live_mem._lock:
+            other_active = [
+                aid for aid in live_mem.active_tasks
+                if aid != agent_id and not _is_system_agent_id(aid)
+            ]
+        if other_active:
+            logger.info(
+                f"[{agent_id}] Workspace contract not ready; waiting for bootstrap agent(s): {other_active}"
+            )
+            return None
     
     external_tasks = await _fetch_external_tasks(project_token)
     
@@ -4212,29 +5289,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     except Exception:
         pass
     
-    # Sort tasks by priority (high first), then by phase order, then by task_id
-    PHASE_ORDER = {
-        "foundation": 1,
-        "backend-core": 2,
-        "backend-features": 3,
-        "frontend-core": 4,
-        "frontend-features": 5,
-        "integration": 6,
-    }
-    
-    def get_priority_score(task: Dict[str, Any]) -> int:
-        priority = (task.get("priority") or "medium").lower()
-        return {"high": 3, "medium": 2, "low": 1}.get(priority, 2)
-    
-    def get_phase_order(task: Dict[str, Any]) -> int:
-        phase = task.get("phase") or task.get("task_phase") or ""
-        return PHASE_ORDER.get(phase, 99)  # Unknown phases go last
-    
-    external_tasks.sort(key=lambda t: (
-        -get_priority_score(t),
-        get_phase_order(t),
-        str(_normalize_task_id(t) or t.get("id") or "")
-    ))
+    external_tasks = _sort_tasks_for_execution(external_tasks)
     
     for t in external_tasks:
         tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
@@ -4289,7 +5344,12 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
                 )
                 continue  # Skip this task, try next one
-        
+
+            blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+            if blocked:
+                logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                continue
+
         # All checks passed - claim this task
         claimed_task_ids.add(tid)
         # Also claim its linked tasks
@@ -4529,6 +5589,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             task["status"] = "in_progress"
             task["assigned_agent"] = agent_id
             task["started_at"] = datetime.utcnow().isoformat()
+            coordination_branch = (force_branch if force_branch else _branch_name_for_task(task)) if use_git else None
 
             # ── Register in Cross-Agent Shared Memory ────────────────
             try:
@@ -4536,19 +5597,22 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 live_mem = ctx_mgr.get_live_memory(project_token or "")
                 task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
                 task_phase = task.get("phase") or task.get("task_phase")
-                task_domain = task.get("domain") or task.get("task_domain")
+                task_domain = task.get("_resolved_task_domain") or task.get("domain") or task.get("task_domain") or _normalize_task_domain(task)
                 task_deps = task.get("dependencies", [])
+                predicted_files = _predict_task_file_intents(task)
                 
                 live_mem.register_task_start(
                     agent_id=agent_id,
                     task_title=task.get("title", "Untitled"),
                     task_description=task.get("description", "")[:500],
-                    branch_name=(force_branch if force_branch else _branch_name_for_task(task)) if use_git else None,
+                    branch_name=coordination_branch,
                     task_id=task_id,
                     task_phase=task_phase,
                     task_domain=task_domain,
                     dependencies=[str(d) for d in task_deps],
                 )
+                if predicted_files:
+                    live_mem.register_file_intent(agent_id, predicted_files)
                 other_active = [
                     aid for aid in live_mem.active_tasks
                     if aid != agent_id
@@ -4562,6 +5626,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         f" | {len(other_active)} peer(s) active"
                         f", {completed_count} task(s) in history"
                         + (f" | peers: {', '.join(other_active)}" if other_active else "")
+                        + (f" | planned files: {', '.join(predicted_files[:4])}" if predicted_files else "")
                     )
                 })
             except Exception as mem_err:
@@ -4569,6 +5634,31 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
                     "message": f"Cross-agent memory: skipped ({str(mem_err)[:80]})"
+                })
+
+            try:
+                planned_files = _predict_task_file_intents(task)
+                note_result = await _publish_agent_status_note(
+                    agent_id=agent_id,
+                    task=task,
+                    status="in_progress",
+                    project_token=project_token,
+                    task_token=task_token,
+                    branch_name=coordination_branch,
+                    planned_files=planned_files,
+                    summary=_to_single_line(task.get("description") or ""),
+                )
+                if note_result.get("success"):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "Coordination note updated: live status published"
+                    })
+            except Exception as note_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Coordination note skipped: {str(note_err)[:80]}"
                 })
             
             # Map "agent_01" -> "agent1"
@@ -4761,6 +5851,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 project_token=project_token,
                                 task_description="Full system architecture overview",
                                 agent_id="architect_agent",
+                                task_token=task_token,
                             )
                     except Exception:
                         pass
@@ -4804,6 +5895,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         task_description=task.get("description", ""),
                         task_type=task.get("task_type"),
                         agent_id=agent_id,
+                        task_token=task_token,
                     )
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -5249,6 +6341,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 project_token=project_token or "",
                                 task_description=linked_task.get("description", lt_title),
                                 task_type=linked_task.get("task_type"),
+                                task_token=task_token,
                             )
                     except Exception:
                         pass
@@ -5754,6 +6847,49 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     ),
                 )
 
+                try:
+                    note_branch = ((commit_result or {}).get("branch") if isinstance(commit_result, dict) else None) or branch_name or coordination_branch
+                    note_status = "completed" if result["exit_code"] == 0 else "failed"
+                    status_summary = (
+                        f"{'Completed' if result['exit_code'] == 0 else 'Failed'} task "
+                        f"'{task['title']}' in {elapsed}s. "
+                        f"Touched {len(touched_files)} files and generated "
+                        f"{len(symbols.get('created', []))} new symbols."
+                    )
+                    status_note = await _publish_agent_status_note(
+                        agent_id=agent_id,
+                        task=task,
+                        status=note_status,
+                        project_token=project_token,
+                        task_token=task_token,
+                        branch_name=note_branch,
+                        planned_files=_predict_task_file_intents(task),
+                        completed_files=touched_files,
+                        symbols_created=symbols.get("created", []),
+                        symbols_modified=symbols.get("modified", []),
+                        next_agent_should=(
+                            (
+                                f"Continue from these files: {', '.join(touched_files[:5])}. "
+                                "Extend the existing implementation instead of recreating it."
+                            )
+                            if result["exit_code"] == 0 and touched_files
+                            else "Inspect the failed task context and resume from the same planned files."
+                        ),
+                        summary=status_summary,
+                    )
+                    if status_note.get("success"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Coordination note updated: {note_status} status published"
+                        })
+                except Exception as note_err:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Coordination note publish skipped: {str(note_err)[:80]}"
+                    })
+
                 # 2) Feed generated code back into the Knowledge Graph + RAG
                 #    This is the core Blitzy pattern: KG as living source of truth.
                 #    Only do this for successful builds — failed code shouldn't
@@ -5861,6 +6997,47 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         })
         agent["last_run"] = datetime.utcnow().isoformat()
         agent["current_task"] = None
+
+        try:
+            import context_manager as ctx_mgr
+            live_mem = ctx_mgr.get_live_memory(project_token or "")
+            if task:
+                live_mem.register_task_complete(
+                    agent_id=agent_id,
+                    files_touched=_predict_task_file_intents(task),
+                    exit_code=1,
+                    summary=str(e)[:300],
+                )
+            live_mem.release_file_intent(agent_id)
+        except Exception:
+            pass
+
+        if task:
+            try:
+                active_branch = locals().get("branch_name") or locals().get("coordination_branch") or force_branch
+                note_result = await _publish_agent_status_note(
+                    agent_id=agent_id,
+                    task=task,
+                    status="failed",
+                    project_token=project_token,
+                    task_token=task_token,
+                    branch_name=active_branch,
+                    planned_files=_predict_task_file_intents(task),
+                    next_agent_should="Resume or repair this task in the same files instead of starting a parallel implementation.",
+                    summary=str(e)[:300],
+                )
+                if note_result.get("success"):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "Coordination note updated: failure status published"
+                    })
+            except Exception as note_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Coordination failure note skipped: {str(note_err)[:80]}"
+                })
 
         # Clean up container on error
         if container_created:
@@ -6727,6 +7904,17 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
     Each agent keeps picking the next uncompleted task after finishing its current one,
     only stopping when ALL tasks are done. Agents run concurrently.
     """
+    try:
+        import langgraph_workflow
+
+        return await langgraph_workflow.run_agent_supervisor_workflow(
+            agents_config=agents_config,
+            project_token=project_token,
+            task_token=task_token,
+        )
+    except ImportError as exc:
+        logger.warning("LangGraph workflow unavailable, falling back to legacy runner: %s", exc)
+
     state = _ensure_project_state(project_token)
     if task_token:
         state["task_token"] = task_token

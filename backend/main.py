@@ -3997,6 +3997,13 @@ class TaskOptInRequest(BaseModel):
     task_id: int
     username: str
 
+
+class AgentNoteUpsertRequest(BaseModel):
+    note_id: Optional[int] = None
+    title: str
+    content: str
+    user: Optional[str] = None
+
 @app.post("/api/agent/tasks/")
 async def create_external_agent_task(
     task: AgentTaskCreate,
@@ -4226,6 +4233,50 @@ async def get_agent_dashboard(
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard info: {e}")
+
+
+@app.put("/api/agent/notes/")
+async def upsert_agent_note(
+    payload: AgentNoteUpsertRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Create or update an agent note in the external task management API."""
+    try:
+        return await task_service.upsert_note(payload.dict(exclude_none=True), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to save note")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save note: {e}")
+
+
+@app.get("/api/agent/notes/")
+async def list_agent_notes(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """List agent notes from the external task management API."""
+    try:
+        return await task_service.list_notes(task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch notes")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch notes: {e}")
+
+
+@app.get("/api/agent/notes/{note_id}/")
+async def get_agent_note_detail(
+    note_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Fetch one agent note from the external task management API."""
+    try:
+        return await task_service.get_note_detail(note_id, task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch note detail")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch note detail: {e}")
 
 class AutoGenerateRequest(BaseModel):
     project_token: str
@@ -5225,4 +5276,3 @@ if __name__ == "__main__":
         port=settings.port,
         reload=False,
     )
-
