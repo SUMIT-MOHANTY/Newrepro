@@ -114,7 +114,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
     // Map step labels to navigable routes
     const STEP_ROUTES = {
         'Project Initiation': '/new-project',
-        'Governance': '/new-project',
+        'Governance': '/new-project/governance',
         'Requirement Screening': '/dashboard',
         'AI Analysis': '/dashboard',
         'Agent Analysis': '/dashboard',

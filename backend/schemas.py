@@ -122,6 +122,9 @@ class GovernanceSubmission(BaseModel):
     """User submits answers to all 17 questions"""
     project_name: str
     answers: list[GovernanceAnswer]  # All 17 answers
+    project_token: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
 
 class GovernanceDimensionScores(BaseModel):
     """Calculated dimension scores (each 0-10)"""

@@ -1,3 +1,5 @@
+import { clearDraftProjects } from './draftProjects';
+
 const PUBLIC_AUTH_PATHS = new Set(['/login', '/signup', '/', '/sso/callback']);
 
 let isAuthRedirectInProgress = false;
@@ -9,6 +11,7 @@ export const clearAuthData = () => {
     localStorage.removeItem('governanceContext');
     sessionStorage.removeItem('governanceResult');
     sessionStorage.removeItem('governanceContext');
+    clearDraftProjects();
 };
 
 export const logoutAndRedirect = () => {

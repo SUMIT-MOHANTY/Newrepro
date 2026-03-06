@@ -4,6 +4,7 @@ import { API_ENDPOINTS } from '../config';
 import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
 import colors from '../styles/colors';
+import { createDraftProject, getDraftProject, upsertDraftProject } from '../utils/draftProjects';
 /* ─────────────────────────────────────────────────────────
    STEP INDICATOR  (compact, responsive)
 ───────────────────────────────────────────────────────── */
@@ -81,14 +82,41 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
 /* ─────────────────────────────────────────────────────────
    MAIN FORM COMPONENT
 ───────────────────────────────────────────────────────── */
-const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
+const GovernanceForm = ({
+    fetchRoadmapData,
+    selectedProjectKey,
+    setSelectedProjectKey,
+    setIsNewProjectMode,
+    fetchHistory,
+    projects = [],
+}) => {
     const navigate = useNavigate();
     const location = useLocation();
     const { data: questionsData, isLoading: loading, error: queryError } = useGovernanceQuestions();
     const { mutate: submitGovernance, isPending: submitting } = useSubmitGovernance();
     const isGovernanceQuestionsPage = location.pathname.endsWith('/governance');
     const initiationPath = '/new-project';
-    const governancePath = '/new-project/governance';
+    const projectStorageKey = 'status_dashboard_selected_project_key';
+    const persistedDraftProject = getDraftProject(selectedProjectKey);
+    const selectedProject = (() => {
+        const projectFromList = projects.find((project) => project.key === selectedProjectKey) || null;
+        if (!projectFromList) return persistedDraftProject || null;
+        if (!persistedDraftProject) return projectFromList;
+        return {
+            ...persistedDraftProject,
+            ...projectFromList,
+            documents: projectFromList.documents?.length ? projectFromList.documents : persistedDraftProject.documents,
+            latestRevision: projectFromList.latestRevision || persistedDraftProject.latestRevision,
+            status: projectFromList.status === 'analysis_complete' || persistedDraftProject.status === 'analysis_complete'
+                ? 'analysis_complete'
+                : projectFromList.status,
+        };
+    })();
+    const hasExistingAnalysis = Boolean(
+        selectedProject?.status === 'analysis_complete' ||
+        selectedProject?.latestDocument?.analysis_result ||
+        selectedProject?.documents?.length
+    );
 
     const questions = questionsData?.questions || [];
 
@@ -130,6 +158,19 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
         const params = new URLSearchParams(location.search);
         const nameFromUrl = params.get('projectName');
         const isNew = params.get('new');
+        const draftProject = getDraftProject(selectedProjectKey) || selectedProject || null;
+        const currentProjectName = String(draftProject?.name || '').trim();
+        const matchesCurrentProject = (payload) => {
+            if (!payload || typeof payload !== 'object') return false;
+
+            const payloadToken = String(payload.project_token || '').trim();
+            if (selectedProjectKey && payloadToken) {
+                return payloadToken === String(selectedProjectKey);
+            }
+
+            const payloadName = String(payload.project_name || '').trim().toLowerCase();
+            return Boolean(payloadName && currentProjectName && payloadName === currentProjectName.toLowerCase());
+        };
 
         setTimeout(() => {
             if (isNew) {
@@ -153,7 +194,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
             }
 
             const savedContext = getStoredJson('governanceContext');
-            if (savedContext && !nameFromUrl) {
+            if (savedContext && !nameFromUrl && matchesCurrentProject(savedContext)) {
                 if (savedContext.project_name) setProjectName(savedContext.project_name);
                 if (Array.isArray(savedContext.answers)) {
                     const r = {};
@@ -164,9 +205,16 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                     setAnswers(r);
                 }
             }
+            if (!nameFromUrl && currentProjectName) {
+                setProjectName(currentProjectName);
+            }
 
             const savedResult = getStoredJson('governanceResult');
-            if (savedResult) setResult(savedResult);
+            if (savedResult && matchesCurrentProject(savedResult)) {
+                setResult(savedResult);
+            } else {
+                setResult(null);
+            }
 
             const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
             let persistedStep = 0;
@@ -189,7 +237,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
             }
             setIsHydrated(true);
         }, 0);
-    }, [location.search, location.pathname, navigate, isGovernanceQuestionsPage, selectedProjectKey]);
+    }, [location.search, location.pathname, navigate, isGovernanceQuestionsPage, selectedProjectKey, selectedProject]);
 
     // Persist current wizard step so the global tracker can highlight
     // Project Initiation vs Governance appropriately while filling the form.
@@ -215,7 +263,6 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
         if (!isHydrated) return;
         if (!isGovernanceQuestionsPage) return;
         if (projectName.trim()) return;
-        setError('Please complete Project Initiation first.');
         navigate(initiationPath, { replace: true });
     }, [isHydrated, isGovernanceQuestionsPage, projectName, navigate]);
 
@@ -259,6 +306,9 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                 score: a.score,
                 selected_option: a.selected_option,
             })),
+            project_token: selectedProject?.projectToken || selectedProjectKey || undefined,
+            client_id: selectedProject?.client_id || undefined,
+            client_secret: selectedProject?.client_secret || undefined,
         };
 
         submitGovernance(submission, {
@@ -280,6 +330,17 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                     };
                     persistGovernanceData(ctx, normalizedResultData);
                     setResult(normalizedResultData);
+                    upsertDraftProject({
+                        key: resultData.project_token || selectedProjectKey,
+                        name: projectName,
+                        client_id: resultData.client_id || submission.client_id || null,
+                        client_secret: resultData.client_secret || submission.client_secret || null,
+                    });
+                    if (resultData.project_token) {
+                        setSelectedProjectKey?.(String(resultData.project_token));
+                    }
+                    setIsNewProjectMode?.(false);
+                    fetchHistory?.();
 
                     // Auto-refresh roadmap stepper after governance submission
                     if (fetchRoadmapData) {
@@ -288,7 +349,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                     }
 
                     // If all questions were skipped, jump straight to Requirement Screening (BRD upload)
-                    if (allSkipped && resultData.project_token) {
+                    if (allSkipped && resultData.project_token && !hasExistingAnalysis) {
                         window.location.href = `/a/${resultData.project_token}`;
                     }
                 } catch (err) {
@@ -317,7 +378,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     }
 
     if (result) {
-        return <GovernanceResult result={result} onBack={() => setResult(null)} />;
+        return <GovernanceResult result={result} onBack={() => setResult(null)} hasAnalysis={hasExistingAnalysis} />;
     }
 
     /* ── build dimension list ── */
@@ -330,7 +391,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
     // Cross-page flow:
     // /new-project -> Project Initiation only
-    // /new-project/governance -> Steps 2..8 (dimensions + review)
+    // /new-project/governance -> Governance questionnaire after screening + analysis
     const TOTAL_STEPS = dimensions.length + 2;
     const governanceStepLabels = [...dimensions.map((d) => d.split(' ')[0]), 'Review'];
     const sidebarStepLabels = isGovernanceQuestionsPage ? governanceStepLabels : ['Project Initiation'];
@@ -351,6 +412,37 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
         return true;
     };
 
+    const continueToScreening = () => {
+        const draftProject = upsertDraftProject(createDraftProject(projectName, {
+            key: selectedProject?.projectToken || selectedProjectKey || undefined,
+            client_id: selectedProject?.client_id || null,
+            client_secret: selectedProject?.client_secret || null,
+        }));
+
+        if (!draftProject?.projectToken) {
+            setError('Unable to create the project. Please try again.');
+            return;
+        }
+
+        try {
+            localStorage.setItem(projectStorageKey, draftProject.key);
+        } catch {
+            // Ignore storage access errors in restricted browser contexts.
+        }
+
+        setSelectedProjectKey?.(draftProject.key);
+        setIsNewProjectMode?.(false);
+
+        const targetPath = `/a/${draftProject.projectToken}`;
+        navigate(targetPath, { replace: true });
+
+        window.setTimeout(() => {
+            if (window.location.pathname !== targetPath) {
+                window.location.assign(targetPath);
+            }
+        }, 0);
+    };
+
     const goNext = () => {
         if (!canProceed()) {
             if (!isGovernanceQuestionsPage || currentStep === 0) setError('Please enter a project name before continuing.');
@@ -359,7 +451,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
         }
         setError('');
         if (!isGovernanceQuestionsPage) {
-            navigate(governancePath);
+            continueToScreening();
             return;
         }
         setCurrentStep((s) => Math.min(s + 1, TOTAL_STEPS - 1));
@@ -676,7 +768,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                             : 'bg-gray-300 cursor-not-allowed shadow-none'
                                             }`}
                                     >
-                                        {!isGovernanceQuestionsPage ? 'Continue to Governance' : currentStep === dimensions.length ? 'Review' : 'Next'}
+                                        {!isGovernanceQuestionsPage ? 'Continue to Screening' : currentStep === dimensions.length ? 'Review' : 'Next'}
                                         <ChevronRight className="w-4 h-4" />
                                     </button>
                                 )}
@@ -736,7 +828,7 @@ const ScoreRing = ({ score, max = 10, size = 120, stroke = 10 }) => {
     );
 };
 
-const GovernanceResult = ({ result, onBack }) => {
+const GovernanceResult = ({ result, onBack, hasAnalysis = false }) => {
     if (!result) {
         return <div className="text-red-700 p-6">Error: No result data available.</div>;
     }
@@ -782,7 +874,7 @@ const GovernanceResult = ({ result, onBack }) => {
                             </div>
 
                             <div className="flex-1 min-w-0">
-                                <p className="text-white/70 text-xs font-semibold uppercase tracking-widest mb-1">Requirement Screening Result</p>
+                                <p className="text-white/70 text-xs font-semibold uppercase tracking-widest mb-1">Governance Result</p>
                                 <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-1 truncate">
                                     {theme.emoji} {theme.label}
                                 </h1>
@@ -1007,11 +1099,11 @@ const GovernanceResult = ({ result, onBack }) => {
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
-                                window.location.href = `/a/${result.project_token}`;
+                                window.location.href = hasAnalysis ? '/prerequisites' : `/a/${result.project_token}`;
                             }}
                             className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
                         >
-                            <ArrowRight className="w-4 h-4" /> Proceed to Upload BRD
+                            <ArrowRight className="w-4 h-4" /> {hasAnalysis ? 'Proceed to Prerequisites' : 'Proceed to Requirement Screening'}
                         </button>
                     )}
                     <button

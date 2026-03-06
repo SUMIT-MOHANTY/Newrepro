@@ -1858,24 +1858,58 @@ async def submit_governance_response(
 
     recommendation_text = _generate_recommendation(scoring_result, answers_dict)
 
-    # Save response to database
-    db_response = models.GovernanceResponse(
-        owner_id=current_user.id,
-        project_token=str(uuid.uuid4()),
-        project_name=request.project_name,
-        answers=detailed_answers,
-        business_value_score=scoring_result["dimension_scores"].get("Business Value & Urgency"),
-        data_sensitivity_score=scoring_result["dimension_scores"].get("Data Sensitivity"),
-        integration_complexity_score=scoring_result["dimension_scores"].get("Integration & Architecture Complexity"),
-        operational_impact_score=scoring_result["dimension_scores"].get("Operational Impact"),
-        ai_risk_score=scoring_result["dimension_scores"].get("AI Risk"),
-        ownership_score=scoring_result["dimension_scores"].get("Ownership & Support"),
-        weighted_score=scoring_result["weighted_score"],
-        classification=scoring_result["classification"],
-        recommendation=recommendation_text,
-    )
-    
-    db.add(db_response)
+    project_token = _normalize_project_token(request.project_token) or str(uuid.uuid4())
+    db_response = None
+
+    if request.project_token:
+        db_response = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id == current_user.id,
+            models.GovernanceResponse.project_token == project_token,
+        ).first()
+        if not db_response:
+            conflicting_response = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == project_token,
+            ).first()
+            if conflicting_response and conflicting_response.owner_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Project token is not available for this user")
+
+    if db_response:
+        db_response.project_name = request.project_name
+        db_response.submission_date = datetime.utcnow()
+        db_response.answers = detailed_answers
+        db_response.business_value_score = scoring_result["dimension_scores"].get("Business Value & Urgency")
+        db_response.data_sensitivity_score = scoring_result["dimension_scores"].get("Data Sensitivity")
+        db_response.integration_complexity_score = scoring_result["dimension_scores"].get("Integration & Architecture Complexity")
+        db_response.operational_impact_score = scoring_result["dimension_scores"].get("Operational Impact")
+        db_response.ai_risk_score = scoring_result["dimension_scores"].get("AI Risk")
+        db_response.ownership_score = scoring_result["dimension_scores"].get("Ownership & Support")
+        db_response.weighted_score = scoring_result["weighted_score"]
+        db_response.classification = scoring_result["classification"]
+        db_response.recommendation = recommendation_text
+        if request.client_id:
+            db_response.client_id = request.client_id
+        if request.client_secret:
+            db_response.client_secret = request.client_secret
+    else:
+        db_response = models.GovernanceResponse(
+            owner_id=current_user.id,
+            project_token=project_token,
+            project_name=request.project_name,
+            answers=detailed_answers,
+            business_value_score=scoring_result["dimension_scores"].get("Business Value & Urgency"),
+            data_sensitivity_score=scoring_result["dimension_scores"].get("Data Sensitivity"),
+            integration_complexity_score=scoring_result["dimension_scores"].get("Integration & Architecture Complexity"),
+            operational_impact_score=scoring_result["dimension_scores"].get("Operational Impact"),
+            ai_risk_score=scoring_result["dimension_scores"].get("AI Risk"),
+            ownership_score=scoring_result["dimension_scores"].get("Ownership & Support"),
+            weighted_score=scoring_result["weighted_score"],
+            classification=scoring_result["classification"],
+            recommendation=recommendation_text,
+            client_id=request.client_id,
+            client_secret=request.client_secret,
+        )
+        db.add(db_response)
+
     db.commit()
     db.refresh(db_response)
     
@@ -1898,6 +1932,9 @@ async def submit_governance_response(
         classification_description=scoring_result["classification_description"],
         recommendation=recommendation_text,
         hard_stops=scoring_result["hard_stops"],
+        pending_revision_reason=db_response.pending_revision_reason,
+        client_id=db_response.client_id,
+        client_secret=db_response.client_secret,
     )
 
 
@@ -2212,9 +2249,9 @@ async def get_project_roadmap_step(
 
     Steps:
         0 - Project Initiation           (project created)
-        1 - Governance                   (governance questionnaire submitted)
-        2 - Requirement Screening        (awaiting BRD analysis)
-        3 - Agent Analysis               (BRD analysis completed)
+        1 - Requirement Screening        (awaiting BRD analysis)
+        2 - Agent Analysis               (BRD analysis completed)
+        3 - Governance                   (governance questionnaire submitted)
         4 - Prerequisite Classification  (prerequisites / credentials identified)
         5 - Task Creation                (tasks auto-generated via external API)
         6 - Resource Onboarding          (agents configured for execution)
@@ -2227,9 +2264,9 @@ async def get_project_roadmap_step(
     """
     STEP_LABELS = [
         "Project Initiation",
-        "Governance",
         "Requirement Screening",
         "Agent Analysis",
+        "Governance",
         "Prerequisite Classification",
         "Task Creation",
         "Resource Onboarding",
@@ -2250,8 +2287,8 @@ async def get_project_roadmap_step(
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Step 0 (Project Initiation) is always complete once governance exists.
-    # Step 1 (Governance) is complete once questionnaire is submitted.
-    current_step = 2  # default active step before analysis is completed
+    # Governance is intentionally shown after analysis in the roadmap sequence.
+    current_step = 1  # default active step before analysis is completed
     failed_step = None
     roadmap_project_token = _normalize_project_token(governance.project_token or str(governance.id))
 
@@ -2354,13 +2391,13 @@ async def get_project_roadmap_step(
         print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
 
     # Backend roadmap progression:
-    # Project Initiation -> Governance -> Requirement Screening -> Agent Analysis ->
+    # Project Initiation -> Requirement Screening -> Agent Analysis -> Governance ->
     # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
     # On Flight -> Complete
     PROJECT_INIT_IDX = 0
-    GOVERNANCE_IDX = 1
-    REQUIREMENT_SCREENING_IDX = 2
-    AGENT_ANALYSIS_IDX = 3
+    REQUIREMENT_SCREENING_IDX = 1
+    AGENT_ANALYSIS_IDX = 2
+    GOVERNANCE_IDX = 3
     PREREQ_IDX = 4
     TASK_CREATION_IDX = 5
     RESOURCE_ONBOARDING_IDX = 6
@@ -2371,12 +2408,11 @@ async def get_project_roadmap_step(
     step_statuses[PROJECT_INIT_IDX] = "completed"
 
     if not has_analysis:
-        step_statuses[GOVERNANCE_IDX] = "completed"
         step_statuses[REQUIREMENT_SCREENING_IDX] = "active"
     else:
-        step_statuses[GOVERNANCE_IDX] = "completed"
         step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
         step_statuses[AGENT_ANALYSIS_IDX] = "completed"
+        step_statuses[GOVERNANCE_IDX] = "completed"
         step_statuses[PREREQ_IDX] = "completed" if prerequisites_done else "active"
 
         if prerequisites_done:

@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchProjectsData, fetchRoadmapStep } from '../api/projects';
+import { getDraftProjects } from '../utils/draftProjects';
 
 export const useProjects = () => {
     return useQuery({
@@ -10,6 +11,7 @@ export const useProjects = () => {
             const { govPayload, historyPayload } = data;
             const submissions = Array.isArray(govPayload?.submissions) ? govPayload.submissions : [];
             const history = Array.isArray(historyPayload) ? historyPayload : [];
+            const draftProjects = getDraftProjects();
 
             // Build project map
             const normalizeProjectName = (name) => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -85,14 +87,31 @@ export const useProjects = () => {
 
             const builtProjects = Array.from(projectMap.values())
                 .map(project => {
+                    const draft = draftProjects.find((entry) => entry.key === project.key);
                     const docs = [...project.documents].sort(
                         (a, b) => new Date(b.upload_date || 0).getTime() - new Date(a.upload_date || 0).getTime()
                     );
-                    return { ...project, documents: docs, latestDocument: docs[0] || null, latestRevision: docs.length, status: docs.length > 0 ? 'analysis_complete' : 'ready_for_upload' };
+                    return {
+                        ...draft,
+                        ...project,
+                        projectToken: project.projectToken || draft?.projectToken || project.key,
+                        client_id: project.client_id || draft?.client_id || null,
+                        client_secret: project.client_secret || draft?.client_secret || null,
+                        documents: docs,
+                        latestDocument: docs[0] || null,
+                        latestRevision: docs.length,
+                        status: docs.length > 0 ? 'analysis_complete' : (draft?.status || 'ready_for_upload'),
+                        isDraft: !project.governanceResultId && docs.length === 0,
+                    };
                 })
+                .concat(
+                    draftProjects
+                        .filter((draft) => !projectMap.has(draft.key))
+                        .map((draft) => ({ ...draft }))
+                )
                 .sort((a, b) => {
-                    const aDate = new Date(a.submissionDate || a.latestDocument?.upload_date || 0).getTime();
-                    const bDate = new Date(b.submissionDate || b.latestDocument?.upload_date || 0).getTime();
+                    const aDate = new Date(a.submissionDate || a.createdAt || a.latestDocument?.upload_date || 0).getTime();
+                    const bDate = new Date(b.submissionDate || b.createdAt || b.latestDocument?.upload_date || 0).getTime();
                     return bDate - aDate;
                 });
 

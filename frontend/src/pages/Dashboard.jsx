@@ -13,6 +13,7 @@ import AIConfig from '../components/AIConfig';
 import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
+import { upsertDraftProject } from '../utils/draftProjects';
 
 const parseAIResponse = (text) => {
     // Strip <think>...</think> blocks that some models (e.g. minimax-m2.5) embed in content
@@ -265,6 +266,7 @@ const Dashboard = ({
     user: propUser,
     projects: propProjects,
     projectsLoading: propProjectsLoading,
+    fetchHistory: refreshProjects,
     selectedProjectKey: propSelectedProjectKey,
     setSelectedProjectKey: propSetSelectedProjectKey,
     showSettings: propShowSettings,
@@ -428,6 +430,7 @@ const Dashboard = ({
         return allAnswersSkipped || hasSkipFollowUpDescription;
     })();
     const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
+    const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
     const isEnterpriseUploadBlocked = isEnterpriseProject && !isAllGovernanceSkippedCase;
     const getEnterpriseUploadBlockMessage = () => {
         const description = String(governanceContext?.classification_description || '').trim();
@@ -565,8 +568,16 @@ const Dashboard = ({
 
             if (res.ok) {
                 const savedDoc = await res.json();
+                upsertDraftProject({
+                    key: taskKey,
+                    name: (projects.find(p => p.key === taskKey)?.name) || governanceContext?.project_name || 'Project',
+                    status: 'analysis_complete',
+                    latestRevision: nextRevisionNumber,
+                    submissionDate: new Date().toISOString(),
+                });
                 setProjectState(taskKey, prev => ({ result: { ...prev.result, id: savedDoc.id }, revisionUnlocked: false, revisionReason: '' }));
                 fetchHistory(); // refresh sidebar
+                refreshProjects?.();
 
 
             }
@@ -795,7 +806,7 @@ const Dashboard = ({
             });
 
         setProjects(builtProjects);
-    }, [governanceHistory, history, extractProjectMetaFromDocument]);
+    }, [governanceHistory, history, extractProjectMetaFromDocument, setProjects]);
 
     useEffect(() => {
         if (projects.length === 0) {
@@ -821,7 +832,7 @@ const Dashboard = ({
             : null;
 
         setSelectedProjectKey(preferredByToken?.key || preferredById?.key || preferredByName?.key || projects[0].key);
-    }, [projects, selectedProjectKey, governanceContext, isNewProjectMode]);
+    }, [projects, selectedProjectKey, governanceContext, isNewProjectMode, projectToken, setSelectedProjectKey]);
 
     useEffect(() => {
         if (!selectedProject?.governanceResultId) return;
@@ -978,10 +989,6 @@ const Dashboard = ({
 
         if (!selectedProject) {
             setError('Select a project from the sidebar before uploading a BRD.');
-            return;
-        }
-        if (!governanceContext) {
-            setError('Governance context is missing for the selected project. Please open Governance Assessment.');
             return;
         }
         if (isEnterpriseUploadBlocked) {
@@ -1307,7 +1314,7 @@ const Dashboard = ({
                 }
             }
 
-            await fetch(projectCreationUrl, {
+            const createProjectResponse = await fetch(projectCreationUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1322,6 +1329,20 @@ const Dashboard = ({
                     project_token: pToken
                 }),
             });
+
+            if (createProjectResponse.ok) {
+                const createdProject = await createProjectResponse.json().catch(() => ({}));
+                const projectApplication = createdProject?.project_application || null;
+                if (projectApplication && (selectedProjectKey || pToken)) {
+                    upsertDraftProject({
+                        key: selectedProjectKey || pToken,
+                        name: projName,
+                        client_id: projectApplication.client_id || null,
+                        client_secret: projectApplication.client_secret || null,
+                    });
+                    refreshProjects?.();
+                }
+            }
         } catch (err) {
             console.error("Project generation error:", err);
         }
@@ -2074,7 +2095,7 @@ const Dashboard = ({
     };
 
     const goToGovernanceAssessment = () => {
-        navigate('/new-project');
+        navigate(selectedProjectKey ? '/new-project/governance' : '/new-project');
     };
 
     if (!user) {
@@ -2660,25 +2681,45 @@ const Dashboard = ({
                                     </div>
                                 </div>
 
-                                {/* Prerequisites Review Banner */}
-                                <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 flex items-center justify-center shadow-lg shadow-amber-200">
-                                            <KeyRound className="w-5 h-5 text-white" />
+                                {hasGovernanceAssessment ? (
+                                    <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 flex items-center justify-center shadow-lg shadow-amber-200">
+                                                <KeyRound className="w-5 h-5 text-white" />
+                                            </div>
+                                            <div>
+                                                <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
+                                                <p className="text-xs text-amber-700">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
-                                            <p className="text-xs text-amber-700">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
-                                        </div>
+                                        <button
+                                            onClick={() => navigate('/prerequisites')}
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                        >
+                                            <KeyRound className="w-4 h-4" />
+                                            Review Prerequisites
+                                        </button>
                                     </div>
-                                    <button
-                                        onClick={() => navigate('/prerequisites')}
-                                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
-                                    >
-                                        <KeyRound className="w-4 h-4" />
-                                        Review Prerequisites
-                                    </button>
-                                </div>
+                                ) : (
+                                    <div className="bg-gradient-to-r from-sky-50 to-indigo-50 rounded-xl shadow-sm border border-sky-200/70 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-sky-200">
+                                                <CheckCircle2 className="w-5 h-5 text-white" />
+                                            </div>
+                                            <div>
+                                                <h3 className="text-sm font-bold text-sky-950">Governance Assessment</h3>
+                                                <p className="text-xs text-sky-800">Agent Analysis is complete. Finish Governance next so the project can move into prerequisites and task planning.</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={goToGovernanceAssessment}
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-sky-600 to-indigo-600 rounded-lg shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                        >
+                                            <CheckCircle2 className="w-4 h-4" />
+                                            Complete Governance
+                                        </button>
+                                    </div>
+                                )}
 
                                 <div id="analysis-content" className="bg-transparent space-y-6">
 
