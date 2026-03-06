@@ -36,6 +36,16 @@ async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str,
     if not result.get("success") and not result.get("skipped"):
         reason = result.get("error") or result.get("reason") or "unknown error"
         errors.append(f"master note: {reason}")
+        agent_service.complete_run_all_waiting_state(
+            state.get("project_token"),
+            success=False,
+            error_message=str(reason),
+        )
+    else:
+        agent_service.complete_run_all_waiting_state(
+            state.get("project_token"),
+            success=True,
+        )
     return {
         "master_note": result,
         "errors": errors,

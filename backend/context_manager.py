@@ -369,6 +369,84 @@ def update_workspace_contract_from_workspace_tree(project_token: str, workspace_
     return contract
 
 
+def _extract_file_paths_from_canonical_tree(tree_text: str) -> List[str]:
+    paths: List[str] = []
+    stack: List[str] = []
+
+    for raw_line in str(tree_text or "").splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        stripped = line.strip().strip("`")
+        if stripped.lower() in {"text", "project/"}:
+            continue
+
+        content = line
+        while content.startswith(("│", " ", "\t")):
+            content = content[1:]
+        if content.startswith(("├──", "└──")):
+            content = content[3:].lstrip("─ ").strip()
+        else:
+            content = stripped
+
+        if not content or content.startswith("#"):
+            continue
+
+        if " # " in content:
+            content = content.split(" # ", 1)[0].rstrip()
+        elif "  #" in content:
+            content = content.split("  #", 1)[0].rstrip()
+
+        if not content:
+            continue
+
+        indent_prefix = raw_line.split(content, 1)[0]
+        depth = indent_prefix.count("│") + (indent_prefix.count("    ") if "    " in indent_prefix else 0)
+        while len(stack) > depth:
+            stack.pop()
+
+        name = content.rstrip("/")
+        if not name:
+            continue
+
+        if "." not in name and "/" not in name and name.lower() not in {
+            "backend", "frontend", "shared", "infra", "src", "app", "api", "services",
+            "components", "hooks", "pages", "styles", "tests", "public", "scripts",
+            "workflows", "migrations", "models", "schemas", "repositories", "core",
+            "db", "tasks", "store", "types", "lib", "utils", "constants", ".github",
+        } and not raw_line.strip().endswith("/"):
+            continue
+
+        current_path = "/".join(stack + [name]) if stack else name
+
+        if raw_line.strip().endswith("/"):
+            stack.append(name)
+            continue
+
+        if "/" in name and raw_line.strip() == content:
+            current_path = name
+        paths.append(current_path)
+
+    return sorted({path for path in paths if path and not path.endswith("/")})
+
+
+def update_workspace_contract_from_canonical_tree(project_token: str, workspace_tree: str) -> Dict[str, Any]:
+    token = (project_token or "").strip()
+    project_ctx = _project_contexts.setdefault(token, {})
+    existing = project_ctx.get("workspace_contract") or {}
+    if existing.get("status") == "ready":
+        return existing
+
+    file_paths = _extract_file_paths_from_canonical_tree(workspace_tree)
+    contract = _build_workspace_contract_from_file_paths(
+        token,
+        file_paths,
+        source="master_tree",
+    )
+    project_ctx["workspace_contract"] = contract
+    return contract
+
+
 def build_workspace_contract_context(project_token: str) -> str:
     contract = get_workspace_contract(project_token)
     if contract.get("status") != "ready":
@@ -1274,6 +1352,7 @@ async def get_agent_notes_context(
                 dependencies = str(payload.get("dependencies") or "").strip()
                 instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
                 tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
+                recommended_assignments = payload.get("recommended_assignments") if isinstance(payload.get("recommended_assignments"), list) else []
                 workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
                 validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
                 stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
@@ -1318,6 +1397,51 @@ async def get_agent_notes_context(
                             ]
                             if planned_files:
                                 lines.append(f"    Planned files: {', '.join(planned_files[:6])}")
+                            assignee = str(task.get("assignee") or "").strip()
+                            opt_in_username = str(task.get("opt_in_username") or "").strip()
+                            assignment_reason = str(task.get("assignment_reason") or "").strip()
+                            if assignee or opt_in_username:
+                                lines.append(
+                                    "    Recommended owner: "
+                                    + " | ".join(
+                                        item
+                                        for item in [
+                                            assignee,
+                                            f"opt-in={opt_in_username}" if opt_in_username else "",
+                                        ]
+                                        if item
+                                    )
+                                )
+                            if assignment_reason:
+                                lines.append(f"    Master reason: {assignment_reason[:220]}")
+                    if recommended_assignments:
+                        has_content = True
+                        lines.append("\nMASTER RECOMMENDED TASK OWNERSHIP:")
+                        for entry in recommended_assignments[:20]:
+                            if not isinstance(entry, dict):
+                                continue
+                            title_text = str(entry.get("title") or "Untitled task").strip()
+                            recommended_agent_id = str(entry.get("recommended_agent_id") or "").strip()
+                            opt_in_username = str(entry.get("opt_in_username") or "").strip()
+                            lines.append(
+                                f"  - {title_text}"
+                                + (
+                                    " -> "
+                                    + " | ".join(
+                                        item
+                                        for item in [
+                                            recommended_agent_id,
+                                            f"opt-in={opt_in_username}" if opt_in_username else "",
+                                        ]
+                                        if item
+                                    )
+                                    if recommended_agent_id or opt_in_username
+                                    else ""
+                                )
+                            )
+                            reason = str(entry.get("reason") or "").strip()
+                            if reason:
+                                lines.append(f"    Reason: {reason[:220]}")
                     if workspace_tree:
                         has_content = True
                         lines.append("\nCANONICAL PROJECT TREE:")

@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 import re as _re
+from collections import Counter
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from config import settings
@@ -109,6 +110,10 @@ DEFAULT_PROJECT_TOKEN = "__default__"
 AGENT_SESSION_NOTES_DIR = "agent_handoff"
 BOOTSTRAP_WAIT_TIMEOUT_SECONDS = 1800
 BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS = 20
+RUN_ALL_WAITING_MESSAGE = "Waiting for master plan..."
+MASTER_BUILDING_MESSAGE = "Creating canonical project tree note..."
+MASTER_READY_MESSAGE = "Master plan ready"
+MASTER_FAILED_MESSAGE = "Master plan failed"
 
 
 def _is_system_agent_id(agent_id: Optional[str]) -> bool:
@@ -250,6 +255,60 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
     return _ensure_project_state(project_token)["agent_states"]
+
+
+def _is_waiting_for_master_plan(agent: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(agent, dict):
+        return False
+    return str(agent.get("progress_message") or "").strip() == RUN_ALL_WAITING_MESSAGE
+
+
+def mark_run_all_waiting_state(
+    project_token: Optional[str],
+    agent_ids: List[str],
+) -> None:
+    project_agents = _get_agent_states(project_token)
+    for agent_id in agent_ids:
+        if _is_system_agent_id(agent_id):
+            continue
+        agent = project_agents.get(agent_id)
+        if not agent:
+            continue
+        agent["status"] = "running"
+        agent["progress"] = 0
+        agent["progress_message"] = RUN_ALL_WAITING_MESSAGE
+
+    master_agent = project_agents.get(MASTER_AGENT_ID)
+    if master_agent:
+        master_agent["status"] = "running"
+        master_agent["progress"] = 0
+        master_agent["progress_message"] = MASTER_BUILDING_MESSAGE
+
+
+def complete_run_all_waiting_state(
+    project_token: Optional[str],
+    *,
+    success: bool,
+    error_message: Optional[str] = None,
+) -> None:
+    project_agents = _get_agent_states(project_token)
+    for agent_id, agent in project_agents.items():
+        if _is_system_agent_id(agent_id):
+            continue
+        if not _is_waiting_for_master_plan(agent):
+            continue
+        if not success:
+            agent["status"] = "idle"
+            agent["progress"] = 0
+            agent["progress_message"] = ""
+            if error_message:
+                agent["error"] = error_message
+
+    master_agent = project_agents.get(MASTER_AGENT_ID)
+    if master_agent:
+        master_agent["status"] = "idle"
+        master_agent["progress"] = 100 if success else 0
+        master_agent["progress_message"] = MASTER_READY_MESSAGE if success else MASTER_FAILED_MESSAGE
 
 def set_project_task_token(project_token: Optional[str], task_token: Optional[str]) -> None:
     if not task_token:
@@ -4848,6 +4907,282 @@ def _build_master_task_plan(
     return plan
 
 
+def _master_worker_signature(project_token: Optional[str] = None) -> str:
+    state = _ensure_project_state(project_token)
+    entries = []
+    for agent_id in sorted(state.get("agent_states", {})):
+        if _is_system_agent_id(agent_id):
+            continue
+        agent = state["agent_states"].get(agent_id) or {}
+        entries.append(
+            "|".join(
+                [
+                    agent_id,
+                    normalize_agent_name(agent_id, agent.get("name")),
+                    str(agent.get("type") or "").strip(),
+                ]
+            )
+        )
+    return "||".join(entries)
+
+
+def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
+    phase = str(task.get("phase") or task.get("task_phase") or "").strip().lower()
+    domain = str(_normalize_task_domain(task) or "").strip().lower()
+    predicted_files = [
+        str(path or "").strip().lower()
+        for path in _predict_task_file_intents(task)
+        if str(path or "").strip()
+    ]
+    combined = " ".join(
+        [
+            phase,
+            domain,
+            str(task.get("title") or task.get("taskName") or ""),
+            str(task.get("description") or ""),
+            " ".join(predicted_files),
+        ]
+    ).lower()
+
+    if any(token in combined for token in ("test", "jest", "pytest", "cypress", "qa", "smoke", "accessibility")):
+        return "qa"
+    if any(token in combined for token in ("deploy", "docker", "infra", "ci", "cd", "release", "observability", "monitor")):
+        return "devops"
+    if phase.startswith("frontend") or domain == "frontend":
+        return "frontend"
+    if phase.startswith("backend") or domain == "backend":
+        return "backend"
+    if phase == "integration" or domain == "integration":
+        return "integration"
+    if phase == "foundation" or domain == "foundation":
+        return "foundation"
+    if any(token in combined for token in ("react", "vite", "tsx", "jsx", "component", "css", "scss", "page")):
+        return "frontend"
+    if any(token in combined for token in ("fastapi", "express", "api", "service", "route", "database", "schema", "python", "node")):
+        return "backend"
+    return "general"
+
+
+def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str, Any]] = None) -> set[str]:
+    state = agent_state if isinstance(agent_state, dict) else {}
+    combined = " ".join(
+        [
+            str(agent_id or ""),
+            str(state.get("name") or ""),
+            str(state.get("type") or ""),
+        ]
+    ).lower()
+    lanes = {"general"}
+
+    if any(token in combined for token in ("frontend", "react", "ui", "web", "component", "design")):
+        lanes.add("frontend")
+    if any(token in combined for token in ("backend", "api", "server", "python", "node", "express", "fastapi")):
+        lanes.add("backend")
+    if any(token in combined for token in ("qa", "test", "validator", "quality")):
+        lanes.add("qa")
+    if any(token in combined for token in ("devops", "infra", "deploy", "release", "ops")):
+        lanes.add("devops")
+    if any(token in combined for token in ("integration", "fullstack", "shared")):
+        lanes.add("integration")
+
+    return lanes
+
+
+def _build_master_recommended_assignments(
+    *,
+    tasks: List[Dict[str, Any]],
+    task_plan: List[Dict[str, Any]],
+    project_token: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    state = _ensure_project_state(project_token)
+    agent_states = state.get("agent_states") if isinstance(state.get("agent_states"), dict) else {}
+    worker_agents = [
+        {
+            "id": agent_id,
+            "name": normalize_agent_name(agent_id, (agent_states.get(agent_id) or {}).get("name")),
+            "type": str((agent_states.get(agent_id) or {}).get("type") or "").strip(),
+            "lanes": _infer_agent_assignment_lanes(agent_id, agent_states.get(agent_id) or {}),
+            "sequence": _extract_dev_agent_sequence(agent_id) or 999,
+        }
+        for agent_id in sorted(agent_states)
+        if not _is_system_agent_id(agent_id)
+    ]
+    if not worker_agents:
+        return []
+
+    history_by_agent: Dict[str, Counter] = {}
+    for completed in state.get("completed_tasks") or []:
+        if not isinstance(completed, dict):
+            continue
+        agent_id = str(completed.get("assigned_agent") or "").strip()
+        if not agent_id or _is_system_agent_id(agent_id):
+            continue
+        lane = _classify_task_assignment_lane(completed)
+        counter = history_by_agent.setdefault(agent_id, Counter())
+        counter[lane] += 1
+        domain = str(_normalize_task_domain(completed) or "").strip().lower()
+        if domain:
+            counter[domain] += 1
+
+    load_by_agent = {agent["id"]: 0 for agent in worker_agents}
+    plan_by_task_id = {
+        str(item.get("task_id") or "").strip(): item
+        for item in task_plan
+        if isinstance(item, dict) and str(item.get("task_id") or "").strip()
+    }
+
+    assignments: List[Dict[str, Any]] = []
+    for task in _sort_tasks_for_execution(tasks or []):
+        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+        if not task_id:
+            continue
+        lane = _classify_task_assignment_lane(task)
+        domain = str(_normalize_task_domain(task) or "").strip().lower()
+        upstream_assignee = str(task.get("assigned_agent") or "").strip()
+        best_agent = None
+        best_score = None
+
+        for agent in worker_agents:
+            score = 0
+            reasons: List[str] = []
+            if upstream_assignee and upstream_assignee == agent["id"]:
+                score += 100
+                reasons.append("task already tagged for this agent")
+            if lane in agent["lanes"]:
+                score += 30
+                reasons.append(f"best match for {lane} work")
+            elif domain and domain in agent["lanes"]:
+                score += 24
+                reasons.append(f"aligned to {domain} domain")
+            elif lane in {"foundation", "integration", "general"}:
+                score += 8
+                reasons.append("suitable for cross-cutting work")
+            else:
+                score += 4
+            prior_lane_count = int((history_by_agent.get(agent["id"]) or {}).get(lane, 0))
+            prior_domain_count = int((history_by_agent.get(agent["id"]) or {}).get(domain, 0)) if domain else 0
+            if prior_lane_count:
+                score += min(prior_lane_count, 3) * 6
+                reasons.append(f"has prior {lane} task history")
+            elif prior_domain_count:
+                score += min(prior_domain_count, 3) * 5
+                reasons.append(f"has prior {domain} task history")
+
+            score -= load_by_agent.get(agent["id"], 0) * 3
+            score -= agent["sequence"] * 0.01
+
+            if best_score is None or score > best_score:
+                best_score = score
+                best_agent = {
+                    **agent,
+                    "reason_tokens": reasons,
+                }
+
+        if not best_agent:
+            continue
+
+        load_by_agent[best_agent["id"]] = load_by_agent.get(best_agent["id"], 0) + 1
+        opt_in_username = build_external_agent_username(best_agent["id"], best_agent.get("name"))
+        reason_tokens = list(best_agent.get("reason_tokens") or [])
+        if not reason_tokens:
+            if load_by_agent[best_agent["id"]] == 1:
+                reason_tokens.append("selected as the initial balanced owner")
+            else:
+                reason_tokens.append("selected by balanced round-robin fallback")
+
+        recommendation = {
+            "task_id": task_id,
+            "title": task.get("title") or task.get("taskName") or "Untitled task",
+            "phase": task.get("phase") or task.get("task_phase") or "",
+            "priority": task.get("priority") or "medium",
+            "recommended_agent_id": best_agent["id"],
+            "recommended_agent_name": best_agent.get("name") or get_default_agent_name(best_agent["id"]),
+            "opt_in_username": opt_in_username,
+            "lane": lane,
+            "reason": "; ".join(dict.fromkeys(reason_tokens))[:280],
+        }
+        assignments.append(recommendation)
+
+        plan_entry = plan_by_task_id.get(task_id)
+        if isinstance(plan_entry, dict):
+            plan_entry["assignee"] = recommendation["recommended_agent_id"]
+            plan_entry["recommended_agent_name"] = recommendation["recommended_agent_name"]
+            plan_entry["opt_in_username"] = recommendation["opt_in_username"]
+            plan_entry["assignment_reason"] = recommendation["reason"]
+
+    return assignments
+
+
+def _get_master_recommended_assignment_map(project_token: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    state = _ensure_project_state(project_token)
+    cached = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+    recommendations = cached.get("recommended_assignments")
+    if not isinstance(recommendations, list):
+        return {}
+
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for entry in recommendations:
+        if not isinstance(entry, dict):
+            continue
+        task_id = str(entry.get("task_id") or "").strip()
+        if task_id:
+            mapping[task_id] = entry
+    return mapping
+
+
+def _resolve_locked_task_owner(
+    task: Dict[str, Any],
+    recommendation_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    worker_agent_ids: Optional[set[str]] = None,
+) -> str:
+    tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+    recommendations = recommendation_map if isinstance(recommendation_map, dict) else {}
+    workers = worker_agent_ids if isinstance(worker_agent_ids, set) else set()
+
+    recommended_agent_id = str((recommendations.get(tid) or {}).get("recommended_agent_id") or "").strip()
+    if recommended_agent_id and (not workers or recommended_agent_id in workers):
+        return recommended_agent_id
+
+    upstream_assignee = str(task.get("assigned_agent") or "").strip()
+    if upstream_assignee and (not workers or upstream_assignee in workers):
+        return upstream_assignee
+
+    return ""
+
+
+def _log_master_assignment_plan(
+    recommended_assignments: List[Dict[str, Any]],
+    *,
+    project_token: Optional[str] = None,
+) -> None:
+    if not recommended_assignments:
+        _log_master_agent(
+            "Master assignment plan created with no task-owner recommendations.",
+            project_token=project_token,
+        )
+        return
+
+    _log_master_agent(
+        f"Master assignment plan created for {len(recommended_assignments)} task(s).",
+        project_token=project_token,
+    )
+    for entry in recommended_assignments[:50]:
+        if not isinstance(entry, dict):
+            continue
+        task_id = str(entry.get("task_id") or "").strip()
+        title = str(entry.get("title") or "Untitled task").strip()
+        recommended_agent_id = str(entry.get("recommended_agent_id") or "").strip() or "unassigned"
+        opt_in_username = str(entry.get("opt_in_username") or "").strip()
+        reason = str(entry.get("reason") or "").strip()
+        message = (
+            f"Master assignment: [{task_id or '?'}] {title[:120]} -> {recommended_agent_id}"
+            + (f" (opt-in: {opt_in_username})" if opt_in_username else "")
+        )
+        if reason:
+            message += f" | reason: {reason[:180]}"
+        _log_master_agent(message, project_token=project_token)
+
+
 def _master_task_signature(tasks: List[Dict[str, Any]]) -> str:
     parts = []
     for task in _sort_tasks_for_execution(tasks or []):
@@ -4941,6 +5276,7 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
     instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
     tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
+    recommended_assignments = payload.get("recommended_assignments") if isinstance(payload.get("recommended_assignments"), list) else []
     workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
     stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
 
@@ -4989,9 +5325,18 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             task_priority = str(task.get("priority") or "").strip()
             task_id = str(task.get("task_id") or "").strip()
             header = f"- `{task_id}` {task_title}" if task_id else f"- {task_title}"
-            if task_phase or task_priority:
+            task_assignee = str(task.get("assignee") or "").strip()
+            opt_in_username = str(task.get("opt_in_username") or "").strip()
+            if task_phase or task_priority or task_assignee or opt_in_username:
                 header += " | " + " | ".join(
-                    item for item in [f"phase={task_phase}" if task_phase else "", f"priority={task_priority}" if task_priority else ""] if item
+                    item
+                    for item in [
+                        f"phase={task_phase}" if task_phase else "",
+                        f"priority={task_priority}" if task_priority else "",
+                        f"recommended={task_assignee}" if task_assignee else "",
+                        f"opt_in={opt_in_username}" if opt_in_username else "",
+                    ]
+                    if item
                 )
             lines.append(header)
             planned_files = [
@@ -5001,6 +5346,34 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             ]
             if planned_files:
                 lines.append(f"  Planned files: {', '.join(planned_files[:6])}")
+            assignment_reason = str(task.get("assignment_reason") or "").strip()
+            if assignment_reason:
+                lines.append(f"  Master reason: {assignment_reason}")
+
+    if recommended_assignments:
+        lines.append("")
+        lines.append("## Recommended Task Ownership and Opt-In")
+        for entry in recommended_assignments[:30]:
+            if not isinstance(entry, dict):
+                continue
+            task_id = str(entry.get("task_id") or "").strip()
+            title_text = str(entry.get("title") or "Untitled task").strip()
+            recommended_agent_id = str(entry.get("recommended_agent_id") or "").strip()
+            opt_in_username = str(entry.get("opt_in_username") or "").strip()
+            reason = str(entry.get("reason") or "").strip()
+            header = f"- `{task_id}` {title_text}" if task_id else f"- {title_text}"
+            if recommended_agent_id or opt_in_username:
+                header += " -> " + " / ".join(
+                    item
+                    for item in [
+                        f"`{recommended_agent_id}`" if recommended_agent_id else "",
+                        f"opt-in `{opt_in_username}`" if opt_in_username else "",
+                    ]
+                    if item
+                )
+            lines.append(header)
+            if reason:
+                lines.append(f"  Reason: {reason}")
 
     if workspace_tree:
         lines.append("")
@@ -5662,13 +6035,32 @@ async def ensure_master_workspace_note(
                 logger.warning("[%s] Failed to fetch tasks for master note: %s", effective_project, exc)
                 tasks = []
         task_signature = _master_task_signature(tasks)
+        worker_signature = _master_worker_signature(project_token)
         cached_master_note = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
         if (
             cached_master_note.get("success")
             and cached_master_note.get("approved")
             and cached_master_note.get("title") == title
             and cached_master_note.get("task_signature") == task_signature
+            and cached_master_note.get("worker_signature") == worker_signature
+            and isinstance(cached_master_note.get("recommended_assignments"), list)
         ):
+            try:
+                import context_manager as ctx_mgr
+                cached_contract = ctx_mgr.get_workspace_contract(effective_project)
+                cached_tree = str(cached_master_note.get("workspace_tree") or "").strip()
+                if cached_contract.get("status") != "ready" and cached_tree:
+                    refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
+                        effective_project,
+                        cached_tree,
+                    )
+                    if refreshed_contract.get("status") == "ready":
+                        _log_master_agent(
+                            "Reused cached master tree to restore the workspace contract for parallel planning.",
+                            project_token=project_token,
+                        )
+            except Exception as exc:
+                logger.warning("[%s] Failed to restore workspace contract from cached master tree: %s", effective_project, exc)
             return dict(cached_master_note)
 
         _log_master_agent(
@@ -5754,6 +6146,15 @@ async def ensure_master_workspace_note(
             stack_profile=stack_profile,
             workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
         )
+        recommended_assignments = _build_master_recommended_assignments(
+            tasks=tasks,
+            task_plan=task_plan,
+            project_token=project_token,
+        )
+        _log_master_assignment_plan(
+            recommended_assignments,
+            project_token=project_token,
+        )
         deterministic_tree = _build_deterministic_master_tree(
             workspace_tree=workspace_tree,
             tech_spec=tech_spec,
@@ -5836,6 +6237,22 @@ async def ensure_master_workspace_note(
                 "validation": validation,
             }
 
+        try:
+            import context_manager as ctx_mgr
+
+            refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
+                effective_project,
+                workspace_tree,
+            )
+            if isinstance(refreshed_contract, dict) and refreshed_contract.get("status") == "ready":
+                workspace_contract = refreshed_contract
+                _log_master_agent(
+                    "Master tree established the workspace contract; parallel planning is now enabled.",
+                    project_token=project_token,
+                )
+        except Exception as exc:
+            logger.warning("[%s] Failed to bootstrap workspace contract from master tree: %s", effective_project, exc)
+
         payload = {
             "note_type": "master_project_plan",
             "project_token": _note_scope_key(project_token),
@@ -5851,6 +6268,7 @@ async def ensure_master_workspace_note(
             "architecture_overview": architecture_overview[:3000],
             "dependencies": dependencies[:1800],
             "tasks_considered": task_plan,
+            "recommended_assignments": recommended_assignments,
             "stack_profile": stack_profile,
             "workspace_contract": {
                 "status": workspace_contract.get("status") if isinstance(workspace_contract, dict) else None,
@@ -5869,6 +6287,7 @@ async def ensure_master_workspace_note(
             "instructions": [
                 "Use this canonical tree as the single source of truth for where files should live.",
                 "Every task below must be implemented inside this structure; do not create alternate app roots or duplicate folders.",
+                "Follow the master ownership plan: each task should be picked up and opted into by the recommended agent unless the plan is regenerated.",
                 "If another agent already has the relevant file in its status note, extend that file instead of recreating the same feature elsewhere.",
                 "Keep per-agent status notes updated so other agents can see live work, completed files, and handoff guidance.",
                 "If a task requires a structural change, update this master note first before coding.",
@@ -5902,6 +6321,10 @@ async def ensure_master_workspace_note(
             "validation": payload["validation"],
             "approved": True,
             "task_signature": task_signature,
+            "worker_signature": worker_signature,
+            "recommended_assignments": recommended_assignments,
+            "tasks_considered": task_plan,
+            "workspace_tree": workspace_tree,
         }
         state["master_note_cache"] = dict(final_result)
         return final_result
@@ -6236,7 +6659,11 @@ async def _claim_initial_task_assignments(
 
     idle_agents = [
         a for a in project_agents.values()
-        if a["status"] == "idle" and not _is_system_agent_id(a["id"])
+        if (
+            (a["status"] == "idle")
+            or _is_waiting_for_master_plan(a)
+        )
+        and not _is_system_agent_id(a["id"])
     ]
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
@@ -6809,6 +7236,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         set_project_task_token(project_token, task_token)
     state = _ensure_project_state(project_token)
     claimed_task_ids = state["claimed_task_ids"]
+    recommendation_map = _get_master_recommended_assignment_map(project_token)
     
     # Check integration gate - if blocked, only allow fix tasks
     try:
@@ -6869,86 +7297,118 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         pass
     
     external_tasks = _sort_tasks_for_execution(external_tasks)
-    skip_reasons = {
-        "completed_or_claimed": 0,
-        "integration_gate": 0,
-        "sprint_mismatch": 0,
-        "phase_mismatch": 0,
-        "dependency_blocked": 0,
-        "conflict_blocked": 0,
-    }
-    
-    for t in external_tasks:
-        tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
-        status_lower = (t.get("status") or "").lower()
-        
-        # Skip if completed or already claimed
-        if _task_status_is_done(status_lower) or tid in claimed_task_ids:
-            skip_reasons["completed_or_claimed"] += 1
-            continue
-        
-        # Integration gate: if blocked, only allow fix tasks
-        if integration_blocked:
-            task_name = (t.get("taskName") or t.get("title") or "").lower()
-            if "fix" not in task_name and "bug" not in task_name.lower():
-                skip_reasons["integration_gate"] += 1
-                continue  # Skip non-fix tasks when integration is blocked
-        
-        # Sprint filtering: if current_sprint_id is set, only show tasks from that sprint
-        if current_sprint_id:
-            task_sprint_id = t.get("sprint") or t.get("sprint_id")
-            if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
-                skip_reasons["sprint_mismatch"] += 1
-                continue  # Skip tasks from other sprints
-        
-        # Phase filtering: if current_phase is set, only show tasks from that phase
-        # Also, prioritize tasks from earlier phases (foundation before backend, etc.)
-        task_phase = t.get("phase") or t.get("task_phase")
-        if current_phase:
-            if task_phase and task_phase != current_phase:
-                skip_reasons["phase_mismatch"] += 1
-                continue  # Skip tasks from other phases
-        elif task_phase:
-            # If no current_phase set, but task has phase, ensure we work in phase order
-            # This ensures foundation tasks come before backend tasks, etc.
-            # (Already handled by sorting above, but this is a safety check)
-            pass
-        
-        # Dependency checking
-        if live_mem:
-            # Get dependencies from task
-            task_deps = t.get("dependencies", [])
-            if not task_deps:
-                # Try to infer from linked_tasks (reverse dependency)
-                linked = t.get("linked_tasks", [])
-                if linked:
-                    task_deps = [str(lt) for lt in linked]
-            
-            # Register dependencies if not already registered
-            if task_deps:
-                live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
-            
-            # Check if all dependencies are completed
-            if not live_mem.check_task_dependencies(tid):
-                blocking = live_mem.get_blocking_tasks(tid)
-                logger.info(
-                    f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
-                )
-                skip_reasons["dependency_blocked"] += 1
-                continue  # Skip this task, try next one
+    if recommendation_map:
+        preferred_tasks = []
+        other_tasks = []
+        for task in external_tasks:
+            task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+            recommendation = recommendation_map.get(task_id) or {}
+            recommended_agent_id = str(recommendation.get("recommended_agent_id") or "").strip()
+            if recommended_agent_id == agent_id:
+                preferred_tasks.append(task)
+            else:
+                other_tasks.append(task)
+        external_tasks = preferred_tasks + other_tasks
 
-            blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
-            if blocked:
-                logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
-                skip_reasons["conflict_blocked"] += 1
+    def _new_skip_reasons() -> Dict[str, int]:
+        return {
+            "completed_or_claimed": 0,
+            "integration_gate": 0,
+            "sprint_mismatch": 0,
+            "phase_mismatch": 0,
+            "dependency_blocked": 0,
+            "conflict_blocked": 0,
+            "master_assignment": 0,
+        }
+
+    worker_agent_ids = {
+        aid for aid in state.get("agent_states", {})
+        if not _is_system_agent_id(aid)
+    }
+
+    def _try_pick_task(enforce_master_assignment: bool) -> tuple[Optional[Dict[str, Any]], Dict[str, int]]:
+        skip_reasons = _new_skip_reasons()
+
+        for t in external_tasks:
+            tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
+            status_lower = (t.get("status") or "").lower()
+            recommendation = recommendation_map.get(tid) or {}
+            recommended_agent_id = str(recommendation.get("recommended_agent_id") or "").strip()
+            locked_owner = _resolve_locked_task_owner(
+                t,
+                recommendation_map=recommendation_map,
+                worker_agent_ids=worker_agent_ids,
+            )
+
+            # Skip if completed or already claimed
+            if _task_status_is_done(status_lower) or tid in claimed_task_ids:
+                skip_reasons["completed_or_claimed"] += 1
                 continue
 
-        # All checks passed - claim this task
-        claimed_task_ids.add(tid)
-        # Also claim its linked tasks
-        for lt in (t.get("linked_tasks") or []):
-            claimed_task_ids.add(str(lt))
-        return t
+            if (
+                locked_owner
+                and locked_owner != agent_id
+            ):
+                skip_reasons["master_assignment"] += 1
+                continue
+
+            # Integration gate: if blocked, only allow fix tasks
+            if integration_blocked:
+                task_name = (t.get("taskName") or t.get("title") or "").lower()
+                if "fix" not in task_name and "bug" not in task_name.lower():
+                    skip_reasons["integration_gate"] += 1
+                    continue
+
+            if current_sprint_id:
+                task_sprint_id = t.get("sprint") or t.get("sprint_id")
+                if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
+                    skip_reasons["sprint_mismatch"] += 1
+                    continue
+
+            task_phase = t.get("phase") or t.get("task_phase")
+            if current_phase:
+                if task_phase and task_phase != current_phase:
+                    skip_reasons["phase_mismatch"] += 1
+                    continue
+
+            if live_mem:
+                task_deps = t.get("dependencies", [])
+                if not task_deps:
+                    linked = t.get("linked_tasks", [])
+                    if linked:
+                        task_deps = [str(lt) for lt in linked]
+
+                if task_deps:
+                    live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+
+                if not live_mem.check_task_dependencies(tid):
+                    blocking = live_mem.get_blocking_tasks(tid)
+                    logger.info(
+                        f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
+                    )
+                    skip_reasons["dependency_blocked"] += 1
+                    continue
+
+                blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+                if blocked:
+                    logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                    skip_reasons["conflict_blocked"] += 1
+                    continue
+
+            claimed_task_ids.add(tid)
+            for lt in (t.get("linked_tasks") or []):
+                claimed_task_ids.add(str(lt))
+
+            if recommendation:
+                t["_recommended_agent_id"] = recommended_agent_id
+                t["_recommended_opt_in_username"] = str(recommendation.get("opt_in_username") or "").strip()
+            return t, skip_reasons
+
+        return None, skip_reasons
+
+    task, skip_reasons = _try_pick_task(enforce_master_assignment=bool(recommendation_map))
+    if task:
+        return task
 
     logger.info(
         f"[{agent_id}] No eligible task found from {len(external_tasks)} fetched task(s). "
@@ -7287,7 +7747,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "message": f"Coordination note skipped: {str(note_err)[:80]}"
                 })
             
-            username = build_external_agent_username(agent_id, agent.get("name"))
+            username = str(task.get("_recommended_opt_in_username") or "").strip()
+            if not username:
+                username = build_external_agent_username(agent_id, agent.get("name"))
             opt_in_ok = await _opt_in_task(task, username, task_token=task_token)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),

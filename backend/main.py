@@ -3922,6 +3922,11 @@ async def run_all_agents(
             agent["git_repo_url"] = None
             agent["git_token"] = None
 
+    agent_service.mark_run_all_waiting_state(
+        project_token,
+        [a["id"] for a in idle_agents],
+    )
+
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
     bg_task = asyncio.create_task(
