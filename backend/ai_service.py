@@ -7,7 +7,7 @@ from typing import Optional
 from config import settings
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -170,12 +170,12 @@ async def analyze_document(
         If stream=False: dict with analysis results or error
         If stream=True: async generator yielding partial response chunks
     """
-    # Use provided values or fall back to settings
-    url = api_url or settings.ai_api_url
+    use_brn_llama = bool(getattr(settings, "use_brn_llama", False))
+    url = api_url or (settings.brn_llama_url if use_brn_llama else settings.ai_api_url)
     key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
-    
-    if not key or key == "your-api-key-here":
+    model_name = model or (settings.brn_model if use_brn_llama else settings.ai_model)
+
+    if not use_brn_llama and (not key or key == "your-api-key-here"):
         error = "API key not configured. Please set AI_API_KEY in your environment or provide it in the request."
         return {"status": "error", "error": error}
     
@@ -223,8 +223,8 @@ async def analyze_document(
         
         final_user_content = content_blocks
 
-    # Prepare the request payload (OpenAI-compatible format)
-    payload = {
+    # Prepare request payloads
+    openai_payload = {
         "model": model_name,
         "messages": [
             {
@@ -241,19 +241,70 @@ async def analyze_document(
             "thinking": False
         }
     }
-    
-    headers = {
+
+    if isinstance(final_user_content, list):
+        brn_user_prompt = "\n\n".join(
+            block.get("text", "")
+            for block in final_user_content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ).strip()
+    else:
+        brn_user_prompt = str(final_user_content)
+    brn_prompt = f"{BRD_ANALYSIS_PROMPT}\n\n{brn_user_prompt}"
+
+    brn_payload = {
+        "model": model_name,
+        "prompt": brn_prompt,
+        "stream": False,
+        "agent_id": settings.brn_agent_id,
+        "platform_id": settings.brn_platform_id,
+        "max_tokens": settings.brn_max_tokens,
+        "temperature": settings.brn_temperature,
+    }
+
+    openai_headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {key}"
+    }
+    brn_headers = {
+        "Content-Type": "application/json"
     }
 
     try:
         client = httpx.AsyncClient(timeout=120.0)
         
         if stream:
+            if use_brn_llama:
+                async def stream_response():
+                    try:
+                        response = await client.post(url, json=brn_payload, headers=brn_headers)
+                        response.raise_for_status()
+                        data = response.json()
+                        content = data.get('response', data.get('text', data.get('content', '')))
+                        response_chunk = {
+                            "choices": [{
+                                "delta": {
+                                    "content": content if content else None,
+                                    "reasoning_content": None
+                                }
+                            }]
+                        }
+                        yield f"data: {json.dumps(response_chunk)}\n\n"
+                        yield "data: [DONE]\n\n"
+                    except Exception as e:
+                        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    finally:
+                        await client.aclose()
+                return stream_response()
+
             async def stream_response():
                 try:
-                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    # State machine to handle <think> tags embedded in content
+                    # Some models (e.g. minimax-m2.5) put reasoning inside <think> in content
+                    _inside_think = False
+                    _think_buffer = ""
+
+                    async with client.stream("POST", url, json=openai_payload, headers=openai_headers) as response:
                         response.raise_for_status()
                         async for line in response.aiter_lines():
                             if line.startswith("data: "):
@@ -265,17 +316,55 @@ async def analyze_document(
                                     if "choices" in data_json and len(data_json["choices"]) > 0:
                                         delta = data_json["choices"][0].get("delta", {})
                                         
-                                        # Construct a clean chunk to proxy back to frontend
-                                        # Use OpenAI format so frontend parser works seamlessly
-                                        response_chunk = {
-                                            "choices": [{
-                                                "delta": {
-                                                    "content": delta.get("content"),
-                                                    "reasoning_content": delta.get("reasoning_content")
-                                                }
-                                            }]
-                                        }
-                                        yield f"data: {json.dumps(response_chunk)}\n\n"
+                                        raw_content = delta.get("content") or ""
+                                        reasoning = delta.get("reasoning_content") or ""
+                                        
+                                        # Handle <think> tags inside content
+                                        clean_content = ""
+                                        if raw_content:
+                                            if _inside_think:
+                                                # Check if </think> appears in this chunk
+                                                end_idx = raw_content.find("</think>")
+                                                if end_idx != -1:
+                                                    # Think block ends here
+                                                    _think_buffer += raw_content[:end_idx]
+                                                    reasoning += _think_buffer
+                                                    _think_buffer = ""
+                                                    _inside_think = False
+                                                    # Content after </think> is real content
+                                                    clean_content = raw_content[end_idx + len("</think>"):]
+                                                else:
+                                                    # Still inside think block
+                                                    _think_buffer += raw_content
+                                            else:
+                                                # Check if <think> starts in this chunk
+                                                start_idx = raw_content.find("<think>")
+                                                if start_idx != -1:
+                                                    # Content before <think> is real
+                                                    clean_content = raw_content[:start_idx]
+                                                    remaining = raw_content[start_idx + len("<think>"):]
+                                                    # Check if </think> is also in this chunk
+                                                    end_idx = remaining.find("</think>")
+                                                    if end_idx != -1:
+                                                        reasoning += remaining[:end_idx]
+                                                        clean_content += remaining[end_idx + len("</think>"):]
+                                                    else:
+                                                        _inside_think = True
+                                                        _think_buffer = remaining
+                                                else:
+                                                    clean_content = raw_content
+                                        
+                                        # Only yield if there's actual content or reasoning
+                                        if clean_content or reasoning:
+                                            response_chunk = {
+                                                "choices": [{
+                                                    "delta": {
+                                                        "content": clean_content if clean_content else None,
+                                                        "reasoning_content": reasoning if reasoning else None
+                                                    }
+                                                }]
+                                            }
+                                            yield f"data: {json.dumps(response_chunk)}\n\n"
                                 except json.JSONDecodeError:
                                     continue
                 except Exception as e:
@@ -289,11 +378,24 @@ async def analyze_document(
         else:
             # Non-streaming implementation
             try:
-                response = await client.post(url, json=payload, headers=headers)
+                if use_brn_llama:
+                    response = await client.post(url, json=brn_payload, headers=brn_headers)
+                else:
+                    response = await client.post(url, json=openai_payload, headers=openai_headers)
                 response.raise_for_status()
                 
                 data = response.json()
-                
+
+                if use_brn_llama:
+                    content = data.get('response', data.get('text', data.get('content', '')))
+                    return {
+                        "status": "success",
+                        "analysis": content,
+                        "reasoning": None,
+                        "model": data.get("model", model_name),
+                        "usage": data.get("usage", {})
+                    }
+
                 # Extract the assistant's response
                 if "choices" in data and len(data["choices"]) > 0:
                     message = data["choices"][0].get("message", {})
@@ -345,16 +447,19 @@ async def analyze_document(
 
 async def get_ai_config() -> dict:
     """Get current AI configuration (without exposing the full API key)."""
+    use_brn_llama = bool(getattr(settings, "use_brn_llama", False))
     key = settings.ai_api_key
     masked_key = None
     if key and key != "your-api-key-here":
         masked_key = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "***"
     
     return {
-        "api_url": settings.ai_api_url,
-        "api_key_configured": bool(key and key != "your-api-key-here"),
-        "api_key_masked": masked_key,
-        "model": settings.ai_model
+        "provider": "brn_llama" if use_brn_llama else "nvidia_openai_compatible",
+        "use_brn_llama": use_brn_llama,
+        "api_url": settings.brn_llama_url if use_brn_llama else settings.ai_api_url,
+        "api_key_configured": True if use_brn_llama else bool(key and key != "your-api-key-here"),
+        "api_key_masked": None if use_brn_llama else masked_key,
+        "model": settings.brn_model if use_brn_llama else settings.ai_model
     }
 
 TASK_GENERATION_PROMPT = """You are an expert Project Manager and Agile Practitioner.
@@ -388,6 +493,10 @@ Do not include any other markdown, text, or explanations. Only output the JSON a
 BATCH_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
 You are generating tasks INCREMENTALLY for a project in batches of up to 5 tasks at a time.
 
+CRITICAL: The VERY FIRST task you create (task with ID 1 in the first batch, phase="foundation")
+MUST be a **full-stack project bootstrap** that creates a COMPLETE, CLEAN and
+PRODUCTION-READY project structure for BOTH backend AND frontend.
+
 RULES:
 1. Generate the NEXT batch of up to 5 tasks only.
 2. DO NOT repeat any tasks that have already been created (listed below).
@@ -404,6 +513,31 @@ RULES:
     - Use mock/stub services where applicable (e.g., mock SMTP, in-memory cache instead of Redis, local file storage instead of S3).
     - Add a clear note in the task description like: "NOTE: Using placeholder credentials — replace with real values once provided."
     - This ensures development is NOT blocked by missing credentials or access.
+12. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
+    - "foundation": Project setup, structure, API contracts, database schema, configuration files.
+      For FULL-STACK projects (e.g., React + Flask), the **foundation phase MUST create**:
+        * `backend/` directory with: virtualenv, `requirements.txt`, `config.py`, app entry, API module layout
+        * `frontend/` directory with: `package.json`, bundler config (Vite/Next/etc.), `src/` with `components/` and `pages/`, main entry files
+        * Root-level files: `.env.example`, `.gitignore`, `README.md`, (optionally) `docker-compose.yml`
+    - "backend-core": Core backend features (auth system, base models, base API setup, middleware)
+    - "backend-features": Feature-specific backend endpoints (books API, members API, transactions API)
+    - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the already-created `frontend/` structure
+    - "frontend-features": Feature-specific frontend components (Books UI, Members UI, Transactions UI)
+    - "integration": Testing, bug fixes, deployment preparation, end-to-end integration
+13. **DEPENDENCIES**: List task IDs from "ALREADY CREATED TASKS" that must complete BEFORE this task can start:
+    - Foundation tasks have NO dependencies (empty array [])
+    - Backend features depend on backend-core tasks
+    - Frontend features depend on frontend-core tasks AND corresponding backend-features tasks
+    - Integration tasks depend on all feature tasks
+    - Use sequential numbering: First batch = 1,2,3,4,5. Second batch = 6,7,8,9,10. Reference these IDs in dependencies.
+14. **DOMAIN**: Assign each task to a feature domain for better organization:
+    - "auth": Authentication, authorization, user management
+    - "books": Book management, catalog, inventory
+    - "members": Member/user management
+    - "transactions": Borrowing, returning, transactions
+    - "reports": Reporting, analytics, statistics
+    - "common": Shared utilities, helpers, common components
+    - "infrastructure": DevOps, CI/CD, deployment, infrastructure setup
 
 Output ONLY a JSON array of task objects (max 5) with this structure:
 [
@@ -415,7 +549,10 @@ Output ONLY a JSON array of task objects (max 5) with this structure:
     "deadline": "YYYY-MM-DD",
     "startdate": "YYYY-MM-DD",
     "task_type": "string",  // "EPIC", "FEATURE", "STORY", "TASK", or "BUG"
-    "priority": "string"    // "high", "medium", or "low"
+    "priority": "string",   // "high", "medium", or "low"
+    "phase": "string",      // REQUIRED: "foundation", "backend-core", "backend-features", "frontend-core", "frontend-features", or "integration"
+    "dependencies": [int],  // Array of task IDs from ALREADY CREATED TASKS that must complete first. Foundation tasks have [].
+    "domain": "string"      // Feature domain: "auth", "books", "members", "transactions", "reports", "common", "infrastructure"
   }
 ]
 
@@ -611,6 +748,7 @@ async def generate_task_batch(
     total_project_wallet: int,
     already_created_tasks: list,
     batch_number: int,
+    custom_rules: Optional[str] = None,
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
@@ -670,6 +808,7 @@ async def generate_task_batch(
         f"{context_block}\n"
         f"BRD ANALYSIS REPORT:\n"
         f"{analysis_report}\n\n"
+        f"{'CUSTOM RULES TO FOLLOW:' + chr(10) + custom_rules + chr(10) + chr(10) if custom_rules else ''}"
         f"Generate the NEXT batch of up to 5 tasks. "
         f"The total wallet for this batch must NOT exceed {remaining_wallet}. "
         f"If all tasks are already covered, return an empty array []."
@@ -734,6 +873,171 @@ async def generate_task_batch(
         raise Exception(
             f"[Batch {batch_number}] Task generation failed: {str(e)}\n\nTraceback:\n{error_details}"
         )
+
+
+SPRINT_MILESTONE_PROMPT = """You are an expert Agile Delivery Manager.
+Given BRD analysis and project deadline, propose ONE sprint and ONE milestone to start delivery.
+
+Output ONLY valid JSON with this shape:
+{
+  "sprint": {
+    "name": "string",
+    "summary": "string",
+    "start_date": "YYYY-MM-DD",
+    "deadline": "YYYY-MM-DD"
+  },
+  "milestone": {
+    "name": "string",
+    "start_date": "YYYY-MM-DD",
+    "deadline": "YYYY-MM-DD"
+  }
+}
+
+Rules:
+- milestone dates must be inside sprint dates
+- sprint deadline must be <= project deadline
+- no markdown, no explanations, only JSON
+"""
+
+
+def _safe_date(value: str, fallback: str) -> str:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return value
+    except Exception:
+        return fallback
+
+
+def _default_sprint_milestone_plan(project_name: str, project_deadline: str) -> dict:
+    today = datetime.utcnow().date()
+    today_iso = today.strftime("%Y-%m-%d")
+    safe_project_deadline = _safe_date(project_deadline, (today + timedelta(days=30)).strftime("%Y-%m-%d"))
+    pd = datetime.strptime(safe_project_deadline, "%Y-%m-%d").date()
+    sprint_deadline = min(today + timedelta(days=14), pd)
+    if sprint_deadline < today:
+        sprint_deadline = today
+    milestone_deadline = min(today + timedelta(days=10), sprint_deadline)
+    return {
+        "sprint": {
+            "name": "Sprint 1",
+            "summary": f"Initial sprint for {project_name or 'the project'}",
+            "start_date": today_iso,
+            "deadline": sprint_deadline.strftime("%Y-%m-%d"),
+        },
+        "milestone": {
+            "name": "Phase 1 Complete",
+            "start_date": today_iso,
+            "deadline": milestone_deadline.strftime("%Y-%m-%d"),
+        },
+    }
+
+
+def _normalize_plan_dates(plan: dict, project_deadline: str) -> dict:
+    default_plan = _default_sprint_milestone_plan("", project_deadline)
+    project_deadline_safe = _safe_date(project_deadline, default_plan["sprint"]["deadline"])
+
+    sprint = plan.get("sprint") if isinstance(plan, dict) else {}
+    milestone = plan.get("milestone") if isinstance(plan, dict) else {}
+
+    sprint_start = _safe_date(str(sprint.get("start_date", "")), default_plan["sprint"]["start_date"])
+    sprint_deadline = _safe_date(str(sprint.get("deadline", "")), default_plan["sprint"]["deadline"])
+
+    ss = datetime.strptime(sprint_start, "%Y-%m-%d").date()
+    sd = datetime.strptime(sprint_deadline, "%Y-%m-%d").date()
+    pd = datetime.strptime(project_deadline_safe, "%Y-%m-%d").date()
+    if sd < ss:
+        sd = ss
+    if sd > pd:
+        sd = pd
+    if sd < ss:
+        sd = ss
+
+    milestone_start = _safe_date(str(milestone.get("start_date", "")), sprint_start)
+    milestone_deadline = _safe_date(str(milestone.get("deadline", "")), sd.strftime("%Y-%m-%d"))
+
+    ms = datetime.strptime(milestone_start, "%Y-%m-%d").date()
+    md = datetime.strptime(milestone_deadline, "%Y-%m-%d").date()
+    if ms < ss:
+        ms = ss
+    if ms > sd:
+        ms = ss
+    if md < ms:
+        md = ms
+    if md > sd:
+        md = sd
+
+    return {
+        "sprint": {
+            "name": (sprint.get("name") or default_plan["sprint"]["name"]).strip(),
+            "summary": (sprint.get("summary") or default_plan["sprint"]["summary"]).strip(),
+            "start_date": ss.strftime("%Y-%m-%d"),
+            "deadline": sd.strftime("%Y-%m-%d"),
+        },
+        "milestone": {
+            "name": (milestone.get("name") or default_plan["milestone"]["name"]).strip(),
+            "start_date": ms.strftime("%Y-%m-%d"),
+            "deadline": md.strftime("%Y-%m-%d"),
+        },
+    }
+
+
+async def generate_sprint_milestone_plan(
+    analysis_report: str,
+    project_name: str,
+    project_deadline: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> dict:
+    """Generate one sprint and one milestone plan from BRD context."""
+    url = api_url or settings.ai_api_url
+    key = api_key or settings.ai_api_key
+    model_name = model or settings.ai_model
+
+    default_plan = _default_sprint_milestone_plan(project_name, project_deadline)
+    if not key or key == "your-api-key-here":
+        return default_plan
+
+    text_content = (
+        f"Project Name: {project_name or 'Project'}\n"
+        f"Project Deadline: {project_deadline}\n\n"
+        f"BRD ANALYSIS REPORT:\n{analysis_report[:5000]}\n\n"
+        "Create one practical initial sprint and one milestone."
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": SPRINT_MILESTONE_PROMPT},
+            {"role": "user", "content": text_content},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            if "choices" not in data or not data["choices"]:
+                return default_plan
+            content = data["choices"][0].get("message", {}).get("content", "")
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            content = content.replace("```json", "").replace("```", "").strip()
+            start = content.find("{")
+            end = content.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return default_plan
+            parsed = json.loads(content[start:end + 1])
+            return _normalize_plan_dates(parsed, project_deadline)
+    except Exception as e:
+        logger.warning(f"Sprint/milestone AI planning failed, using defaults: {e}")
+        return default_plan
 
 
 # Keep the legacy single-shot function for backward compatibility

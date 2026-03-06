@@ -77,8 +77,85 @@ const CATEGORY_CONFIG = {
 };
 
 /* ─────────────────────────────────────────────────────────
+   PROCESS MODE CONFIG
+───────────────────────────────────────────────────────── */
+const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
+
+function readProcessModeMap() {
+    try {
+        const raw = localStorage.getItem(PROCESS_MODE_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeProcessModeMap(map) {
+    try {
+        localStorage.setItem(PROCESS_MODE_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+        // Ignore errors
+    }
+}
+
+function saveProcessModeForProject(projectKey, mode) {
+    if (!projectKey || !mode) return;
+    const map = readProcessModeMap();
+    map[projectKey] = mode;
+    writeProcessModeMap(map);
+}
+
+const PROCESS_MODE_OPTIONS = [
+    {
+        id: 'developer_only',
+        title: 'Developer Only',
+        description: 'Open Status Dashboard without showing AI agents.',
+        enabled: true,
+    },
+    {
+        id: 'ai_assist',
+        title: 'AI Assist',
+        description: 'Legacy mode (same behavior as AI-First).',
+        enabled: true,
+    },
+    {
+        id: 'vibe_coding',
+        title: 'Vibe Coding',
+        description: 'Upcoming mode.',
+        enabled: false,
+    },
+    {
+        id: 'coexistence',
+        title: 'Coexistence',
+        description: 'Open Status Dashboard with agents available for manual run.',
+        enabled: false,
+    },
+    {
+        id: 'ai_first',
+        title: 'AI-First Mode',
+        description: 'Open Status Dashboard and auto-start all agents.',
+        enabled: true,
+    },
+];
+
+/* ─────────────────────────────────────────────────────────
    AI PREREQUISITE EXTRACTION — parses the analysis report
 ───────────────────────────────────────────────────────── */
+const inferFieldTypeFromRequirement = (name = '', description = '') => {
+    const lower = `${name} ${description}`.toLowerCase();
+    if (
+        /\b(pdf|docx?|xlsx?|pptx?|txt|md|png|jpe?g|webp|gif|image|screenshot|diagram|attachment|document|file|upload)\b/.test(lower)
+    ) {
+        return 'file';
+    }
+    if (/\burl\b|\blink\b|\bwebsite\b|\bendpoint\b|\buri\b/.test(lower)) {
+        return 'url';
+    }
+    return 'text';
+};
+
 const extractPrerequisitesFromAnalysis = (analysisData) => {
     if (!analysisData) return [];
 
@@ -104,15 +181,23 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
 
     // If AI already returns structured prerequisites
     if (analysisData.prerequisites && Array.isArray(analysisData.prerequisites)) {
-        return analysisData.prerequisites.map((p, idx) => ({
-            id: idx + 1,
-            name: stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`),
-            description: stripHtml(p.description || p.details || ''),
-            category: p.category || 'other',
-            priority: p.priority || 'medium',
-            provided: false,
-            userNotes: '',
-        }));
+        return analysisData.prerequisites.map((p, idx) => {
+            const name = stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`);
+            const description = stripHtml(p.description || p.details || '');
+            const fieldType = inferFieldTypeFromRequirement(name, description);
+            return {
+                id: idx + 1,
+                name,
+                description,
+                category: p.category || 'other',
+                priority: p.priority || 'medium',
+                fieldType,
+                provided: false,
+                containsSecret: false,
+                userValue: '',
+                userFileName: '',
+            };
+        });
     }
 
     // Smart extraction from analysis text
@@ -133,7 +218,7 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
         { regex: /(?:ssl|tls)[- ]?(?:certificate|cert)/gi, category: 'credentials', label: 'SSL/TLS Certificate' },
         { regex: /(?:ssh)[- ]?(?:key|access)/gi, category: 'credentials', label: 'SSH Key Access' },
         { regex: /(?:domain|dns)[- ]?(?:name|config|registration)/gi, category: 'infrastructure', label: 'Domain / DNS Configuration' },
-        { regex: /(?:docker|container|kubernetes|k8s)/gi, category: 'infrastructure', label: 'Container/Orchestration Platform' },
+        { regex: /(?:docker|container|kubernetes|k8s)/gi, category: 'infrastructure', label: 'Deployment Platform' },
         { regex: /(?:ci[/ ]cd|jenkins|github[- ]?actions|gitlab[- ]?ci|pipeline)/gi, category: 'infrastructure', label: 'CI/CD Pipeline Access' },
         { regex: /(?:redis|memcache|cache[- ]?server)/gi, category: 'databases', label: 'Cache Server (Redis/Memcache)' },
         { regex: /(?:s3|blob[- ]?storage|object[- ]?storage|file[- ]?storage)/gi, category: 'cloud', label: 'Object / File Storage Service' },
@@ -169,8 +254,11 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
                 description: context || `Identified from BRD analysis — ${label} may be required for this project.`,
                 category,
                 priority: category === 'credentials' ? 'high' : 'medium',
+                fieldType: inferFieldTypeFromRequirement(label, context),
                 provided: false,
-                userNotes: '',
+                containsSecret: false,
+                userValue: '',
+                userFileName: '',
             });
         }
     });
@@ -178,13 +266,195 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
     // If nothing was found, add generic ones based on common project needs
     if (items.length === 0) {
         items.push(
-            { id: 1, name: 'Environment Configuration', description: 'Set up development, staging, and production environments.', category: 'infrastructure', priority: 'high', provided: false, userNotes: '' },
-            { id: 2, name: 'Access Credentials', description: 'Provide necessary credentials for services identified in the BRD.', category: 'credentials', priority: 'high', provided: false, userNotes: '' },
-            { id: 3, name: 'Third-Party Integrations', description: 'Confirm access to external APIs and services mentioned in the requirements.', category: 'apis', priority: 'medium', provided: false, userNotes: '' },
+            { id: 1, name: 'Environment Configuration', description: 'Set up development, staging, and production environments.', category: 'infrastructure', priority: 'high', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
+            { id: 2, name: 'Access Credentials', description: 'Provide necessary credentials for services identified in the BRD.', category: 'credentials', priority: 'high', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
+            { id: 3, name: 'Third-Party Integrations', description: 'Confirm access to external APIs and services mentioned in the requirements.', category: 'apis', priority: 'medium', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
         );
     }
 
     return items;
+};
+
+const normalizePrerequisiteItem = (item = {}, idx = 0) => {
+    const name = String(item.name || item.title || `Prerequisite ${idx + 1}`).trim();
+    const description = String(item.description || item.details || '').trim();
+    const inferredFieldType = inferFieldTypeFromRequirement(name, description);
+    const rawType = String(item.fieldType || '').trim().toLowerCase();
+    const fieldType = rawType === 'text' || rawType === 'url' || rawType === 'file'
+        ? rawType
+        : inferredFieldType;
+
+    const userValue = String(item.userValue || '').trim();
+    const userFileName = String(item.userFileName || item.userFile || '').trim();
+    const hasAnswer = Boolean(userValue || userFileName);
+
+    return {
+        id: item.id ?? (idx + 1),
+        name: name || `Prerequisite ${idx + 1}`,
+        description,
+        category: String(item.category || 'other').trim() || 'other',
+        priority: String(item.priority || 'medium').trim() || 'medium',
+        fieldType,
+        provided: typeof item.provided === 'boolean' ? item.provided : hasAnswer,
+        containsSecret: Boolean(item.containsSecret),
+        userValue,
+        userFileName,
+    };
+};
+
+const sanitizePrerequisiteForAiPayload = (item = {}) => {
+    const safe = {
+        name: String(item.name || '').trim() || 'Unknown',
+        description: String(item.description || '').trim(),
+        category: String(item.category || 'other').trim() || 'other',
+        priority: String(item.priority || 'medium').trim() || 'medium',
+        fieldType: String(item.fieldType || 'text').trim() || 'text',
+        provided: Boolean(item.provided),
+    };
+
+    // Never pass secret-marked user-entered content to AI generation payloads.
+    const isSecret = Boolean(item.containsSecret);
+    safe.containsSecret = isSecret;
+
+    const value = String(item.userValue || '').trim();
+    const fileName = String(item.userFileName || '').trim();
+    if (!isSecret) {
+        if (value) safe.userValue = value;
+        if (fileName) safe.userFileName = fileName;
+    }
+
+    return safe;
+};
+
+const parseRepoMetaSuggestion = (value = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+
+    const asGithubPath = (candidate) => {
+        const cleaned = String(candidate || '')
+            .trim()
+            .replace(/^\/+|\/+$/g, '')
+            .replace(/\.git$/i, '');
+        const parts = cleaned.split('/').filter(Boolean);
+        if (parts.length < 2) return null;
+        const path = `${parts[0]}/${parts[1]}`;
+        return {
+            repo: path,
+            provider: 'github',
+            url: `https://github.com/${path}.git`,
+        };
+    };
+
+    if (/github\.com/i.test(raw)) {
+        try {
+            const normalizedUrl = raw.startsWith('http://') || raw.startsWith('https://')
+                ? raw
+                : `https://${raw}`;
+            const url = new URL(normalizedUrl);
+            return asGithubPath(url.pathname);
+        } catch {
+            // Fallback to direct path parsing below.
+        }
+    }
+
+    if (/dev\.azure\.com|\.visualstudio\.com/i.test(raw)) {
+        try {
+            const normalizedUrl = raw.startsWith('http://') || raw.startsWith('https://')
+                ? raw
+                : `https://${raw}`;
+            const url = new URL(normalizedUrl);
+            const host = url.hostname.toLowerCase();
+            const parts = url.pathname.split('/').filter(Boolean).map((p) => decodeURIComponent(p));
+
+            let org = '';
+            let project = '';
+            let repo = '';
+
+            if (host.endsWith('dev.azure.com')) {
+                if (parts.length >= 4 && parts[2].toLowerCase() === '_git') {
+                    [org, project] = parts;
+                    repo = parts[3];
+                }
+            } else if (host.endsWith('.visualstudio.com')) {
+                org = host.split('.visualstudio.com')[0];
+                if (parts.length >= 3 && parts[1].toLowerCase() === '_git') {
+                    project = parts[0];
+                    repo = parts[2];
+                }
+            }
+
+            repo = String(repo || '').replace(/\.git$/i, '').trim();
+            if (org && project && repo) {
+                return {
+                    repo: `${org}/${project}/${repo}`,
+                    provider: 'azure-devops',
+                    url: `https://dev.azure.com/${org}/${project}/_git/${repo}`,
+                };
+            }
+        } catch {
+            // fall through
+        }
+    }
+
+    return asGithubPath(raw);
+};
+
+const extractRepoSuggestionFromAnalysis = (analysisObj) => {
+    if (!analysisObj || typeof analysisObj !== 'object') return null;
+
+    const possibleSources = [
+        analysisObj.repoContextMeta,
+        analysisObj.repoContext,
+        analysisObj.projectMeta?.repoContext,
+        analysisObj.projectMeta?.repo_context,
+    ].filter(Boolean);
+
+    for (const source of possibleSources) {
+        const parsed = parseRepoMetaSuggestion(
+            source?.repo || source?.full_name || source?.url || source?.git_repo_url || source?.repository
+        );
+        if (!parsed) continue;
+
+        return {
+            repo: parsed.repo,
+            branch: String(source?.branch || source?.default_branch || '').trim() || null,
+            url: parsed.url,
+            source: String(source?.source || 'analysis'),
+            provider: parsed.provider,
+        };
+    }
+
+    const analysisText = String(analysisObj.analysis || analysisObj.report || '');
+    const match = analysisText.match(/Repository:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i);
+    if (match?.[1]) {
+        const parsed = parseRepoMetaSuggestion(match[1]);
+        if (parsed) {
+            return {
+                repo: parsed.repo,
+                branch: null,
+                url: parsed.url,
+                source: 'analysis',
+                provider: parsed.provider,
+            };
+        }
+    }
+
+    return null;
+};
+
+const extractRepoSuggestionFromStoredMeta = (storedMeta) => {
+    if (!storedMeta || typeof storedMeta !== 'object') return null;
+    const parsed = parseRepoMetaSuggestion(
+        storedMeta.repo || storedMeta.full_name || storedMeta.url || storedMeta.git_repo_url || storedMeta.repository
+    );
+    if (!parsed) return null;
+    return {
+        repo: parsed.repo,
+        branch: String(storedMeta.branch || storedMeta.default_branch || '').trim() || null,
+        url: String(storedMeta.url || parsed.url || '').trim() || parsed.url,
+        source: String(storedMeta.source || 'session'),
+        provider: String(storedMeta.provider || parsed.provider || 'github'),
+    };
 };
 
 /* ─────────────────────────────────────────────────────────
@@ -214,7 +484,63 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
+    const [processMode, setProcessMode] = useState('ai_first');
     const [projectName, setProjectName] = useState('');
+    const [globalGitRepoUrl, setGlobalGitRepoUrl] = useState('');
+    const [globalGitToken, setGlobalGitToken] = useState('');
+    const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
+    const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
+    const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
+
+    const loadStoredProjectRepoSuggestion = useCallback(() => {
+        const currentProject = projects?.find((p) => p.key === selectedProjectKey);
+        const projectToken = currentProject?.projectToken || selectedProjectKey;
+        const repoKeys = [
+            selectedProjectKey,
+            currentProject?.projectToken,
+            currentProject?.governanceResultId != null ? String(currentProject.governanceResultId) : null,
+            projectToken,
+        ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+
+        for (const key of repoKeys) {
+            try {
+                const storageKey = `repo_context_meta_${key}`;
+                const raw =
+                    sessionStorage.getItem(storageKey) ||
+                    localStorage.getItem(storageKey);
+                if (!raw) continue;
+                const parsed = extractRepoSuggestionFromStoredMeta(JSON.parse(raw));
+                if (parsed) {
+                    return parsed;
+                }
+            } catch {
+                // ignore malformed storage values and continue trying keys
+            }
+        }
+        return null;
+    }, [projects, selectedProjectKey]);
+
+    const [customRules, setCustomRules] = useState(() => {
+        if (selectedProjectKey) {
+            return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+        }
+        return '';
+    });
+
+    useEffect(() => {
+        if (selectedProjectKey) {
+            const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+            setCustomRules(saved);
+        }
+    }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (selectedProjectKey) {
+            localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
+        }
+    }, [selectedProjectKey, customRules]);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -235,6 +561,62 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             } catch { /* ignore */ }
         }
     }, [projects, selectedProjectKey]);
+
+    useEffect(() => {
+        let isMounted = true;
+        const loadGlobalGitConfig = async () => {
+            if (!selectedProjectKey) {
+                setGlobalGitRepoUrl('');
+                setGlobalGitToken('');
+                setHasSavedGlobalGitToken(false);
+                return;
+            }
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) return;
+                setIsLoadingGitConfig(true);
+
+                const url = new URL(API_ENDPOINTS.AGENTS);
+                url.searchParams.set('project_token', selectedProjectKey);
+                const res = await fetch(url.toString(), {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!res.ok) return;
+
+                const data = await res.json().catch(() => ({}));
+                const agents = Array.isArray(data?.agents) ? data.agents : [];
+                const repo = agents.find((a) => a?.git_repo_url)?.git_repo_url || '';
+                const hasToken = agents.some((a) => a?.has_git_token);
+                if (!isMounted) return;
+
+                // Do not wipe an already-prefilled repo with an empty backend value.
+                if (repo.trim()) {
+                    setGlobalGitRepoUrl(repo);
+                }
+                setHasSavedGlobalGitToken(Boolean(hasToken));
+                setGlobalGitToken('');
+            } catch (e) {
+                console.error('Failed to load global git config', e);
+            } finally {
+                if (isMounted) setIsLoadingGitConfig(false);
+            }
+        };
+
+        loadGlobalGitConfig();
+        return () => {
+            isMounted = false;
+        };
+    }, [selectedProjectKey]);
+
+    // Always prefill from the repo selected during BRD analysis for this project.
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        const storedSuggestion = loadStoredProjectRepoSuggestion();
+        if (!storedSuggestion) return;
+
+        setAnalysisRepoSuggestion((prev) => prev || storedSuggestion);
+        setGlobalGitRepoUrl((prev) => prev.trim() || storedSuggestion.url);
+    }, [selectedProjectKey, loadStoredProjectRepoSuggestion]);
 
     // Load analysis data for the selected project
     useEffect(() => {
@@ -265,8 +647,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         // Validate: reject cache if any description contains HTML tags
                         const hasHtml = parsed.some(p => /<[a-z][\s\S]*>/i.test(p.description || ''));
                         if (!hasHtml && parsed.length > 0) {
-                            setPrerequisites(parsed);
-                            setLoading(false);
+                            setPrerequisites(parsed.map((p, idx) => normalizePrerequisiteItem(p, idx)));
                             return;
                         }
                     } catch { /* fall through */ }
@@ -324,7 +705,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 });
 
                 if (!projectDoc?.analysis_result) {
-                    setError(`No analysis found for "${projName || selectedProjectKey}". Please complete AI Analysis first.`);
+                    setError(`No analysis found for "${projName || selectedProjectKey}". Please complete Agent Analysis first.`);
                     setPrerequisites([]);
                     setLoading(false);
                     return;
@@ -338,9 +719,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     analysisObj = null;
                 }
 
+                const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
+                const storedRepo = loadStoredProjectRepoSuggestion();
+
+                const finalRepoSuggestion = detectedRepo || storedRepo;
+                setAnalysisRepoSuggestion(finalRepoSuggestion);
+                if (finalRepoSuggestion?.url) {
+                    setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
+                }
+
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
                 const extracted = extractPrerequisitesFromAnalysis(analysisObj || projectDoc.analysis_result);
-                setPrerequisites(extracted);
+                setPrerequisites(extracted.map((p, idx) => normalizePrerequisiteItem(p, idx)));
             } catch (err) {
                 setError('Failed to load analysis data: ' + err.message);
             } finally {
@@ -350,7 +740,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
         loadAnalysis();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedProjectKey, navigate, projects]);
+    }, [selectedProjectKey, navigate, projects, loadStoredProjectRepoSuggestion]);
 
     // Save prerequisites to session when they change
     useEffect(() => {
@@ -368,9 +758,40 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         );
     }, []);
 
-    const updateNotes = useCallback((id, notes) => {
+    // Toggle secret flag - secret-marked answers are excluded from AI payloads.
+    const toggleSecret = useCallback((id) => {
         setPrerequisites(prev =>
-            prev.map(p => p.id === id ? { ...p, userNotes: notes } : p)
+            prev.map(p => p.id === id ? { ...p, containsSecret: !p.containsSecret } : p)
+        );
+    }, []);
+
+    // Update free‑form value for text/url fields
+    const updateValue = useCallback((id, val) => {
+        setPrerequisites(prev =>
+            prev.map((p) => {
+                if (p.id !== id) return p;
+                const normalized = String(val || '');
+                return {
+                    ...p,
+                    userValue: normalized,
+                    provided: normalized.trim().length > 0,
+                };
+            })
+        );
+    }, []);
+
+    // Store selected file (only name is kept for simplicity)
+    const updateFile = useCallback((id, file) => {
+        setPrerequisites(prev =>
+            prev.map((p) => {
+                if (p.id !== id) return p;
+                const fileName = file?.name ? String(file.name) : '';
+                return {
+                    ...p,
+                    userFileName: fileName,
+                    provided: Boolean(fileName),
+                };
+            })
         );
     }, []);
 
@@ -387,12 +808,75 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
     const progress = totalItems > 0 ? Math.round((providedCount / totalItems) * 100) : 0;
-    const allProvided = totalItems > 0 && providedCount === totalItems;
+    const allProvided = processMode === 'developer_only' ? true : (totalItems > 0 && providedCount === totalItems);
+    const shouldShowRepoSuggestion = Boolean(
+        analysisRepoSuggestion &&
+        !isLoadingGitConfig &&
+        processMode !== 'developer_only'
+    );
+    const isGlobalGitConfigValid = processMode === 'developer_only' || Boolean(
+        globalGitRepoUrl.trim() && (hasSavedGlobalGitToken || globalGitToken.trim())
+    );
 
     const handleSubmit = async () => {
         setSubmitting(true);
         try {
             const token = localStorage.getItem('token');
+            if (!token) {
+                navigate('/login');
+                return;
+            }
+            if (!selectedProjectKey) {
+                throw new Error('No project selected.');
+            }
+
+            if (processMode !== 'developer_only') {
+                const repo = globalGitRepoUrl.trim();
+                const pat = globalGitToken.trim();
+                if (!repo) {
+                    throw new Error('Git repository URL is required.');
+                }
+                if (!hasSavedGlobalGitToken && !pat) {
+                    throw new Error('Global PAT is required.');
+                }
+
+                // Save global Git config from prerequisites so all agents reuse it.
+                const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
+                agentsUrl.searchParams.set('project_token', selectedProjectKey);
+                const agentsRes = await fetch(agentsUrl.toString(), {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!agentsRes.ok) {
+                    throw new Error('Failed to load agents for saving global Git config.');
+                }
+                const agentsData = await agentsRes.json().catch(() => ({}));
+                const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
+                const targetAgent =
+                    agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
+                if (!targetAgent?.id) {
+                    throw new Error('No agent available to save global Git config.');
+                }
+
+                const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
+                updateUrl.searchParams.set('project_token', selectedProjectKey);
+                const gitPayload = { git_repo_url: repo };
+                if (pat) gitPayload.git_token = pat;
+
+                const updateRes = await fetch(updateUrl.toString(), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify(gitPayload),
+                });
+                if (!updateRes.ok) {
+                    const errData = await updateRes.json().catch(() => ({}));
+                    throw new Error(errData?.detail || 'Failed to save  Git config.');
+                }
+                setHasSavedGlobalGitToken(true);
+                setGlobalGitToken('');
+            }
 
             // Build the prerequisite summary to persist
             const prerequisiteData = {
@@ -402,14 +886,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 progress,
                 totalItems,
                 providedCount,
-                items: prerequisites.map(p => ({
-                    name: p.name,
-                    description: p.description,
-                    category: p.category,
-                    priority: p.priority,
-                    provided: p.provided,
-                    userNotes: p.userNotes,
-                })),
+                items: prerequisites.map((p) => sanitizePrerequisiteForAiPayload(p)),
             };
 
             // Save to localStorage (persistent) so task generation can use it
@@ -417,6 +894,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 `prerequisites_completed_${selectedProjectKey}`,
                 JSON.stringify(prerequisiteData)
             );
+
+            // Save custom rules
+            localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
 
             // Also update the v2 session cache
             sessionStorage.setItem(
@@ -438,16 +918,26 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 await fetchRoadmapData(selectedProjectKey);
             }
 
-            setSubmitted(true);
+            // Save selected execution mode
+            saveProcessModeForProject(selectedProjectKey, processMode);
 
-            // After a brief success animation, redirect to Status Dashboard
-            setTimeout(() => {
-                navigate('/status-dashboard');
-            }, 1500);
+            if (processMode === 'developer_only') {
+                // Redirect immediately without showing the checkmark screen
+                window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
+                return; // Stop execution here so it doesn't clear the submitting state right away
+            } else {
+                setSubmitted(true);
+                // After a brief success animation, redirect to Task Creation
+                setTimeout(() => {
+                    navigate('/task-creation');
+                }, 1500);
+            }
         } catch (err) {
             setError('Failed to save prerequisites: ' + err.message);
         } finally {
-            setSubmitting(false);
+            if (processMode !== 'developer_only') {
+                setSubmitting(false);
+            }
         }
     };
 
@@ -488,7 +978,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                         <div className="flex items-center justify-center gap-2 text-sm text-gray-400">
                             <div className="w-4 h-4 border-2 border-gray-300 border-t-emerald-500 rounded-full animate-spin" />
-                            Redirecting to Status Dashboard…
+                            {processMode === 'developer_only' ? 'Redirecting to VS Code Extension…' : 'Redirecting to Task Creation…'}
                         </div>
                     </div>
                 </div>
@@ -506,7 +996,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     onClick={() => navigate('/dashboard')}
                     className="inline-flex items-center gap-1.5 text-sm font-semibold text-gray-500 hover:text-gray-800 mb-5 transition-colors group"
                 >
-                    <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back to Dashboard
+                    <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back to Requirement Screening
                 </button>
 
                 {/* ── HERO HEADER ── */}
@@ -567,6 +1057,45 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     </div>
                 </div>
 
+                {/* ── EXECUTION MODE (Grid View) ── */}
+                <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-6 mb-6">
+                    <h3 className="text-base font-bold text-gray-900 mb-1">Choose Execution Mode</h3>
+                    <p className="text-sm text-gray-500 mb-4">Select how this project should run in Status Dashboard.</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {PROCESS_MODE_OPTIONS.map(option => (
+                            <button
+                                key={option.id}
+                                type="button"
+                                disabled={!option.enabled}
+                                onClick={() => setProcessMode(option.id)}
+                                className={`text-left rounded-xl border p-4 transition-all ${processMode === option.id && option.enabled
+                                    ? 'border-indigo-500 bg-indigo-50 shadow-sm ring-1 ring-indigo-500'
+                                    : option.enabled
+                                        ? 'border-gray-200 bg-white hover:bg-gray-50 hover:border-indigo-300'
+                                        : 'border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed'
+                                    }`}
+                            >
+                                <div className="flex items-center justify-between gap-2 mb-1.5">
+                                    <p className={`text-sm font-bold ${option.enabled ? (processMode === option.id ? 'text-indigo-900' : 'text-gray-900') : 'text-gray-500'}`}>
+                                        {option.title}
+                                    </p>
+                                    {!option.enabled && (
+                                        <span className="text-[9px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">
+                                            Disabled
+                                        </span>
+                                    )}
+                                    {processMode === option.id && option.enabled && (
+                                        <CheckCircle2 className="w-4 h-4 text-indigo-600" />
+                                    )}
+                                </div>
+                                <p className={`text-xs ${processMode === option.id && option.enabled ? 'text-indigo-700' : 'text-gray-500'}`}>
+                                    {option.description}
+                                </p>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
                 {/* ── ERROR ── */}
                 {error && (
                     <div className="rounded-xl bg-red-50/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
@@ -583,104 +1112,256 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     <div>
                         <p className="text-sm font-semibold text-blue-900 mb-0.5">How this works</p>
                         <p className="text-xs text-blue-700 leading-relaxed">
-                            Our AI has analyzed your BRD and identified the services, credentials, and infrastructure
-                            you'll need. Review each item and mark it as "Provided" once you've arranged access.
-                            Add notes for your team as needed.
+                            {processMode === 'developer_only'
+                                ? 'In Developer Only mode, prerequisite classification is not required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
+                                : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Each prerequisite asks for the expected answer type (text, URL, or file upload).'
+                            }
                         </p>
                     </div>
                 </div>
 
-                {/* ── CATEGORY GROUPS ── */}
-                <div className="space-y-5 mb-8">
-                    {Object.entries(grouped).map(([category, items]) => {
-                        const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG.other;
-                        const CategoryIcon = config.icon;
-                        const catProvided = items.filter(i => i.provided).length;
+                {/* ── PREREQUISITES SECTION ── */}
+                {processMode === 'developer_only' ? (
+                    <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-8 text-center mb-8 border-dashed border-blue-200">
+                        <div className="w-16 h-16 mx-auto mb-4 bg-blue-50 rounded-full flex items-center justify-center">
+                            <ArrowRight className="w-8 h-8 text-blue-500" />
+                        </div>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2">Developer Workflow.</h3>
+                        <p className="text-sm text-gray-600 max-w-lg mx-auto leading-relaxed">
+                            Prerequisite classification is bypassed for <strong>Developer Only</strong> mode.
+                            You will be redirected to VS Code.
+                        </p>
+                    </div>
+                ) : (
+                    /* ── CATEGORY GROUPS ── */
+                    <div className="space-y-5 mb-8">
+                        {Object.entries(grouped).map(([category, items]) => {
+                            const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG.other;
+                            const CategoryIcon = config.icon;
+                            const catProvided = items.filter(i => i.provided).length;
 
-                        return (
-                            <div key={category} className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 overflow-hidden">
-                                {/* Category Header */}
-                                <div className={`flex items-center justify-between px-5 py-3.5 ${config.bg} border-b ${config.border}`}>
-                                    <div className="flex items-center gap-3">
-                                        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${config.gradient} flex items-center justify-center shadow-sm`}>
-                                            <CategoryIcon className="w-4 h-4 text-white" />
-                                        </div>
-                                        <div>
-                                            <h3 className={`text-sm font-bold ${config.text}`}>{config.label}</h3>
-                                            <p className="text-[11px] text-gray-500">{catProvided}/{items.length} confirmed</p>
-                                        </div>
-                                    </div>
-                                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${config.badge}`}>
-                                        {items.length} {items.length === 1 ? 'item' : 'items'}
-                                    </span>
-                                </div>
-
-                                {/* Items */}
-                                <div className="divide-y divide-gray-100">
-                                    {items.map(item => (
-                                        <div
-                                            key={item.id}
-                                            className={`px-5 py-4 flex items-start gap-4 transition-all duration-200 ${item.provided ? 'bg-emerald-50/40' : 'hover:bg-gray-50/50'
-                                                }`}
-                                        >
-                                            {/* Checkbox */}
-                                            <button
-                                                onClick={() => toggleProvided(item.id)}
-                                                className="flex-shrink-0 mt-0.5 transition-transform active:scale-90"
-                                                title={item.provided ? 'Mark as not provided' : 'Mark as provided'}
-                                            >
-                                                {item.provided ? (
-                                                    <CheckCircle2 className="w-6 h-6 text-emerald-500 drop-shadow-sm" />
-                                                ) : (
-                                                    <Circle className="w-6 h-6 text-gray-300 hover:text-gray-400" />
-                                                )}
-                                            </button>
-
-                                            {/* Content */}
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                    <span className={`text-sm font-semibold ${item.provided ? 'text-gray-500 line-through' : 'text-gray-800'}`}>
-                                                        {item.name}
-                                                    </span>
-                                                    <PriorityBadge priority={item.priority} />
-                                                </div>
-                                                <p className="text-xs text-gray-500 leading-relaxed mb-2.5 max-w-2xl">
-                                                    {item.description}
-                                                </p>
-
-                                                {/* Notes field */}
-                                                <textarea
-                                                    value={item.userNotes}
-                                                    onChange={(e) => updateNotes(item.id, e.target.value)}
-                                                    placeholder="Add notes (optional) — e.g., credentials location, contact person…"
-                                                    rows={1}
-                                                    className="w-full text-xs text-gray-600 bg-gray-50/80 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all resize-none"
-                                                />
+                            return (
+                                <div key={category} className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 overflow-hidden">
+                                    {/* Category Header */}
+                                    <div className={`flex items-center justify-between px-5 py-3.5 ${config.bg} border-b ${config.border}`}>
+                                        <div className="flex items-center gap-3">
+                                            <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${config.gradient} flex items-center justify-center shadow-sm`}>
+                                                <CategoryIcon className="w-4 h-4 text-white" />
+                                            </div>
+                                            <div>
+                                                <h3 className={`text-sm font-bold ${config.text}`}>{config.label}</h3>
+                                                <p className="text-[11px] text-gray-500">{catProvided}/{items.length} confirmed</p>
                                             </div>
                                         </div>
-                                    ))}
+                                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${config.badge}`}>
+                                            {items.length} {items.length === 1 ? 'item' : 'items'}
+                                        </span>
+                                    </div>
+
+                                    {/* Items */}
+                                    <div className="divide-y divide-gray-100">
+                                        {items.map(item => (
+                                            <div
+                                                key={item.id}
+                                                className={`px-5 py-4 flex items-start gap-4 transition-all duration-200 ${item.provided ? 'bg-emerald-50/40' : 'hover:bg-gray-50/50'
+                                                    }`}
+                                            >
+                                                {/* Checkbox */}
+                                                <button
+                                                    onClick={() => toggleProvided(item.id)}
+                                                    className="flex-shrink-0 mt-0.5 transition-transform active:scale-90"
+                                                    title={item.provided ? 'Mark as not provided' : 'Mark as provided'}
+                                                >
+                                                    {item.provided ? (
+                                                        <CheckCircle2 className="w-6 h-6 text-emerald-500 drop-shadow-sm" />
+                                                    ) : (
+                                                        <Circle className="w-6 h-6 text-gray-300 hover:text-gray-400" />
+                                                    )}
+                                                </button>
+
+                                                {/* Content */}
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-gray-500' : 'text-gray-800'}`}>
+                                                            {item.name}
+                                                        </span>
+                                                        <PriorityBadge priority={item.priority} />
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 leading-relaxed mb-2.5 max-w-2xl">
+                                                        {item.description}
+                                                    </p>
+
+                                                    {/* Field type specific input */}
+                                                    {item.fieldType === 'text' && (
+                                                        <div className="mt-2">
+                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: Text</p>
+                                                            <input
+                                                                type="text"
+                                                                placeholder="Type your answer"
+                                                                value={item.userValue || ''}
+                                                                onChange={(e) => updateValue(item.id, e.target.value)}
+                                                                className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+                                                            />
+                                                        </div>
+                                                    )}
+                                                    {item.fieldType === 'url' && (
+                                                        <div className="mt-2">
+                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: URL</p>
+                                                            <input
+                                                                type="url"
+                                                                placeholder="https://example.com"
+                                                                value={item.userValue || ''}
+                                                                onChange={(e) => updateValue(item.id, e.target.value)}
+                                                                className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+                                                            />
+                                                        </div>
+                                                    )}
+                                                    {item.fieldType === 'file' && (
+                                                        <div className="mt-2">
+                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: File upload</p>
+                                                            <input
+                                                                type="file"
+                                                                onChange={(e) => updateFile(item.id, e.target.files[0])}
+                                                                className="w-full text-sm"
+                                                            />
+                                                            {item.userFileName && (
+                                                                <div className="mt-2 flex items-center gap-2">
+                                                                    <span className="text-xs text-gray-600">Selected: {item.userFileName}</span>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => updateFile(item.id, null)}
+                                                                        className="text-[11px] text-red-600 hover:text-red-700 font-medium"
+                                                                    >
+                                                                        Remove
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {/* Secret flag toggle */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleSecret(item.id)}
+                                                        className={`mt-2 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
+                                                            ? 'border-red-200 bg-red-50 text-red-700'
+                                                            : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'
+                                                            }`}
+                                                        title="Mark as sensitive (will be excluded from AI payload)"
+                                                    >
+                                                        {item.containsSecret ? (
+                                                            <CheckCircle2 className="w-3.5 h-3.5 text-red-600" />
+                                                        ) : (
+                                                            <Circle className="w-3.5 h-3.5 text-gray-400" />
+                                                        )}
+                                                        Sensitive (exclude from AI)
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
+                            );
+                        })}
+                    </div>
+                )}
+
+                {/* ── CUSTOM RULES SECTION ── */}
+                {processMode !== 'developer_only' && (
+                    <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-6 mb-6 space-y-4">
+                        <div className="flex items-center gap-2 mb-1">
+                            <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
+                                <Sparkles className="w-4 h-4 text-indigo-600" />
                             </div>
-                        );
-                    })}
-                </div>
+                            <h3 className="text-base font-bold text-gray-900">A.I. Custom Rules</h3>
+                        </div>
+                        <p className="text-sm text-gray-500">
+                            Define specific coding standards, architectural patterns, or task constraints. The AI will follow these instructions when generating the project plan and tasks.
+                        </p>
+                        <textarea
+                            value={customRules}
+                            onChange={(e) => setCustomRules(e.target.value)}
+                            placeholder="e.g. Use functional components for React, follow SOLID principles, all API tasks must include error handling documentation..."
+                            className="w-full min-h-[120px] p-4 text-sm text-gray-900 bg-slate-50 border border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 transition-all outline-none resize-y"
+                        />
+                        <div className="flex items-center gap-2 text-[11px] text-indigo-500 font-medium bg-indigo-50/50 px-3 py-2 rounded-lg italic">
+                            <AlertCircle className="w-3.5 h-3.5" />
+                            Rules are saved automatically for this project.
+                        </div>
+                    </div>
+                )}
 
                 {/* ── SUMMARY + SUBMIT ── */}
                 <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-100/80 p-6 mb-6">
+                    {processMode !== 'developer_only' && (
+                        <div className="mb-6 pb-6 border-b border-gray-100">
+                            <h3 className="text-base font-bold text-gray-900 mb-1">Git Configuration</h3>
+                            <p className="text-sm text-gray-500 mb-4">
+                                Provide one global repository and PAT here. All agents in this project will use these credentials.
+                            </p>
+                            {shouldShowRepoSuggestion && (
+                                <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/80 p-4">
+                                    <p className="text-sm font-semibold text-indigo-900">Repository detected from analysis</p>
+                                    <p className="text-xs text-indigo-700 mt-1">
+                                        Using <span className="font-semibold">{analysisRepoSuggestion.repo}</span>
+                                        {analysisRepoSuggestion.branch ? ` (${analysisRepoSuggestion.branch})` : ''} from BRD section for this project.
+                                        You can change it below if needed.
+                                    </p>
+                                </div>
+                            )}
+                            <div className="grid grid-cols-1 gap-4">
+                                <div>
+                                    <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
+                                        Git Repository URL <span className="text-red-500">*</span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={globalGitRepoUrl}
+                                        onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
+                                        placeholder="https://github.com/org/repo.git"
+                                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
+                                        Personal Access Token {!hasSavedGlobalGitToken && <span className="text-red-500">*</span>}
+                                    </label>
+                                    <input
+                                        type="password"
+                                        value={globalGitToken}
+                                        onChange={(e) => setGlobalGitToken(e.target.value)}
+                                        placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'ghp_...'}
+                                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                    />
+                                    <p className="text-xs text-gray-500 mt-2">
+                                        {hasSavedGlobalGitToken
+                                            ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
+                                            : 'PAT is required the first time so agents can clone/push to the global repository.'}
+                                    </p>
+                                </div>
+                                {isLoadingGitConfig && (
+                                    <p className="text-xs text-gray-500">Loading saved Git config...</p>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                         <div>
                             <h3 className="text-base font-bold text-gray-900 mb-1">Ready to proceed?</h3>
                             <p className="text-sm text-gray-500">
-                                {allProvided
-                                    ? '✅ All prerequisites confirmed. You can proceed to task creation.'
-                                    : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
+                                {processMode === 'developer_only'
+                                    ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
+                                    : allProvided
+                                        ? '✅ All prerequisites confirmed. You can proceed to task creation.'
+                                        : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
                                 }
                             </p>
                         </div>
 
                         <button
                             onClick={handleSubmit}
-                            disabled={submitting}
+                            disabled={submitting || isLoadingGitConfig || !isGlobalGitConfigValid}
                             className={`inline-flex items-center gap-2 py-3 px-7 text-sm font-bold rounded-xl text-white transition-all shadow-lg active:scale-[0.97] flex-shrink-0 ${allProvided
                                 ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-emerald-200/50'
                                 : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-200/50'
@@ -689,8 +1370,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             {submitting ? (
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                             ) : (
-                                <>{allProvided ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-                                    {allProvided ? 'Confirm & Proceed' : 'Proceed Anyway'}</>
+                                <>{(allProvided || processMode === 'developer_only') ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
+                                    {processMode === 'developer_only' ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
                             )}
                         </button>
                     </div>

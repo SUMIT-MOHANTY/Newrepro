@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { Menu, Settings } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
+import AgentsPage from './AgentsPage';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
 import ProjectDropdown from './ProjectDropdown';
@@ -15,11 +16,22 @@ const DASHBOARD_ROLES = [
     { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
 ];
 const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
+const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 
 const DEFAULT_ROADMAP = {
-    steps: ['Project Setup', 'Requirement Screening', 'AI Analysis', 'Prerequisite Classification', 'Task Creation', 'Agent Execution', 'Complete'],
+    steps: [
+        'Project Initiation',
+        'Governance',
+        'Requirement Screening',
+        'Agent Analysis',
+        'Prerequisite Classification',
+        'Task Creation',
+        'Resource Onboarding',
+        'On Flight',
+        'Complete',
+    ],
     current_step: 0,
-    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
+    step_statuses: ['active', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'],
     failed_step: null,
 };
 
@@ -37,7 +49,13 @@ export default function AppLayout({ children }) {
     const [user, setUser] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [projects, setProjects] = useState([]);
-    const [selectedProjectKey, setSelectedProjectKey] = useState('');
+    const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
+        try {
+            return localStorage.getItem(PROJECT_STORAGE_KEY) || '';
+        } catch {
+            return '';
+        }
+    });
     const [showSettings, setShowSettings] = useState(false);
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
     const [pluginClients, setPluginClients] = useState([]);
@@ -54,7 +72,6 @@ export default function AppLayout({ children }) {
 
     useEffect(() => {
         if (!DASHBOARD_ROLES.some((r) => r.value === selectedRole)) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
             setSelectedRole('project');
             return;
         }
@@ -65,13 +82,26 @@ export default function AppLayout({ children }) {
         }
     }, [selectedRole]);
 
+    useEffect(() => {
+        try {
+            if (selectedProjectKey) {
+                localStorage.setItem(PROJECT_STORAGE_KEY, selectedProjectKey);
+            } else {
+                localStorage.removeItem(PROJECT_STORAGE_KEY);
+            }
+        } catch {
+            // Ignore storage errors in restricted browser contexts.
+        }
+    }, [selectedProjectKey]);
+
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
-        : location.pathname === '/organization-admin' ? 'organizationAdmin'
-            : location.pathname === '/governance' ? 'governance'
-                : location.pathname === '/prerequisites' ? 'prerequisites'
-                    : 'main';
+        : location.pathname === '/new-project' || location.pathname.startsWith('/new-project/') ? 'governance'
+            : location.pathname === '/prerequisites' ? 'prerequisites'
+                : location.pathname === '/task-creation' ? 'taskCreation'
+                    : location.pathname === '/resource-onboarding' ? 'resourceOnboarding'
+                        : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
@@ -79,9 +109,13 @@ export default function AppLayout({ children }) {
         } else if (view === 'organizationAdmin') {
             navigate('/organization-admin');
         } else if (view === 'governance') {
-            navigate('/governance');
+            navigate('/new-project');
         } else if (view === 'prerequisites') {
             navigate('/prerequisites');
+        } else if (view === 'taskCreation') {
+            navigate('/task-creation');
+        } else if (view === 'resourceOnboarding') {
+            navigate('/resource-onboarding');
         } else {
             navigate('/dashboard');
         }
@@ -149,7 +183,96 @@ export default function AppLayout({ children }) {
         }, 0);
     }, [generatedProjects, isProjectsError, projectsError, handleLogout]);
 
+    useEffect(() => {
+        if (isNewProjectMode) return;
+        if (!projects || projects.length === 0) {
+            return;
+        }
+
+        const queueProjectSelection = (projectKey) => {
+            setTimeout(() => setSelectedProjectKey(projectKey), 0);
+        };
+
+        const projectTokenFromPath = (() => {
+            const match = location.pathname.match(/^\/a\/([^/?#]+)/);
+            return match ? decodeURIComponent(match[1]) : '';
+        })();
+
+        const byPath = projectTokenFromPath
+            ? projects.find(
+                (project) =>
+                    project.key === projectTokenFromPath ||
+                    project.projectToken === projectTokenFromPath
+            )
+            : null;
+
+        if (byPath && byPath.key !== selectedProjectKey) {
+            queueProjectSelection(byPath.key);
+            return;
+        }
+
+        if (selectedProjectKey && projects.some((project) => project.key === selectedProjectKey)) {
+            return;
+        }
+
+        let governanceContext = null;
+        try {
+            const raw =
+                sessionStorage.getItem('governanceContext') ||
+                localStorage.getItem('governanceContext');
+            if (raw) governanceContext = JSON.parse(raw);
+        } catch {
+            governanceContext = null;
+        }
+
+        const byStored = (() => {
+            try {
+                const storedKey = localStorage.getItem(PROJECT_STORAGE_KEY);
+                if (!storedKey) return null;
+                return projects.find((project) => project.key === storedKey) || null;
+            } catch {
+                return null;
+            }
+        })();
+
+        const byGovToken = governanceContext?.project_token
+            ? projects.find(
+                (project) =>
+                    project.key === String(governanceContext.project_token) ||
+                    project.projectToken === String(governanceContext.project_token)
+            )
+            : null;
+
+        const byGovId = governanceContext?.result_id
+            ? projects.find(
+                (project) =>
+                    String(project.governanceResultId || '') === String(governanceContext.result_id)
+            )
+            : null;
+
+        const byGovName = governanceContext?.project_name
+            ? projects.find(
+                (project) =>
+                    String(project.name || '').trim().toLowerCase() ===
+                    String(governanceContext.project_name || '').trim().toLowerCase()
+            )
+            : null;
+
+        const fallback =
+            byPath ||
+            byStored ||
+            byGovToken ||
+            byGovId ||
+            byGovName ||
+            projects[0];
+
+        if (fallback?.key && fallback.key !== selectedProjectKey) {
+            queueProjectSelection(fallback.key);
+        }
+    }, [projects, selectedProjectKey, location.pathname, isNewProjectMode]);
+
     const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
+    const hasServerRoadmap = !!roadmapDataResult;
     let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
 
     // Fast-fail the UI stepper if the project classification is Enterprise (meaning it's blocked from task agent workflow)
@@ -159,9 +282,197 @@ export default function AppLayout({ children }) {
             ...roadmapData,
             current_step: 1,
             failed_step: 1,
-            step_statuses: ['completed', 'failed', 'pending', 'pending', 'pending', 'pending']
+            step_statuses: ['completed', 'failed', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending']
         };
     }
+
+    // Keep "On Flight" emphasis on Status Dashboard.
+    // On Task Creation page, keep the roadmap focused on Task Creation
+    // until deploy stage starts.
+    const roadmapDataForView = useMemo(() => {
+        if (!roadmapData) return roadmapData;
+
+        // While in Governance wizard *before* a backend roadmap exists (or for a BRAND NEW project),
+        // drive the top tracker from the local wizard step:
+        // - Step 0 (Project Details): Project Initiation = active, Governance = pending
+        // - Step 1+ (Governance Questions): Project Initiation = completed, Governance = active
+        if (currentView === 'governance' && !hasServerRoadmap) {
+            const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
+            let wizardStep = 0;
+            try {
+                const raw = sessionStorage.getItem(storageKey);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed.step === 'number') {
+                        wizardStep = parsed.step;
+                    }
+                }
+            } catch {
+                wizardStep = 0;
+            }
+
+            const steps = Array.isArray(roadmapData.steps) && roadmapData.steps.length > 0
+                ? roadmapData.steps
+                : DEFAULT_ROADMAP.steps;
+            const statuses = Array(steps.length).fill('pending');
+
+            if (wizardStep <= 0) {
+                // Still on Project name entry
+                statuses[0] = 'active';
+            } else {
+                // From the first dimension/question step onward
+                statuses[0] = 'completed';
+                statuses[1] = 'active';
+            }
+
+            return {
+                ...roadmapData,
+                steps,
+                current_step: wizardStep <= 0 ? 0 : 1,
+                step_statuses: statuses,
+            };
+        }
+
+        if (currentView !== 'taskCreation') return roadmapData;
+
+        const statuses = Array.isArray(roadmapData.step_statuses)
+            ? [...roadmapData.step_statuses]
+            : null;
+        const steps = Array.isArray(roadmapData.steps) && roadmapData.steps.length > 0
+            ? roadmapData.steps
+            : DEFAULT_ROADMAP.steps;
+
+        if (!statuses || !steps.length) return roadmapData;
+
+        const onFlightIndex = steps.indexOf('On Flight');
+        if (onFlightIndex === -1 || statuses.length <= onFlightIndex) {
+            return roadmapData;
+        }
+
+        const completeStarted = statuses[onFlightIndex] === 'active' || statuses[onFlightIndex] === 'completed';
+        if (completeStarted) return roadmapData;
+
+        const taskIndex = steps.indexOf('Task Creation');
+        const prereqIndex = steps.indexOf('Prerequisite Classification');
+
+        if (
+            taskIndex === -1 ||
+            prereqIndex === -1 ||
+            statuses.length <= taskIndex ||
+            statuses.length <= prereqIndex
+        ) {
+            return roadmapData;
+        }
+
+        if (statuses[taskIndex] === 'active' || statuses[taskIndex] === 'completed') {
+            const nextStatuses = [...statuses];
+            nextStatuses[taskIndex] = 'pending';
+            nextStatuses[prereqIndex] = 'active';
+            return {
+                ...roadmapData,
+                current_step: prereqIndex,
+                current_step_label: steps[prereqIndex] || 'Task Creation',
+                step_statuses: nextStatuses,
+            };
+        }
+
+        return roadmapData;
+    }, [roadmapData, currentView, hasServerRoadmap, selectedProjectKey]);
+
+    const [storageNonce, forceUpdate] = React.useReducer(x => x + 1, 0);
+
+    // Watch for storage changes to keep roadmap synced with the governance wizard on /new-project
+    useEffect(() => {
+        const handleStorage = () => forceUpdate();
+        window.addEventListener('storage', handleStorage);
+        // Custom event for same-tab storage changes (sessionStorage doesn't trigger 'storage' in same tab)
+        const originalSetItem = sessionStorage.setItem;
+        sessionStorage.setItem = function () {
+            originalSetItem.apply(this, arguments);
+            handleStorage();
+        };
+        return () => {
+            window.removeEventListener('storage', handleStorage);
+            sessionStorage.setItem = originalSetItem;
+        };
+    }, []);
+
+    // Drive the active roadmap step from the frontend route (UI-only logic)
+    const forcedRoadmapStepIndex = useMemo(() => {
+        const path = location.pathname;
+
+        // Dummy reference to satisfy linter and ensure memo updates on storage event
+        const _ = storageNonce;
+
+        const steps = Array.isArray(roadmapData?.steps) && roadmapData.steps.length > 0
+            ? roadmapData.steps
+            : DEFAULT_ROADMAP.steps;
+
+        const idx = (label) => {
+            const i = steps.indexOf(label);
+            return i === -1 ? null : i;
+        };
+
+        if (path === '/new-project' || path.startsWith('/new-project/')) {
+            let wizardStep = 0;
+            let hasResult = false;
+            try {
+                const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
+                const raw = sessionStorage.getItem(storageKey);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed.step === 'number') wizardStep = parsed.step;
+                }
+                hasResult = !!sessionStorage.getItem('governanceResult');
+            } catch { wizardStep = 0; }
+
+            if (path.startsWith('/new-project/governance')) {
+                return idx('Governance') ?? 1;
+            }
+
+            // If we have a result, we are in the Screening phase (Requirement Screening)
+            if (hasResult) return idx('Requirement Screening') ?? 2;
+            return wizardStep > 0 ? (idx('Governance') ?? 1) : (idx('Project Initiation') ?? 0);
+        }
+
+        if (path === '/prerequisites') return idx('Prerequisite Classification') ?? 4;
+        if (path === '/task-creation') return idx('Task Creation') ?? 5;
+        if (path === '/resource-onboarding') return idx('Resource Onboarding') ?? 6;
+        if (path === '/status-dashboard') {
+            const completeIndex = idx('Complete');
+            const onFlightIndex = idx('On Flight');
+            if (
+                completeIndex !== null &&
+                roadmapData?.current_step >= completeIndex
+            ) {
+                return completeIndex;
+            }
+            return onFlightIndex ?? completeIndex ?? (steps.length - 1);
+        }
+
+        if (path === '/dashboard' || path.startsWith('/a/')) {
+            const showingResults = !!sessionStorage.getItem('dashboard_showing_results');
+            // Upload form → Requirement Screening; Analysis results → Agent Analysis
+            const reqIdx = idx('Requirement Screening') ?? 2;
+            const agentIdx = idx('Agent Analysis') ?? 3;
+            return showingResults ? agentIdx : reqIdx;
+        }
+
+        return null;
+    }, [location.pathname, selectedProjectKey, roadmapData?.current_step, roadmapData?.steps, storageNonce]);
+
+    // When the focused step is already done, render it green+highlighted instead of yellow
+    const forcedStepCompleted = useMemo(() => {
+        const path = location.pathname;
+        if (path === '/dashboard' || path.startsWith('/a/')) {
+            const showingResults = !!sessionStorage.getItem('dashboard_showing_results');
+            if (showingResults) return true; // Agent Analysis completed
+            // On upload form: if project already has analysis, screening is done too
+            const hasExistingAnalysis = !!selectedProject?.latestDocument?.analysis_result;
+            return hasExistingAnalysis;
+        }
+        return false;
+    }, [location.pathname, selectedProject, storageNonce]);
 
     // Backward compatibility for components expecting the old fetch logic
     const fetchRoadmapData = useCallback(() => {
@@ -183,7 +494,7 @@ export default function AppLayout({ children }) {
         localStorage.removeItem('governanceContext');
         sessionStorage.removeItem('governanceResult');
         sessionStorage.removeItem('governanceContext');
-        navigate('/governance?new=' + Date.now());
+        navigate('/new-project?new=' + Date.now());
     }, [navigate]);
 
     const handleSelectProject = (project) => {
@@ -285,28 +596,36 @@ export default function AppLayout({ children }) {
                                         currentView === 'organizationAdmin' ? 'Organization Admin' :
                                         currentView === 'governance' ? 'Project Requirement Screening' :
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
-                                                'BRD Requirements Analyzer'}
+                                                currentView === 'taskCreation' ? 'Task Creation Planner' :
+                                                    currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
+                                                        'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
                                         currentView === 'governance' ? 'Screening & Configuration' :
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
-                                                'Project Insight & AI Assessment'}
+                                                currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
+                                                    currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
+                                                        'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 
-                            {currentView === 'statusDashboard' && (
+                            {(currentView === 'statusDashboard' || currentView === 'taskCreation' || currentView === 'resourceOnboarding') && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
-                                    <div className="w-48">
-                                        <RoleDropdown
-                                            roles={DASHBOARD_ROLES}
-                                            selectedRole={selectedRole}
-                                            onSelect={(roleValue) => setSelectedRole(roleValue)}
-                                            theme="dark"
-                                        />
-                                    </div>
-                                    <div className="w-px h-5 bg-white/20"></div>
+                                    {currentView === 'statusDashboard' && (
+                                        <>
+                                            <div className="w-48">
+                                                <RoleDropdown
+                                                    roles={DASHBOARD_ROLES}
+                                                    selectedRole={selectedRole}
+                                                    onSelect={(roleValue) => setSelectedRole(roleValue)}
+                                                    theme="dark"
+                                                />
+                                            </div>
+                                            <div className="w-px h-5 bg-white/20"></div>
+                                        </>
+                                    )}
                                     <div className="w-48 sm:w-56">
                                         <ProjectDropdown
                                             projects={projects}
@@ -346,13 +665,15 @@ export default function AppLayout({ children }) {
                 </header>
 
                 {/* ── Project-level Roadmap Stepper — shown on all pages ── */}
-                {roadmapData && (
+                {roadmapDataForView && (
                     <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto">
                         <RoadmapHeader
-                            steps={roadmapData.steps || []}
-                            currentStep={roadmapData.current_step || 0}
-                            stepStatuses={roadmapData.step_statuses || null}
-                            failedStep={roadmapData.failed_step ?? null}
+                            steps={roadmapDataForView.steps || []}
+                            currentStep={roadmapDataForView.current_step || 0}
+                            stepStatuses={roadmapDataForView.step_statuses || null}
+                            failedStep={roadmapDataForView.failed_step ?? null}
+                            activeStepIndex={forcedRoadmapStepIndex}
+                            activeStepCompleted={forcedStepCompleted}
                         />
                     </div>
                 )}

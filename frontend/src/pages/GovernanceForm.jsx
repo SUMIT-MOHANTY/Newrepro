@@ -11,7 +11,7 @@ import colors from '../styles/colors';
    STEP INDICATOR  (responsive: vertical on desktop, horizontal on mobile)
    Now accepts a `vertical` prop to switch layout modes.
 ───────────────────────────────────────────────────────── */
-const StepIndicator = ({ steps, currentStep, vertical = false }) => {
+const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber = 1, totalSteps = null }) => {
     // ── VERTICAL LAYOUT (Desktop Sidebar) ──
     if (vertical) {
         return (
@@ -32,7 +32,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
                                         : active ? 'bg-app-bg-card border-2 border-app-primary text-app-primary shadow-lg shadow-blue-100 ring-4 ring-blue-50'
                                             : 'bg-app-bg-muted border border-app-border text-app-text-light group-hover:border-app-border group-hover:text-app-text-muted'}`}
                                 >
-                                    {done ? <Check className="w-3.5 h-3.5" /> : idx + 1}
+                                    {done ? <Check className="w-3.5 h-3.5" /> : startStepNumber + idx}
                                     {active && <span className="absolute inset-0 rounded-full animate-ping bg-blue-400/20" />}
                                 </div>
                                 {/* Label */}
@@ -40,7 +40,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
                                     <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors duration-200
                                         ${active ? 'text-app-primary' : done ? 'text-blue-500/70' : 'text-app-text-light'}`}
                                     >
-                                        Step {idx + 1}
+                                        Step {startStepNumber + idx}
                                     </span>
                                     <span className={`text-[13px] font-semibold transition-colors duration-200 truncate
                                         ${active ? 'text-app-text-main' : done ? 'text-app-text-label' : 'text-app-text-light'}`}
@@ -61,7 +61,9 @@ const StepIndicator = ({ steps, currentStep, vertical = false }) => {
     return (
         <div className="w-full mb-6">
             <div className="flex items-center justify-between text-xs mb-2.5">
-                <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Step {currentStep + 1} of {steps.length}</span>
+                <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
+                    Step {startStepNumber + currentStep} of {totalSteps || steps.length}
+                </span>
                 <span className="text-app-text-label font-semibold truncate ml-2">{steps[currentStep]}</span>
             </div>
             <div className="w-full bg-app-bg-muted rounded-full h-2.5 overflow-hidden shadow-inner">
@@ -84,6 +86,9 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     const location = useLocation();
     const { data: questionsData, isLoading: loading, error: queryError } = useGovernanceQuestions();
     const { mutate: submitGovernance, isPending: submitting } = useSubmitGovernance();
+    const isGovernanceQuestionsPage = location.pathname.endsWith('/governance');
+    const initiationPath = '/new-project';
+    const governancePath = '/new-project/governance';
 
     const questions = questionsData?.questions || [];
 
@@ -91,8 +96,10 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     const [projectName, setProjectName] = useState('');
     const [error, setError] = useState('');
     const [result, setResult] = useState(null);
+    const [isHydrated, setIsHydrated] = useState(false);
+    const skipOption = { label: 'Skip', score: 0 };
 
-    // Step state: 0 = Project Name, 1…N = dimension steps, N+1 = review
+    // Step state: 0 = Project Name page, 1…N = dimension steps, N+1 = review
     const [currentStep, setCurrentStep] = useState(0);
 
     /* ── helpers ── */
@@ -130,13 +137,15 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                 setAnswers({});
                 setCurrentStep(0);
                 setResult(null);
-                navigate(location.pathname, { replace: true });
+                sessionStorage.removeItem('governance_wizard_step_new');
+                navigate(initiationPath, { replace: true });
+                setIsHydrated(true);
                 return;
             }
 
             if (nameFromUrl) {
                 setProjectName(decodeURIComponent(nameFromUrl));
-                setCurrentStep(1); // Skip Project Name step
+                setCurrentStep(0);
                 // Also store it so it persists on reload
                 sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
                 // Clean up the URL
@@ -158,8 +167,41 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
             const savedResult = getStoredJson('governanceResult');
             if (savedResult) setResult(savedResult);
+
+            const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
+            let persistedStep = 0;
+            try {
+                const rawStep = sessionStorage.getItem(storageKey);
+                if (rawStep) {
+                    const parsedStep = JSON.parse(rawStep);
+                    if (parsedStep && typeof parsedStep.step === 'number') {
+                        persistedStep = parsedStep.step;
+                    }
+                }
+            } catch {
+                persistedStep = 0;
+            }
+
+            if (isGovernanceQuestionsPage) {
+                setCurrentStep(Math.max(1, persistedStep || 1));
+            } else {
+                setCurrentStep(0);
+            }
+            setIsHydrated(true);
         }, 0);
-    }, [location.search, location.pathname, navigate]);
+    }, [location.search, location.pathname, navigate, isGovernanceQuestionsPage, selectedProjectKey]);
+
+    // Persist current wizard step so the global tracker can highlight
+    // Project Initiation vs Governance appropriately while filling the form.
+    useEffect(() => {
+        try {
+            const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
+            const payload = { projectKey: selectedProjectKey || 'new', step: currentStep };
+            sessionStorage.setItem(storageKey, JSON.stringify(payload));
+        } catch {
+            // ignore storage errors
+        }
+    }, [currentStep, selectedProjectKey]);
 
     useEffect(() => {
         if (queryError) {
@@ -169,8 +211,23 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
         }
     }, [queryError]);
 
+    useEffect(() => {
+        if (!isHydrated) return;
+        if (!isGovernanceQuestionsPage) return;
+        if (projectName.trim()) return;
+        setError('Please complete Project Initiation first.');
+        navigate(initiationPath, { replace: true });
+    }, [isHydrated, isGovernanceQuestionsPage, projectName, navigate]);
+
     const handleAnswer = (questionId, option) =>
         setAnswers((prev) => ({ ...prev, [questionId]: option }));
+
+    const getQuestionOptions = (question) => {
+        if (question.options.some((option) => option.label === skipOption.label)) {
+            return question.options;
+        }
+        return [...question.options, skipOption];
+    };
 
     /* ── submit ── */
     const handleSubmit = (e) => {
@@ -191,6 +248,9 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
             score: answers[q.id]?.score ?? 0,
             selected_option: answers[q.id]?.label || '',
         }));
+        const allSkipped = formattedAnswers.every(
+            (a) => (a.selected_option || '').toLowerCase() === skipOption.label.toLowerCase()
+        );
 
         const submission = {
             project_name: projectName,
@@ -225,6 +285,11 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                     if (fetchRoadmapData) {
                         const tokenToUse = resultData.project_token || selectedProjectKey;
                         if (tokenToUse) fetchRoadmapData(tokenToUse);
+                    }
+
+                    // If all questions were skipped, jump straight to Requirement Screening (BRD upload)
+                    if (allSkipped && resultData.project_token) {
+                        window.location.href = `/a/${resultData.project_token}`;
                     }
                 } catch (err) {
                     setError('Submission data processing error: ' + err.message);
@@ -263,39 +328,62 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
     });
     const dimensions = Object.keys(questionsByDimension);
 
-    // steps: 0 = Project Name, 1..N = dimensions, N+1 = Review & Submit
-    const TOTAL_STEPS = dimensions.length + 2; // +1 project name, +1 review
-    const stepLabels = ['Project', ...dimensions.map((d) => d.split(' ')[0]), 'Review'];
-    const isDimensionStep = currentStep >= 1 && currentStep <= dimensions.length;
-    const isReviewStep = currentStep === dimensions.length + 1;
+    // Cross-page flow:
+    // /new-project -> Project Initiation only
+    // /new-project/governance -> Steps 2..8 (dimensions + review)
+    const TOTAL_STEPS = dimensions.length + 2;
+    const governanceStepLabels = [...dimensions.map((d) => d.split(' ')[0]), 'Review'];
+    const sidebarStepLabels = isGovernanceQuestionsPage ? governanceStepLabels : ['Project Initiation'];
+    const sidebarCurrentStep = isGovernanceQuestionsPage ? Math.max(currentStep - 1, 0) : 0;
+    // Start numbering from 1 on the Governance wizard sidebar.
+    // (User-facing "Step 1" should be Business when on /new-project/governance)
+    const sidebarStepOffset = 1;
+    const isDimensionStep = isGovernanceQuestionsPage && currentStep >= 1 && currentStep <= dimensions.length;
+    const isReviewStep = isGovernanceQuestionsPage && currentStep === dimensions.length + 1;
     const activeDimension = isDimensionStep ? dimensions[currentStep - 1] : null;
     const activeQuestions = activeDimension ? questionsByDimension[activeDimension] : [];
 
 
 
     const canProceed = () => {
-        if (currentStep === 0) return projectName.trim().length > 0;
+        if (!isGovernanceQuestionsPage) return projectName.trim().length > 0;
         if (isDimensionStep) return activeQuestions.every((q) => answers[q.id] !== undefined);
         return true;
     };
 
     const goNext = () => {
         if (!canProceed()) {
-            if (currentStep === 0) setError('Please enter a project name before continuing.');
+            if (!isGovernanceQuestionsPage || currentStep === 0) setError('Please enter a project name before continuing.');
             else setError('Please answer all questions in this section before continuing.');
             return;
         }
         setError('');
+        if (!isGovernanceQuestionsPage) {
+            navigate(governancePath);
+            return;
+        }
         setCurrentStep((s) => Math.min(s + 1, TOTAL_STEPS - 1));
     };
 
     const goPrev = () => {
         setError('');
-        setCurrentStep((s) => Math.max(s - 1, 0));
+        if (!isGovernanceQuestionsPage) {
+            setCurrentStep(0);
+            return;
+        }
+        if (currentStep <= 1) {
+            navigate(initiationPath);
+            return;
+        }
+        setCurrentStep((s) => Math.max(s - 1, 1));
     };
 
 
     /* ── render ── */
+    const mainContentClass = isGovernanceQuestionsPage
+        ? 'flex-1 min-w-0 max-w-4xl'
+        : 'flex-1 min-w-0 w-full';
+
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
 
@@ -325,20 +413,28 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                 <div className="flex gap-5 items-start">
 
                     {/* ── DESKTOP SIDEBAR (≥1024px) ── */}
-                    <aside className="hidden lg:block w-64 xl:w-72 flex-shrink-0 sticky top-6 self-start">
-                        <div className="bg-app-bg-card/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
-                            {/* Decorative gradient accent */}
-                            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl" />
-                            <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-app-text-light mb-5 mt-1 flex items-center gap-2">
-                                <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
-                                Progress
-                            </h2>
-                            <StepIndicator steps={stepLabels} currentStep={currentStep} vertical={true} />
-                        </div>
-                    </aside>
+                    {isGovernanceQuestionsPage && (
+                        <aside className="hidden lg:block w-64 xl:w-72 flex-shrink-0 sticky top-6 self-start">
+                            <div className="bg-app-bg-card/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
+                                {/* Decorative gradient accent */}
+                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl" />
+                                <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-app-text-light mb-5 mt-1 flex items-center gap-2">
+                                    <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
+                                    Progress
+                                </h2>
+                                <StepIndicator
+                                    steps={sidebarStepLabels}
+                                    currentStep={sidebarCurrentStep}
+                                    vertical={true}
+                                    startStepNumber={sidebarStepOffset}
+                                    totalSteps={TOTAL_STEPS}
+                                />
+                            </div>
+                        </aside>
+                    )}
 
                     {/* ── MAIN CONTENT: Step Wizard ── */}
-                    <div className="flex-1 min-w-0 max-w-4xl">
+                    <div className={mainContentClass}>
                         {/* Error banner */}
                         {error && (
                             <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
@@ -350,9 +446,16 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                         )}
 
                         {/* Mobile Step indicator (horizontal) */}
-                        <div className="lg:hidden">
-                            <StepIndicator steps={stepLabels} currentStep={currentStep} />
-                        </div>
+                        {isGovernanceQuestionsPage && (
+                            <div className="lg:hidden">
+                                <StepIndicator
+                                    steps={sidebarStepLabels}
+                                    currentStep={sidebarCurrentStep}
+                                    startStepNumber={sidebarStepOffset}
+                                    totalSteps={TOTAL_STEPS}
+                                />
+                            </div>
+                        )}
 
                         {/* Wrapper: fixed min-height so nav buttons stay at a consistent position */}
                         <div className="flex flex-col min-h-[calc(100vh-14rem)]">
@@ -362,7 +465,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                 <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500" />
 
                                 {/* ── STEP 0: Project Name ── */}
-                                {currentStep === 0 && (
+                                {!isGovernanceQuestionsPage && (
                                     <div className="p-6 sm:p-8">
                                         <div className="mb-6">
                                             <h2 className="text-xl font-bold text-app-text-main mb-1.5 tracking-tight">Project Details</h2>
@@ -412,6 +515,11 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                         <div className="space-y-4">
                                             {activeQuestions.map((question, qIdx) => {
                                                 const answered = answers[question.id] !== undefined;
+                                                const allOptions = getQuestionOptions(question);
+                                                const mainOptions = allOptions.filter((opt) => opt.label !== skipOption.label);
+                                                const skip = allOptions.find((opt) => opt.label === skipOption.label);
+                                                const isSkipped = answers[question.id]?.label === skipOption.label;
+
                                                 return (
                                                     <div
                                                         key={question.id}
@@ -419,19 +527,35 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                                             ? 'border-app-primary-ring/80 bg-gradient-to-br from-blue-50/40 to-indigo-50/30 shadow-sm'
                                                             : 'border-app-border/80 bg-app-bg-card hover:border-app-border'}`}
                                                     >
-                                                        <div className="flex items-start gap-3 mb-4">
-                                                            <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
-                                                                ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
-                                                                : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
-                                                            >
-                                                                {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
-                                                            </span>
-                                                            <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5">{question.question}</h3>
+                                                        <div className="flex items-start justify-between gap-3 mb-4">
+                                                            <div className="flex items-start gap-3">
+                                                                <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
+                                                                    ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
+                                                                    : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
+                                                                >
+                                                                    {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
+                                                                </span>
+                                                                <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5 max-w-xl">
+                                                                    {question.question}
+                                                                </h3>
+                                                            </div>
+                                                            {skip && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleAnswer(question.id, skip)}
+                                                                    className={`text-[11px] font-semibold rounded-full px-3 py-1 border transition-colors duration-200 whitespace-nowrap ${isSkipped
+                                                                        ? 'border-blue-400 bg-app-primary-light text-blue-800'
+                                                                        : 'border-transparent text-app-text-light hover:text-app-primary hover:border-app-primary-light hover:bg-app-primary-light/20'
+                                                                        }`}
+                                                                >
+                                                                    Skip
+                                                                </button>
+                                                            )}
                                                         </div>
 
-                                                        {/* Options — 2 cols on wider screens */}
+                                                        {/* Options — 2 cols on wider screens (excluding Skip) */}
                                                         <div className="ml-10 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                            {question.options.map((option) => {
+                                                            {mainOptions.map((option) => {
                                                                 const selected = answers[question.id]?.label === option.label;
                                                                 return (
                                                                     <label
@@ -528,7 +652,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
 
                             {/* ── NAV BUTTONS ── */}
                             <div className="flex items-center justify-end gap-3 mt-auto pt-5 px-1">
-                                {currentStep === 0 ? (
+                                {!isGovernanceQuestionsPage ? (
                                     <button type="button" onClick={() => navigate('/dashboard')}
                                         className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
                                     >
@@ -552,7 +676,7 @@ const GovernanceForm = ({ fetchRoadmapData, selectedProjectKey }) => {
                                             : 'bg-gray-300 cursor-not-allowed shadow-none'
                                             }`}
                                     >
-                                        {currentStep === dimensions.length ? 'Review' : 'Next'}
+                                        {!isGovernanceQuestionsPage ? 'Continue to Governance' : currentStep === dimensions.length ? 'Review' : 'Next'}
                                         <ChevronRight className="w-4 h-4" />
                                     </button>
                                 )}
@@ -631,6 +755,9 @@ const GovernanceResult = ({ result, onBack }) => {
         gradient: 'from-gray-400 to-gray-500', bg: 'bg-app-bg-page', border: 'border-app-border',
         text: 'text-app-text-label', badge: 'bg-app-bg-muted text-gray-800', label: classification, emoji: '📋',
     };
+    const isSkipFollowUpCase =
+        classification === 'ENTERPRISE' &&
+        String(classification_description || '').toLowerCase().includes('our it team will reach out to you');
 
 
     return (
@@ -826,10 +953,19 @@ const GovernanceResult = ({ result, onBack }) => {
                                     <AlertCircle className="w-4 h-4" /> Required Processes
                                 </h3>
                                 <ul className="text-app-text-label space-y-2 text-sm">
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> Architecture board review</li>
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> Threat modeling</li>
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> Full security assessment</li>
-                                    <li className="flex gap-2"><span className="text-red-400">•</span> SDLC compliance</li>
+                                    {isSkipFollowUpCase ? (
+                                        <>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Screening answers were skipped</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> IT follow-up is required</li>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Architecture board review</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Threat modeling</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> Full security assessment</li>
+                                            <li className="flex gap-2"><span className="text-red-400">•</span> SDLC compliance</li>
+                                        </>
+                                    )}
                                 </ul>
                             </div>
                             <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
@@ -837,10 +973,20 @@ const GovernanceResult = ({ result, onBack }) => {
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
                                 <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
+                                    {isSkipFollowUpCase ? (
+                                        <>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Our IT team will reach out to you</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Wait for IT guidance to continue</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Thanks for connecting with us</li>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
+                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
+                                        </>
+                                    )}
                                 </ol>
                             </div>
                         </>
@@ -857,7 +1003,7 @@ const GovernanceResult = ({ result, onBack }) => {
                     >
                         <ChevronLeft className="w-4 h-4" /> Back to Form
                     </button>
-                    {classification !== 'ENTERPRISE' && (
+                    {(classification !== 'ENTERPRISE' || isSkipFollowUpCase) && (
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));

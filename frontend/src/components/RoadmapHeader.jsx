@@ -1,20 +1,21 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
     CheckCircle2, Circle, AlertCircle, Loader2,
-    FolderOpen, ShieldCheck, Brain, KeyRound, ListChecks, Bot, Flag
+    FolderOpen, ShieldCheck, Brain, KeyRound, ListChecks, Bot, Flag, UserPlus
 } from 'lucide-react';
 
 /**
  * Step icon mapping — maps each step label to a meaningful icon.
  */
 const STEP_ICONS = {
-    'Project Setup': FolderOpen,
+    'Project Initiation': FolderOpen,
+    'Governance': ShieldCheck,
     'Requirement Screening': ShieldCheck,
-    'AI Analysis': Brain,
+    'Agent Analysis': Brain,
     'Prerequisite Classification': KeyRound,
     'Task Creation': ListChecks,
-    'Agent Execution': Bot,
+    'Resource Onboarding': UserPlus,
+    'On Flight': Bot,
     'Complete': Flag,
 };
 
@@ -80,11 +81,10 @@ const styles = {
 /**
  * RoadmapHeader — Railway-track dotted stepper.
  */
-const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }) => {
-    const navigate = useNavigate();
+const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null, activeStepCompleted = false }) => {
     if (!steps.length) return null;
 
-    const statuses =
+    const baseStatuses =
         stepStatuses && stepStatuses.length === steps.length
             ? stepStatuses
             : steps.map((_, i) => {
@@ -94,17 +94,40 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                 return 'pending';
             });
 
+    const statuses = (() => {
+        if (activeStepIndex === null || activeStepIndex === undefined) {
+            return baseStatuses;
+        }
+        if (activeStepIndex < 0 || activeStepIndex >= steps.length) {
+            return baseStatuses;
+        }
+
+        const next = baseStatuses.map((status, idx) => {
+            if (status === 'failed') return 'failed';
+            if (idx < activeStepIndex) return 'completed';
+            if (idx === activeStepIndex) return activeStepCompleted ? 'completedActive' : 'active';
+            return 'pending';
+        });
+        return next;
+    })();
+
     // Map step labels to navigable routes
     const STEP_ROUTES = {
-        'Requirement Screening': '/governance',
+        'Project Initiation': '/new-project',
+        'Governance': '/new-project',
+        'Requirement Screening': '/dashboard',
+        'AI Analysis': '/dashboard',
+        'Agent Analysis': '/dashboard',
         'Prerequisite Classification': '/prerequisites',
+        'Task Creation': '/task-creation',
+        'Resource Onboarding': '/resource-onboarding',
+        'On Flight': '/status-dashboard',
+        'Complete': '/status-dashboard',
     };
 
-    const handleStepClick = (stepLabel, status) => {
-        const route = STEP_ROUTES[stepLabel];
-        if (route && (status === 'active' || status === 'completed')) {
-            navigate(route);
-        }
+    const handleStepClick = () => {
+        // Navigation from roadmap is disabled as requested.
+        return;
     };
 
     // percentage of the track that is "filled"
@@ -127,7 +150,6 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                         const status = statuses[index];
                         const StepIcon = STEP_ICONS[step] || Circle;
                         const labelPosition = index % 2 === 0 ? 'top' : 'bottom';
-                        const isClickable = !!(STEP_ROUTES[step] && (status === 'active' || status === 'completed'));
                         return (
                             <StepNode
                                 key={index}
@@ -136,8 +158,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
                                 status={status}
                                 icon={StepIcon}
                                 labelPosition={labelPosition}
-                                clickable={isClickable}
-                                onClick={() => handleStepClick(step, status)}
+                                clickable={false}
+                                onClick={handleStepClick}
                             />
                         );
                     })}
@@ -150,7 +172,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep }
 /**
  * StepNode — A single "station" dot on the railway track.
  */
-const StepNode = ({ index, label, status, icon, labelPosition, clickable, onClick }) => {
+const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) => {
     /**
      * Style map per status.
      */
@@ -196,6 +218,17 @@ const StepNode = ({ index, label, status, icon, labelPosition, clickable, onClic
             labelColor: '#991b1b',
             stepColor: '#dc2626',
         },
+        completedActive: {
+            dotSize: 38,
+            bg: '#dcfce7',
+            border: '3px solid #22c55e',
+            iconColor: '#16a34a',
+            shadow: '0 0 0 6px rgba(34,197,94,.2), 0 0 18px rgba(34,197,94,.25)',
+            labelWeight: '700',
+            labelColor: '#111827',
+            stepColor: '#16a34a',
+            glowGreen: true,
+        },
     };
 
     const c = cfgMap[status] || cfgMap.pending;
@@ -223,18 +256,8 @@ const StepNode = ({ index, label, status, icon, labelPosition, clickable, onClic
             lineHeight: '1.25',
         }}>
             <p style={{
-                fontSize: '9px',
-                textTransform: 'uppercase',
-                letterSpacing: '0.06em',
-                margin: 0,
-                color: c.stepColor,
-                fontWeight: '600',
-            }}>
-                Step {index + 1}
-            </p>
-            <p style={{
                 fontSize: '11px',
-                margin: '2px 0 0',
+                margin: 0,
                 color: c.labelColor,
                 fontWeight: c.labelWeight,
             }}>
@@ -292,6 +315,16 @@ const StepNode = ({ index, label, status, icon, labelPosition, clickable, onClic
                         inset: '-5px',
                         borderRadius: '50%',
                         border: '2px solid rgba(239,68,68,.35)',
+                        animation: 'roadmapPulse 2s ease-in-out infinite',
+                    }} />
+                )}
+                {/* Completed-active green glow ring */}
+                {c.glowGreen && (
+                    <span style={{
+                        position: 'absolute',
+                        inset: '-6px',
+                        borderRadius: '50%',
+                        border: '2px solid rgba(34,197,94,.45)',
                         animation: 'roadmapPulse 2s ease-in-out infinite',
                     }} />
                 )}

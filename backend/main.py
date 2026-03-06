@@ -1,11 +1,18 @@
 import asyncio
 import logging
 import secrets
+import re
 import uuid
+import html as html_lib
+from html.parser import HTMLParser
+from urllib.parse import urlparse
+import ipaddress
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional, List, Dict, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+import httpx
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File, Header, Request, Form
 from fastapi.security import OAuth2PasswordRequestForm
@@ -13,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import auth
 import models
@@ -22,6 +29,7 @@ import ingestion
 import ai_service
 import governance_scoring
 import github_service
+import azure_devops_service
 import agent_service
 import rag_service
 import context_manager
@@ -31,7 +39,20 @@ from config import settings
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="BRD Analysis API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _startup_init()
+    yield
+
+
+app = FastAPI(title="BRD Analysis API", version="1.0.0", lifespan=lifespan)
+
+# Configure logging with date and time
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 SSO_DEFAULT_SCOPES = "openid profile email"
 SSO_STATE_TTL_SECONDS = 1800
@@ -65,6 +86,173 @@ class AIConfigUpdate(BaseModel):
     api_key: Optional[str] = None
     model: Optional[str] = None
 
+
+class URLIngestRequest(BaseModel):
+    url: str = Field(..., description="Public website URL to fetch")
+
+
+class _RequirementPageParser(HTMLParser):
+    """
+    Lightweight HTML parser for extracting readable requirement-like content
+    without external dependencies.
+    """
+
+    _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    _BLOCK_TAGS = {"p", "li", "section", "article", "div", "blockquote", "td", "th"}
+    _IGNORE_TAGS = {"script", "style", "noscript", "svg", "canvas", "iframe"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_ignored_depth = 0
+        self.in_title = False
+        self.current_tag: Optional[str] = None
+        self.current_text_parts: List[str] = []
+        self.title_parts: List[str] = []
+        self.headings: List[str] = []
+        self.paragraphs: List[str] = []
+        self.list_items: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        tag_l = tag.lower()
+        if tag_l in self._IGNORE_TAGS:
+            self.in_ignored_depth += 1
+            return
+        if self.in_ignored_depth > 0:
+            return
+        if tag_l == "title":
+            self.in_title = True
+            return
+        if tag_l in self._HEADING_TAGS or tag_l in self._BLOCK_TAGS:
+            self.current_tag = tag_l
+            self.current_text_parts = []
+
+    def handle_endtag(self, tag: str):
+        tag_l = tag.lower()
+        if tag_l in self._IGNORE_TAGS and self.in_ignored_depth > 0:
+            self.in_ignored_depth -= 1
+            return
+        if self.in_ignored_depth > 0:
+            return
+        if tag_l == "title":
+            self.in_title = False
+            return
+        if self.current_tag == tag_l:
+            text = " ".join(self.current_text_parts).strip()
+            text = re.sub(r"\s+", " ", text)
+            if text:
+                if tag_l in self._HEADING_TAGS:
+                    self.headings.append(text)
+                elif tag_l == "li":
+                    self.list_items.append(text)
+                else:
+                    self.paragraphs.append(text)
+            self.current_tag = None
+            self.current_text_parts = []
+
+    def handle_data(self, data: str):
+        if self.in_ignored_depth > 0:
+            return
+        clean = re.sub(r"\s+", " ", data or "").strip()
+        if not clean:
+            return
+        if self.in_title:
+            self.title_parts.append(clean)
+        if self.current_tag:
+            self.current_text_parts.append(clean)
+
+    def to_requirement_markdown(self, source_url: str, max_lines: int = 120) -> Dict[str, Any]:
+        page_title = re.sub(r"\s+", " ", " ".join(self.title_parts).strip())
+        heading_lines = [f"## {h}" for h in self.headings[:25]]
+        paragraph_lines = self.paragraphs[:70]
+        bullet_lines = [f"- {item}" for item in self.list_items[:70]]
+
+        lines: List[str] = []
+        if page_title:
+            lines.append(f"# Extracted Requirements - {page_title}")
+        else:
+            lines.append("# Extracted Requirements")
+        lines.append(f"Source URL: {source_url}")
+        lines.append("")
+        lines.append("The following requirements were generated from webpage content.")
+        lines.append("Review and edit before final analysis.")
+        lines.append("")
+        lines.append("## Candidate Requirements")
+
+        if not heading_lines and not paragraph_lines and not bullet_lines:
+            lines.append("- No readable requirement content was detected on this page.")
+        else:
+            lines.extend(heading_lines)
+            if heading_lines and (paragraph_lines or bullet_lines):
+                lines.append("")
+            lines.extend(bullet_lines)
+            if paragraph_lines:
+                lines.append("")
+                lines.extend(paragraph_lines)
+
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines.append("")
+            lines.append("... (truncated)")
+
+        markdown = "\n".join(lines).strip()
+        summary = {
+            "title": page_title or None,
+            "headings_found": len(self.headings),
+            "paragraphs_found": len(self.paragraphs),
+            "list_items_found": len(self.list_items),
+        }
+        return {"markdown": markdown, "summary": summary}
+
+
+def _normalize_and_validate_public_url(raw_url: str) -> str:
+    candidate = str(raw_url or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="URL is required.")
+
+    parsed = urlparse(candidate)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed.")
+
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Invalid URL hostname.")
+
+    blocked_hostnames = {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+        "host.docker.internal",
+        "metadata.google.internal",
+    }
+    if hostname in blocked_hostnames or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="Local/internal URLs are not allowed.")
+
+    try:
+        host_ip = ipaddress.ip_address(hostname)
+        if host_ip.is_loopback or host_ip.is_private or host_ip.is_link_local or host_ip.is_multicast or host_ip.is_reserved:
+            raise HTTPException(status_code=400, detail="Private or local network URLs are not allowed.")
+    except ValueError:
+        # Hostname is a domain name, continue.
+        pass
+
+    # Ignore fragments as they are browser-only and not needed for server fetch.
+    normalized = parsed._replace(fragment="").geturl()
+    return normalized
+
+
+def _strip_html_to_text(value: str, max_chars: int = 300_000) -> str:
+    text = str(value or "")
+    text = re.sub(r"<!--[\s\S]*?-->", " ", text)
+    text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars]
+    return text
+
 # ... (Auth endpoints omitted for brevity, keeping existing) ...
 
 # --- AI Analysis Endpoints ---
@@ -89,6 +277,9 @@ async def analyze_document_with_ai(
     - model: Model name to use
     - stream: Set to true for streaming response (Server-Sent Events)
     """
+    if _all_answers_skipped_from_governance_context(request.governance_context):
+        raise HTTPException(status_code=403, detail=ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE)
+
     result = await ai_service.analyze_document(
         document_content=request.document_content,
         api_url=request.api_url,
@@ -1198,6 +1389,73 @@ async def upload_document(
     print(f"DEBUG: API Response keys: {list(response.keys())}")
     return response
 
+
+@app.post("/documents/extract-from-url")
+async def extract_document_from_url(
+    payload: URLIngestRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch website content and convert it into requirement-style markdown.
+    """
+    source_url = _normalize_and_validate_public_url(payload.url)
+
+    headers = {
+        "User-Agent": "BRD-Analyzer/1.0 (+Requirement-Extraction)",
+        "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(source_url, headers=headers)
+            resp.raise_for_status()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timed out while fetching the URL.")
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code if exc.response is not None else 502
+        if code == 404:
+            detail = "Website page not found (404). Check the URL and try again."
+        elif code in (401, 403):
+            detail = "Website denied access to this URL."
+        else:
+            detail = f"Failed to fetch URL content (HTTP {code})."
+        raise HTTPException(status_code=code, detail=detail)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"URL fetch failed: {exc}")
+
+    content_type = str(resp.headers.get("content-type", "")).lower()
+    raw_text = resp.text or ""
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="Fetched page is empty.")
+
+    parser = _RequirementPageParser()
+    parser.feed(raw_text)
+    parser.close()
+    parsed = parser.to_requirement_markdown(str(resp.url))
+
+    markdown = parsed["markdown"]
+    if not markdown.strip():
+        plain_text = _strip_html_to_text(raw_text)
+        markdown = (
+            f"# Extracted Requirements\n"
+            f"Source URL: {str(resp.url)}\n\n"
+            f"## Candidate Requirements\n"
+            f"{plain_text[:120000] if plain_text else 'No readable content found.'}"
+        )
+
+    filename_source = (parser.title_parts[0] if parser.title_parts else "") or urlparse(str(resp.url)).hostname or "Website_URL"
+    safe_label = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename_source).strip("_") or "Website_URL"
+    generated_filename = f"URL_{safe_label}_{datetime.utcnow().strftime('%Y-%m-%d')}"
+
+    return {
+        "filename": generated_filename,
+        "url": str(resp.url),
+        "content_type": content_type or None,
+        "markdown": markdown,
+        "summary": parsed.get("summary") or {},
+        "user": current_user.email,
+    }
+
 # --- History Endpoints ---
 
 @app.get("/history", response_model=List[schemas.Document])
@@ -1280,6 +1538,73 @@ async def upload_and_analyze_document(
 
 # ===== GOVERNANCE QUESTIONNAIRE ENDPOINTS =====
 
+ALL_SKIPPED_GOVERNANCE_MESSAGE = "Our IT team will reach out to you. Thanks for connecting."
+ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE = "Sandbox is not approved. Our IT team will reach out to you soon."
+ALL_SKIPPED_HARD_STOP = "All governance questions were skipped. IT follow-up is required before BRD analysis."
+ALL_SKIPPED_SCORE = 5.0
+
+
+def _is_skip_option_label(label: Optional[str]) -> bool:
+    return str(label or "").strip().lower() == "skip"
+
+
+def _all_answers_skipped_from_submission(answers: List[schemas.GovernanceAnswer]) -> bool:
+    return bool(answers) and all(_is_skip_option_label(answer.selected_option) for answer in answers)
+
+
+def _all_answers_skipped_from_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+
+    for value in payload.values():
+        if not isinstance(value, dict):
+            return False
+        if not _is_skip_option_label(value.get("selected_option")):
+            return False
+
+    return True
+
+
+def _all_answers_skipped_from_governance_context(governance_context: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(governance_context, dict):
+        return False
+
+    answers = governance_context.get("answers")
+    if isinstance(answers, list):
+        answer_entries = [entry for entry in answers if isinstance(entry, dict)]
+        if not answer_entries or len(answer_entries) != len(answers):
+            return False
+        return all(_is_skip_option_label(entry.get("selected_option")) for entry in answer_entries)
+
+    if isinstance(answers, dict):
+        return _all_answers_skipped_from_payload(answers)
+
+    classification_description = str(governance_context.get("classification_description") or "").strip().lower()
+    return "our it team will reach out to you" in classification_description
+
+
+def _apply_all_skipped_override(scoring_result: Dict[str, Any]) -> Dict[str, Any]:
+    dimension_scores = scoring_result.get("dimension_scores") or {}
+    if dimension_scores:
+        overridden_dimension_scores = {dimension: ALL_SKIPPED_SCORE for dimension in dimension_scores.keys()}
+    else:
+        overridden_dimension_scores = {
+            dimension: ALL_SKIPPED_SCORE for dimension in governance_scoring.DIMENSION_WEIGHTS.keys()
+        }
+
+    hard_stops = list(scoring_result.get("hard_stops") or [])
+    if ALL_SKIPPED_HARD_STOP not in hard_stops:
+        hard_stops.append(ALL_SKIPPED_HARD_STOP)
+
+    return {
+        **scoring_result,
+        "dimension_scores": overridden_dimension_scores,
+        "weighted_score": ALL_SKIPPED_SCORE,
+        "classification": "ENTERPRISE",
+        "classification_description": ALL_SKIPPED_GOVERNANCE_MESSAGE,
+        "hard_stops": hard_stops,
+    }
+
 @app.get("/governance/questions")
 async def get_governance_questions():
     """
@@ -1310,6 +1635,9 @@ async def submit_governance_response(
     
     # Perform complete scoring
     scoring_result = governance_scoring.score_governance_response(answers_dict)
+
+    if _all_answers_skipped_from_submission(request.answers):
+        scoring_result = _apply_all_skipped_override(scoring_result)
     
     detailed_answers = {
         str(answer.question_id): {
@@ -1438,6 +1766,14 @@ async def get_governance_result(
                     selected_option=_lookup_selected_option(int(question_id), score_value),
                 ))
 
+    all_answers_skipped = _all_answers_skipped_from_payload(response.answers)
+    classification_description = (
+        ALL_SKIPPED_GOVERNANCE_MESSAGE
+        if all_answers_skipped
+        else _classification_description(response.classification)
+    )
+    hard_stops = [ALL_SKIPPED_HARD_STOP] if all_answers_skipped else []
+
     return schemas.GovernanceResult(
         id=response.id,
         project_token=response.project_token or str(response.id),
@@ -1453,14 +1789,107 @@ async def get_governance_result(
         ),
         weighted_score=response.weighted_score,
         classification=response.classification,
-        classification_description=_classification_description(response.classification),
+        classification_description=classification_description,
         recommendation=response.recommendation,
         pending_revision_reason=response.pending_revision_reason,
-        hard_stops=[],
+        hard_stops=hard_stops,
         answers=answers_list if answers_list else None,
         client_id=response.client_id,
         client_secret=response.client_secret,
     )
+
+
+@app.delete("/governance/{identifier}")
+async def delete_governance_project(
+    identifier: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Permanently delete a project and all locally stored project-scoped data.
+    """
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_token = _normalize_project_token(governance.project_token or str(governance.id))
+    user_documents = db.query(models.Document).filter(
+        models.Document.owner_id == current_user.id
+    ).all()
+    linked_document_ids = [
+        doc.id for doc in user_documents if _is_document_linked_to_governance(doc, governance)
+    ]
+
+    deleted_documents = 0
+    if linked_document_ids:
+        deleted_documents = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id,
+            models.Document.id.in_(linked_document_ids),
+        ).delete(synchronize_session=False)
+
+    deleted_agent_credentials = 0
+    deleted_agent_records = 0
+
+    if project_token:
+        deleted_agent_credentials = db.query(models.AgentCredential).filter(
+            models.AgentCredential.owner_id == current_user.id,
+            models.AgentCredential.project_token == project_token,
+        ).delete(synchronize_session=False)
+
+        deleted_agent_records = db.query(models.Agent).filter(
+            models.Agent.project_token == project_token
+        ).delete(synchronize_session=False)
+
+    deleted_project_name = governance.project_name or "Untitled Project"
+    deleted_project_token = governance.project_token or str(governance.id)
+    deleted_result_id = governance.id
+
+    db.delete(governance)
+    db.commit()
+
+    cleanup_warnings: List[str] = []
+    if project_token:
+        try:
+            await agent_service.stop_preview(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Preview cleanup failed: {exc}")
+
+        try:
+            agent_service.clear_project_runtime_state(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Agent runtime cleanup failed: {exc}")
+
+        try:
+            context_manager.clear_project_runtime_context(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Context cleanup failed: {exc}")
+
+        try:
+            await rag_service.delete_index(project_token)
+        except Exception as exc:
+            cleanup_warnings.append(f"Knowledge graph cleanup failed: {exc}")
+
+    response: Dict[str, Any] = {
+        "status": "deleted",
+        "result_id": deleted_result_id,
+        "project_token": deleted_project_token,
+        "project_name": deleted_project_name,
+        "deleted_documents": deleted_documents,
+        "deleted_agent_credentials": deleted_agent_credentials,
+        "deleted_agent_records": deleted_agent_records,
+    }
+    if cleanup_warnings:
+        response["warnings"] = cleanup_warnings
+
+    return response
 
 
 @app.post("/governance/{identifier}/revision-reason")
@@ -1512,6 +1941,56 @@ async def mark_prerequisites_complete(
 
     return {"status": "ok", "completed_at": governance.prerequisites_completed_at.isoformat()}
 
+
+def _extract_document_analysis_context(doc: models.Document) -> Optional[Dict[str, Any]]:
+    """Parse stored analysis JSON and extract project-linking metadata."""
+    if not doc.analysis_result:
+        return None
+
+    try:
+        import json
+        analysis = json.loads(doc.analysis_result)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+    if not isinstance(analysis, dict):
+        return None
+
+    gov_ctx = analysis.get("governanceContext") if isinstance(analysis.get("governanceContext"), dict) else {}
+    proj_meta = analysis.get("projectMeta") if isinstance(analysis.get("projectMeta"), dict) else {}
+
+    return {
+        "analysis": analysis,
+        "result_id": proj_meta.get("governance_result_id") or gov_ctx.get("result_id"),
+        "project_token": proj_meta.get("project_token") or gov_ctx.get("project_token"),
+        "project_name": str(
+            proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
+        ).strip().lower(),
+    }
+
+
+def _is_document_linked_to_governance(
+    doc: models.Document,
+    governance: models.GovernanceResponse,
+) -> bool:
+    """Return True when a document belongs to the given governance project."""
+    ctx = _extract_document_analysis_context(doc)
+    if not ctx:
+        return False
+
+    governance_token = str(governance.project_token or "").strip()
+    governance_name = str(governance.project_name or "").strip().lower()
+
+    if ctx["result_id"] is not None and str(ctx["result_id"]) == str(governance.id):
+        return True
+    if governance_token and ctx["project_token"] and str(ctx["project_token"]) == governance_token:
+        return True
+    if governance_name and ctx["project_name"] == governance_name:
+        return True
+
+    return False
+
+
 @app.get("/governance/{identifier}/roadmap-step")
 async def get_project_roadmap_step(
     identifier: str,
@@ -1523,25 +2002,29 @@ async def get_project_roadmap_step(
     Get the current roadmap step for a project.
 
     Steps:
-        0 - Project Setup                (project named)
-        1 - Requirement Screening        (governance assessment completed)
-        2 - AI Analysis                  (BRD uploaded & analysis completed)
-        3 - Prerequisite Classification  (prerequisites / credentials identified)
-        4 - Task Creation                (tasks auto-generated via external API)
-        5 - Agent Execution              (agents working on tasks)
-        6 - Complete                     (all tasks completed)
+        0 - Project Initiation           (project created)
+        1 - Governance                   (governance questionnaire submitted)
+        2 - Requirement Screening        (awaiting BRD analysis)
+        3 - Agent Analysis               (BRD analysis completed)
+        4 - Prerequisite Classification  (prerequisites / credentials identified)
+        5 - Task Creation                (tasks auto-generated via external API)
+        6 - Resource Onboarding          (agents configured for execution)
+        7 - On Flight                    (agents executing task work)
+        8 - Complete                     (deploy requested/succeeded)
 
     Returns a `step_statuses` array with per-step status:
         "completed" | "active" | "pending" | "failed"
     And a `failed_step` index (null if none failed).
     """
     STEP_LABELS = [
-        "Project Setup",
+        "Project Initiation",
+        "Governance",
         "Requirement Screening",
-        "AI Analysis",
+        "Agent Analysis",
         "Prerequisite Classification",
         "Task Creation",
-        "Agent Execution",
+        "Resource Onboarding",
+        "On Flight",
         "Complete",
     ]
 
@@ -1557,106 +2040,169 @@ async def get_project_roadmap_step(
     if not governance:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Step 0 (Project Setup) is always complete once a governance response exists
-    # Step 1 (Requirement Screening) is complete: governance submitted
-    current_step = 2  # user is now at "AI Analysis"
+    # Step 0 (Project Initiation) is always complete once governance exists.
+    # Step 1 (Governance) is complete once questionnaire is submitted.
+    current_step = 2  # default active step before analysis is completed
     failed_step = None
+    roadmap_project_token = _normalize_project_token(governance.project_token or str(governance.id))
 
     # 2. Find documents linked to this governance result
-    project_name = governance.project_name or ""
     user_documents = db.query(models.Document).filter(
         models.Document.owner_id == current_user.id,
     ).all()
 
     linked_docs = []
     for doc in user_documents:
-        if not doc.analysis_result:
-            continue
-        try:
-            import json
-            analysis = json.loads(doc.analysis_result)
-            gov_ctx = analysis.get("governanceContext") or {}
-            proj_meta = analysis.get("projectMeta") or {}
-            doc_result_id = proj_meta.get("governance_result_id") or gov_ctx.get("result_id")
-            doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
-            doc_project_name = proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
-
-            if (doc_result_id is not None and str(doc_result_id) == str(governance.id)) or \
-               (doc_token_id and str(doc_token_id) == str(governance.project_token)) or \
-               (project_name and doc_project_name.strip().lower() == project_name.strip().lower()):
-                linked_docs.append(doc)
-        except (json.JSONDecodeError, AttributeError):
-            continue
+        if _is_document_linked_to_governance(doc, governance):
+            linked_docs.append(doc)
 
     has_analysis = False
     if linked_docs:
         has_analysis = any(
             _doc_has_completed_analysis(doc) for doc in linked_docs
         )
-        if has_analysis:
-            current_step = 3  # AI Analysis complete, now at "Prerequisite Classification"
 
-            # Check if prerequisites were acknowledged
-            if governance.prerequisites_completed_at is not None:
-                current_step = 4  # Prerequisites done, now at "Task Creation"
-
-    # 3. Check external task management for task creation & agent execution
+    # 3. Check external task management for task creation & completion
+    prerequisites_done = governance.prerequisites_completed_at is not None
     has_tasks = False
     all_tasks_complete = False
     any_agent_working = False
 
-    if has_analysis and x_task_token:
+    if has_analysis and prerequisites_done and x_task_token:
         try:
-            existing_page = await task_service.get_tasks(page=1, task_token=x_task_token)
-            if isinstance(existing_page, list):
-                page_results = existing_page
-            elif isinstance(existing_page, dict):
-                page_results = existing_page.get("results") if isinstance(existing_page.get("results"), list) else []
-            else:
-                page_results = []
+            all_page_results: List[Dict[str, Any]] = []
+            page = 1
+            max_pages = 200
 
-            if page_results:
+            while page <= max_pages:
+                existing_page = await task_service.get_tasks(page=page, task_token=x_task_token)
+                if isinstance(existing_page, list):
+                    page_results = existing_page
+                    has_next = False
+                elif isinstance(existing_page, dict):
+                    page_results = existing_page.get("results") if isinstance(existing_page.get("results"), list) else []
+                    has_next = bool(existing_page.get("next"))
+                else:
+                    page_results = []
+                    has_next = False
+
+                if page_results:
+                    all_page_results.extend(page_results)
+
+                if not has_next:
+                    break
+                page += 1
+
+            if all_page_results:
                 has_tasks = True
-                current_step = 5  # Tasks created, now at "Agent Execution"
 
-                # Check if any agent is actively working (has progress or is assigned)
-                any_agent_working = any(
-                    (t.get("status") or "").lower() in ("in_progress", "in progress", "working", "assigned", "started")
-                    or (t.get("completion_percentage") or 0) > 0
-                    for t in page_results
-                )
+                done_statuses = {"completed", "done", "closed", "complete", "resolved"}
 
-                if any_agent_working:
-                    current_step = 5  # Still at Agent Execution (active)
+                def _task_status(task: Dict[str, Any]) -> str:
+                    return str(task.get("status") or task.get("taskStatus") or "").strip().lower()
 
-                # Check if ALL tasks are completed
+                def _task_completion(task: Dict[str, Any]) -> float:
+                    raw = (
+                        task.get("completion_percentage")
+                        if task.get("completion_percentage") is not None
+                        else task.get("progress")
+                    )
+                    try:
+                        return float(raw or 0)
+                    except (TypeError, ValueError):
+                        return 0.0
+
                 all_tasks_complete = all(
-                    (t.get("status") or "").lower() in ("completed", "done", "closed", "complete")
-                    or (t.get("completion_percentage") or 0) >= 100
-                    for t in page_results
+                    _task_status(t) in done_statuses or _task_completion(t) >= 100
+                    for t in all_page_results
                 )
-
-                if all_tasks_complete:
-                    current_step = 6  # Complete
         except Exception as e:
             print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
-            # If task check fails, we don't mark it as failed - just stay at current step
+            # If task check fails, keep the last known roadmap state.
 
-    # Build per-step statuses
-    step_statuses = []
-    for i in range(len(STEP_LABELS)):
-        if failed_step is not None and i == failed_step:
-            step_statuses.append("failed")
-        elif i < current_step:
-            step_statuses.append("completed")
-        elif i == current_step:
-            step_statuses.append("active")
-        else:
-            step_statuses.append("pending")
+    # 4. Check runtime agent statuses for true "On Flight" execution
+    try:
+        runtime_agents = agent_service.get_all_agents(roadmap_project_token)
+        any_agent_working = any(
+            (a.get("status") or "").lower() == "running" and a.get("id") not in {"agent_03", "agent_04"}
+            for a in runtime_agents
+        )
+    except Exception as e:
+        print(f"Roadmap: Failed to check agent runtime state for {identifier}: {e}")
+
+    # 5. Check preview deploy state to drive "Complete" activation/completion
+    deploy_status = "none"
+    deploy_in_progress = False
+    deploy_success = False
+    deploy_attempted = False
+    try:
+        preview_state = agent_service.get_preview_status(roadmap_project_token)
+        deploy_status = str((preview_state or {}).get("status") or "none").lower()
+        deploy_in_progress = deploy_status == "deploying"
+        deploy_success = deploy_status == "running"
+        deploy_attempted = deploy_status in {"deploying", "running", "error"}
+    except Exception as e:
+        print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
+
+    # Backend roadmap progression:
+    # Project Initiation -> Governance -> Requirement Screening -> Agent Analysis ->
+    # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
+    # On Flight -> Complete
+    PROJECT_INIT_IDX = 0
+    GOVERNANCE_IDX = 1
+    REQUIREMENT_SCREENING_IDX = 2
+    AGENT_ANALYSIS_IDX = 3
+    PREREQ_IDX = 4
+    TASK_CREATION_IDX = 5
+    RESOURCE_ONBOARDING_IDX = 6
+    ON_FLIGHT_IDX = 7
+    COMPLETE_IDX = 8
+
+    step_statuses = ["pending"] * len(STEP_LABELS)
+    step_statuses[PROJECT_INIT_IDX] = "completed"
+
+    if not has_analysis:
+        step_statuses[GOVERNANCE_IDX] = "completed"
+        step_statuses[REQUIREMENT_SCREENING_IDX] = "active"
+    else:
+        step_statuses[GOVERNANCE_IDX] = "completed"
+        step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
+        step_statuses[AGENT_ANALYSIS_IDX] = "completed"
+        step_statuses[PREREQ_IDX] = "completed" if prerequisites_done else "active"
+
+        if prerequisites_done:
+            step_statuses[TASK_CREATION_IDX] = "completed" if has_tasks else "active"
+
+        if has_tasks:
+            onboarding_complete = any_agent_working or all_tasks_complete or deploy_attempted
+            step_statuses[RESOURCE_ONBOARDING_IDX] = "completed" if onboarding_complete else "active"
+
+            if onboarding_complete:
+                on_flight_done = all_tasks_complete and not any_agent_working
+
+                if on_flight_done:
+                    step_statuses[ON_FLIGHT_IDX] = "completed"
+                    if deploy_success:
+                        step_statuses[COMPLETE_IDX] = "completed"
+                    elif deploy_in_progress or deploy_attempted:
+                        step_statuses[COMPLETE_IDX] = "active"
+                    else:
+                        step_statuses[COMPLETE_IDX] = "pending"
+                elif any_agent_working:
+                    step_statuses[ON_FLIGHT_IDX] = "active"
+                    step_statuses[COMPLETE_IDX] = "pending"
+
+    # Derive current step from explicit statuses.
+    active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)
+    if active_step is not None:
+        current_step = active_step
+    else:
+        completed_indices = [idx for idx, status in enumerate(step_statuses) if status == "completed"]
+        current_step = completed_indices[-1] if completed_indices else 0
 
     return {
         "result_id": governance.id,
-        "project_token": governance.project_token or str(governance.id),
+        "project_token": roadmap_project_token or str(governance.id),
         "project_name": governance.project_name,
         "current_step": current_step,
         "current_step_label": STEP_LABELS[current_step] if current_step < len(STEP_LABELS) else "Complete",
@@ -1713,7 +2259,13 @@ def _generate_recommendation(scoring_result: dict, answers: dict) -> str:
     
     recommendation = f"**Governance Classification: {classification}**\n\n"
     
-    if hard_stops:
+    if ALL_SKIPPED_HARD_STOP in hard_stops:
+        recommendation += (
+            "**Screening Status: Incomplete**\n\n"
+            "Our IT team will reach out to you. Thanks for connecting.\n\n"
+            "AI analysis is blocked until the IT team completes a follow-up review.\n\n"
+        )
+    elif hard_stops:
         recommendation += f"**⚠️ HARD STOPS TRIGGERED:**\n"
         for stop in hard_stops:
             recommendation += f"- {stop}\n"
@@ -1855,6 +2407,14 @@ class RepoContextRequest(BaseModel):
     repo: str
     branch: str = "main"
     token: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+class AzureDevOpsRepoContextRequest(BaseModel):
+    repo_url: str
+    token: Optional[str] = None
+    branch: Optional[str] = None
 
 
 @app.post("/github/repo-context")
@@ -1866,19 +2426,190 @@ async def github_repo_context(
     Fetch repository source code and return a structured text context
     suitable for feeding into the AI model alongside the BRD.
     """
-    try:
-        # Prioritize explicitly provided token (for private links), fallback to OAuth token
-        token_to_use = payload.token if payload.token else current_user.github_token
+    provided_token = (payload.token or "").strip() or None
+    provided_username = (payload.username or "").strip() or None
+    provided_password = str(payload.password or "") if payload.password is not None else None
+    has_basic_credentials = bool(provided_username or (provided_password is not None and provided_password != ""))
+    if has_basic_credentials and not (provided_username and provided_password):
+        raise HTTPException(status_code=400, detail="Provide both GitHub username and password.")
+    if provided_token and has_basic_credentials:
+        raise HTTPException(status_code=400, detail="Use either PAT or username/password, not both.")
 
-        context = await github_service.build_repo_context(
-            token_to_use,
-            payload.owner,
-            payload.repo,
-            payload.branch,
+    saved_oauth_token = (current_user.github_token or "").strip() or None
+    token_to_use = provided_token if provided_token else saved_oauth_token
+
+    owner, repo = github_service.normalize_repo_identity(payload.owner, payload.repo)
+    branch = (payload.branch or "main").strip() or "main"
+    if not owner or not repo:
+        raise HTTPException(status_code=400, detail="Invalid GitHub repository URL or owner/repo values.")
+
+    async def _build_context(
+        token_value: Optional[str],
+        username_value: Optional[str] = None,
+        password_value: Optional[str] = None,
+    ) -> Dict[str, str]:
+        return await github_service.build_repo_context(
+            token_value,
+            owner,
+            repo,
+            branch,
+            username=username_value,
+            password=password_value,
         )
-        return {"context": context, "repo": f"{payload.owner}/{payload.repo}"}
+
+    async def _build_context_from_zip() -> Dict[str, str]:
+        return await github_service.build_repo_context_from_zip(
+            owner,
+            repo,
+            branch,
+        )
+
+    def _is_rate_limited(err: httpx.HTTPStatusError) -> bool:
+        if err.response is None:
+            return False
+        if err.response.status_code != 403:
+            return False
+        try:
+            message = str((err.response.json() or {}).get("message") or "").lower()
+        except Exception:
+            message = str(err.response.text or "").lower()
+        return "rate limit" in message
+
+    def _raise_repo_context_error(err: httpx.HTTPStatusError) -> None:
+        status_code = err.response.status_code if err.response is not None else 502
+        response_msg = ""
+        if err.response is not None:
+            try:
+                response_msg = str((err.response.json() or {}).get("message") or "").strip()
+            except Exception:
+                response_msg = str(err.response.text or "").strip()
+        response_msg_lc = response_msg.lower()
+
+        if status_code == 404:
+            detail = (
+                "Repository or branch was not found. Verify the URL, remove any trailing .git, "
+                "and provide a PAT for private repositories."
+            )
+        elif status_code == 403 and "rate limit" in response_msg_lc:
+            detail = "GitHub API rate limit exceeded. Add a valid PAT or reconnect GitHub OAuth and try again."
+        elif status_code in (401, 403):
+            detail = "GitHub authentication failed or access denied. Check your PAT, username/password, or OAuth access."
+        else:
+            detail = f"Failed to fetch repository context from GitHub (HTTP {status_code})."
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    try:
+        username_to_use = provided_username if has_basic_credentials else None
+        password_to_use = provided_password if has_basic_credentials else None
+        token_for_primary = None if has_basic_credentials else token_to_use
+        repo_data = await _build_context(token_for_primary, username_to_use, password_to_use)
+        return {
+            "context": repo_data["context"],
+            "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+            "branch": repo_data["branch"],
+        }
+    except httpx.HTTPStatusError as e:
+        if _is_rate_limited(e):
+            try:
+                repo_data = await _build_context_from_zip()
+                return {
+                    "context": repo_data["context"],
+                    "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+                    "branch": repo_data["branch"],
+                }
+            except httpx.HTTPStatusError:
+                # If zip fallback also fails, continue to the regular error path below.
+                pass
+
+        # If saved OAuth token is stale/invalid and no PAT was explicitly provided,
+        # retry without auth so public repositories still work.
+        status_code = e.response.status_code if e.response is not None else 502
+        should_retry_without_auth = (
+            status_code in (401, 403)
+            and provided_token is None
+            and not has_basic_credentials
+            and saved_oauth_token is not None
+        )
+        if should_retry_without_auth:
+            try:
+                repo_data = await _build_context(None)
+                return {
+                    "context": repo_data["context"],
+                    "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+                    "branch": repo_data["branch"],
+                }
+            except httpx.HTTPStatusError as retry_err:
+                if _is_rate_limited(retry_err):
+                    try:
+                        repo_data = await _build_context_from_zip()
+                        return {
+                            "context": repo_data["context"],
+                            "repo": f"{repo_data['owner']}/{repo_data['repo']}",
+                            "branch": repo_data["branch"],
+                        }
+                    except httpx.HTTPStatusError:
+                        pass
+                _raise_repo_context_error(retry_err)
+        _raise_repo_context_error(e)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build repo context: {e}")
+
+@app.post("/azure-devops/repo-context")
+async def azure_devops_repo_context(
+    payload: AzureDevOpsRepoContextRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Fetch Azure DevOps repository source and return a structured context
+    suitable for feeding into the AI model alongside BRD content.
+    """
+    provided_token = (payload.token or "").strip() or None
+    branch = (payload.branch or "").strip() or None
+
+    try:
+        repo_data = await azure_devops_service.build_repo_context_from_url(
+            repo_url=payload.repo_url,
+            pat=provided_token,
+            branch=branch,
+        )
+        return {
+            "context": repo_data["context"],
+            "repo": repo_data["repo"],
+            "branch": repo_data["branch"],
+            "provider": "azure-devops",
+            "url": repo_data["url"],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        response_msg = ""
+        if e.response is not None:
+            try:
+                response_msg = str((e.response.json() or {}).get("message") or "").strip()
+            except Exception:
+                response_msg = str(e.response.text or "").strip()
+        response_msg_lc = response_msg.lower()
+
+        if status_code == 404:
+            detail = (
+                "Azure DevOps repository or branch was not found. Verify organization/project/repository URL "
+                "and branch name."
+            )
+        elif status_code in (401, 403):
+            if "pat" in response_msg_lc or "token" in response_msg_lc:
+                detail = "Azure DevOps authentication failed. Check your PAT permissions."
+            else:
+                detail = "Azure DevOps authentication failed or access denied. Provide a valid PAT."
+        else:
+            detail = f"Failed to fetch repository context from Azure DevOps (HTTP {status_code})."
+        raise HTTPException(status_code=status_code, detail=detail)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build Azure DevOps repo context: {e}")
 
 
 # ═════════════════════════ KNOWLEDGE GRAPH + RAG ═════════════════════════════
@@ -2104,6 +2835,68 @@ async def get_cross_agent_memory(
     }
 
 
+@app.get("/api/knowledge-graph/tech-spec/{project_token}")
+async def get_tech_spec(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get the generated Technical Spec (Layer 1: Architect Agent)."""
+    from agent_service import get_technical_spec, _project_tech_specs
+    spec = get_technical_spec(project_token)
+    record = _project_tech_specs.get(project_token, {})
+    return {
+        "project_token": project_token,
+        "status": record.get("status", "not_generated"),
+        "spec": spec,
+        "char_length": len(spec),
+        "generated_at": record.get("generated_at"),
+    }
+
+
+@app.post("/api/knowledge-graph/tech-spec/{project_token}/generate")
+async def generate_tech_spec(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Manually trigger Technical Spec generation (Layer 1: Architect Agent)."""
+    from agent_service import _generate_technical_spec
+
+    # Get KG context if available
+    kg_context = ""
+    try:
+        if context_manager.is_project_indexed(project_token):
+            kg_context = await context_manager.get_full_agent_context(
+                project_token=project_token,
+                task_description="Full system architecture overview",
+                agent_id="architect_agent",
+            )
+    except Exception:
+        pass
+
+    result = await _generate_technical_spec(
+        project_token=project_token,
+        tasks=[],
+        kg_context=kg_context,
+    )
+    return result
+
+
+@app.get("/api/github/pr-status/{project_token}")
+async def get_pr_status(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get the status of merged branches and created PRs."""
+    from agent_service import _ensure_project_state
+    state = _ensure_project_state(project_token)
+    return {
+        "project_token": project_token,
+        "merged_branches": state.get("merged_branches", []),
+        "merge_queue_length": len(state.get("git_merge_queue", [])),
+        "is_merging": state.get("git_merge_running", False)
+    }
+
+
 # ═══════════════════════════════ AI AGENTS ═══════════════════════════════════
 
 def _normalize_project_token(project_token: Optional[str]) -> Optional[str]:
@@ -2239,8 +3032,7 @@ def _ensure_default_oauth_clients(db: Session) -> None:
 
 
 # Seed sample tasks on startup
-@app.on_event("startup")
-async def startup_event():
+def _startup_init() -> None:
     agent_service.seed_sample_tasks()
     db = SessionLocal()
     try:
@@ -2254,20 +3046,41 @@ async def startup_event():
         db.close()
 
 
-def _get_agent_credentials_map(
+GLOBAL_GIT_CREDENTIAL_AGENT_ID = "__global_git__"
+
+
+def _get_project_global_credential(
     db: Session,
     user_id: int,
     project_token: Optional[str],
-) -> Dict[str, models.AgentCredential]:
-    creds_query = db.query(models.AgentCredential).filter(
-        models.AgentCredential.owner_id == user_id
+) -> Optional[models.AgentCredential]:
+    project_token = _normalize_project_token(project_token)
+    cred_query = db.query(models.AgentCredential).filter(
+        models.AgentCredential.owner_id == user_id,
+        models.AgentCredential.agent_id == GLOBAL_GIT_CREDENTIAL_AGENT_ID,
     )
     if project_token:
-        creds_query = creds_query.filter(models.AgentCredential.project_token == project_token)
+        cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
     else:
-        creds_query = creds_query.filter(models.AgentCredential.project_token.is_(None))
-    creds = creds_query.all()
-    return {c.agent_id: c for c in creds}
+        cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
+    return cred_query.first()
+
+
+def _list_legacy_agent_credentials(
+    db: Session,
+    user_id: int,
+    project_token: Optional[str],
+) -> List[models.AgentCredential]:
+    project_token = _normalize_project_token(project_token)
+    cred_query = db.query(models.AgentCredential).filter(
+        models.AgentCredential.owner_id == user_id,
+        models.AgentCredential.agent_id != GLOBAL_GIT_CREDENTIAL_AGENT_ID,
+    )
+    if project_token:
+        cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
+    else:
+        cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
+    return cred_query.all()
 
 
 def _ensure_default_agents(db: Session, project_token: Optional[str] = None) -> None:
@@ -2338,31 +3151,19 @@ def _delete_agent_record(db: Session, agent_id: str, project_token: Optional[str
     db.commit()
 
 
-def _upsert_agent_credentials(
+def _upsert_project_global_credentials(
     db: Session,
     user_id: int,
-    agent_id: str,
     git_repo_url: Optional[str] = None,
     git_token: Optional[str] = None,
     project_token: Optional[str] = None,
 ) -> models.AgentCredential:
     project_token = _normalize_project_token(project_token)
-    cred_query = (
-        db.query(models.AgentCredential)
-        .filter(
-            models.AgentCredential.owner_id == user_id,
-            models.AgentCredential.agent_id == agent_id,
-        )
-    )
-    if project_token:
-        cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
-    else:
-        cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
-    cred = cred_query.first()
+    cred = _get_project_global_credential(db, user_id, project_token)
     if not cred:
         cred = models.AgentCredential(
             owner_id=user_id,
-            agent_id=agent_id,
+            agent_id=GLOBAL_GIT_CREDENTIAL_AGENT_ID,
             project_token=project_token,
         )
         db.add(cred)
@@ -2379,14 +3180,56 @@ def _upsert_agent_credentials(
     return cred
 
 
+def _resolve_project_global_credential(
+    db: Session,
+    user_id: int,
+    project_token: Optional[str],
+) -> Optional[models.AgentCredential]:
+    """
+    Return project-wide global Git credential.
+    Backfills from legacy per-agent credentials so existing users are not disrupted.
+    """
+    cred = _get_project_global_credential(db, user_id, project_token)
+    if cred:
+        return cred
+
+    legacy = sorted(
+        _list_legacy_agent_credentials(db, user_id, project_token),
+        key=lambda row: row.updated_at or datetime.min,
+        reverse=True,
+    )
+    if not legacy:
+        return None
+
+    latest_complete = next((row for row in legacy if row.git_repo_url and row.git_token), None)
+    if latest_complete:
+        repo_val = latest_complete.git_repo_url.strip()
+        token_val = latest_complete.git_token.strip()
+    else:
+        first_repo = next((row.git_repo_url for row in legacy if row.git_repo_url), None)
+        first_token = next((row.git_token for row in legacy if row.git_token), None)
+        repo_val = first_repo.strip() if first_repo else None
+        token_val = first_token.strip() if first_token else None
+
+    if not repo_val and not token_val:
+        return None
+
+    return _upsert_project_global_credentials(
+        db,
+        user_id,
+        git_repo_url=repo_val,
+        git_token=token_val,
+        project_token=project_token,
+    )
+
+
 def _sanitize_agent_for_user(
     agent: Dict[str, Any],
-    cred: Optional[models.AgentCredential],
+    global_cred: Optional[models.AgentCredential],
 ) -> Dict[str, Any]:
     safe_agent = dict(agent)
-    if cred and cred.git_repo_url:
-        safe_agent["git_repo_url"] = cred.git_repo_url
-    safe_agent["has_git_token"] = bool(cred and cred.git_token)
+    safe_agent["git_repo_url"] = global_cred.git_repo_url if global_cred and global_cred.git_repo_url else None
+    safe_agent["has_git_token"] = bool(global_cred and global_cred.git_token)
     if "git_token" in safe_agent:
         safe_agent["git_token"] = None
     return safe_agent
@@ -2429,9 +3272,9 @@ async def list_agents(
     records = query.all()
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-    creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
+    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
     agents = [
-        _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))
+        _sanitize_agent_for_user(agent, global_cred)
         for agent in agent_service.get_all_agents(project_token)
     ]
     return {"agents": agents}
@@ -2464,17 +3307,131 @@ async def create_agent_task(
     return {"task": task}
 
 
+# ─────────────────────────────── Preview Deploy ──────────────────────────────
+# NOTE: These MUST be defined before /agents/{agent_id}/* routes,
+# otherwise FastAPI matches "preview" as an agent_id.
+
+class PreviewDeployRequest(BaseModel):
+    git_repo_url: Optional[str] = None
+    git_token: Optional[str] = None
+
+
+@app.post("/agents/preview/deploy")
+async def deploy_preview(
+    request: Optional[PreviewDeployRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
+):
+    """
+    Deploy the agent/integration branch into a live environment.
+    Returns a preview URL that opens the running application.
+    """
+    project_token = _normalize_project_token(project_token)
+
+    # Get git credentials: from request body, or from project-global saved credentials.
+    git_repo_url = request.git_repo_url if request else None
+    git_token = request.git_token if request else None
+
+    if request and (request.git_repo_url is not None or request.git_token is not None):
+        _upsert_project_global_credentials(
+            db,
+            current_user.id,
+            git_repo_url=git_repo_url,
+            git_token=git_token,
+            project_token=project_token,
+        )
+
+    if not git_repo_url or not git_token:
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        if global_cred:
+            git_repo_url = git_repo_url or global_cred.git_repo_url
+            git_token = git_token or global_cred.git_token
+
+    if not git_repo_url or not git_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Git repo URL and token are required. Configure global Git credentials first."
+        )
+
+    result = await agent_service.deploy_preview(
+        git_repo_url=git_repo_url,
+        git_token=git_token,
+        project_token=project_token,
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("error", "Deploy failed"))
+    return result
+
+
+@app.get("/agents/preview/status")
+async def preview_status(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """Get the current preview deployment status."""
+    project_token = _normalize_project_token(project_token)
+    return agent_service.get_preview_status(project_token)
+
+
+@app.post("/agents/preview/fix")
+async def fix_preview(
+    request: Optional[PreviewDeployRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
+):
+    """Trigger AI to fix failing preview deployment, commit, push, and restart preview."""
+    project_token = _normalize_project_token(project_token)
+
+    git_repo_url = request.git_repo_url if request else None
+    git_token = request.git_token if request else None
+
+    if not git_repo_url or not git_token:
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        if global_cred:
+            git_repo_url = git_repo_url or global_cred.git_repo_url
+            git_token = git_token or global_cred.git_token
+
+    if not git_repo_url or not git_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Git repo URL and token are required. Configure global Git credentials first."
+        )
+
+    result = await agent_service.repair_preview(
+        git_repo_url=git_repo_url,
+        git_token=git_token,
+        project_token=project_token,
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("error", "Fix failed"))
+    return result
+
+
+@app.post("/agents/preview/stop")
+async def stop_preview(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """Stop and destroy the preview environment."""
+    project_token = _normalize_project_token(project_token)
+    return await agent_service.stop_preview(project_token)
+
+
 @app.get("/agents/{agent_id}/status")
 async def get_agent_status(
     agent_id: str,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
     project_token: Optional[str] = None,
 ):
     """Get the current status and details of a specific agent."""
     try:
         project_token = _normalize_project_token(project_token)
         agent = agent_service.get_agent_status(agent_id, project_token)
-        return {"agent": agent}
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -2514,21 +3471,24 @@ async def run_agent(
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
 
-    cred = None
-    if git_repo_url or git_token:
-        cred = _upsert_agent_credentials(
+    if request and (request.git_repo_url is not None or request.git_token is not None):
+        _upsert_project_global_credentials(
             db,
             current_user.id,
-            agent_id,
             git_repo_url=git_repo_url,
             git_token=git_token,
             project_token=project_token,
         )
-    else:
-        cred = _get_agent_credentials_map(db, current_user.id, project_token).get(agent_id)
+    cred = _resolve_project_global_credential(db, current_user.id, project_token)
 
     effective_repo = git_repo_url or (cred.git_repo_url if cred else None)
     effective_token = git_token or (cred.git_token if cred else None)
+    if effective_repo and effective_token:
+        agent["git_repo_url"] = effective_repo
+        agent["git_token"] = effective_token
+    else:
+        agent["git_repo_url"] = None
+        agent["git_token"] = None
 
     # Mark as running immediately so frontend refresh sees it instantly
     agent["status"] = "running"
@@ -2606,41 +3566,52 @@ async def run_all_agents(
 
     idle_agents = [
         a for a in agent_service.get_all_agents(project_token)
-        if a["status"] == "idle" and a["id"] != "agent_03"
+        if a["status"] == "idle" and a["id"] not in ("agent_03", "agent_04")
     ]
     if not idle_agents:
         raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
 
+    # Backward-compatible request parsing: if caller still sends per-agent config,
+    # use the first provided repo/token as project-global credentials.
     agents_config = dict(request.agents_config) if request and request.agents_config else {}
-    if agents_config:
-        for agent_id, cfg in agents_config.items():
-            if not cfg:
-                continue
-            _upsert_agent_credentials(
-                db,
-                current_user.id,
-                agent_id,
-                git_repo_url=cfg.get("git_repo_url"),
-                git_token=cfg.get("git_token"),
-                project_token=project_token,
-            )
-
-    creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
-    for agent in idle_agents:
-        if agent["id"] in agents_config:
+    provided_repo = None
+    provided_token = None
+    for cfg in agents_config.values():
+        if not isinstance(cfg, dict):
             continue
-        cred = creds_map.get(agent["id"])
-        if cred and cred.git_repo_url and cred.git_token:
-            agents_config[agent["id"]] = {
-                "git_repo_url": cred.git_repo_url,
-                "git_token": cred.git_token,
+        if not provided_repo and cfg.get("git_repo_url"):
+            provided_repo = cfg.get("git_repo_url")
+        if not provided_token and cfg.get("git_token"):
+            provided_token = cfg.get("git_token")
+        if provided_repo and provided_token:
+            break
+    if provided_repo or provided_token:
+        _upsert_project_global_credentials(
+            db,
+            current_user.id,
+            git_repo_url=provided_repo,
+            git_token=provided_token,
+            project_token=project_token,
+        )
+
+    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+    run_all_config: Dict[str, Dict[str, str]] = {}
+    if global_cred and global_cred.git_repo_url and global_cred.git_token:
+        for agent in idle_agents:
+            run_all_config[agent["id"]] = {
+                "git_repo_url": global_cred.git_repo_url,
+                "git_token": global_cred.git_token,
             }
+    else:
+        for agent in idle_agents:
+            agent["git_repo_url"] = None
+            agent["git_token"] = None
 
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
     bg_task = asyncio.create_task(
         agent_service.run_all_agents(
-            agents_config=agents_config if agents_config else None,
+            agents_config=run_all_config if run_all_config else None,
             project_token=project_token,
             task_token=x_task_token,
         )
@@ -2665,12 +3636,25 @@ class UpdateAgentRequest(BaseModel):
     git_token: Optional[str] = None
 
 
+def _build_external_agent_username(agent_id: Optional[str], fallback_name: Optional[str] = None) -> str:
+    """Map local agent id to upstream username format, e.g. agent_04 -> agent4."""
+    source_id = str(agent_id or "").strip().lower()
+    digits = "".join(re.findall(r"\d", source_id))
+    if digits:
+        return f"agent{int(digits)}"
+
+    fallback = str(fallback_name or source_id or "agent").strip().lower()
+    normalized = re.sub(r"[^a-z0-9_]", "", fallback)
+    return normalized or "agent"
+
+
 @app.post("/agents/add")
 async def add_agent(
     request: Optional[AddAgentRequest] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Dynamically add a new agent."""
     name = request.name if request else None
@@ -2688,21 +3672,52 @@ async def add_agent(
 
     agent = agent_service.add_agent(
         name=name,
-        git_repo_url=git_repo_url,
-        git_token=git_token,
         project_token=project_token,
     )
     _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
     if git_repo_url or git_token:
-        _upsert_agent_credentials(
+        _upsert_project_global_credentials(
             db,
             current_user.id,
-            agent["id"],
             git_repo_url=git_repo_url,
             git_token=git_token,
             project_token=project_token,
         )
-    return {"agent": agent}
+    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+    external_agent = None
+    external_error = None
+    external_username = _build_external_agent_username(agent.get("id"), agent.get("name"))
+    try:
+        external_agent = await task_service.create_agent(
+            {"username": external_username},
+            task_token=x_task_token,
+        )
+    except TaskServiceError as e:
+        external_error = str(e)
+        logger.warning(
+            "Failed to create upstream agent for %s (username=%s): %s",
+            agent.get("id"),
+            external_username,
+            external_error,
+        )
+    except Exception as e:
+        external_error = str(e)
+        logger.warning(
+            "Unexpected error while creating upstream agent for %s (username=%s): %s",
+            agent.get("id"),
+            external_username,
+            external_error,
+        )
+
+    response = {
+        "agent": _sanitize_agent_for_user(agent, global_cred),
+        "external_username": external_username,
+    }
+    if external_agent is not None:
+        response["external_agent"] = external_agent
+    if external_error:
+        response["external_agent_warning"] = external_error
+    return response
 
 
 @app.patch("/agents/{agent_id}")
@@ -2739,16 +3754,15 @@ async def update_agent(
             agent = agent_service.update_agent_name(agent_id, next_name, project_token)
         _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
         if repo_provided or token_provided:
-            _upsert_agent_credentials(
+            _upsert_project_global_credentials(
                 db,
                 current_user.id,
-                agent_id,
                 git_repo_url=request.git_repo_url,
                 git_token=request.git_token,
                 project_token=project_token,
             )
-        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))}
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -2787,16 +3801,15 @@ async def update_agent_post(
             agent = agent_service.update_agent_name(agent_id, next_name, project_token)
         _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
         if repo_provided or token_provided:
-            _upsert_agent_credentials(
+            _upsert_project_global_credentials(
                 db,
                 current_user.id,
-                agent_id,
                 git_repo_url=request.git_repo_url,
                 git_token=request.git_token,
                 project_token=project_token,
             )
-        creds_map = _get_agent_credentials_map(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, creds_map.get(agent.get("id")))}
+        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -2825,9 +3838,27 @@ async def remove_agent(
         return {"success": True, "removed": agent_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+
 # ─────────────────────────────── Task Management Integration ──────────────────────────
 
-from task_service import task_service
+from task_service import (
+    task_service,
+    TaskServiceError,
+    TaskServiceTimeoutError,
+    TaskServiceConnectionError,
+    TaskServiceHTTPError,
+)
+
+def _raise_task_service_http_exception(e: TaskServiceError, fallback_message: str) -> None:
+    detail = str(e) or fallback_message
+    if isinstance(e, TaskServiceTimeoutError):
+        raise HTTPException(status_code=504, detail=detail)
+    if isinstance(e, TaskServiceConnectionError):
+        raise HTTPException(status_code=502, detail=detail)
+    status_code = e.status_code if 400 <= e.status_code < 500 else 502
+    raise HTTPException(status_code=status_code, detail=detail)
 
 @app.get("/api/agents/")
 async def get_external_agents(
@@ -2912,12 +3943,39 @@ async def create_agent_project(
 class AgentTaskCreate(BaseModel):
     taskName: str
     description: str
-    assignees: List[int]
+    assignees: List[int] = Field(default_factory=list)
     wallet: int
     deadline: str
     startdate: str
     task_type: str
     priority: str
+    sprint: Optional[int] = None
+    milestone: Optional[int] = None
+
+class SprintCreateRequest(BaseModel):
+    name: str
+    summary: Optional[str] = ""
+    start_date: str
+    deadline: str
+
+class MilestoneCreateRequest(BaseModel):
+    name: str
+    sprint_id: int
+    deadline: str
+    start_date: str
+
+class SprintStatusUpdateRequest(BaseModel):
+    sprint_id: int
+    status: str
+    is_completed: bool
+
+class MilestoneStatusUpdateRequest(BaseModel):
+    milestone_id: int
+    is_completed: bool
+
+class ProjectStatusUpdateRequest(BaseModel):
+    deadline: str
+    status: str
 
 class TaskMessageRequest(BaseModel):
     task_id: int
@@ -2949,8 +4007,98 @@ async def create_external_agent_task(
     try:
         result = await task_service.create_task(task.dict(), task_token=x_task_token)
         return result
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to create task")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
+
+
+@app.get("/api/agent/sprints/")
+async def get_agent_sprints(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Fetch sprints from the external task management API."""
+    try:
+        return await task_service.get_sprints(task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch sprints")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch sprints: {e}")
+
+
+@app.post("/api/agent/sprints/")
+async def create_agent_sprint(
+    payload: SprintCreateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Create sprint in the external task management API."""
+    try:
+        return await task_service.create_sprint(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to create sprint")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create sprint: {e}")
+
+
+@app.put("/api/agent/sprints/")
+async def update_agent_sprint_status(
+    payload: SprintStatusUpdateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Update sprint status/is_completed in the external task management API."""
+    try:
+        return await task_service.update_sprint_status(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to update sprint status")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update sprint status: {e}")
+
+
+@app.get("/api/agent/milestones/")
+async def get_agent_milestones(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Fetch milestones from the external task management API."""
+    try:
+        return await task_service.get_milestones(task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch milestones")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch milestones: {e}")
+
+
+@app.post("/api/agent/milestones/")
+async def create_agent_milestone(
+    payload: MilestoneCreateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Create milestone in the external task management API."""
+    try:
+        return await task_service.create_milestone(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to create milestone")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create milestone: {e}")
+
+
+@app.put("/api/agent/milestones/")
+async def update_agent_milestone_status(
+    payload: MilestoneStatusUpdateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Update milestone completion state in the external task management API."""
+    try:
+        return await task_service.update_milestone_status(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to update milestone status")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update milestone status: {e}")
 
 
 @app.post("/api/agent/messages/")
@@ -3027,6 +4175,13 @@ async def get_external_agent_tasks(
     try:
         tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
         return tasks
+    except TaskServiceTimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except TaskServiceConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except TaskServiceError as e:
+        status_code = e.status_code if 400 <= e.status_code < 500 else 502
+        raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -3046,6 +4201,20 @@ async def get_agent_project_info(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {repr(e)}")
 
+@app.put("/api/agent/project/update/")
+async def update_agent_project_status(
+    payload: ProjectStatusUpdateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Update project deadline/status in the external task management API."""
+    try:
+        return await task_service.update_project_status(payload.dict(), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to update project status")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update project status: {e}")
+
 @app.get("/api/agent/dashboard/")
 async def get_agent_dashboard(
     current_user: models.User = Depends(auth.get_current_user),
@@ -3061,6 +4230,10 @@ async def get_agent_dashboard(
 class AutoGenerateRequest(BaseModel):
     project_token: str
     prerequisites: Optional[List[Dict[str, Any]]] = None
+    sprint_id: Optional[int] = None
+    milestone_id: Optional[int] = None
+    auto_create_plan: Optional[bool] = False
+    custom_rules: Optional[str] = None
 
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
@@ -3073,11 +4246,361 @@ async def auto_generate_project_tasks(
     Auto-generate tasks based on a BRD analysis, 
     using real project deadline and wallet from the external API.
     """
+    def _extract_created_id(payload: Any, entity_key: str) -> Optional[int]:
+        """Extract an integer id from common upstream response shapes."""
+        if not isinstance(payload, dict):
+            return None
+
+        candidates: List[Any] = [
+            payload.get("id"),
+            payload.get(f"{entity_key}_id"),
+        ]
+
+        nested = payload.get(entity_key)
+        if isinstance(nested, dict):
+            candidates.extend([
+                nested.get("id"),
+                nested.get(f"{entity_key}_id"),
+            ])
+
+        for value in candidates:
+            try:
+                if value is None or value == "":
+                    continue
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _parse_date_value(value: Any) -> Optional[datetime.date]:
+        """Parse date-like values from upstream payloads (YYYY-MM-DD or datetime string)."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        # Common case: "YYYY-MM-DD ..." or full ISO datetime.
+        if len(text) >= 10:
+            try:
+                return datetime.strptime(text[:10], "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+
+    def _format_date(date_obj: datetime.date) -> str:
+        return date_obj.strftime("%Y-%m-%d")
+
+    def _clamp_date(
+        value: Any,
+        *,
+        fallback: datetime.date,
+        min_date: datetime.date,
+        max_date: datetime.date,
+    ) -> datetime.date:
+        parsed = _parse_date_value(value) or fallback
+        if parsed < min_date:
+            parsed = min_date
+        if parsed > max_date:
+            parsed = max_date
+        return parsed
+
+    def _ensure_strict_window(
+        start_value: Any,
+        end_value: Any,
+        *,
+        fallback_start: datetime.date,
+        fallback_end: datetime.date,
+        min_date: datetime.date,
+        max_date: datetime.date,
+        label: str,
+    ):
+        """
+        Ensure strict ordering start_date < deadline within [min_date, max_date].
+        Raises a 400 when the allowed window is too narrow to satisfy upstream rules.
+        """
+        start_date = _clamp_date(
+            start_value,
+            fallback=fallback_start,
+            min_date=min_date,
+            max_date=max_date,
+        )
+        end_date = _clamp_date(
+            end_value,
+            fallback=fallback_end,
+            min_date=min_date,
+            max_date=max_date,
+        )
+
+        if end_date > start_date:
+            return start_date, end_date
+
+        # First try extending deadline by 1 day if possible.
+        next_day = start_date + timedelta(days=1)
+        if next_day <= max_date:
+            return start_date, next_day
+
+        # Otherwise try moving start one day back if possible.
+        prev_day = end_date - timedelta(days=1)
+        if prev_day >= min_date and end_date > prev_day:
+            return prev_day, end_date
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid {label} date window: start_date must be before deadline. "
+                f"Allowed range is {_format_date(min_date)} to {_format_date(max_date)}."
+            ),
+        )
+
+    def _ensure_non_strict_window(
+        start_value: Any,
+        end_value: Any,
+        *,
+        fallback_start: datetime.date,
+        fallback_end: datetime.date,
+        min_date: datetime.date,
+        max_date: datetime.date,
+    ):
+        """
+        Ensure ordering start_date <= deadline within [min_date, max_date].
+        Useful where upstream allows same-day start/deadline.
+        """
+        start_date = _clamp_date(
+            start_value,
+            fallback=fallback_start,
+            min_date=min_date,
+            max_date=max_date,
+        )
+        end_date = _clamp_date(
+            end_value,
+            fallback=fallback_end,
+            min_date=min_date,
+            max_date=max_date,
+        )
+        if end_date < start_date:
+            end_date = start_date
+        return start_date, end_date
+
+    def _extract_sprint_deadline_from_error(err_text: str) -> Optional[datetime.date]:
+        if not err_text:
+            return None
+        match = re.search(r"deadline\s*\((\d{4}-\d{2}-\d{2})\)", err_text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        return _parse_date_value(match.group(1))
+
+    async def _resolve_sprint_bounds(
+        sprint_id: int,
+        fallback_start: datetime.date,
+        fallback_deadline: datetime.date,
+        created_payload: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Resolve the authoritative sprint start/deadline.
+        Prefer upstream sprint list (source of truth), with safe fallback.
+        """
+        start_candidate = None
+        deadline_candidate = None
+
+        if isinstance(created_payload, dict):
+            start_candidate = _parse_date_value(created_payload.get("start_date"))
+            deadline_candidate = _parse_date_value(created_payload.get("deadline"))
+
+        try:
+            sprints_payload = await task_service.get_sprints(task_token=x_task_token)
+            sprint_items = []
+            if isinstance(sprints_payload, list):
+                sprint_items = sprints_payload
+            elif isinstance(sprints_payload, dict):
+                if isinstance(sprints_payload.get("sprints"), list):
+                    sprint_items = sprints_payload.get("sprints")
+                elif isinstance(sprints_payload.get("results"), list):
+                    sprint_items = sprints_payload.get("results")
+
+            for sprint_item in sprint_items:
+                sprint_item_id = sprint_item.get("id") or sprint_item.get("sprint_id")
+                if sprint_item_id is None:
+                    continue
+                if str(sprint_item_id) != str(sprint_id):
+                    continue
+                start_candidate = _parse_date_value(
+                    sprint_item.get("start_date") or sprint_item.get("startdate")
+                ) or start_candidate
+                deadline_candidate = _parse_date_value(
+                    sprint_item.get("deadline") or sprint_item.get("end_date")
+                ) or deadline_candidate
+                break
+        except Exception as sprint_read_err:
+            logger.warning(
+                f"Could not fetch authoritative sprint dates for sprint {sprint_id}: {sprint_read_err}"
+            )
+
+        resolved_start = _clamp_date(
+            start_candidate,
+            fallback=fallback_start,
+            min_date=project_start_obj,
+            max_date=project_deadline_obj,
+        )
+        resolved_deadline = _clamp_date(
+            deadline_candidate,
+            fallback=fallback_deadline,
+            min_date=resolved_start,
+            max_date=project_deadline_obj,
+        )
+        return _ensure_strict_window(
+            resolved_start,
+            resolved_deadline,
+            fallback_start=fallback_start,
+            fallback_end=fallback_deadline,
+            min_date=project_start_obj,
+            max_date=project_deadline_obj,
+            label="sprint",
+        )
+
+    async def _create_milestone_with_retry(
+        milestone_payload: Dict[str, Any],
+        *,
+        sprint_id: int,
+        sprint_start_obj: datetime.date,
+        sprint_deadline_obj: datetime.date,
+    ):
+        try:
+            return await task_service.create_milestone(milestone_payload, task_token=x_task_token)
+        except TaskServiceHTTPError as milestone_err:
+            # Upstream sometimes returns a normalized sprint deadline in error text.
+            # Retry once using that exact deadline to avoid timezone/date-boundary drift.
+            sprint_deadline_from_error = _extract_sprint_deadline_from_error(str(milestone_err))
+            if sprint_deadline_from_error is None:
+                raise
+
+            effective_max_deadline = min(sprint_deadline_obj, sprint_deadline_from_error)
+            if effective_max_deadline < sprint_start_obj:
+                effective_max_deadline = sprint_start_obj
+
+            corrected_start, corrected_deadline = _ensure_non_strict_window(
+                milestone_payload.get("start_date"),
+                sprint_deadline_from_error,
+                fallback_start=sprint_start_obj,
+                fallback_end=effective_max_deadline,
+                min_date=sprint_start_obj,
+                max_date=effective_max_deadline,
+            )
+            retry_payload = {
+                **milestone_payload,
+                "start_date": _format_date(corrected_start),
+                "deadline": _format_date(corrected_deadline),
+            }
+            logger.warning(
+                "Retrying milestone create with corrected deadline from upstream error. "
+                f"sprint_id={sprint_id}, retry_deadline={retry_payload['deadline']}"
+            )
+            return await task_service.create_milestone(retry_payload, task_token=x_task_token)
+
+    def _build_sprint_windows(
+        start_date_obj: datetime.date,
+        end_date_obj: datetime.date,
+        *,
+        target_sprint_days: int = 14,
+        max_sprints: int = 8,
+    ):
+        """
+        Build contiguous sprint windows across the project duration.
+        Requires at least a 2-day window due to upstream strict sprint rule.
+        """
+        if end_date_obj <= start_date_obj:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Project date window is too small for sprint creation. "
+                    "Project deadline must be at least one day after project start date."
+                ),
+            )
+
+        windows: List[Dict[str, datetime.date]] = []
+        cursor = start_date_obj
+
+        while cursor < end_date_obj and len(windows) < max_sprints:
+            window_end = min(cursor + timedelta(days=max(2, target_sprint_days) - 1), end_date_obj)
+            if window_end <= cursor:
+                break
+            windows.append({
+                "start_date": cursor,
+                "deadline": window_end,
+            })
+            cursor = window_end + timedelta(days=1)
+
+        if not windows:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not derive sprint windows from project dates.",
+            )
+
+        # Ensure full project tail is covered even when max_sprints cap is hit.
+        if windows[-1]["deadline"] < end_date_obj:
+            windows[-1]["deadline"] = end_date_obj
+
+        # Upstream requires start_date < deadline for sprints.
+        for idx, win in enumerate(windows):
+            if win["deadline"] <= win["start_date"]:
+                if idx == 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Project date window is too small for strict sprint dates. "
+                            "Need at least 2 days."
+                        ),
+                    )
+                windows[idx - 1]["deadline"] = max(windows[idx - 1]["deadline"], win["deadline"])
+                win["start_date"] = win["deadline"]
+
+        return [w for w in windows if w["deadline"] > w["start_date"]]
+
+    def _pick_plan_item_for_task(
+        task_start_obj: datetime.date,
+        task_deadline_obj: datetime.date,
+        plan_items: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not plan_items:
+            return None
+
+        for item in plan_items:
+            if item["start_date"] <= task_start_obj <= item["deadline"]:
+                return item
+        for item in plan_items:
+            if item["start_date"] <= task_deadline_obj <= item["deadline"]:
+                return item
+
+        # Fallback: nearest sprint by deadline distance.
+        return min(plan_items, key=lambda item: abs((item["deadline"] - task_deadline_obj).days))
+
     try:
         # 1. Fetch initial project info from external API
         project_info = await task_service.get_project_info(task_token=x_task_token)
         project_data = project_info.get("project", {})
-        project_deadline = project_data.get("deadline", "2026-12-31")
+        raw_project_start = (
+            project_data.get("start_date")
+            or project_data.get("startdate")
+            or project_data.get("project_start_date")
+        )
+        raw_project_deadline = (
+            project_data.get("deadline")
+            or project_data.get("project_deadline")
+        )
+        project_start_obj = _parse_date_value(raw_project_start) or datetime.utcnow().date()
+        project_deadline_obj = _parse_date_value(raw_project_deadline) or (project_start_obj + timedelta(days=30))
+        if project_deadline_obj < project_start_obj:
+            project_deadline_obj = project_start_obj
+
+        project_start_date = _format_date(project_start_obj)
+        project_deadline = _format_date(project_deadline_obj)
         project_wallet = project_data.get("project_wallet", 100)
 
         # 2. Fetch the governance response and BRD analysis from DB
@@ -3125,10 +4648,21 @@ async def auto_generate_project_tasks(
                             priority = p.get("priority", "medium")
                             provided = p.get("provided", False)
                             status_str = "PROVIDED" if provided else "NOT YET PROVIDED"
-                            notes = p.get("userNotes", "")
+                            is_secret = bool(p.get("containsSecret", False))
+                            user_inputs = []
+                            if not is_secret:
+                                user_value = str(p.get("userValue", "")).strip()
+                                user_file = str(p.get("userFileName", "")).strip()
+                                notes = str(p.get("userNotes", "")).strip()
+                                if user_value:
+                                    user_inputs.append(f"Value: {user_value}")
+                                if user_file:
+                                    user_inputs.append(f"File: {user_file}")
+                                if notes:
+                                    user_inputs.append(f"Notes: {notes}")
                             prereq_lines.append(
                                 f"- [{status_str}] {name} ({cat}, {priority}): {desc}"
-                                + (f" — Notes: {notes}" if notes else "")
+                                + (f" - Team Input: {' | '.join(user_inputs)}" if user_inputs else "")
                             )
                         prerequisites_context = "\n".join(prereq_lines)
 
@@ -3153,10 +4687,21 @@ async def auto_generate_project_tasks(
                 priority = p.get("priority", "medium")
                 provided = p.get("provided", False)
                 status_str = "PROVIDED" if provided else "NOT YET PROVIDED"
-                notes = p.get("userNotes", "")
+                is_secret = bool(p.get("containsSecret", False))
+                user_inputs = []
+                if not is_secret:
+                    user_value = str(p.get("userValue", "")).strip()
+                    user_file = str(p.get("userFileName", "")).strip()
+                    notes = str(p.get("userNotes", "")).strip()
+                    if user_value:
+                        user_inputs.append(f"Value: {user_value}")
+                    if user_file:
+                        user_inputs.append(f"File: {user_file}")
+                    if notes:
+                        user_inputs.append(f"Notes: {notes}")
                 prereq_lines.append(
                     f"- [{status_str}] {name} ({cat}, {priority}): {desc}"
-                    + (f" — Notes: {notes}" if notes else "")
+                    + (f" - Team Input: {' | '.join(user_inputs)}" if user_inputs else "")
                 )
             analysis_report += "\n".join(prereq_lines)
 
@@ -3228,6 +4773,17 @@ async def auto_generate_project_tasks(
         project_wallet_int = max(project_wallet_int, 0)
 
         remaining_wallet = max(project_wallet_int - existing_wallet_used, 0)
+        created_sprint = None
+        created_milestone = None
+        created_sprints: List[Dict[str, Any]] = []
+        created_milestones: List[Dict[str, Any]] = []
+        # Auto plan items used for per-task sprint/milestone assignment.
+        auto_plan_items: List[Dict[str, Any]] = []
+        selected_sprint_id = request.sprint_id
+        selected_milestone_id = request.milestone_id
+        resolved_sprint_start_obj = project_start_obj
+        resolved_sprint_deadline_obj = project_deadline_obj
+
         if remaining_wallet <= 0:
             return {
                 "status": "success",
@@ -3242,10 +4798,219 @@ async def auto_generate_project_tasks(
                 "checklists_generated_for": 0,
                 "checklists_attached": 0,
                 "checklist_attach_failures": [],
+                "project_start_date": project_start_date,
                 "project_deadline": project_deadline,
                 "project_wallet": project_wallet_int,
                 "remaining_wallet": remaining_wallet,
+                "sprint_id": selected_sprint_id,
+                "milestone_id": selected_milestone_id,
+                "created_sprint": created_sprint,
+                "created_milestone": created_milestone,
+                "created_sprints": created_sprints,
+                "created_milestones": created_milestones,
             }
+
+        # Phase to Sprint mapping (for phase-based task assignment)
+        PHASE_TO_SPRINT_MAP = {
+            "foundation": 1,
+            "backend-core": 2,
+            "backend-features": 3,
+            "frontend-core": 4,
+            "frontend-features": 5,
+            "integration": 6,
+        }
+        PHASE_NAMES = {
+            "foundation": "Foundation",
+            "backend-core": "Backend Core",
+            "backend-features": "Backend Features",
+            "frontend-core": "Frontend Core",
+            "frontend-features": "Frontend Features",
+            "integration": "Integration",
+        }
+
+        if request.auto_create_plan and selected_sprint_id is None and selected_milestone_id is None:
+            sprint_windows = _build_sprint_windows(project_start_obj, project_deadline_obj)
+
+            for sprint_index, win in enumerate(sprint_windows, start=1):
+                win_start = win["start_date"]
+                win_deadline = win["deadline"]
+                # Map sprint index to phase name (if within 6 sprints)
+                phase_name = None
+                for phase, phase_sprint_num in PHASE_TO_SPRINT_MAP.items():
+                    if phase_sprint_num == sprint_index:
+                        phase_name = PHASE_NAMES[phase]
+                        break
+                
+                sprint_name = f"Sprint {sprint_index}" + (f" - {phase_name}" if phase_name else "")
+                sprint_summary = f"Auto-generated sprint {sprint_index}" + (f" ({phase_name})" if phase_name else "") + f" for {project_name or 'the project'}"
+                
+                sprint_payload = {
+                    "name": sprint_name,
+                    "summary": sprint_summary,
+                    "start_date": _format_date(win_start),
+                    "deadline": _format_date(win_deadline),
+                }
+                sprint_result = await task_service.create_sprint(sprint_payload, task_token=x_task_token)
+                sprint_id = _extract_created_id(sprint_result, "sprint")
+                if sprint_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Sprint {sprint_index} was created but upstream did not return a sprint id.",
+                    )
+
+                resolved_start, resolved_deadline = await _resolve_sprint_bounds(
+                    sprint_id=sprint_id,
+                    fallback_start=win_start,
+                    fallback_deadline=win_deadline,
+                    created_payload=sprint_result if isinstance(sprint_result, dict) else None,
+                )
+                milestone_start_obj, milestone_deadline_obj = _ensure_non_strict_window(
+                    resolved_start,
+                    resolved_deadline,
+                    fallback_start=resolved_start,
+                    fallback_end=resolved_deadline,
+                    min_date=resolved_start,
+                    max_date=resolved_deadline,
+                )
+                milestone_payload = {
+                    "name": f"Sprint {sprint_index} Milestone",
+                    "sprint_id": sprint_id,
+                    "start_date": _format_date(milestone_start_obj),
+                    "deadline": _format_date(milestone_deadline_obj),
+                }
+                milestone_result = await _create_milestone_with_retry(
+                    milestone_payload,
+                    sprint_id=sprint_id,
+                    sprint_start_obj=resolved_start,
+                    sprint_deadline_obj=resolved_deadline,
+                )
+                milestone_id = _extract_created_id(milestone_result, "milestone")
+                if milestone_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Milestone for Sprint {sprint_index} was created but upstream "
+                            "did not return a milestone id."
+                        ),
+                    )
+
+                created_sprints.append(sprint_result)
+                created_milestones.append(milestone_result)
+                auto_plan_items.append({
+                    "sprint_id": sprint_id,
+                    "milestone_id": milestone_id,
+                    "start_date": resolved_start,
+                    "deadline": resolved_deadline,
+                })
+
+            # Keep backward compatibility when only one sprint was created.
+            if len(auto_plan_items) == 1:
+                selected_sprint_id = auto_plan_items[0]["sprint_id"]
+                selected_milestone_id = auto_plan_items[0]["milestone_id"]
+                created_sprint = created_sprints[0]
+                created_milestone = created_milestones[0]
+
+        elif request.auto_create_plan and (selected_sprint_id is None or selected_milestone_id is None):
+            # Backward-compatible branch when one of sprint/milestone is already provided.
+            plan = await ai_service.generate_sprint_milestone_plan(
+                analysis_report=analysis_report,
+                project_name=project_name,
+                project_deadline=project_deadline,
+            )
+            sprint_plan = plan.get("sprint") if isinstance(plan, dict) else {}
+            milestone_plan = plan.get("milestone") if isinstance(plan, dict) else {}
+
+            if selected_sprint_id is None:
+                sprint_start_obj = _clamp_date(
+                    (sprint_plan or {}).get("start_date"),
+                    fallback=project_start_obj,
+                    min_date=project_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                sprint_deadline_obj = _clamp_date(
+                    (sprint_plan or {}).get("deadline"),
+                    fallback=project_deadline_obj,
+                    min_date=sprint_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                sprint_start_obj, sprint_deadline_obj = _ensure_strict_window(
+                    sprint_start_obj,
+                    sprint_deadline_obj,
+                    fallback_start=project_start_obj,
+                    fallback_end=project_deadline_obj,
+                    min_date=project_start_obj,
+                    max_date=project_deadline_obj,
+                    label="sprint",
+                )
+                sprint_payload = {
+                    "name": (sprint_plan or {}).get("name") or "Sprint 1",
+                    "summary": (sprint_plan or {}).get("summary") or f"Initial sprint for {project_name or 'the project'}",
+                    "start_date": _format_date(sprint_start_obj),
+                    "deadline": _format_date(sprint_deadline_obj),
+                }
+                resolved_sprint_start_obj = sprint_start_obj
+                resolved_sprint_deadline_obj = sprint_deadline_obj
+                created_sprint = await task_service.create_sprint(sprint_payload, task_token=x_task_token)
+                selected_sprint_id = _extract_created_id(created_sprint, "sprint")
+                if selected_sprint_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Sprint was created but upstream did not return a sprint id.",
+                    )
+                created_sprints.append(created_sprint)
+
+            if selected_sprint_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot auto-create milestone without a sprint id.",
+                )
+
+            resolved_sprint_start_obj, resolved_sprint_deadline_obj = await _resolve_sprint_bounds(
+                sprint_id=selected_sprint_id,
+                fallback_start=resolved_sprint_start_obj,
+                fallback_deadline=resolved_sprint_deadline_obj,
+                created_payload=created_sprint if isinstance(created_sprint, dict) else None,
+            )
+            if selected_milestone_id is None:
+                milestone_start_obj = _clamp_date(
+                    (milestone_plan or {}).get("start_date"),
+                    fallback=resolved_sprint_start_obj,
+                    min_date=resolved_sprint_start_obj,
+                    max_date=resolved_sprint_deadline_obj,
+                )
+                milestone_deadline_obj = _clamp_date(
+                    (milestone_plan or {}).get("deadline"),
+                    fallback=resolved_sprint_deadline_obj,
+                    min_date=milestone_start_obj,
+                    max_date=resolved_sprint_deadline_obj,
+                )
+                milestone_start_obj, milestone_deadline_obj = _ensure_non_strict_window(
+                    milestone_start_obj,
+                    milestone_deadline_obj,
+                    fallback_start=resolved_sprint_start_obj,
+                    fallback_end=resolved_sprint_deadline_obj,
+                    min_date=resolved_sprint_start_obj,
+                    max_date=resolved_sprint_deadline_obj,
+                )
+                milestone_payload = {
+                    "name": (milestone_plan or {}).get("name") or "Phase 1 Complete",
+                    "sprint_id": selected_sprint_id,
+                    "start_date": _format_date(milestone_start_obj),
+                    "deadline": _format_date(milestone_deadline_obj),
+                }
+                created_milestone = await _create_milestone_with_retry(
+                    milestone_payload,
+                    sprint_id=selected_sprint_id,
+                    sprint_start_obj=resolved_sprint_start_obj,
+                    sprint_deadline_obj=resolved_sprint_deadline_obj,
+                )
+                selected_milestone_id = _extract_created_id(created_milestone, "milestone")
+                if selected_milestone_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Milestone was created but upstream did not return a milestone id.",
+                    )
+                created_milestones.append(created_milestone)
 
         # 5. Generate tasks in incremental batches of up to 5, then attach checklists per batch.
         generation_context = list(existing_tasks_context)
@@ -3267,6 +5032,7 @@ async def auto_generate_project_tasks(
                 total_project_wallet=project_wallet_int,
                 already_created_tasks=generation_context,
                 batch_number=batch_number,
+                custom_rules=request.custom_rules,
             )
             if not batch_tasks:
                 break
@@ -3285,6 +5051,60 @@ async def auto_generate_project_tasks(
                 if task_name_key in known_task_name_keys:
                     duplicates_skipped += 1
                     continue
+
+                task_start_obj = _clamp_date(
+                    task_data.get("startdate"),
+                    fallback=project_start_obj,
+                    min_date=project_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                task_deadline_obj = _clamp_date(
+                    task_data.get("deadline"),
+                    fallback=project_deadline_obj,
+                    min_date=task_start_obj,
+                    max_date=project_deadline_obj,
+                )
+                task_data["startdate"] = _format_date(task_start_obj)
+                task_data["deadline"] = _format_date(task_deadline_obj)
+
+                assigned_sprint_id = selected_sprint_id
+                assigned_milestone_id = selected_milestone_id
+                
+                # Phase-based sprint assignment: Assign tasks to sprints based on their phase
+                task_phase = task_data.get("phase") or task_data.get("task_phase")
+                if task_phase and auto_plan_items:
+                    # Map phase to sprint number
+                    phase_sprint_num = PHASE_TO_SPRINT_MAP.get(task_phase)
+                    if phase_sprint_num and phase_sprint_num <= len(auto_plan_items):
+                        # Assign to the sprint corresponding to this phase
+                        chosen_plan_item = auto_plan_items[phase_sprint_num - 1]
+                        assigned_sprint_id = chosen_plan_item.get("sprint_id")
+                        assigned_milestone_id = chosen_plan_item.get("milestone_id")
+                    elif auto_plan_items:
+                        # Fallback: if phase not mapped or sprint doesn't exist, use date-based assignment
+                        chosen_plan_item = _pick_plan_item_for_task(
+                            task_start_obj=task_start_obj,
+                            task_deadline_obj=task_deadline_obj,
+                            plan_items=auto_plan_items,
+                        )
+                        if chosen_plan_item:
+                            assigned_sprint_id = chosen_plan_item.get("sprint_id")
+                            assigned_milestone_id = chosen_plan_item.get("milestone_id")
+                elif auto_plan_items:
+                    # No phase specified: use date-based assignment (backward compatibility)
+                    chosen_plan_item = _pick_plan_item_for_task(
+                        task_start_obj=task_start_obj,
+                        task_deadline_obj=task_deadline_obj,
+                        plan_items=auto_plan_items,
+                    )
+                    if chosen_plan_item:
+                        assigned_sprint_id = chosen_plan_item.get("sprint_id")
+                        assigned_milestone_id = chosen_plan_item.get("milestone_id")
+
+                if assigned_sprint_id is not None:
+                    task_data["sprint"] = assigned_sprint_id
+                if assigned_milestone_id is not None:
+                    task_data["milestone"] = assigned_milestone_id
 
                 res = await task_service.create_task(task_data, task_token=x_task_token)
                 if isinstance(res, dict) and "id" in res:
@@ -3348,7 +5168,14 @@ async def auto_generate_project_tasks(
                 break
             batch_number += 1
 
+        plan_message = ""
+        if created_sprints:
+            plan_message = (
+                f"Created {len(created_sprints)} sprint(s) and {len(created_milestones)} milestone(s). "
+            )
+
         message = (
+            f"{plan_message}"
             f"Successfully created {len(created_tasks)} task(s) across {batches_processed} batch(es) of up to 5. "
             f"Skipped {duplicates_skipped} duplicate task suggestion(s). "
         )
@@ -3369,12 +5196,33 @@ async def auto_generate_project_tasks(
              "checklists_generated_for": checklists_generated_for,
              "checklists_attached": checklists_attached,
              "checklist_attach_failures": checklist_attach_failures,
+             "project_start_date": project_start_date,
              "project_deadline": project_deadline,
              "project_wallet": project_wallet_int,
              "remaining_wallet": remaining_wallet,
+             "sprint_id": selected_sprint_id,
+             "milestone_id": selected_milestone_id,
+             "created_sprint": created_sprint,
+             "created_milestone": created_milestone,
+             "created_sprints": created_sprints,
+             "created_milestones": created_milestones,
         }
 
     except HTTPException:
         raise
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Auto-generate failed due to task service error")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=False,
+    )
+

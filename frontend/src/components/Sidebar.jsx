@@ -1,6 +1,8 @@
-import React from 'react';
-import { X, Plus, History, Activity, Settings, User, LogOut, ShieldCheck, PlugZap, ExternalLink, Loader2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
+import { API_ENDPOINTS } from '../config';
 
 export default function Sidebar({
     isSidebarOpen,
@@ -15,13 +17,56 @@ export default function Sidebar({
     setShowSettings,
     user,
     handleLogout,
-    pluginClients = [],
-    launchingPluginId = '',
-    handleOpenPlugin,
+    handleDeleteProject,
+    deletingProjectKey,
 }) {
+    const navigate = useNavigate();
+    // Agents state
+    const [agents, setAgents] = useState([]);
+    const [agentsLoading, setAgentsLoading] = useState(false);
+    const [agentsError, setAgentsError] = useState(null);
+    const [agentsExpanded, setAgentsExpanded] = useState(false);
+
+    useEffect(() => {
+        if (!agentsExpanded) return;
+        const fetchAgents = async () => {
+            setAgentsLoading(true);
+            const token = localStorage.getItem('token');
+            try {
+                const res = await fetch(API_ENDPOINTS.AGENTS, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!res.ok) throw new Error('Failed to fetch agents');
+                const data = await res.json();
+                setAgents(data?.agents || []);
+                setAgentsError(null);
+            } catch (e) {
+                setAgentsError(e.message);
+            } finally {
+                setAgentsLoading(false);
+            }
+        };
+        fetchAgents();
+    }, [agentsExpanded]);
+
+    const handleDeleteAgent = async (agentId) => {
+        const token = localStorage.getItem('token');
+        try {
+            const res = await fetch(API_ENDPOINTS.AGENT_REMOVE(agentId), {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!res.ok) throw new Error('Delete failed');
+            // Refresh list locally
+            setAgents((prev) => prev.filter((a) => a.id !== agentId));
+        } catch (e) {
+            console.error(e);
+            setAgentsError(e.message);
+        }
+    };
+
     return (
         <>
-            {/* Mobile Overlay */}
             {isSidebarOpen && (
                 <button
                     type="button"
@@ -31,15 +76,11 @@ export default function Sidebar({
                 />
             )}
 
-            {/* Main Desktop Spacer to push the layout smoothly without squishing the sidebar content */}
             <div className={`hidden md:block transition-[width] duration-300 ease-in-out flex-shrink-0 ${isSidebarOpen ? 'w-72' : 'w-0'}`} />
 
-            {/* Animated Sidebar */}
             <div
-                className={`fixed inset-y-0 left-0 z-40 w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
-                    }`}
+                className={`fixed inset-y-0 left-0 z-40 w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
             >
-                {/* Header */}
                 <div className="h-16 flex items-center px-2 border-b border-gray-800 bg-app-text-main shrink-0">
                     <div className="flex items-center justify-between w-full">
                         <div className="flex items-center min-w-0">
@@ -58,7 +99,6 @@ export default function Sidebar({
                     </div>
                 </div>
 
-                {/* Main scrollable area */}
                 <div className="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar">
                     <button
                         onClick={handleNewProject}
@@ -74,78 +114,63 @@ export default function Sidebar({
                             {projects.length === 0 ? (
                                 <p className="text-xs text-app-text-label px-2 italic">No projects yet.</p>
                             ) : (
-                                projects.map((project) => (
-                                    <button
-                                        key={project.key}
-                                        onClick={() => handleSelectProject(project)}
-                                        className={`w-full flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && currentView === 'main'
-                                            ? 'bg-blue-900/40 text-blue-100 border-blue-800'
-                                            : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'
-                                            }`}
-                                        title={project.name}
-                                    >
-                                        <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && currentView === 'main' ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
-                                        <div className="min-w-0">
-                                            <p className="truncate">{project.name}</p>
-                                            <p className="text-[11px] text-app-text-muted truncate">
-                                                {project.status === 'analysis_complete'
-                                                    ? `Locked • ${getProjectSidebarSubtitle(project)}`
-                                                    : getProjectSidebarSubtitle(project)}
-                                            </p>
-                                        </div>
-                                    </button>
-                                ))
-                            )}
-                        </div>
-                    </div>
-
-                    <div className="mb-2">
-                        <h3 className="text-xs font-semibold text-app-text-muted uppercase tracking-wider mb-3 px-2">Plugins</h3>
-                        <div className="space-y-1">
-                            {pluginClients.length === 0 ? (
-                                <p className="text-xs text-app-text-label px-2 italic">No plugins configured.</p>
-                            ) : (
-                                pluginClients.map((plugin) => {
-                                    const isLaunching = launchingPluginId === plugin.client_id;
-                                    const isConnected = Boolean(plugin.connected);
+                                projects.map((project) => {
+                                    const canDelete = Boolean(project.projectToken || project.governanceResultId);
                                     return (
-                                        <button
-                                            key={plugin.client_id}
-                                            onClick={() => handleOpenPlugin?.(plugin.client_id)}
-                                            disabled={isLaunching}
-                                            className="w-full flex items-center justify-between px-3 py-2 text-sm font-medium rounded-md border border-transparent text-app-text-light hover:bg-app-text-label hover:text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                                            title={plugin.login_url || plugin.name}
-                                        >
-                                            <span className="inline-flex items-center min-w-0">
-                                                {isLaunching ? (
-                                                    <Loader2 className="w-4 h-4 mr-2 animate-spin flex-shrink-0" />
-                                                ) : (
-                                                    <PlugZap className="w-4 h-4 mr-2 flex-shrink-0 text-app-text-label" />
-                                                )}
-                                                <span className="min-w-0">
-                                                    <span className="truncate block">{plugin.name}</span>
-                                                    <span className={`text-[10px] ${isConnected ? 'text-emerald-300' : 'text-amber-300'}`}>
-                                                        {isConnected ? 'Connected' : 'Not Connected'}
-                                                    </span>
-                                                </span>
-                                            </span>
-                                            <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
-                                        </button>
+                                        <div key={project.key} className="flex items-center gap-1">
+                                            <button
+                                                onClick={() => handleSelectProject(project)}
+                                                className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
+                                                    ? 'bg-blue-900/40 text-blue-100 border-blue-800'
+                                                    : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'}
+                                                `}
+                                                title={project.name}
+                                            >
+                                                <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation') ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
+                                                <div className="min-w-0">
+                                                    <p className="truncate">{project.name}</p>
+                                                    <p className="text-[11px] text-app-text-muted truncate">
+                                                        {project.status === 'analysis_complete'
+                                                            ? `Locked - ${getProjectSidebarSubtitle(project)}`
+                                                            : getProjectSidebarSubtitle(project)}
+                                                    </p>
+                                                </div>
+                                            </button>
+                                            {typeof handleDeleteProject === 'function' && canDelete && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDeleteProject(project)}
+                                                    disabled={deletingProjectKey === project.key}
+                                                    className={`p-2 rounded-md border transition-colors ${deletingProjectKey === project.key ? 'text-app-text-muted border-gray-700 cursor-not-allowed' : 'text-red-400 border-transparent hover:text-red-300 hover:bg-red-500/10'}`}
+                                                    title={deletingProjectKey === project.key ? 'Deleting project...' : `Delete ${project.name || 'project'}`}
+                                                    aria-label={`Delete ${project.name || 'project'}`}
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            )}
+                                        </div>
                                     );
                                 })
                             )}
                         </div>
                     </div>
+
+                    {/* Agents Section – navigates to full page */}
+                    <div className="mb-4">
+                        <button
+                            onClick={() => navigate('/agents')}
+                            className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 bg-blue-900/40 text-blue-100 border border-blue-800"
+                        >
+                            <Users className="w-4 h-4 mr-3" />
+                            Agents
+                        </button>
+                    </div>
                 </div>
 
-                {/* Footer area */}
                 <div className="p-4 border-t border-gray-800 bg-app-text-main shrink-0">
                     <button
-                        onClick={() => {
-                            setCurrentView('statusDashboard');
-                        }}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'
-                            }`}
+                        onClick={() => setCurrentView('statusDashboard')}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
                     >
                         <Activity className="w-4 h-4 mr-3" />
                         Status Dashboard
@@ -163,9 +188,7 @@ export default function Sidebar({
                         </button>
                     )}
                     <button
-                        onClick={() => {
-                            setShowSettings(true);
-                        }}
+                        onClick={() => setShowSettings(true)}
                         className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2"
                     >
                         <Settings className="w-4 h-4 mr-3" />

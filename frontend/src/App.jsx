@@ -2,14 +2,18 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
+import ResourceOnboarding from './pages/ResourceOnboarding';
 import GovernanceForm from './pages/GovernanceForm';
 import PrerequisiteClassification from './pages/PrerequisiteClassification';
+import TaskCreation from './pages/TaskCreation';
 import GitHubCallback from './pages/GitHubCallback';
 import SsoCallback from './pages/SsoCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
 import OrganizationAdmin from './pages/OrganizationAdmin';
+import AppPreview from './pages/AppPreview';
 import AppLayout from './components/AppLayout';
+import AgentsPage from './components/AgentsPage';
 
 function App() {
   return (
@@ -34,12 +38,27 @@ function App() {
             {(layoutProps) => <Dashboard {...layoutProps} />}
           </AppLayout>
         } />
+        <Route path="/agents" element={
+          <AppLayout>
+            {(layoutProps) => <AgentsPage {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/resource-onboarding" element={
+          <AppLayout>
+            {(layoutProps) => <ResourceOnboarding {...layoutProps} />}
+          </AppLayout>
+        } />
         <Route path="/a/:projectToken" element={
           <AppLayout>
             {(layoutProps) => <Dashboard {...layoutProps} />}
           </AppLayout>
         } />
-        <Route path="/governance" element={
+        <Route path="/new-project" element={
+          <AppLayout>
+            {(layoutProps) => <GovernanceForm {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/new-project/governance" element={
           <AppLayout>
             {(layoutProps) => <GovernanceForm {...layoutProps} />}
           </AppLayout>
@@ -53,6 +72,14 @@ function App() {
           <AppLayout>
             {(layoutProps) => <OrganizationAdmin {...layoutProps} />}
           </AppLayout>
+        } />
+        <Route path="/task-creation" element={
+          <AppLayout>
+            {(layoutProps) => <TaskCreation {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/app/:projectId" element={
+          <AppPreview />
         } />
       </Routes>
     </Router>

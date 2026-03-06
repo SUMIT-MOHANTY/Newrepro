@@ -1,21 +1,24 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch, Globe, ExternalLink, StopCircle, Rocket } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
 import { API_ENDPOINTS } from '../config';
-import KnowledgeGraphCard from './KnowledgeGraphCard';
+// import KnowledgeGraphCard from './KnowledgeGraphCard';
+// import PrStatusCard from './PrStatusCard';
 
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
+const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
+const DEFAULT_PROCESS_MODE = 'coexistence';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const TOKEN_CACHE_MIN_TTL_SECONDS = 0;
 const DASHBOARD_ROLES = [
     { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
-    { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
+    { value: 'project', label: 'Project Dashboard' },
 ];
 
 function decodeJwtExpiry(token) {
@@ -77,8 +80,102 @@ function cacheTaskToken(projectKey, token) {
     writeTaskTokenCache(cache);
 }
 
-export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole }) {
+function readProcessModeMap() {
+    try {
+        const raw = localStorage.getItem(PROCESS_MODE_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeProcessModeMap(map) {
+    try {
+        localStorage.setItem(PROCESS_MODE_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function getProcessModeForProject(projectKey) {
+    if (!projectKey) return DEFAULT_PROCESS_MODE;
+    const map = readProcessModeMap();
+    return map[projectKey] || DEFAULT_PROCESS_MODE;
+}
+
+function setProcessModeForProject(projectKey, mode) {
+    if (!projectKey || !mode) return;
+    const map = readProcessModeMap();
+    map[projectKey] = mode;
+    writeProcessModeMap(map);
+}
+
+function extractEntityId(item, key) {
+    const direct = item?.[key];
+    if (direct && typeof direct === 'object') {
+        if (direct.id != null) return direct.id;
+        if (direct[`${key}_id`] != null) return direct[`${key}_id`];
+    }
+    if (direct != null && direct !== '') return direct;
+    const fallback = item?.[`${key}_id`];
+    if (fallback != null && fallback !== '') return fallback;
+    return null;
+}
+
+function getTaskSprintLabel(task) {
+    // Prioritize sprint_name from API response
+    if (task?.sprint_name && task.sprint_name !== '') {
+        return task.sprint_name;
+    }
+    const sprint = task?.sprint;
+    if (sprint && typeof sprint === 'object') {
+        if (sprint.name) return sprint.name;
+        if (sprint.id != null) return `Sprint #${sprint.id}`;
+    }
+    const sprintId = extractEntityId(task, 'sprint');
+    if (sprintId != null && sprintId !== '') return `Sprint #${sprintId}`;
+    return 'Unassigned';
+}
+
+function toNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function toDateKey(value) {
+    if (!value) return '9999-12-31';
+    const text = String(value).slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '9999-12-31';
+}
+
+function sanitizePrerequisiteForAiPayload(item = {}) {
+    const safe = {
+        name: String(item.name || '').trim() || 'Unknown',
+        description: String(item.description || '').trim(),
+        category: String(item.category || 'other').trim() || 'other',
+        priority: String(item.priority || 'medium').trim() || 'medium',
+        fieldType: String(item.fieldType || 'text').trim() || 'text',
+        provided: Boolean(item.provided),
+    };
+
+    const isSecret = Boolean(item.containsSecret);
+    safe.containsSecret = isSecret;
+
+    const value = String(item.userValue || '').trim();
+    const fileName = String(item.userFileName || '').trim();
+    if (!isSecret) {
+        if (value) safe.userValue = value;
+        if (fileName) safe.userFileName = fileName;
+    }
+
+    return safe;
+}
+
+export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole, fetchRoadmapData }) {
     const navigate = useNavigate();
+    const location = useLocation();
     const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
@@ -105,6 +202,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [showAddAgentModal, setShowAddAgentModal] = useState(false);
     const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
 
+    // ── Preview Deploy State ─────────────────────────────────────────
+    const [previewStatus, setPreviewStatus] = useState({ status: 'none' });
+    const [isDeploying, setIsDeploying] = useState(false);
+    const [isFixing, setIsFixing] = useState(false);
+    const [showPreviewLogs, setShowPreviewLogs] = useState(false);
+    const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
+
     // ── External Task API State ──────────────────────────────────────
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
     const [taskList, setTaskList] = useState([]);
@@ -113,6 +217,34 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [totalTaskCount, setTotalTaskCount] = useState(0);
     const [nextPageUrl, setNextPageUrl] = useState(null);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+    const sortedTaskList = useMemo(() => {
+        const copy = [...taskList];
+        copy.sort((a, b) => {
+            const aSprint = extractEntityId(a, 'sprint');
+            const bSprint = extractEntityId(b, 'sprint');
+            const aMilestone = extractEntityId(a, 'milestone');
+            const bMilestone = extractEntityId(b, 'milestone');
+            return (
+                toNumber(aSprint) - toNumber(bSprint) ||
+                toNumber(aMilestone) - toNumber(bMilestone) ||
+                toDateKey(a.startdate || a.start_date).localeCompare(toDateKey(b.startdate || b.start_date)) ||
+                toDateKey(a.deadline).localeCompare(toDateKey(b.deadline)) ||
+                String(a.taskName || a.title || '').localeCompare(String(b.taskName || b.title || ''))
+            );
+        });
+        return copy;
+    }, [taskList]);
+
+    const sprintCount = useMemo(() => {
+        const sprints = new Set();
+        sortedTaskList.forEach((task) => {
+            const sprintId = extractEntityId(task, 'sprint');
+            if (sprintId != null && sprintId !== '') sprints.add(String(sprintId));
+        });
+        return sprints.size;
+    }, [sortedTaskList]);
+    const autoAiAssistRunRef = useRef(new Set());
 
     const selectedProjectKeyRef = useRef(selectedProjectKey);
     const dashboardRequestIdRef = useRef(0);
@@ -159,6 +291,52 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         },
         enabled: !!token,
     });
+    const hasGlobalGitConfigured = agents.some(agent => Boolean(agent.git_repo_url && agent.has_git_token));
+    const devAgents = useMemo(() => {
+        const parseAgentNumber = (agentId) => {
+            const match = String(agentId || '').match(/^agent_(\d+)$/i);
+            if (!match) return Number.MAX_SAFE_INTEGER;
+            return Number.parseInt(match[1], 10);
+        };
+
+        return [...agents]
+            .filter(agent => agent.id !== 'agent_03' && agent.id !== 'agent_04')
+            .sort((a, b) => {
+                const aNumber = parseAgentNumber(a.id);
+                const bNumber = parseAgentNumber(b.id);
+                if (aNumber !== bNumber) return aNumber - bNumber;
+                return String(a.id).localeCompare(String(b.id));
+            });
+    }, [agents]);
+
+    const orderedAgents = useMemo(() => {
+        const masterAgent = agents.find(agent => agent.id === 'agent_04');
+        const gitManagerAgent = agents.find(agent => agent.id === 'agent_03');
+
+        return [
+            ...(masterAgent ? [masterAgent] : []),
+            ...(gitManagerAgent ? [gitManagerAgent] : []),
+            ...devAgents,
+        ];
+    }, [agents, devAgents]);
+
+    const agentDisplayNames = useMemo(() => {
+        const names = {
+            agent_04: 'Master Agent',
+            agent_03: 'Git Manager',
+        };
+
+        devAgents.forEach((agent, index) => {
+            names[agent.id] = `Dev Agent ${index + 1}`;
+        });
+
+        return names;
+    }, [devAgents]);
+
+    const getAgentDisplayName = useCallback((agent) => {
+        if (!agent) return 'Agent';
+        return agentDisplayNames[agent.id] || agent.name || agent.id;
+    }, [agentDisplayNames]);
 
     const setAgents = useCallback((updater) => {
         queryClient.setQueryData(['agents', selectedProjectKey], updater);
@@ -193,6 +371,22 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     useEffect(() => {
         selectedProjectKeyRef.current = selectedProjectKey;
     }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setProcessMode(DEFAULT_PROCESS_MODE);
+            return;
+        }
+        const incomingMode = location.state?.processMode;
+        const normalizedMode = ['ai_first', 'ai_assist', 'developer_only', 'coexistence', 'vibe_coding'].includes(incomingMode)
+            ? incomingMode
+            : getProcessModeForProject(selectedProjectKey);
+        setProcessMode(normalizedMode);
+        setProcessModeForProject(selectedProjectKey, normalizedMode);
+    }, [selectedProjectKey, location.state]);
+
+    const isAiAssistMode = processMode === 'ai_assist' || processMode === 'ai_first';
+    const isDeveloperOnlyMode = processMode === 'developer_only';
 
     useEffect(() => {
         if (!selectedProjectKey) {
@@ -282,6 +476,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         queryClient.invalidateQueries({ queryKey: ['agents', selectedProjectKey] });
     }, [queryClient, selectedProjectKey]);
 
+    const refreshRoadmap = useCallback(async () => {
+        if (!fetchRoadmapData || !selectedProjectKey) return;
+        try {
+            await fetchRoadmapData(selectedProjectKey);
+        } catch (e) {
+            console.error('Roadmap refresh failed', e);
+        }
+    }, [fetchRoadmapData, selectedProjectKey]);
+
     // ── Fetch tasks (External API) ───────────────────────────────────
     const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
         if (!hasValidTaskToken) {
@@ -361,18 +564,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const interval = setInterval(() => {
             fetchAgents(true);
             fetchTasks(false, 1, true); // silent reload
+            refreshRoadmap();
         }, 3000);
         return () => clearInterval(interval);
-    }, [agents, fetchAgents, fetchTasks]);
+    }, [agents, fetchAgents, fetchTasks, refreshRoadmap]);
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
-        if (agent.id === 'agent_03') return;
+        if (agent.id === 'agent_03' || agent.id === 'agent_04') return;
         const needsConfig = !agent.git_repo_url || !agent.has_git_token;
         if (needsConfig) {
-            setGitRepoUrl(agent.git_repo_url || '');
-            setGitToken('');
-            setGitModalAgent(agent);
+            navigate('/prerequisites');
             return;
         }
 
@@ -400,6 +602,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
+            await refreshRoadmap();
         } catch (e) {
             console.error('Run failed', e);
         } finally {
@@ -470,34 +673,27 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     const handleCreateProject = () => {
         if (!newProjectName.trim()) return;
-        navigate(`/governance?projectName=${encodeURIComponent(newProjectName.trim())}`);
+        navigate(`/new-project?projectName=${encodeURIComponent(newProjectName.trim())}`);
     };
 
     // ── Run All Agents ────────────────────────────────────────────────
     const [runningAll, setRunningAll] = useState(false);
 
-    const handleRunAll = async () => {
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03');
+    const handleRunAll = useCallback(async () => {
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
         if (idleAgents.length === 0) return;
 
         const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
         if (missingConfig.length > 0) {
-            const initialMap = {};
-            const existingRepo = agents.find(a => a.git_repo_url)?.git_repo_url || '';
-            missingConfig.forEach(agent => {
-                initialMap[agent.id] = {
-                    git_repo_url: agent.git_repo_url || existingRepo,
-                    git_token: '',
-                };
-            });
-            setAgentsGitConfig(initialMap);
-            setGitModalAgent({ id: '__run_all_setup__', name: 'Configure Specific Agents', missingConfig });
+            navigate('/prerequisites');
             return;
         }
 
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+            ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
+            : a));
 
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -509,27 +705,49 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
+            await refreshRoadmap();
         } catch (e) {
             console.error('Run all failed', e);
         } finally {
             setRunningAll(false);
         }
-    };
+    }, [agents, token, hasValidTaskToken, taskToken, withProjectToken, fetchAgents, fetchTasks, refreshRoadmap, navigate]);
+
+    useEffect(() => {
+        if (!isAiAssistMode) return;
+        if (!selectedProjectKey) return;
+        if (isLoadingAgents || runningAll) return;
+        if (gitModalAgent) return;
+        if (!hasValidTaskToken) return;
+        if (agents.some(a => a.status === 'running')) return;
+
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
+        if (idleAgents.length === 0) return;
+
+        const autoKey = `${selectedProjectKey}:${processMode}`;
+        if (autoAiAssistRunRef.current.has(autoKey)) return;
+        autoAiAssistRunRef.current.add(autoKey);
+        handleRunAll();
+    }, [isAiAssistMode, selectedProjectKey, isLoadingAgents, runningAll, gitModalAgent, hasValidTaskToken, agents, processMode, handleRunAll]);
 
     const submitMultiAgentConfig = async () => {
+        const globalConfig = agentsGitConfig.__global__ || {};
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => a.status === 'idle' ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+            ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
+            : a));
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ agents_config: agentsGitConfig }),
+                body: JSON.stringify({ agents_config: { __global__: globalConfig } }),
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
+            await refreshRoadmap();
         } catch (e) {
             console.error('Run all failed with config', e);
         } finally {
@@ -539,19 +757,34 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Add/Remove Agent ─────────────────────────────────────────────
     const handleAddAgent = () => {
+        if (hasGlobalGitConfigured) {
+            setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
+        }
         setShowAddAgentModal(true);
     };
 
     const submitAddAgent = async () => {
+        const nextName = (newAgentConfig.name || '').trim();
+        const nextRepo = (newAgentConfig.git_repo_url || '').trim();
+        const nextToken = (newAgentConfig.git_token || '').trim();
+        const payload = {};
+        if (nextName) payload.name = nextName;
+        if (!hasGlobalGitConfigured) {
+            if (nextRepo) payload.git_repo_url = nextRepo;
+            if (nextToken) payload.git_token = nextToken;
+        }
+
         setShowAddAgentModal(false);
         try {
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_ADD), {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(newAgentConfig),
+                headers,
+                body: JSON.stringify(payload),
             });
             setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
             fetchAgents();
@@ -572,6 +805,111 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     //     }
     // };
 
+    // ── Preview Deploy Handlers ──────────────────────────────────────
+    const fetchPreviewStatus = useCallback(async () => {
+        if (!token) return;
+        try {
+            const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
+            const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_STATUS}${params}`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setPreviewStatus(data);
+            }
+        } catch (e) {
+            console.error('Preview status fetch failed', e);
+        }
+    }, [token, selectedProjectKey]);
+
+    // Poll preview status when deploying or running
+    useEffect(() => {
+        if (previewStatus.status === 'deploying' || previewStatus.status === 'running') {
+            const interval = setInterval(fetchPreviewStatus, 3000);
+            return () => clearInterval(interval);
+        }
+    }, [previewStatus.status, fetchPreviewStatus]);
+
+    useEffect(() => {
+        const status = (previewStatus?.status || '').toLowerCase();
+        if (!status || status === 'none') return;
+        refreshRoadmap();
+    }, [previewStatus?.status, refreshRoadmap]);
+
+    // Check preview status on mount
+    useEffect(() => {
+        if (token && selectedProjectKey) {
+            fetchPreviewStatus();
+        }
+    }, [token, selectedProjectKey, fetchPreviewStatus]);
+
+    const handleDeployPreview = async () => {
+        setIsDeploying(true);
+        try {
+            const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
+            const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_DEPLOY}${params}`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({}),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setPreviewStatus(data);
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert(err.detail || 'Deploy failed');
+            }
+        } catch (e) {
+            console.error('Deploy preview failed', e);
+            alert('Deploy failed: ' + e.message);
+        } finally {
+            setIsDeploying(false);
+        }
+    };
+
+    const handleFixWithAI = async () => {
+        setIsFixing(true);
+        try {
+            const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
+            const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_FIX}${params}`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({}),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setPreviewStatus(data);
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert(err.detail || 'Fix failed');
+            }
+        } catch (e) {
+            console.error('Fix preview failed', e);
+            alert('Fix failed: ' + e.message);
+        } finally {
+            setIsFixing(false);
+        }
+    };
+
+    const handleStopPreview = async () => {
+        try {
+            const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
+            await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_STOP}${params}`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+            setPreviewStatus({ status: 'stopped' });
+        } catch (e) {
+            console.error('Stop preview failed', e);
+        }
+    };
+
     // ── Agent Card Config ────────────────────────────────────────────
     const agentConfig = {
         agent_01: {
@@ -585,10 +923,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         },
         agent_02: {
             icon: <Shield className="w-5 h-5 text-white" />,
-            gradient: 'from-amber-400 to-orange-600',
-            shadow: 'shadow-orange-200',
-            accent: 'from-amber-400 to-orange-500',
-            color: 'amber',
+            gradient: 'from-emerald-400 to-green-600',
+            shadow: 'shadow-emerald-200',
+            accent: 'from-emerald-400 to-green-500',
+            color: 'emerald',
             stats: ['risks', 'critical', 'avg_time'],
             statLabels: { risks: 'Risks', critical: 'Critical', avg_time: 'Duration' },
         },
@@ -601,12 +939,24 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             stats: ['avg_time'],
             statLabels: { avg_time: 'Duration' },
         },
+        agent_04: {
+            icon: <Bot className="w-5 h-5 text-white" />,
+            gradient: 'from-fuchsia-500 to-rose-500',
+            shadow: 'shadow-fuchsia-200',
+            accent: 'from-fuchsia-500 to-rose-500',
+            color: 'fuchsia',
+            stats: ['avg_time'],
+            statLabels: { avg_time: 'Duration' },
+        },
     };
 
 
     // ── Render Agent Card ────────────────────────────────────────────
     const renderAgentCard = (agent) => {
         const isGitManager = agent.id === 'agent_03';
+        const isMasterAgent = agent.id === 'agent_04';
+        const isSystemAgent = isGitManager || isMasterAgent;
+        const displayName = getAgentDisplayName(agent);
         const cfg = agentConfig[agent.id] || agentConfig.agent_01;
         const Icon = cfg.icon;
         const isRunning = agent.status === 'running';
@@ -628,21 +978,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <div>
                             <div className="flex items-center gap-2">
                                 <h4 className="text-sm font-bold text-app-text-main">
-                                    {isGitManager ? 'Git Manager' : agent.name}
+                                    {displayName}
                                 </h4>
-                                {!isGitManager && (
-                                    <button
-                                        type="button"
-                                        onClick={() => startEditingAgentName(agent)}
-                                        className="p-1 rounded-md text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted"
-                                        title="Edit agent settings"
-                                    >
-                                        <Pencil className="w-3.5 h-3.5" />
-                                    </button>
-                                )}
                             </div>
                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
-                            {!isGitManager && (
+                            {!isSystemAgent && (
                                 <p className="text-[10px] text-app-text-light">
                                     Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
                                 </p>
@@ -691,16 +1031,28 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 {/* Last run info */}
                 <div className="flex items-center justify-between text-[10px] text-app-text-light mb-4">
                     <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {agent.last_run ? `Last: ${new Date(agent.last_run).toLocaleTimeString()}` : 'Not run yet'}
+                        {agent.last_run && (
+                            <>
+                                <Clock className="w-3 h-3" />
+                                {`Last: ${new Date(agent.last_run).toLocaleTimeString()}`}
+                            </>
+                        )}
                     </span>
                     {isCompleted && <span className="font-semibold text-app-status-success">✓ Completed</span>}
                     {isError && <span className="font-semibold text-app-status-error">✗ Error</span>}
                 </div>
+                {/* Error details when agent has errored */}
+                {isError && agent.progress_message && (
+                    <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+                        <p className="text-[11px] text-red-600 font-medium break-all leading-relaxed">
+                            {agent.progress_message}
+                        </p>
+                    </div>
+                )}
 
                 {/* Actions */}
                 <div className="flex gap-2 mt-auto">
-                    {!isGitManager && (
+                    {!isSystemAgent && (
                         (isIdle || isCompleted || isError) ? (
                             <button
                                 onClick={() => handleRunAgentClick(agent)}
@@ -709,13 +1061,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     ? `bg-gradient-to-r ${cfg.gradient} hover:shadow-md hover:-translate-y-0.5`
                                     : 'bg-gray-300 cursor-not-allowed'
                                     }`}
-                                title={!canRun ? 'No pending tasks available' : `Run ${agent.name}`}
+                                title={!canRun ? 'No pending tasks available' : `Run ${displayName}`}
                             >
                                 {runningAgent === agent.id ? (<><Loader2 className="w-3 h-3 animate-spin" /> Starting...</>) : (<><Play className="w-3 h-3" /> Run Agent</>)}
                             </button>
                         ) : (
-                            <button disabled className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-app-text-light bg-app-bg-muted rounded-lg cursor-not-allowed">
-                                <RefreshCw className="w-3 h-3 animate-spin" /> Running...
+                            <button
+                                onClick={() => handleResetAgent(agent.id)}
+                                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg"
+                                title="Stop agent"
+                            >
+                                <StopCircle className="w-3 h-3" /> Stop
                             </button>
                         )
                     )}
@@ -725,7 +1081,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     >
                         <Terminal className="w-3 h-3" /> Log
                     </button>
-                    {!isGitManager && (isCompleted || isError) && (
+                    {!isSystemAgent && (isCompleted || isError) && (
                         <button
                             onClick={() => handleResetAgent(agent.id)}
                             className="inline-flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-app-text-label bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-colors"
@@ -735,7 +1091,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </button>
                     )}
                 </div>
-            </div>
+            </div >
         );
     };
 
@@ -759,7 +1115,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 const savedPrereqs = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
                 if (savedPrereqs) {
                     const parsed = JSON.parse(savedPrereqs);
-                    prerequisitesPayload = parsed.items || [];
+                    const parsedItems = Array.isArray(parsed?.items) ? parsed.items : [];
+                    prerequisitesPayload = parsedItems
+                        .map((item) => sanitizePrerequisiteForAiPayload(item))
+                        .filter((item) => item.name || item.description);
                 }
             } catch { /* ignore */ }
 
@@ -1393,7 +1752,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             cy="80"
                                                             r={donutRadius}
                                                             fill="none"
-                                                            stroke="#374151"
+                                                            stroke="#fef3c7"
                                                             strokeWidth="18"
                                                             strokeLinecap="round"
                                                             strokeDasharray={`${donutCompletedLength} ${donutCircumference}`}
@@ -1404,7 +1763,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             cy="80"
                                                             r={donutRadius}
                                                             fill="none"
-                                                            stroke="#fef3c7"
+                                                            stroke="#000000"
                                                             strokeWidth="18"
                                                             strokeLinecap="round"
                                                             strokeDasharray={`${donutRemainingLength} ${donutCircumference}`}
@@ -1418,13 +1777,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     </div>
                                                 </div>
                                                 <div className="grid grid-cols-2 gap-2 w-full max-w-[260px]">
-                                                    <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-center">
-                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-gray-500">Completed</p>
-                                                        <p className="text-sm font-black text-gray-800">{workCompletedDisplay}%</p>
-                                                    </div>
                                                     <div className="rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2 text-center">
-                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-amber-700">Remaining</p>
-                                                        <p className="text-sm font-black text-amber-700">{workRemainingDisplay}%</p>
+                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-amber-700">Completed</p>
+                                                        <p className="text-sm font-black text-amber-700">{workCompletedDisplay}%</p>
+                                                    </div>
+                                                    <div className="rounded-lg border border-black bg-black px-3 py-2 text-center">
+                                                        <p className="text-[10px] uppercase tracking-widest font-bold text-gray-200">Remaining</p>
+                                                        <p className="text-sm font-black text-white">{workRemainingDisplay}%</p>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1590,7 +1949,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     <AlertTriangle className="w-4 h-4 text-amber-500" />
                                                     <h3 className="text-sm font-bold text-gray-800 uppercase tracking-widest">Due This Week</h3>
                                                 </div>
-                                                <div className="overflow-auto rounded border border-gray-100" style={{ maxHeight: '200px' }}>
+                                                <div className="overflow-auto rounded border border-gray-100" style={{ height: '200px' }}>
                                                     <table className="min-w-full text-xs">
                                                         <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-100">
                                                             <tr className="text-gray-500 uppercase tracking-widest">
@@ -1658,76 +2017,266 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </div>
                                 )}
 
-                                {/* ── KNOWLEDGE GRAPH SECTION ── */}
-                                <KnowledgeGraphCard
-                                    selectedProjectKey={selectedProjectKey}
-                                    token={token}
-                                    taskToken={taskToken}
-                                    repoUrl={agents.find(a => a.git_repo_url)?.git_repo_url || ''}
-                                />
-
-                                {/* ── AI AGENTS SECTION ── */}
-                                <div className="w-full mt-4 lg:col-span-2 min-w-0">
-                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
-                                        <div className="flex items-center flex-wrap">
-                                            <div className="p-2 mr-3 bg-app-primary-light rounded text-indigo-500">
-                                                <Bot className="w-5 h-5" />
-                                            </div>
-                                            <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
-                                            <span className="ml-3 text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-app-bg-muted px-2 py-0.5 rounded-full">
-                                                {agents.filter(a => a.status === 'running').length} Running
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center flex-wrap gap-2 lg:justify-end">
-                                            <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
-                                                {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
-                                            </span>
-                                            <button
-                                                onClick={handleRunAll}
-                                                disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0}
-                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03').length === 0
-                                                    ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
-                                                    : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
-                                                    }`}
-                                                title="Run all idle agents simultaneously"
-                                            >
-                                                {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                                {runningAll ? 'Starting...' : 'Run All'}
-                                            </button>
-                                            <button
-                                                onClick={handleGenerateTasks}
-                                                disabled={isGeneratingTasks || !selectedProjectKey}
-                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${isGeneratingTasks || !selectedProjectKey
-                                                    ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
-                                                    : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md hover:shadow-lg hover:scale-105'
-                                                    }`}
-                                                title="Generate tasks from selected project"
-                                            >
-                                                {isGeneratingTasks ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                                                {isGeneratingTasks ? 'Mapping...' : 'Create Tasks'}
-                                            </button>
-                                            <button
-                                                onClick={() => handleAddAgent()}
-                                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-app-primary bg-app-primary-light hover:bg-indigo-100 transition-colors"
-                                                title="Add a new agent"
-                                            >
-                                                <PlusCircle className="w-3.5 h-3.5" />
-                                                Add Agent
-                                            </button>
-                                            <button
-                                                onClick={() => { fetchAgents(); fetchTasks(); }}
-                                                className="text-app-text-light hover:text-app-text-label p-1 rounded hover:bg-app-bg-muted transition-colors"
-                                                title="Refresh"
-                                            >
-                                                <RefreshCw className="w-4 h-4" />
-                                            </button>
-                                        </div>
+                                {/* ── KNOWLEDGE GRAPH & CI/CD SECTION ── */}
+                                {/*
+                                  Temporarily hidden as requested:
+                                  - Knowledge Graph
+                                  - CI/CD Pipeline (Pre-Compilation & Linting card)
+                                */}
+                                {/*
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
+                                    <div className="w-full min-w-0">
+                                        <KnowledgeGraphCard
+                                            selectedProjectKey={selectedProjectKey}
+                                            token={token}
+                                            taskToken={taskToken}
+                                            repoUrl={agents.find(a => a.git_repo_url)?.git_repo_url || ''}
+                                        />
                                     </div>
-
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                                        {agents.map(agent => renderAgentCard(agent))}
+                                    <div className="w-full min-w-0">
+                                        <PrStatusCard selectedProjectKey={selectedProjectKey} />
                                     </div>
                                 </div>
+                                */}
+
+                                {/* ── AI AGENTS SECTION ── */}
+                                {!isDeveloperOnlyMode && (
+                                    <div className="w-full mt-4 lg:col-span-2 min-w-0">
+                                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
+                                            <div className="flex items-center flex-wrap">
+                                                <div className="p-2 mr-3 bg-app-primary-light rounded text-indigo-500">
+                                                    <Bot className="w-5 h-5" />
+                                                </div>
+                                                <h3 className="text-[15px] font-bold text-[#f27a24] uppercase tracking-wide">AI Agents</h3>
+                                                <span className="ml-3 text-[10px] font-bold text-indigo-700 uppercase tracking-wider bg-indigo-50 px-2 py-0.5 rounded-full">
+                                                    {isAiAssistMode ? 'AI-First' : 'Coexistence'}
+                                                </span>
+                                                <span className="ml-3 text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-app-bg-muted px-2 py-0.5 rounded-full">
+                                                    {agents.filter(a => a.status === 'running').length} Running
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center flex-wrap gap-2 lg:justify-end">
+                                                <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
+                                                    {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
+                                                </span>
+                                                <button
+                                                    onClick={() => handleRunAll()}
+                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0}
+                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0
+                                                        ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
+                                                        : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                                        }`}
+                                                    title="Run all idle agents simultaneously"
+                                                >
+                                                    {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                                                    {runningAll ? 'Starting...' : 'Run All'}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleAddAgent()}
+                                                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-app-primary bg-app-primary-light hover:bg-indigo-100 transition-colors"
+                                                    title="Add a new agent"
+                                                >
+                                                    <PlusCircle className="w-3.5 h-3.5" />
+                                                    Add Agent
+                                                </button>
+                                                <button
+                                                    onClick={() => { fetchAgents(); fetchTasks(); }}
+                                                    className="text-app-text-light hover:text-app-text-label p-1 rounded hover:bg-app-bg-muted transition-colors"
+                                                    title="Refresh"
+                                                >
+                                                    <RefreshCw className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                                            {orderedAgents.map(agent => renderAgentCard(agent))}
+
+                                            {/* ── Preview Deploy Section (Tile Format) ────────────────────── */}
+                                            <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow h-full">
+                                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-violet-500 to-purple-600"></div>
+
+                                                <div className="flex items-start justify-between mb-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/20">
+                                                            <Globe className="w-5 h-5 text-white" />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>
+                                                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">agent/integration</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center">
+                                                        {previewStatus.status === 'running' && (
+                                                            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 text-[10px] font-bold uppercase tracking-wider">
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                                                Live
+                                                            </span>
+                                                        )}
+                                                        {previewStatus.status === 'deploying' && (
+                                                            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 text-[10px] font-bold uppercase tracking-wider">
+                                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                                Deploying...
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex-1 flex flex-col justify-end">
+                                                    {previewStatus.status === 'running' && previewStatus.preview_url ? (
+                                                        <div className="space-y-3">
+                                                            <div className="flex flex-col gap-2">
+                                                                <a
+                                                                    href={`/app/${selectedProjectKey}`}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-indigo-50 text-indigo-700 font-semibold text-xs hover:bg-indigo-100 transition-colors"
+                                                                >
+                                                                    <ExternalLink className="w-3.5 h-3.5" />
+                                                                    Open Preview
+                                                                </a>
+                                                                <div className="flex bg-app-bg-muted rounded-lg p-2 justify-between items-center text-[10px]">
+                                                                    <code className="text-app-text-main font-mono truncate mr-2">/app/{selectedProjectKey}</code>
+                                                                    <span className="text-app-text-light shrink-0">{previewStatus.stack} project</span>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={handleDeployPreview}
+                                                                    disabled={isDeploying}
+                                                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-bold hover:bg-blue-100 transition-colors"
+                                                                >
+                                                                    <RefreshCw className={`w-3 h-3 ${isDeploying ? 'animate-spin' : ''}`} />
+                                                                    Redeploy
+                                                                </button>
+                                                                <button
+                                                                    onClick={handleStopPreview}
+                                                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-red-50 text-red-600 text-[10px] font-bold hover:bg-red-100 transition-colors"
+                                                                >
+                                                                    <StopCircle className="w-3 h-3" />
+                                                                    Stop
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => setShowPreviewLogs(!showPreviewLogs)}
+                                                                    className="px-2.5 py-1.5 rounded-lg bg-app-bg-hover text-app-text-light hover:text-app-text-main hover:bg-app-bg-muted transition-colors"
+                                                                    title="View Logs"
+                                                                >
+                                                                    <Terminal className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            </div>
+
+                                                            {showPreviewLogs && previewStatus.logs && (
+                                                                <div className="mt-2 bg-slate-900 rounded-lg p-2 max-h-32 overflow-y-auto">
+                                                                    <div className="space-y-0.5 font-mono text-[9px]">
+                                                                        {previewStatus.logs.map((log, i) => (
+                                                                            <div key={i} className="text-slate-400">
+                                                                                <span className="text-slate-600 mr-1">[{new Date(log.time).toLocaleTimeString()}]</span>
+                                                                                {log.message}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                    {previewStatus.server_log && (
+                                                                        <div className="mt-1 pt-1 border-t border-slate-800">
+                                                                            <pre className="text-[9px] text-emerald-400 whitespace-pre-wrap">{previewStatus.server_log}</pre>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : previewStatus.status === 'deploying' ? (
+                                                        <div className="space-y-3">
+                                                            <div className="flex items-center gap-2 text-app-text-main justify-center py-2">
+                                                                <Loader2 className="w-4 h-4 animate-spin text-app-primary" />
+                                                                <span className="text-[11px] font-medium">Deploying preview...</span>
+                                                            </div>
+                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                                <div className="bg-slate-900 rounded-lg p-2 h-20 overflow-y-auto">
+                                                                    <div className="space-y-0.5 font-mono text-[9px]">
+                                                                        {previewStatus.logs.map((log, i) => (
+                                                                            <div key={i} className="text-slate-400">
+                                                                                <span className="text-violet-400 mr-1">›</span>
+                                                                                {log.message}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : previewStatus.status === 'error' ? (
+                                                        <div className="space-y-3">
+                                                            <div className="flex items-center gap-1.5 text-red-500 text-xs font-semibold justify-center bg-red-50 p-2 rounded-lg">
+                                                                <AlertCircle className="w-3.5 h-3.5" />
+                                                                <span>Deployment Failed</span>
+                                                            </div>
+                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                                <div className="bg-slate-900 rounded-lg p-2 max-h-24 overflow-y-auto">
+                                                                    <div className="space-y-0.5 font-mono text-[9px]">
+                                                                        {previewStatus.logs.slice(-5).map((log, i) => (
+                                                                            <div key={i} className="text-red-400/80">
+                                                                                {log.message}
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    onClick={handleDeployPreview}
+                                                                    disabled={isDeploying || isFixing}
+                                                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-app-bg-hover text-app-text-main text-[10px] font-bold hover:bg-app-bg-muted transition-colors disabled:opacity-50"
+                                                                >
+                                                                    <RefreshCw className={`w-3 h-3 ${isDeploying ? 'animate-spin' : ''}`} />
+                                                                    Retry
+                                                                </button>
+                                                                <button
+                                                                    onClick={handleFixWithAI}
+                                                                    disabled={isDeploying || isFixing}
+                                                                    className="flex-[2] flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 text-[10px] font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50"
+                                                                >
+                                                                    {isFixing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
+                                                                    AI Fix
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex flex-col items-center justify-center py-4 bg-app-bg-muted rounded-xl">
+                                                            <Rocket className="w-6 h-6 text-app-text-light mb-2 opacity-50" />
+                                                            <p className="text-[11px] text-app-text-light text-center font-medium mb-3 px-4">
+                                                                View a live version of the integration branch
+                                                            </p>
+                                                            <button
+                                                                onClick={handleDeployPreview}
+                                                                disabled={isDeploying}
+                                                                className="flex items-center justify-center gap-1.5 w-full max-w-[140px] py-1.5 rounded-lg bg-app-primary text-white text-[10px] font-bold hover:bg-indigo-600 transition-colors disabled:opacity-50"
+                                                            >
+                                                                {isDeploying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Rocket className="w-3 h-3" />}
+                                                                {isDeploying ? 'Deploying...' : 'Deploy Preview'}
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Render bottom spacer */}
+
+                                {isDeveloperOnlyMode && (
+                                    <div className="w-full mt-4 lg:col-span-2 min-w-0">
+                                        <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4">
+                                            <div className="flex items-center gap-2">
+                                                <Cpu className="w-4 h-4 text-slate-600" />
+                                                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide">Developer Only Mode</h3>
+                                            </div>
+                                            <p className="text-xs text-app-text-light mt-2">
+                                                AI agents are hidden for this project in Developer Only mode.
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
                                 {/* Closes CSS grid layout */}
                             </div>
                         </>
@@ -1736,63 +2285,84 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
             )
             }
-            {showLogModal && (() => {
-                const agent = agents.find(a => a.id === showLogModal);
-                if (!agent) return null;
-                const logs = agent.output_log || [];
-                const result = agent.last_result;
-                return (
-                    <div className="fixed inset-0 bg-app-text-main/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-app-text-main text-gray-100 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-                            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-app-text-label">
-                                <div className="flex items-center gap-3">
-                                    <Terminal className="w-5 h-5 text-green-400" />
-                                    <h3 className="font-bold text-white text-sm">{agent.name} — Execution Log</h3>
-                                </div>
-                                <button onClick={() => setShowLogModal(null)} className="text-app-text-light hover:text-white p-1 rounded hover:bg-gray-700 transition-colors">
-                                    <X className="w-5 h-5" />
-                                </button>
-                            </div>
-                            <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5">
-                                {logs.length === 0 ? (
-                                    <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
-                                ) : logs.map((log, idx) => (
-                                    <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
-                                        <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
-                                        <span className="break-all">{log.message}</span>
+            {
+                showLogModal && (() => {
+                    const agent = agents.find(a => a.id === showLogModal);
+                    if (!agent) return null;
+                    const logs = agent.output_log || [];
+                    const result = agent.last_result;
+                    return (
+                        <div className="fixed inset-0 bg-app-text-main/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                            <div className="bg-app-text-main text-gray-100 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+                                <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-app-text-label">
+                                    <div className="flex items-center gap-3">
+                                        <Terminal className="w-5 h-5 text-green-400" />
+                                        <h3 className="font-bold text-white text-sm">{getAgentDisplayName(agent)} — Execution Log</h3>
                                     </div>
-                                ))}
+                                    <button onClick={() => setShowLogModal(null)} className="text-app-text-light hover:text-white p-1 rounded hover:bg-gray-700 transition-colors">
+                                        <X className="w-5 h-5" />
+                                    </button>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5">
+                                    {logs.length === 0 ? (
+                                        <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
+                                    ) : logs.map((log, idx) => {
+                                        const isInfoOrWarning = log.type === 'info' || log.type === 'warning';
+                                        let formattedTime = null;
+                                        if (log.time) {
+                                            const d = new Date(log.time);
+                                            const year = d.getFullYear();
+                                            const month = String(d.getMonth() + 1).padStart(2, '0');
+                                            const day = String(d.getDate()).padStart(2, '0');
+                                            const hours = String(d.getHours()).padStart(2, '0');
+                                            const minutes = String(d.getMinutes()).padStart(2, '0');
+                                            const seconds = String(d.getSeconds()).padStart(2, '0');
+                                            formattedTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                                        }
+
+                                        return (
+                                            <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
+                                                {isInfoOrWarning && formattedTime && (
+                                                    <span className="text-gray-500 flex-shrink-0 select-none opacity-80" title={log.time}>
+                                                        [{formattedTime}]
+                                                    </span>
+                                                )}
+                                                <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
+                                                <span className="break-all">{log.message}</span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                {result?.generated_code && (
+                                    <div className="border-t border-gray-700">
+                                        <details className="group" open>
+                                            <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
+                                                <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
+                                                View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files captured)
+                                            </summary>
+                                            <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-96 overflow-y-auto whitespace-pre-wrap">
+                                                {result.generated_code}
+                                            </pre>
+                                        </details>
+                                    </div>
+                                )}
+                                {result?.builder_scripts && (
+                                    <div className="border-t border-gray-700">
+                                        <details className="group">
+                                            <summary className="px-4 py-2 text-xs font-bold text-blue-400 cursor-pointer hover:text-blue-300 select-none flex items-center gap-2">
+                                                <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
+                                                View Builder Scripts ({result.builder_scripts.split('\n').length} lines of AI-generated code)
+                                            </summary>
+                                            <pre className="px-4 py-3 overflow-x-auto text-[10px] text-app-primary-ring bg-gray-950 max-h-60 overflow-y-auto whitespace-pre-wrap">
+                                                {result.builder_scripts}
+                                            </pre>
+                                        </details>
+                                    </div>
+                                )}
                             </div>
-                            {result?.generated_code && (
-                                <div className="border-t border-gray-700">
-                                    <details className="group" open>
-                                        <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
-                                            <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
-                                            View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files created in Docker)
-                                        </summary>
-                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-gray-950 max-h-96 overflow-y-auto whitespace-pre-wrap">
-                                            {result.generated_code}
-                                        </pre>
-                                    </details>
-                                </div>
-                            )}
-                            {result?.builder_scripts && (
-                                <div className="border-t border-gray-700">
-                                    <details className="group">
-                                        <summary className="px-4 py-2 text-xs font-bold text-blue-400 cursor-pointer hover:text-blue-300 select-none flex items-center gap-2">
-                                            <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
-                                            View Builder Scripts ({result.builder_scripts.split('\n').length} lines of AI-generated code)
-                                        </summary>
-                                        <pre className="px-4 py-3 overflow-x-auto text-[10px] text-app-primary-ring bg-gray-950 max-h-60 overflow-y-auto whitespace-pre-wrap">
-                                            {result.builder_scripts}
-                                        </pre>
-                                    </details>
-                                </div>
-                            )}
                         </div>
-                    </div>
-                );
-            })()
+                    );
+                })()
             }
             {/* Generated Tasks Section */}
             {
@@ -1810,7 +2380,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <div>
                                             <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
-                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator
+                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from AI Auto-Generator{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
                                             </p>
                                         </div>
                                     </div>
@@ -1821,9 +2391,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
 
                                 <div className="hidden md:block bg-app-bg-page/50 border-b border-app-border-light px-6 py-2.5">
-                                    <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">#</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Task Information</div>
+                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Sprint</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Status</div>
                                         <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Priority</div>
@@ -1837,7 +2408,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     {isLoadingTasks && taskList.length === 0 && (
                                         <div className="p-6 space-y-4">
                                             {[0, 1, 2, 3].map((row) => (
-                                                <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_140px_90px_80px_120px_60px_130px] gap-2 items-center">
+                                                <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_120px_140px_90px_80px_120px_60px_130px] gap-2 items-center">
                                                     <Skeleton height={10} width={18} />
                                                     <div>
                                                         <Skeleton height={13} width="52%" />
@@ -1845,6 +2416,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <Skeleton height={10} width="70%" />
                                                         </div>
                                                     </div>
+                                                    <Skeleton height={18} width={90} />
                                                     <Skeleton height={10} width={108} />
                                                     <Skeleton height={18} width={72} />
                                                     <Skeleton height={18} width={64} />
@@ -1867,12 +2439,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 <ListTodo className="w-7 h-7 text-app-border" />
                                             </div>
                                             <p className="text-sm font-bold text-app-text-muted">No tasks generated yet</p>
-                                            <p className="text-xs text-app-text-light max-w-xs">Select a project and click "Create Tasks" above to get started.</p>
+                                            <p className="text-xs text-app-text-light max-w-xs">Select a project and start the process from Task Creation to begin.</p>
                                         </div>
                                     )}
                                     {!isLoadingTasks && taskList.length > 0 && (
                                         <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
-                                            {taskList.map((task, index) => {
+                                            {sortedTaskList.map((task, index) => {
                                                 const priorityStyles = { high: 'bg-app-status-errorBg text-red-700 border-red-200', medium: 'bg-app-status-warningBg text-amber-700 border-amber-200', low: 'bg-app-status-successBg text-green-700 border-green-200' };
                                                 const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-app-primary-light text-app-primary-hover', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-app-bg-muted text-app-text-label', BUG: 'bg-red-100 text-red-700' };
                                                 const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-green-700', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-amber-700', 'Blocked': 'bg-app-status-errorBg text-red-700' };
@@ -1880,10 +2452,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 const taskType = (task.task_type || 'TASK').toUpperCase();
                                                 const progress = task.task_progress || 0;
                                                 const progressColor = progress >= 80 ? 'bg-green-500' : progress >= 40 ? 'bg-blue-500' : 'bg-amber-500';
+                                                const sprintLabel = getTaskSprintLabel(task);
 
                                                 return (
                                                     <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
-                                                        <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                                        <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
                                                             {/* # */}
                                                             <div className="flex items-center gap-1.5">
                                                                 <span className="text-[10px] font-bold text-app-text-light">{(index + 1).toString().padStart(2, '0')}</span>
@@ -1897,6 +2470,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                     <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
                                                                 </div>
                                                                 <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
+                                                            </div>
+
+                                                            {/* Sprint */}
+                                                            <div>
+                                                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                                                    {sprintLabel}
+                                                                </span>
                                                             </div>
 
                                                             {/* Progress */}
@@ -1959,6 +2539,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 </div>
                                                                 <span className="font-bold text-app-primary">${task.task_wallet || 0}</span>
                                                             </div>
+                                                            <div className="text-[10px] text-app-text-light">
+                                                                Sprint: <span className="font-semibold text-app-text-label">{sprintLabel}</span>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 );
@@ -1990,7 +2573,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </div>
                         </div>
                     )
-                )}
+                )
+            }
 
             {/* Add Project Modal */}
             {
@@ -2035,7 +2619,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </button>
                             </div>
                             <div className="p-6">
-                                <p className="text-sm text-app-text-muted mb-4 font-medium">Update agent name, Git repository URL, and Personal Access Token.</p>
+                                <p className="text-sm text-app-text-muted mb-4 font-medium">Update agent name. Git repository URL and PAT are global per project and apply to all agents.</p>
 
                                 <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Agent Name <span className="text-red-400">*</span></label>
                                 <input
@@ -2054,7 +2638,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4"
                                 />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token</label>
+                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token</label>
                                 <input
                                     type="password"
                                     value={editingAgentToken}
@@ -2093,15 +2677,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Agent Name (optional)</label>
                                 <input type="text" value={newAgentConfig.name} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, name: e.target.value })} placeholder="e.g. Code Reviewer" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL</label>
-                                <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
+                                {hasGlobalGitConfigured ? (
+                                    <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-6">
+                                        Git repository and PAT are already configured for this project. This agent will use those automatically.
+                                    </p>
+                                ) : (
+                                    <>
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL (optional)</label>
+                                        <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
-                                <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token (optional)</label>
+                                        <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="Leave blank to keep existing global PAT" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
+                                    </>
+                                )}
 
                                 <div className="flex items-center gap-3">
                                     <button type="button" onClick={() => setShowAddAgentModal(false)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
-                                    <button type="button" onClick={submitAddAgent} disabled={!newAgentConfig.git_token.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30">
+                                    <button type="button" onClick={submitAddAgent} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30">
                                         Add Agent
                                     </button>
                                 </div>
@@ -2118,7 +2710,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
-                                    <Bot className="w-5 h-5 text-indigo-500" /> {gitModalAgent.id === '__run_all_setup__' ? 'Configure Agents' : 'Git Configuration'}
+                                    <Bot className="w-5 h-5 text-indigo-500" /> {gitModalAgent.id === '__run_all_setup__' ? 'Configure Global Git' : 'Git Configuration'}
                                 </h3>
                                 <button type="button" onClick={() => setGitModalAgent(null)} className="text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
@@ -2127,29 +2719,49 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             <div className="p-6 overflow-y-auto">
                                 {gitModalAgent.id === '__run_all_setup__' ? (
                                     <>
-                                        <p className="text-sm text-app-text-muted mb-6 font-medium">To run simultaneously, the following agents require Git configuration.</p>
-                                        <div className="space-y-6">
-                                            {gitModalAgent.missingConfig.map(agent => (
-                                                <div key={agent.id} className="p-4 border border-indigo-100 bg-app-primary-light/30 rounded-xl">
-                                                    <h4 className="text-sm font-bold text-indigo-900 mb-3">{agent.name || agent.id}</h4>
+                                        <p className="text-sm text-app-text-muted mb-6 font-medium">
+                                            {`To run ${gitModalAgent.missingConfig.length} agent(s), provide one global Git repository and PAT. All agents will use this same configuration.`}
+                                        </p>
+                                        <div className="p-4 border border-indigo-100 bg-app-primary-light/30 rounded-xl">
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
+                                            <input
+                                                type="text"
+                                                value={agentsGitConfig.__global__?.git_repo_url || ''}
+                                                onChange={(e) => setAgentsGitConfig({
+                                                    ...agentsGitConfig,
+                                                    __global__: {
+                                                        ...agentsGitConfig.__global__,
+                                                        git_repo_url: e.target.value,
+                                                    },
+                                                })}
+                                                placeholder="https://github.com/org/repo.git"
+                                                className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main mb-3"
+                                            />
 
-                                                    <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
-                                                    <input type="text" value={agentsGitConfig[agent.id]?.git_repo_url || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_repo_url: e.target.value } })} placeholder="https://github.com/org/repo.git" className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main mb-3" />
-
-                                                    <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
-                                                    <input type="password" value={agentsGitConfig[agent.id]?.git_token || ''} onChange={(e) => setAgentsGitConfig({ ...agentsGitConfig, [agent.id]: { ...agentsGitConfig[agent.id], git_token: e.target.value } })} placeholder="ghp_..." className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main" />
-                                                </div>
-                                            ))}
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Personal Access Token <span className="text-red-400">*</span></label>
+                                            <input
+                                                type="password"
+                                                value={agentsGitConfig.__global__?.git_token || ''}
+                                                onChange={(e) => setAgentsGitConfig({
+                                                    ...agentsGitConfig,
+                                                    __global__: {
+                                                        ...agentsGitConfig.__global__,
+                                                        git_token: e.target.value,
+                                                    },
+                                                })}
+                                                placeholder="ghp_..."
+                                                className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main"
+                                            />
                                         </div>
                                     </>
                                 ) : (
                                     <>
-                                        <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{gitModalAgent.name}</b>, please provide a Git repository where the agent can push its work.</p>
+                                        <p className="text-sm text-app-text-muted mb-4 font-medium">To run <b>{getAgentDisplayName(gitModalAgent)}</b>, provide global Git settings that all agents in this project will use.</p>
 
                                         <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
                                         <input type="text" value={gitRepoUrl} onChange={(e) => setGitRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
 
-                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Personal Access Token <span className="text-red-400">*</span></label>
+                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token <span className="text-red-400">*</span></label>
                                         <input type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} placeholder="ghp_..." className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
                                     </>
                                 )}
@@ -2162,7 +2774,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     } else {
                                         handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken);
                                     }
-                                }} disabled={gitModalAgent.id === '__run_all_setup__' ? gitModalAgent.missingConfig.some(a => !agentsGitConfig[a.id]?.git_repo_url?.trim() || !agentsGitConfig[a.id]?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                }} disabled={gitModalAgent.id === '__run_all_setup__' ? (!agentsGitConfig.__global__?.git_repo_url?.trim() || !agentsGitConfig.__global__?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
                                     <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all_setup__' ? 'Start All Agents' : 'Start Agent'}
                                 </button>
                             </div>

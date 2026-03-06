@@ -5,7 +5,7 @@ import { clearAuthData } from '../utils/auth';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, X, CheckCircle2, KeyRound } from 'lucide-react';
+import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import AIConfig from '../components/AIConfig';
 
@@ -15,7 +15,11 @@ import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
 
 const parseAIResponse = (text) => {
-    const source = String(text || '');
+    // Strip <think>...</think> blocks that some models (e.g. minimax-m2.5) embed in content
+    let source = String(text || '');
+    source = source.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    // Also handle unclosed <think> tags (model still streaming reasoning)
+    source = source.replace(/<think>[\s\S]*/gi, '').trim();
 
     const hasExpectedShape = (obj) => obj && typeof obj === 'object' && !Array.isArray(obj)
         && ('questions' in obj || 'metrics' in obj || 'title' in obj);
@@ -93,6 +97,124 @@ const isLikelyHtml = (content = '') => {
 const sanitizeHtml = (content = '') => DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
 
 const normalizeProjectName = (name = '') => String(name || '').trim().toLowerCase();
+const ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE = 'Sandbox is not approved. Our IT team will reach out to you soon.';
+const isSkipSelectedOption = (label = '') => String(label || '').trim().toLowerCase() === 'skip';
+
+const parseGithubRepoMetaFromUrl = (value = '') => {
+    if (!String(value || '').includes('github.com/')) return null;
+    try {
+        const urlObj = new URL(String(value).trim());
+        const parts = urlObj.pathname.split('/').filter(Boolean);
+        if (parts.length < 2) return null;
+        const owner = parts[0];
+        const repo = parts[1].replace(/\.git$/i, '');
+        if (!owner || !repo) return null;
+        let branch = null;
+        if (parts[2] === 'tree' && parts[3]) {
+            branch = parts[3];
+        }
+        return {
+            repo: `${owner}/${repo}`,
+            branch,
+            fromLink: true,
+            provider: 'github',
+            url: `https://github.com/${owner}/${repo}.git`,
+        };
+    } catch {
+        return null;
+    }
+};
+
+const parseAzureRepoMetaFromUrl = (value = '', explicitBranch = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+
+    try {
+        const normalized = raw.includes('://') ? raw : `https://${raw}`;
+        const urlObj = new URL(normalized);
+        const host = urlObj.hostname.toLowerCase();
+        const parts = urlObj.pathname.split('/').filter(Boolean).map((p) => decodeURIComponent(p));
+
+        let organization = '';
+        let project = '';
+        let repo = '';
+
+        if (host.endsWith('dev.azure.com')) {
+            if (parts.length < 4 || parts[2].toLowerCase() !== '_git') return null;
+            organization = parts[0];
+            project = parts[1];
+            repo = parts[3];
+        } else if (host.endsWith('.visualstudio.com')) {
+            organization = host.split('.visualstudio.com')[0];
+            if (parts.length < 3 || parts[1].toLowerCase() !== '_git') return null;
+            project = parts[0];
+            repo = parts[2];
+        } else {
+            return null;
+        }
+
+        repo = repo.replace(/\.git$/i, '').trim();
+        if (!organization || !project || !repo) return null;
+
+        const queryVersion = urlObj.searchParams.get('version') || urlObj.searchParams.get('versionDescriptor.version') || '';
+        const queryBranch = queryVersion.startsWith('GB') ? queryVersion.slice(2) : queryVersion;
+        const branch = String(explicitBranch || queryBranch || '').trim() || null;
+
+        return {
+            repo: `${organization}/${project}/${repo}`,
+            branch,
+            fromLink: true,
+            provider: 'azure-devops',
+            url: `https://dev.azure.com/${organization}/${project}/_git/${repo}`,
+        };
+    } catch {
+        return null;
+    }
+};
+
+const buildRepoContextMeta = (context) => {
+    const provider = String(context?.provider || 'github').trim().toLowerCase();
+    const rawRepo = String(context?.repo || '').trim();
+    if (!rawRepo) return null;
+
+    if (provider === 'azure-devops') {
+        const normalizedRepo = rawRepo.replace(/^\/+|\/+$/g, '');
+        if (!normalizedRepo || normalizedRepo.split('/').filter(Boolean).length < 3) {
+            return null;
+        }
+        const fallbackMeta = parseAzureRepoMetaFromUrl(String(context?.url || '').trim(), context?.branch || '');
+        const cloneUrl = String(context?.url || fallbackMeta?.url || '').trim();
+        if (!cloneUrl) return null;
+        return {
+            repo: normalizedRepo,
+            branch: String(context?.branch || '').trim() || null,
+            source: 'link',
+            provider: 'azure-devops',
+            url: cloneUrl,
+        };
+    }
+
+    const normalizedRepo = rawRepo
+        .replace(/^https?:\/\/github\.com\//i, '')
+        .replace(/\.git$/i, '')
+        .replace(/^\/+|\/+$/g, '');
+
+    if (!normalizedRepo || !normalizedRepo.includes('/')) {
+        return null;
+    }
+
+    return {
+        repo: normalizedRepo,
+        branch: String(context?.branch || '').trim() || null,
+        source: context?.fromLink ? 'link' : 'oauth',
+        provider: 'github',
+        url: `https://github.com/${normalizedRepo}.git`,
+    };
+};
+
+const parseRepoMetaFromUrl = (value = '') => {
+    return parseGithubRepoMetaFromUrl(value) || parseAzureRepoMetaFromUrl(value);
+};
 
 
 const normalizeDimensionScores = (dimensionScores = {}) => ({
@@ -188,7 +310,9 @@ const Dashboard = ({
             files: [], textInput: '', activeTab: 'upload', processing: false,
             result: null, error: '', userFeedback: '', aiQuestions: [],
             userAnswers: {}, revisionUnlocked: false, revisionReason: '',
-            progress: 0, progressMessage: ''
+            progress: 0, progressMessage: '',
+            urlInput: '', urlRequirements: '', urlSource: '', urlFetchSummary: null,
+            urlFetching: false
         };
 
         const proj = projects.find(p => p.key === key);
@@ -216,13 +340,17 @@ const Dashboard = ({
     const {
         files = [], linkedFiles = [], textInput, activeTab, processing, result, error,
         userFeedback, aiQuestions, userAnswers, revisionUnlocked,
-        revisionReason, progress, progressMessage
+        revisionReason, progress, progressMessage,
+        urlInput = '', urlRequirements = '', urlSource = '', urlFetchSummary = null,
+        urlFetching = false
     } = activeState;
 
     // Helpers to update active project state from UI components natively 
     const setFiles = (v) => setProjectState(selectedProjectKey, { files: typeof v === 'function' ? v(activeState.files || []) : v });
     const setLinkedFiles = (v) => setProjectState(selectedProjectKey, { linkedFiles: typeof v === 'function' ? v(activeState.linkedFiles || []) : v });
     const setTextInput = (v) => setProjectState(selectedProjectKey, { textInput: typeof v === 'function' ? v(activeState.textInput) : v });
+    const setUrlInput = (v) => setProjectState(selectedProjectKey, { urlInput: typeof v === 'function' ? v(activeState.urlInput) : v });
+    const setUrlRequirements = (v) => setProjectState(selectedProjectKey, { urlRequirements: typeof v === 'function' ? v(activeState.urlRequirements) : v });
     const setActiveTab = (v) => setProjectState(selectedProjectKey, { activeTab: typeof v === 'function' ? v(activeState.activeTab) : v });
     const setError = (v) => setProjectState(selectedProjectKey, { error: typeof v === 'function' ? v(activeState.error) : v });
     const setUserFeedback = (v) => setProjectState(selectedProjectKey, { userFeedback: typeof v === 'function' ? v(activeState.userFeedback) : v });
@@ -232,15 +360,82 @@ const Dashboard = ({
 
     const currentView = propCurrentView || (location.pathname === '/status' ? 'statusDashboard' : 'main');
 
+    // Signal to AppLayout whether we are showing analysis results or the upload form.
+    // This drives the roadmap highlighting (Requirement Screening vs Agent Analysis).
+    useEffect(() => {
+        if (currentView === 'main') {
+            if (result) {
+                sessionStorage.setItem('dashboard_showing_results', 'true');
+            } else {
+                sessionStorage.removeItem('dashboard_showing_results');
+            }
+        }
+        return () => {
+            // Clean up when leaving the dashboard
+            sessionStorage.removeItem('dashboard_showing_results');
+        };
+    }, [result, currentView]);
+
     const [githubLinkUrl, setGithubLinkUrl] = useState('');
     const [githubLinkToken, setGithubLinkToken] = useState('');
+    const [githubAuthMode, setGithubAuthMode] = useState('pat');
+    const [githubLinkUsername, setGithubLinkUsername] = useState('');
+    const [githubLinkPassword, setGithubLinkPassword] = useState('');
     const [githubLinkParsing, setGithubLinkParsing] = useState(false);
     const [githubLinkError, setGithubLinkError] = useState('');
+    const [repoLinkProvider, setRepoLinkProvider] = useState('github');
+    const [azureLinkUrl, setAzureLinkUrl] = useState('');
+    const [azureLinkToken, setAzureLinkToken] = useState('');
+    const [azureLinkBranch, setAzureLinkBranch] = useState('');
+    const [azureLinkParsing, setAzureLinkParsing] = useState(false);
+    const [azureLinkError, setAzureLinkError] = useState('');
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
+    const persistRepoContextMetaForProject = useCallback((ctx, projectKey = selectedProjectKey) => {
+        const repoMeta = buildRepoContextMeta(ctx);
+        if (!repoMeta) return;
+        const keyCandidates = [
+            projectKey,
+            selectedProject?.key,
+            selectedProject?.projectToken,
+            selectedProject?.governanceResultId != null ? String(selectedProject.governanceResultId) : null,
+            governanceContext?.project_token,
+            governanceContext?.result_id != null ? String(governanceContext.result_id) : null,
+        ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+
+        const serialized = JSON.stringify(repoMeta);
+        keyCandidates.forEach((key) => {
+            const storageKey = `repo_context_meta_${key}`;
+            sessionStorage.setItem(storageKey, serialized);
+            localStorage.setItem(storageKey, serialized);
+        });
+    }, [selectedProjectKey, selectedProject, governanceContext]);
+    const isAllGovernanceSkippedCase = (() => {
+        if (!governanceContext || typeof governanceContext !== 'object') return false;
+
+        const answerList = Array.isArray(governanceContext.answers) ? governanceContext.answers : [];
+        const allAnswersSkipped = answerList.length > 0
+            && answerList.every((answer) => isSkipSelectedOption(answer?.selected_option));
+
+        const classificationDescription = String(governanceContext.classification_description || '').toLowerCase();
+        const hasSkipFollowUpDescription = classificationDescription.includes('our it team will reach out to you');
+
+        return allAnswersSkipped || hasSkipFollowUpDescription;
+    })();
+    const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
+    const isEnterpriseUploadBlocked = isEnterpriseProject && !isAllGovernanceSkippedCase;
+    const getEnterpriseUploadBlockMessage = () => {
+        const description = String(governanceContext?.classification_description || '').trim();
+        if (description) {
+            return `${description} BRD upload is disabled for this project.`;
+        }
+        return 'Selected project is classified as ENTERPRISE. Upload is disabled until governance is updated.';
+    };
 
     const handleLogout = useCallback(() => {
         clearAuthData();
@@ -334,14 +529,18 @@ const Dashboard = ({
         try {
             const token = localStorage.getItem('token');
             const nextRevisionNumber = ((projects.find(p => p.key === taskKey)?.documents?.length) || 0) + 1;
+            const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(repoContext);
             const storedAnalysis = {
                 ...(newResult.analysis || {}),
                 governanceContext: governanceContext || null,
+                repoContextMeta: repoContextMeta || null,
                 projectMeta: {
                     project_name: (projects.find(p => p.key === taskKey)?.name) || governanceContext?.project_name || 'Project',
+                    project_token: (projects.find(p => p.key === taskKey)?.projectToken) || taskKey || null,
                     governance_result_id: governanceContext?.result_id || (projects.find(p => p.key === taskKey)?.governanceResultId) || null,
                     revision_number: nextRevisionNumber,
                     revision_reason: revisionReason || null,
+                    repo_context: repoContextMeta || null,
                 }
             };
 
@@ -439,33 +638,6 @@ const Dashboard = ({
                 handleLogout();
             });
 
-        // Fetch server default AI config
-        fetch(API_ENDPOINTS.AI_CONFIG, {
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        })
-            .then(res => {
-                if (res.status === 401) {
-                    handleLogout();
-                    throw new Error('Unauthorized');
-                }
-                return res.ok ? res.json() : null;
-            })
-            .then(data => {
-                if (data) {
-                    setAiConfig({
-                        apiUrl: data.api_url || '',
-                        apiKey: '',
-                        model: data.model || ''
-                    });
-                }
-            })
-            .catch(err => {
-                if (err.message !== 'Unauthorized') {
-                    console.error("Failed to load AI config", err);
-                }
-            });
         fetchHistory();
         fetchGovernanceHistory();
     }, [navigate, fetchHistory, fetchGovernanceHistory, handleLogout]);
@@ -495,7 +667,7 @@ const Dashboard = ({
     useEffect(() => {
         const params = new URLSearchParams(location.search);
         const requestedTab = params.get('tab');
-        if (requestedTab === 'upload' || requestedTab === 'text') {
+        if (requestedTab === 'upload' || requestedTab === 'text' || requestedTab === 'url') {
             setActiveTab(requestedTab);
         }
 
@@ -735,6 +907,70 @@ const Dashboard = ({
         setTextInput(e.target.value);
     };
 
+    const handleUrlInputChange = (e) => {
+        setUrlInput(e.target.value);
+    };
+
+    const fetchRequirementsFromUrl = async (urlValue, taskKey = selectedProjectKey) => {
+        const token = localStorage.getItem('token');
+        const normalizedUrl = String(urlValue || '').trim();
+        if (!normalizedUrl) {
+            throw new Error('Please enter a website URL.');
+        }
+
+        setProjectState(taskKey, {
+            urlFetching: true,
+            error: '',
+            progress: 20,
+            progressMessage: 'Fetching website requirements...'
+        });
+
+        try {
+            const response = await fetch(API_ENDPOINTS.DOCUMENTS_EXTRACT_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ url: normalizedUrl })
+            });
+
+            if (response.status === 401) {
+                handleLogout();
+                return null;
+            }
+
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.detail || 'Failed to fetch URL requirements');
+            }
+
+            const markdown = String(data.markdown || '').trim();
+            if (!markdown) {
+                throw new Error('No readable requirement content found on that URL.');
+            }
+
+            setProjectState(taskKey, {
+                urlRequirements: markdown,
+                urlSource: String(data.url || normalizedUrl),
+                urlFetchSummary: data.summary || null,
+                progress: 40,
+                progressMessage: 'Website content processed.'
+            });
+            return data;
+        } finally {
+            setProjectState(taskKey, { urlFetching: false });
+        }
+    };
+
+    const handleFetchUrlRequirements = async () => {
+        try {
+            await fetchRequirementsFromUrl(urlInput, selectedProjectKey);
+        } catch (err) {
+            setError(err.message || 'Failed to fetch URL requirements');
+        }
+    };
+
     const handleUpload = async (e) => {
         const taskKey = selectedProjectKey;
         const taskFiles = activeTab === 'linked-doc' ? linkedFiles : files;
@@ -748,8 +984,8 @@ const Dashboard = ({
             setError('Governance context is missing for the selected project. Please open Governance Assessment.');
             return;
         }
-        if (String(governanceContext.classification || '') === 'ENTERPRISE') {
-            setError('Selected project is classified as ENTERPRISE. Upload is disabled until governance is updated.');
+        if (isEnterpriseUploadBlocked) {
+            setError(getEnterpriseUploadBlockMessage());
             return;
         }
         if (selectedProject.documents.length > 0 && !revisionUnlocked) {
@@ -769,6 +1005,20 @@ const Dashboard = ({
             setError('Please enter some text');
             return;
         }
+        if (activeTab === 'url' && !urlInput.trim()) {
+            setError('Please enter a website URL');
+            return;
+        }
+
+        // Persist repository choice for this project even if user did not click "Fetch Repository".
+        if (activeTab === 'github-link') {
+            const repoFromInput = repoLinkProvider === 'azure-devops'
+                ? parseAzureRepoMetaFromUrl(azureLinkUrl, azureLinkBranch)
+                : parseRepoMetaFromUrl(githubLinkUrl);
+            if (repoFromInput) {
+                persistRepoContextMetaForProject(repoFromInput, taskKey);
+            }
+        }
 
         setProjectState(taskKey, { processing: true, error: '', result: null, aiQuestions: [], userAnswers: {}, userFeedback: '' });
 
@@ -784,7 +1034,10 @@ const Dashboard = ({
             let extractedHtml = '';
             let filename = '';
 
-            setProjectState(taskKey, { progress: 10, progressMessage: `Uploading ${taskFiles.length > 0 ? taskFiles.length : ''} documents for ${selectedProject.name}...` });
+            const initialProgressMessage = activeTab === 'url'
+                ? `Preparing website content for ${selectedProject.name}...`
+                : `Uploading ${taskFiles.length > 0 ? taskFiles.length : ''} documents for ${selectedProject.name}...`;
+            setProjectState(taskKey, { progress: 10, progressMessage: initialProgressMessage });
 
 
             if (activeTab === 'upload' || activeTab === 'linked-doc') {
@@ -821,10 +1074,52 @@ const Dashboard = ({
                 filename = uploadData.filename; // e.g., "doc1.pdf, doc2.pdf"
 
             } else {
-                // Text Input Mode
-                extractedMarkdown = textInput;
-                filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
-                setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+                if (activeTab === 'text') {
+                    // Text Input Mode
+                    extractedMarkdown = textInput;
+                    filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
+                    setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+                } else if (activeTab === 'url') {
+                    const fetchedData = urlRequirements.trim()
+                        ? {
+                            markdown: urlRequirements,
+                            filename: `URL_${new Date().toISOString().slice(0, 10)}`,
+                            url: urlSource || urlInput.trim(),
+                        }
+                        : await fetchRequirementsFromUrl(urlInput, taskKey);
+
+                    if (!fetchedData) {
+                        throw new Error('Unable to process URL requirements.');
+                    }
+
+                    extractedMarkdown = String(fetchedData.markdown || urlRequirements || '').trim();
+                    filename = fetchedData.filename || 'URL_Requirements_' + new Date().toISOString().slice(0, 10);
+
+                    if (!extractedMarkdown) {
+                        throw new Error('No requirement text generated from URL.');
+                    }
+                    setProjectState(taskKey, {
+                        progress: 40,
+                        progressMessage: 'Website requirements ready for analysis.',
+                        urlSource: fetchedData.url || (urlSource || urlInput.trim()),
+                        urlFetchSummary: fetchedData.summary || urlFetchSummary || null,
+                        urlRequirements: extractedMarkdown
+                    });
+                }
+            }
+
+            if (isAllGovernanceSkippedCase && analyzeWithAi) {
+                // Governance was fully skipped and IT follow-up is required.
+                // Do not run BRD analysis; instead jump back to Governance so
+                // the user can see the Sandbox / IT message there.
+                setProjectState(taskKey, {
+                    progress: 100,
+                    progressMessage: 'Analysis blocked pending IT approval.',
+                    error: ''
+                });
+                // Route to Governance results page within the authenticated layout
+                navigate('/new-project/governance');
+                return;
             }
 
             // Set initial result
@@ -912,7 +1207,8 @@ const Dashboard = ({
                     prerequisites: prerequisites,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
-                    governanceContext: governanceContext
+                    governanceContext: governanceContext,
+                    repoContextMeta: buildRepoContextMeta(repoContext),
                 }
             };
             setProjectState(taskKey, { result: finalResult, progress: 100, progressMessage: 'Analysis complete!' });
@@ -1135,6 +1431,7 @@ const Dashboard = ({
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: governanceContext,
+                    repoContextMeta: buildRepoContextMeta(repoContext),
                     reasoning: aiReasoning,
                     model: payload.model || 'Streaming...'
                 }
@@ -1328,7 +1625,7 @@ const Dashboard = ({
                 pdf.setFont('helvetica', 'bold');
                 pdf.setFontSize(13);
                 pdf.setTextColor(255, 255, 255);
-                pdf.text('BRD Analysis Report', marginX, 9);
+                pdf.text('Analysis Report', marginX, 9);
 
                 pdf.setFont('helvetica', 'normal');
                 pdf.setFontSize(8);
@@ -1551,7 +1848,7 @@ const Dashboard = ({
             const safeFilename = String(result.filename || 'Report')
                 .replace(/[^a-zA-Z0-9._-]/g, '_')
                 .slice(0, 80);
-            pdf.save(`BRD_Analysis_${safeFilename}.pdf`);
+            pdf.save(`DSuite_Analysis_${safeFilename}.pdf`);
         } catch (err) {
             console.error('PDF generation failed', err);
             setError(`PDF Error: ${err.message || 'Unknown error'}`);
@@ -1560,9 +1857,18 @@ const Dashboard = ({
 
     const handleLoadGithubUrl = async () => {
         setGithubLinkError('');
+        setAzureLinkError('');
         if (!githubLinkUrl.includes('github.com/')) {
             setGithubLinkError('Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)');
             return;
+        }
+        if (githubAuthMode === 'basic') {
+            const username = String(githubLinkUsername || '').trim();
+            const password = String(githubLinkPassword || '');
+            if (!username || !password) {
+                setGithubLinkError('Enter both GitHub username and password, or switch to PAT mode.');
+                return;
+            }
         }
 
         try {
@@ -1571,21 +1877,34 @@ const Dashboard = ({
             if (parts.length < 2) throw new Error('Invalid repo URL structure');
 
             const owner = parts[0];
-            const repo = parts[1];
+            const repo = parts[1].replace(/\.git$/i, '');
             let branch = 'main';
             if (parts[2] === 'tree' && parts[3]) {
                 branch = parts[3];
             }
+            if (!owner || !repo) {
+                throw new Error('Invalid GitHub URL. Use format: https://github.com/owner/repo');
+            }
 
             setGithubLinkParsing(true);
             const token = localStorage.getItem('token');
+            const providedPat = githubAuthMode === 'pat' ? githubLinkToken.trim() : '';
+            const providedUsername = githubAuthMode === 'basic' ? String(githubLinkUsername || '').trim() : '';
+            const providedPassword = githubAuthMode === 'basic' ? String(githubLinkPassword || '') : '';
             const resp = await fetch(API_ENDPOINTS.GITHUB_REPO_CONTEXT, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ owner, repo, branch, token: githubLinkToken || null })
+                body: JSON.stringify({
+                    owner,
+                    repo,
+                    branch,
+                    token: providedPat || null,
+                    username: providedUsername || null,
+                    password: providedPassword || null,
+                })
             });
             const data = await resp.json();
             if (!resp.ok) {
@@ -1596,12 +1915,21 @@ const Dashboard = ({
                 throw new Error(errMessage);
             }
 
-            setRepoContext({
-                repo: `${owner}/${repo}`,
-                branch,
+            const resolvedRepo = data.repo || `${owner}/${repo}`;
+            const resolvedBranch = data.branch || branch;
+            const nextRepoContext = {
+                repo: resolvedRepo,
+                branch: resolvedBranch,
                 context: data.context,
-                fromLink: true
-            });
+                fromLink: true,
+                provider: 'github',
+                url: `https://github.com/${resolvedRepo}.git`,
+            };
+            setRepoContext(nextRepoContext);
+            persistRepoContextMetaForProject(nextRepoContext);
+            if (githubAuthMode === 'basic') {
+                setGithubLinkPassword('');
+            }
             setGithubLinkError('');
         } catch (e) {
             setGithubLinkError(e.message || 'Failed to parse or load URL');
@@ -1610,10 +1938,74 @@ const Dashboard = ({
         }
     };
 
+    const handleLoadAzureDevOpsUrl = async () => {
+        setAzureLinkError('');
+        setGithubLinkError('');
+
+        const rawUrl = String(azureLinkUrl || '').trim();
+        if (!rawUrl) {
+            setAzureLinkError('Please enter an Azure DevOps repository URL.');
+            return;
+        }
+        if (!/dev\.azure\.com|\.visualstudio\.com/i.test(rawUrl)) {
+            setAzureLinkError('Please enter a valid Azure DevOps URL (dev.azure.com or *.visualstudio.com).');
+            return;
+        }
+
+        try {
+            setAzureLinkParsing(true);
+            const token = localStorage.getItem('token');
+            const providedPat = azureLinkToken.trim();
+            const branch = String(azureLinkBranch || '').trim();
+
+            const resp = await fetch(API_ENDPOINTS.AZURE_DEVOPS_REPO_CONTEXT, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: rawUrl,
+                    token: providedPat || null,
+                    branch: branch || null,
+                }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                let errMessage = 'Failed to fetch Azure DevOps repository';
+                if (data.detail) {
+                    errMessage = Array.isArray(data.detail) ? data.detail.map((e) => e.msg).join(', ') : data.detail;
+                }
+                throw new Error(errMessage);
+            }
+
+            const nextRepoContext = {
+                repo: data.repo,
+                branch: data.branch,
+                context: data.context,
+                fromLink: true,
+                provider: 'azure-devops',
+                url: data.url || rawUrl,
+            };
+            setRepoContext(nextRepoContext);
+            persistRepoContextMetaForProject(nextRepoContext);
+            setAzureLinkError('');
+        } catch (e) {
+            setAzureLinkError(e.message || 'Failed to parse or load Azure DevOps URL');
+        } finally {
+            setAzureLinkParsing(false);
+        }
+    };
+
     const handleNewAnalysis = () => {
         setProjectState(selectedProjectKey, {
             files: [],
             textInput: '',
+            urlInput: '',
+            urlRequirements: '',
+            urlSource: '',
+            urlFetchSummary: null,
+            urlFetching: false,
             processing: false,
             result: null,
             error: '',
@@ -1667,6 +2059,11 @@ const Dashboard = ({
             revisionUnlocked: true,
             files: [],
             textInput: '',
+            urlInput: '',
+            urlRequirements: '',
+            urlSource: '',
+            urlFetchSummary: null,
+            urlFetching: false,
             result: null
         });
     };
@@ -1677,7 +2074,7 @@ const Dashboard = ({
     };
 
     const goToGovernanceAssessment = () => {
-        navigate('/governance');
+        navigate('/new-project');
     };
 
     if (!user) {
@@ -1750,9 +2147,9 @@ const Dashboard = ({
                                                     <p className="text-xs text-emerald-800 mt-1">
                                                         Status: {selectedProject.status === 'analysis_complete' ? 'Analysis Complete (Locked)' : 'Ready for Initial Upload'}
                                                     </p>
-                                                    {selectedProject.classification === 'ENTERPRISE' && (
+                                                    {isEnterpriseUploadBlocked && (
                                                         <p className="text-xs text-red-700 mt-1">
-                                                            Upload blocked: this project currently requires Enterprise Build governance.
+                                                            Upload blocked: {getEnterpriseUploadBlockMessage()}
                                                         </p>
                                                     )}
                                                     {selectedProject.latestDocument && (
@@ -1782,7 +2179,7 @@ const Dashboard = ({
                                                         <button
                                                             type="button"
                                                             onClick={handleCreateRevision}
-                                                            disabled={selectedProject.classification === 'ENTERPRISE'}
+                                                            disabled={isEnterpriseUploadBlocked}
                                                             className="text-xs font-semibold text-app-primary-hover hover:text-blue-900 disabled:text-app-text-light disabled:cursor-not-allowed"
                                                         >
                                                             Create New Revision
@@ -1831,16 +2228,24 @@ const Dashboard = ({
                                         </button>
                                         <button
                                             type="button"
+                                            onClick={() => setActiveTab('url')}
+                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'url' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                            disabled={!selectedProject}
+                                        >
+                                            Upload URL
+                                        </button>
+                                        <button
+                                            type="button"
                                             onClick={() => setActiveTab('github-link')}
                                             className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
                                             disabled={!selectedProject}
                                         >
-                                            GitHub
+                                            Repositories
                                         </button>
                                     </div>
 
                                     {activeTab === 'upload' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
                                             <input
                                                 type="file"
                                                 id={`file-upload-${activeTab}`}
@@ -1848,7 +2253,7 @@ const Dashboard = ({
                                                 onChange={handleFileChange}
                                                 accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
                                             <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
                                                 <FileText className="w-12 h-12" />
@@ -1870,7 +2275,7 @@ const Dashboard = ({
                                             </span>
                                         </div>
                                     ) : activeTab === 'linked-doc' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && selectedProject.classification !== 'ENTERPRISE' ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
                                             <input
                                                 type="file"
                                                 id={`file-upload-linked`}
@@ -1878,7 +2283,7 @@ const Dashboard = ({
                                                 onChange={handleFileChange}
                                                 accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
                                             <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
                                                 <FileText className="w-12 h-12" />
@@ -1906,14 +2311,63 @@ const Dashboard = ({
                                                 onChange={handleTextChange}
                                                 placeholder="Write your requirements here..."
                                                 className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE'}
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
+                                        </div>
+                                    ) : activeTab === 'url' ? (
+                                        <div className="space-y-4">
+                                            <div className="rounded-xl border border-app-border bg-app-bg-page/50 p-4">
+                                                <label className="block text-sm font-semibold text-app-text-main mb-2">Website URL</label>
+                                                <div className="flex flex-col sm:flex-row gap-2">
+                                                    <input
+                                                        type="url"
+                                                        value={urlInput}
+                                                        onChange={handleUrlInputChange}
+                                                        placeholder="https://example.com/requirements"
+                                                        className="flex-1 px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-card"
+                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleFetchUrlRequirements}
+                                                        disabled={!urlInput.trim() || !selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
+                                                        className="px-4 py-2.5 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
+                                                    >
+                                                        {urlFetching ? 'Fetching...' : 'Fetch URL'}
+                                                    </button>
+                                                </div>
+                                                <p className="mt-2 text-xs text-app-text-muted">
+                                                    Fetches webpage content and converts it into requirement text for analysis.
+                                                </p>
+                                            </div>
+                                            <div className="rounded-xl border border-app-border bg-app-bg-card p-4">
+                                                <div className="flex items-center justify-between gap-2 mb-2">
+                                                    <h3 className="text-sm font-semibold text-app-text-main">Extracted Requirements</h3>
+                                                    {urlSource && (
+                                                        <span className="text-[11px] text-app-text-muted truncate max-w-[60%]" title={urlSource}>
+                                                            Source: {urlSource}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <textarea
+                                                    value={urlRequirements}
+                                                    onChange={(e) => setUrlRequirements(e.target.value)}
+                                                    placeholder="Click 'Fetch URL' to generate requirement text from the webpage."
+                                                    className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
+                                                    disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                                />
+                                                {urlFetchSummary && (
+                                                    <div className="mt-2 text-xs text-app-text-muted">
+                                                        Parsed headings: {urlFetchSummary.headings_found || 0}, paragraphs: {urlFetchSummary.paragraphs_found || 0}, list items: {urlFetchSummary.list_items_found || 0}
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
                                     ) : (
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative mx-auto">
                                             {/* OPTION 1: GitHub Connect */}
                                             <div className="relative border border-app-border rounded-xl p-5 bg-app-bg-card shadow-sm flex flex-col justify-start overflow-hidden">
-                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (githubLinkUsername && githubLinkUsername.trim().length > 0) || (githubLinkPassword && githubLinkPassword.trim().length > 0) || (azureLinkUrl && azureLinkUrl.trim().length > 0) || (azureLinkToken && azureLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Link Option</span>
                                                 </div>
                                                 <div className="mb-4">
@@ -1930,8 +2384,22 @@ const Dashboard = ({
                                                         repoContext={repoContext}
                                                         onRepoSelected={() => setIsOAuthRepoSelected(true)}
                                                         onRepoContextReady={(ctx) => {
-                                                            setRepoContext(ctx);
+                                                            const nextCtx = {
+                                                                ...ctx,
+                                                                provider: 'github',
+                                                                url: `https://github.com/${String(ctx?.repo || '').replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '')}.git`,
+                                                            };
+                                                            setRepoContext(nextCtx);
+                                                            persistRepoContextMetaForProject(nextCtx);
                                                             setGithubLinkUrl('');
+                                                            setGithubLinkToken('');
+                                                            setGithubAuthMode('pat');
+                                                            setGithubLinkUsername('');
+                                                            setGithubLinkPassword('');
+                                                            setAzureLinkUrl('');
+                                                            setAzureLinkToken('');
+                                                            setAzureLinkBranch('');
+                                                            setAzureLinkError('');
                                                             setGithubLinkError('');
                                                         }}
                                                         onClearRepo={() => {
@@ -1942,7 +2410,7 @@ const Dashboard = ({
                                                 </div>
                                             </div>
 
-                                            {/* OPTION 2: Repository URL */}
+                                            {/* OPTION 2: Repository URL (GitHub / Azure DevOps) */}
                                             <div className="relative border border-app-border rounded-xl bg-app-bg-card shadow-sm p-5 flex flex-col justify-start overflow-hidden">
                                                 <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || (repoContext && !repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Connected Account</span>
@@ -1953,44 +2421,142 @@ const Dashboard = ({
                                                         <h3 className="text-sm font-bold text-app-text-main">Paste Repository Link</h3>
                                                     </div>
                                                     <p className="text-xs text-app-text-muted mb-2">
-                                                        Provide a direct link to a GitHub repository. For private repositories, include a Personal Access Token (PAT).
+                                                        Provide a repository link from GitHub or Azure DevOps. For private repositories, use PAT, or for GitHub you can also use username and password.
                                                     </p>
                                                 </div>
+                                                <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => { setRepoLinkProvider('github'); setAzureLinkError(''); }}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    >
+                                                        GitHub
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => { setRepoLinkProvider('azure-devops'); setGithubLinkError(''); }}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    >
+                                                        Azure DevOps
+                                                    </button>
+                                                </div>
+                                                {repoLinkProvider === 'github' && (
+                                                    <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => { setGithubAuthMode('pat'); setGithubLinkError(''); }}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        >
+                                                            Use PAT
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => { setGithubAuthMode('basic'); setGithubLinkError(''); }}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        >
+                                                            Username + Password
+                                                        </button>
+                                                    </div>
+                                                )}
                                                 <div className="flex flex-col gap-3 mt-auto">
                                                     <input
                                                         type="text"
-                                                        value={githubLinkUrl}
+                                                        value={repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl}
                                                         onChange={e => {
-                                                            setGithubLinkUrl(e.target.value);
+                                                            if (repoLinkProvider === 'azure-devops') {
+                                                                setAzureLinkUrl(e.target.value);
+                                                            } else {
+                                                                setGithubLinkUrl(e.target.value);
+                                                            }
                                                             if (repoContext) setRepoContext(null);
                                                         }}
-                                                        placeholder="https://github.com/owner/repo"
+                                                        placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo' : 'https://github.com/owner/repo'}
                                                         className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                     />
-                                                    <input
-                                                        type="password"
-                                                        value={githubLinkToken}
-                                                        onChange={e => {
-                                                            setGithubLinkToken(e.target.value);
-                                                            if (repoContext) setRepoContext(null);
-                                                        }}
-                                                        placeholder="Optional PAT for private repos..."
-                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
-                                                    />
+                                                    {repoLinkProvider === 'azure-devops' && (
+                                                        <input
+                                                            type="text"
+                                                            value={azureLinkBranch}
+                                                            onChange={e => {
+                                                                setAzureLinkBranch(e.target.value);
+                                                                if (repoContext) setRepoContext(null);
+                                                            }}
+                                                            placeholder="Optional branch (e.g., main)"
+                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                        />
+                                                    )}
+                                                    {repoLinkProvider === 'azure-devops' ? (
+                                                        <input
+                                                            type="password"
+                                                            value={azureLinkToken}
+                                                            onChange={e => {
+                                                                setAzureLinkToken(e.target.value);
+                                                                if (repoContext) setRepoContext(null);
+                                                            }}
+                                                            placeholder="Optional Azure DevOps PAT..."
+                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                        />
+                                                    ) : githubAuthMode === 'pat' ? (
+                                                        <input
+                                                            type="password"
+                                                            value={githubLinkToken}
+                                                            onChange={e => {
+                                                                setGithubLinkToken(e.target.value);
+                                                                if (repoContext) setRepoContext(null);
+                                                            }}
+                                                            placeholder="Optional GitHub PAT for private repos..."
+                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                        />
+                                                    ) : (
+                                                        <>
+                                                            <input
+                                                                type="text"
+                                                                value={githubLinkUsername}
+                                                                onChange={e => {
+                                                                    setGithubLinkUsername(e.target.value);
+                                                                    if (repoContext) setRepoContext(null);
+                                                                }}
+                                                                placeholder="GitHub username"
+                                                                className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                            />
+                                                            <input
+                                                                type="password"
+                                                                value={githubLinkPassword}
+                                                                onChange={e => {
+                                                                    setGithubLinkPassword(e.target.value);
+                                                                    if (repoContext) setRepoContext(null);
+                                                                }}
+                                                                placeholder="GitHub password"
+                                                                className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                            />
+                                                        </>
+                                                    )}
                                                     <div className="flex items-center gap-2">
                                                         <button
                                                             type="button"
-                                                            onClick={handleLoadGithubUrl}
-                                                            disabled={!githubLinkUrl || githubLinkParsing}
+                                                            onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
+                                                            disabled={repoLinkProvider === 'azure-devops' ? (!azureLinkUrl || azureLinkParsing) : (!githubLinkUrl || githubLinkParsing)}
                                                             className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
                                                         >
-                                                            {githubLinkParsing ? (
+                                                            {(repoLinkProvider === 'azure-devops' ? azureLinkParsing : githubLinkParsing) ? (
                                                                 <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
                                                             ) : 'Fetch Repository'}
                                                         </button>
                                                         {repoContext && repoContext.fromLink && (
                                                             <button
-                                                                onClick={() => { setRepoContext(null); setGithubLinkUrl(''); setGithubLinkToken(''); setGithubLinkError(''); }}
+                                                                onClick={() => {
+                                                                    setRepoContext(null);
+                                                                    setGithubLinkUrl('');
+                                                                    setGithubLinkToken('');
+                                                                    setGithubAuthMode('pat');
+                                                                    setGithubLinkUsername('');
+                                                                    setGithubLinkPassword('');
+                                                                    setGithubLinkError('');
+                                                                    setAzureLinkUrl('');
+                                                                    setAzureLinkToken('');
+                                                                    setAzureLinkBranch('');
+                                                                    setAzureLinkError('');
+                                                                }}
                                                                 className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-red-100 text-sm font-semibold h-10 transition-colors"
                                                                 title="Clear repository"
                                                             >
@@ -2000,7 +2566,9 @@ const Dashboard = ({
                                                     </div>
                                                 </div>
 
-                                                {githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{githubLinkError}</p>}
+                                                {repoLinkProvider === 'azure-devops'
+                                                    ? (azureLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{azureLinkError}</p>)
+                                                    : (githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{githubLinkError}</p>)}
                                                 {repoContext && repoContext.fromLink && (
                                                     <div className="mt-3 p-2.5 bg-app-status-successBg border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
                                                         <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-app-status-success" />
@@ -2028,6 +2596,12 @@ const Dashboard = ({
                                         </div>
                                     )}
 
+                                    {error && (
+                                        <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
+                                            <p className="text-sm font-medium text-red-700">{error}</p>
+                                        </div>
+                                    )}
+
                                     <div className="flex justify-end gap-3 pt-6">
                                         <button
                                             type="button"
@@ -2039,8 +2613,8 @@ const Dashboard = ({
                                         </button>
                                         <button
                                             type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || selectedProject.classification === 'ENTERPRISE' || (activeTab === 'upload' && files.length === 0) || (activeTab === 'text' && !textInput) || processing
+                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching}
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
                                                 ? 'bg-gray-300 cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
@@ -2082,41 +2656,6 @@ const Dashboard = ({
                                             className="text-sm text-app-primary hover:text-app-primary-dark font-medium hover:underline flex items-center"
                                         >
                                             <Plus className="w-4 h-4 mr-1" /> Analyze Another
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {/* Go / No Go Decision Panel */}
-                                <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg shadow-orange-200">
-                                            <Zap className="w-5 h-5 text-white" />
-                                        </div>
-                                        <div>
-                                            <h3 className="text-sm font-bold text-app-text-main">Project Decision</h3>
-                                            <p className="text-xs text-app-text-muted">Based on the analysis, make your go/no-go decision</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-3">
-                                        <button
-                                            onClick={() => {
-                                                navigate('/status-dashboard');
-                                            }}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow-lg shadow-green-500/30 hover:shadow-green-500/50 hover:-translate-y-0.5 transition-all active:scale-95"
-                                        >
-                                            <CheckCircle2 className="w-4 h-4" />
-                                            Go
-                                        </button>
-                                        <button
-                                            onClick={() => {
-                                                if (window.confirm('Are you sure you want to mark this project as No-Go? This will flag it for review.')) {
-                                                    setError('Project marked as No-Go. The project has been flagged for further review.');
-                                                }
-                                            }}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-red-500 to-rose-600 rounded-lg shadow-lg shadow-red-500/30 hover:shadow-red-500/50 hover:-translate-y-0.5 transition-all active:scale-95"
-                                        >
-                                            <X className="w-4 h-4" />
-                                            No Go
                                         </button>
                                     </div>
                                 </div>
@@ -2181,7 +2720,7 @@ const Dashboard = ({
                                         <div className="lg:col-span-8 space-y-6">
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
                                                 <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-app-border-light">
-                                                    Executive Summary & Analysis
+                                                    Executive Summary & Agent Analysis
                                                 </h3>
                                                 <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
                                                     {(() => {
@@ -2320,7 +2859,7 @@ const Dashboard = ({
                             <button onClick={() => setShowSettings(false)} className="text-app-text-light hover:text-app-text-label transition-colors">✕</button>
                         </div>
                         <div className="p-6">
-                            <AIConfig aiConfig={aiConfig} setAiConfig={setAiConfig} />
+                            <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
                         </div>
                         <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
                             <button

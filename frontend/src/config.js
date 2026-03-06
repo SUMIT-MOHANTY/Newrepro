@@ -18,6 +18,7 @@ export const API_ENDPOINTS = {
     // Documents
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,
     DOCUMENTS_UPLOAD_ANALYZE: `${API_BASE_URL}/documents/upload-and-analyze`,
+    DOCUMENTS_EXTRACT_URL: `${API_BASE_URL}/documents/extract-from-url`,
 
     // AI
     AI_CONFIG: `${API_BASE_URL}/ai/config`,
@@ -29,6 +30,7 @@ export const API_ENDPOINTS = {
     GOVERNANCE_SUBMIT: `${API_BASE_URL}/governance/submit`,
     GOVERNANCE_HISTORY: `${API_BASE_URL}/governance/history`,
     GOVERNANCE_RESULT: (id) => `${API_BASE_URL}/governance/result/${id}`,
+    GOVERNANCE_DELETE: (id) => `${API_BASE_URL}/governance/${id}`,
     GOVERNANCE_REVISION_REASON: (id) => `${API_BASE_URL}/governance/${id}/revision-reason`,
     GOVERNANCE_ROADMAP_STEP: (id) => `${API_BASE_URL}/governance/${id}/roadmap-step`,
     GOVERNANCE_PREREQUISITES_COMPLETE: (id) => `${API_BASE_URL}/governance/${id}/prerequisites-complete`,
@@ -40,6 +42,7 @@ export const API_ENDPOINTS = {
     GITHUB_DISCONNECT: `${API_BASE_URL}/github/disconnect`,
     GITHUB_REPOS: `${API_BASE_URL}/github/repos`,
     GITHUB_REPO_CONTEXT: `${API_BASE_URL}/github/repo-context`,
+    AZURE_DEVOPS_REPO_CONTEXT: `${API_BASE_URL}/azure-devops/repo-context`,
 
     // AI Agents (Backend Docker Execution)
     AGENTS: `${API_BASE_URL}/agents`,
@@ -52,10 +55,18 @@ export const API_ENDPOINTS = {
     AGENT_UPDATE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,
     AGENT_REMOVE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,
 
+    // Preview Deploy
+    AGENT_PREVIEW_DEPLOY: `${API_BASE_URL}/agents/preview/deploy`,
+    AGENT_PREVIEW_STATUS: `${API_BASE_URL}/agents/preview/status`,
+    AGENT_PREVIEW_STOP: `${API_BASE_URL}/agents/preview/stop`,
+    AGENT_PREVIEW_FIX: `${API_BASE_URL}/agents/preview/fix`,
+
     // External Task Management API
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
     AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,
     AGENT_CREATE_TASK: `${API_BASE_URL}/api/agent/tasks/`,
+    AGENT_SPRINTS: `${API_BASE_URL}/api/agent/sprints/`,
+    AGENT_MILESTONES: `${API_BASE_URL}/api/agent/milestones/`,
     AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`,
     AGENT_DASHBOARD: `${API_BASE_URL}/api/agent/dashboard/`,
 

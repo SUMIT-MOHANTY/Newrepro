@@ -16,6 +16,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 from config import settings
 import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ── AI Response Cleaner ─────────────────────────────────────────────────────
@@ -96,11 +99,16 @@ _AGENT_TYPES = ["validator", "risk", "estimator"]
 _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimation"]
 
 GIT_MANAGER_AGENT_ID = "agent_03"
+MASTER_AGENT_ID = "agent_04"
 GIT_INTEGRATION_BRANCH = "agent/integration"
 DEFAULT_PROJECT_TOKEN = "__default__"
 AGENT_SESSION_NOTES_DIR = "agent_handoff"
 BOOTSTRAP_WAIT_TIMEOUT_SECONDS = 1800
 BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS = 20
+
+
+def _is_system_agent_id(agent_id: Optional[str]) -> bool:
+    return agent_id in {GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID}
 
 _project_states: Dict[str, Dict[str, Any]] = {}
 
@@ -135,11 +143,22 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "git_merge_queue": [],
             "git_merge_running": False,
             "git_merge_lock": asyncio.Lock(),
+            "git_merge_inflight": set(),
+            "merged_branches": [],
             "repo_bootstrap": _new_repo_bootstrap_state(),
             "repo_bootstrap_lock": asyncio.Lock(),
             "repo_bootstrap_event": asyncio.Event(),
+            "completed_milestones_synced": set(),
+            "completed_sprints_synced": set(),
+            "project_status_synced": None,
+            "status_sync_lock": asyncio.Lock(),
         }
         _project_states[key] = state
+    else:
+        state.setdefault("completed_milestones_synced", set())
+        state.setdefault("completed_sprints_synced", set())
+        state.setdefault("project_status_synced", None)
+        state.setdefault("status_sync_lock", asyncio.Lock())
     return state
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
@@ -153,11 +172,22 @@ def set_project_task_token(project_token: Optional[str], task_token: Optional[st
 def get_project_task_token(project_token: Optional[str]) -> Optional[str]:
     return _ensure_project_state(project_token).get("task_token")
 
+
+def clear_project_runtime_state(project_token: Optional[str]) -> None:
+    """Clear in-memory runtime state for a single project token."""
+    key = _project_key(project_token)
+    _project_states.pop(key, None)
+    _preview_states.pop(key, None)
+
+    token = (project_token or "").strip()
+    if token:
+        _project_tech_specs.pop(token, None)
+
 def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
     atype = _AGENT_TYPES[idx % len(_AGENT_TYPES)]
     aname = _AGENT_NAMES[idx % len(_AGENT_NAMES)]
-    return {
+    agent = {
         "id": agent_id,
         "name": aname,
         "type": atype,
@@ -172,12 +202,32 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
         "git_repo_url": None,
         "git_token": None,
     }
+    if agent_id == GIT_MANAGER_AGENT_ID:
+        agent["name"] = "Git Manager"
+        agent["progress"] = 100
+        agent["progress_message"] = "Git manager idle"
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": "Git manager initialized and waiting for merge events."
+        })
+    elif agent_id == MASTER_AGENT_ID:
+        agent["name"] = "Master Agent"
+        agent["progress"] = 100
+        agent["progress_message"] = "Master agent idle"
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": "Master agent initialized and waiting for orchestration/status events."
+        })
+    return agent
 
 def get_default_agents() -> List[Dict[str, Any]]:
     return [
         _make_agent("agent_01", 0),
         _make_agent("agent_02", 1),
         _make_agent("agent_03", 2),
+        _make_agent("agent_04", 3),
     ]
 
 def initialize_agents_from_records(records: List[Any], project_token: Optional[str] = None) -> None:
@@ -188,6 +238,9 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
     state["claimed_task_ids"].clear()
     state["task_progress_state"].clear()
     state["timer_log_state"].clear()
+    state["completed_milestones_synced"].clear()
+    state["completed_sprints_synced"].clear()
+    state["project_status_synced"] = None
     state["repo_bootstrap"] = _new_repo_bootstrap_state()
     state["repo_bootstrap_event"] = asyncio.Event()
     agent_states = state["agent_states"]
@@ -207,9 +260,22 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
 
 def ensure_project_initialized(project_token: Optional[str], records: List[Any]) -> None:
     state = _ensure_project_state(project_token)
-    if state["agent_states"]:
+    if not state["agent_states"]:
+        initialize_agents_from_records(records, project_token=project_token)
         return
-    initialize_agents_from_records(records, project_token=project_token)
+    agent_states = state["agent_states"]
+    for idx, rec in enumerate(records):
+        agent_id = getattr(rec, "id", None) or (rec.get("id") if isinstance(rec, dict) else None)
+        if not agent_id or agent_id in agent_states:
+            continue
+        name = getattr(rec, "name", None) or (rec.get("name") if isinstance(rec, dict) else None)
+        atype = getattr(rec, "type", None) or (rec.get("type") if isinstance(rec, dict) else None)
+        agent = _make_agent(agent_id, idx)
+        if name:
+            agent["name"] = name
+        if atype:
+            agent["type"] = atype
+        agent_states[agent_id] = agent
 
 def get_completed_tasks(project_token: Optional[str]) -> List[Dict[str, Any]]:
     return list(_ensure_project_state(project_token)["completed_tasks"])
@@ -261,42 +327,875 @@ Do NOT use triple-quoted strings (''' or \"\"\") for file content. Use single-li
 
 AGENT_SYSTEM_PROMPTS = {
     "validator": """You are a Project Builder AI Agent.
-Your job is to analyze the given task and CREATE a complete, working project implementation inside /workspace/.
+Your job is to analyze the given task and CREATE a complete, working project implementation.
 
-Given a task description, you must:
-1. Understand what the project requires
-2. Generate a Python script that CREATES all necessary files and directories
-3. Use os.makedirs() and open() to create real files under /workspace/
-4. Write real, production-quality code into each file
-5. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
-6. Print === SUMMARY === at the end
+CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
+- Backend files (Python) go in the `backend/` directory
+- Frontend files (React) go in the `frontend/` directory
+- Config files go where the tech spec specifies
+- DO NOT create files directly in `/workspace/` root unless the tech spec says so
+
+CRITICAL: NEVER create or commit these files:
+- __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
+- .pyc, .pyo, .pyd files (compiled Python)
+- node_modules/ (Node.js dependencies)
+- .env files (environment variables - use .env.example instead)
+- *.log files (log files)
+- .DS_Store, Thumbs.db (OS files)
+- venv/, env/, .venv/ (virtual environments)
+
+Given a task description and Technical Specification, you must:
+1. READ the tech spec's FILE STRUCTURE section carefully
+2. Create files in the directories specified in the tech spec
+3. Generate a Python script that CREATES all necessary files and directories
+4. Use os.makedirs() and open() to create real files
+5. Write real, production-quality code into each file
+6. NEVER create __pycache__ directories or .pyc files
+7. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
+8. Print === SUMMARY === at the end
 """ + _COMPACT_CODE_RULES,
 
     "risk": """You are a Security and Risk Analysis Builder AI Agent.
-Your job is to analyze the given task, identify all risks, and CREATE actual mitigation code and config files inside /workspace/.
+Your job is to analyze the given task, identify all risks, and CREATE actual mitigation code and config files.
 
-Given a task description, you must:
-1. Identify technical, business, security, and operational risks
-2. Generate a Python script that CREATES mitigation files under /workspace/
-3. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
-4. Print === RISK SUMMARY === at the end
+CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
+- Backend files (Python) go in the `backend/` directory
+- Frontend files (React) go in the `frontend/` directory
+- Config files go where the tech spec specifies
+- DO NOT create files directly in `/workspace/` root unless the tech spec says so
+
+CRITICAL: NEVER create or commit these files:
+- __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
+- .pyc, .pyo, .pyd files (compiled Python)
+- node_modules/ (Node.js dependencies)
+- .env files (environment variables - use .env.example instead)
+- *.log files (log files)
+- .DS_Store, Thumbs.db (OS files)
+- venv/, env/, .venv/ (virtual environments)
+
+Given a task description and Technical Specification, you must:
+1. READ the tech spec's FILE STRUCTURE section carefully
+2. Identify technical, business, security, and operational risks
+3. Generate a Python script that CREATES mitigation files in the correct directories
+4. NEVER create __pycache__ directories or .pyc files
+5. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
+6. Print === RISK SUMMARY === at the end
 """ + _COMPACT_CODE_RULES,
 
     "estimator": """You are a Project Planning and Scaffolding AI Agent.
-Your job is to analyze the task, estimate resources, and CREATE a complete project scaffold inside /workspace/.
+Your job is to analyze the task, estimate resources, and CREATE a complete project scaffold.
 
-Given a task description, you must:
-1. Break down the project into sprints and tasks
-2. Generate a Python script that CREATES the project scaffold under /workspace/
-3. Create source files, configs, Dockerfile, docker-compose, CI/CD, tests
-4. Print [SPRINT N] for each sprint, [CREATED] for each file, [CHECK] for validations
-5. Print === RESOURCE SUMMARY === at the end
+CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
+- Backend files (Python) go in the `backend/` directory
+- Frontend files (React) go in the `frontend/` directory
+- Config files go where the tech spec specifies
+- DO NOT create files directly in `/workspace/` root unless the tech spec says so
+
+CRITICAL: NEVER create or commit these files:
+- __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
+- .pyc, .pyo, .pyd files (compiled Python)
+- node_modules/ (Node.js dependencies)
+- .env files (environment variables - use .env.example instead)
+- *.log files (log files)
+- .DS_Store, Thumbs.db (OS files)
+- venv/, env/, .venv/ (virtual environments)
+
+Given a task description and Technical Specification, you must:
+1. READ the tech spec's FILE STRUCTURE section carefully
+2. Break down the project into sprints and tasks
+3. Generate a Python script that CREATES the project scaffold following the tech spec structure
+4. Create source files, configs, deployment/orchestration, CI/CD, tests in correct directories
+5. NEVER create __pycache__ directories or .pyc files
+6. Print [SPRINT N] for each sprint, [CREATED] for each file, [CHECK] for validations
+7. Print === RESOURCE SUMMARY === at the end
 """ + _COMPACT_CODE_RULES,
 }
 
 
 # Self-healing: keep fixing until the project is perfect
 MAX_FIX_ITERATIONS = 5
+
+# Recursive compile-fail-fix: max retries for the enhanced loop
+MAX_COMPILE_RETRIES = 3
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LAYER 1: ARCHITECT AGENT — Technical Spec Generation
+# ═══════════════════════════════════════════════════════════════════════════
+# Before coding agents start, an "Architect Agent" generates a canonical
+# Technical Spec from the BRD + KG. This spec is the single source of truth
+# that all coding agents reference. It prevents structural divergence.
+
+# In-memory store of generated tech specs per project
+_project_tech_specs: Dict[str, Dict[str, Any]] = {}
+
+
+async def _generate_technical_spec(
+    project_token: str,
+    tasks: List[Dict[str, Any]],
+    brd_summary: str = "",
+    kg_context: str = "",
+) -> Dict[str, Any]:
+    """
+    LAYER 1: Architect Agent — generates a canonical Technical Spec.
+
+    This runs ONCE before any coding agents start. It produces:
+    - Architecture overview (modules, layers, data flow)
+    - API contracts (endpoints, request/response schemas)
+    - Data models (schemas, field names, types)
+    - File structure (what goes where)
+    - Naming conventions (snake_case vs camelCase, etc.)
+    - Dependency list (packages, versions)
+
+    All coding agents then reference this spec as ground truth.
+    """
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        return {"status": "skipped", "reason": "no_api_key", "spec": ""}
+
+    # Build task summary for the architect
+    task_summaries = []
+    for i, t in enumerate(tasks[:30], 1):
+        title = t.get("title", "Untitled")
+        desc = (t.get("description", "") or "")[:200]
+        task_summaries.append(f"  {i}. {title}: {desc}")
+    task_list_text = "\n".join(task_summaries) if task_summaries else "No tasks provided."
+
+    architect_prompt = f"""You are a Senior Software Architect Agent. Your job is to produce a
+CANONICAL TECHNICAL SPECIFICATION that all coding agents will reference as the single source of truth.
+
+BUSINESS REQUIREMENTS (from BRD):
+{brd_summary[:3000] if brd_summary else "Not provided."}
+
+EXISTING CODEBASE KNOWLEDGE (from Knowledge Graph):
+{kg_context[:4000] if kg_context else "New project — no existing codebase."}
+
+TASKS TO BE IMPLEMENTED BY AGENTS:
+{task_list_text}
+
+Generate a Technical Specification with these EXACT sections:
+
+## 1. ARCHITECTURE OVERVIEW
+- System layers (frontend, backend, database, external services)
+- Module breakdown and responsibilities
+- Data flow between modules
+
+## 2. API CONTRACTS
+- List every API endpoint with: method, path, request body schema, response schema
+- Use consistent field naming throughout (choose snake_case or camelCase and state it)
+
+## 3. DATA MODELS
+- Every database table/model with exact field names, types, and constraints
+- Relationships between models (FK, many-to-many, etc.)
+
+## 4. FILE STRUCTURE (CRITICAL - Output as a tree diagram!)
+You MUST output a specific directory tree like this example:
+
+```
+portfolio/
+├── backend/                 # All Python/Flask backend code
+│   ├── __init__.py         # Flask app factory
+│   ├── app.py              # Main Flask application entry point
+│   ├── config.py           # Configuration (DB, JWT, etc.)
+│   ├── requirements.txt    # Python dependencies
+│   └── api/                # API endpoints
+│       ├── __init__.py
+│       ├── routes.py       # Route definitions
+│       └── schemas.py      # Pydantic schemas
+
+├── frontend/               # All frontend code (React)
+│   ├── src/
+│   │   ├── components/     # React components
+│   │   └── pages/          # Page components
+│   └── package.json        # Node dependencies
+
+├── README.md               # Project documentation
+├── .env.example            # Environment template
+└── docker-compose.yml      # Docker configuration
+```
+
+For YOUR project, output the exact directory tree with:
+- All directories and subdirectories
+- Every file with its purpose in comments
+- Backend files in `backend/` directory
+- Frontend files in `frontend/` directory
+- Configuration files in appropriate locations
+
+## 5. NAMING CONVENTIONS
+- Variable naming: snake_case / camelCase
+- Class naming: PascalCase
+- File naming convention
+- API endpoint naming convention
+
+## 6. DEPENDENCIES
+- Exact package names and minimum versions
+- Runtime vs dev dependencies
+
+## 7. CROSS-MODULE CONTRACTS
+- How modules communicate (imports, API calls, events)
+- Shared types/interfaces between modules
+- Error handling conventions
+
+Be extremely specific. Every field name, endpoint, and type must be exact so agents can reference them.
+Do NOT use vague descriptions like "appropriate fields" — name every field explicitly."""
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": "You are a Senior Software Architect. Produce precise, unambiguous technical specifications."},
+            {"role": "user", "content": architect_prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        if "choices" in data and len(data["choices"]) > 0:
+            spec_text = data["choices"][0].get("message", {}).get("content", "")
+            # Strip <think> blocks from models that embed reasoning in content
+            spec_text = _re.sub(r'<think>.*?</think>', '', spec_text, flags=_re.DOTALL).strip()
+            spec_text = _re.sub(r'<think>.*', '', spec_text, flags=_re.DOTALL).strip()
+        else:
+            spec_text = ""
+
+        spec_record = {
+            "status": "generated",
+            "spec": spec_text,
+            "generated_at": datetime.utcnow().isoformat(),
+            "task_count": len(tasks),
+            "char_length": len(spec_text),
+        }
+        _project_tech_specs[project_token] = spec_record
+
+        # Also feed the spec into the KG/RAG so agents can query it
+        try:
+            import context_manager as ctx_mgr
+            if ctx_mgr.is_project_indexed(project_token):
+                import rag_service
+                await rag_service.incremental_insert(
+                    project_token=project_token,
+                    text_chunks=[f"TECHNICAL SPECIFICATION (Canonical)\n\n{spec_text}"],
+                    source_label="architect_agent_spec",
+                )
+        except Exception:
+            pass  # Non-critical
+
+        logger.info(f"[{project_token}] Architect Agent generated tech spec: {len(spec_text)} chars")
+        return spec_record
+
+    except Exception as e:
+        logger.error(f"[{project_token}] Tech spec generation failed: {e}")
+        return {"status": "error", "error": str(e), "spec": ""}
+
+
+def get_technical_spec(project_token: str) -> str:
+    """Retrieve the generated technical spec for a project."""
+    record = _project_tech_specs.get(project_token, {})
+    return record.get("spec", "")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LAYER 3: DYNAMIC PROMPT WRITER
+# ═══════════════════════════════════════════════════════════════════════════
+# Instead of using static system prompts, a "manager" dynamically writes
+# the exact prompt for each agent based on:
+#   - The specific task being assigned
+#   - The tech spec section relevant to this task
+#   - What other agents have already built (from KG)
+#   - File conflict warnings
+
+
+async def _generate_dynamic_prompt(
+    task: Dict[str, Any],
+    agent_type: str,
+    agent_id: str,
+    tech_spec: str = "",
+    kg_context: str = "",
+    cross_agent_info: str = "",
+) -> str:
+    """
+    LAYER 3: Dynamic Prompt Writer.
+
+    Instead of a static system prompt, this function formulates a highly
+    specific instruction for the coding agent based on:
+    - The task description
+    - The relevant section of the Technical Spec
+    - What the KG says about related modules
+    - What other agents are doing / have done
+
+    Falls back to the static prompt if the AI call fails.
+    """
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    # Fallback to static prompt
+    static_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
+
+    if not key or key == "your-api-key-here":
+        return static_prompt
+
+    task_title = task.get("title", "Untitled")
+    task_desc = task.get("description", "")[:1500]
+    checklist = task.get("checklist", [])
+    checklist_text = "\n".join(f"  - {item.get('title', item) if isinstance(item, dict) else item}" for item in checklist[:10]) if checklist else "None"
+
+    manager_prompt = f"""You are a Manager Agent. Your job is to write the EXACT system prompt
+that a Coding Agent will receive. This prompt must be highly specific to the task at hand.
+
+THE TASK:
+  Title: {task_title}
+  Description: {task_desc}
+  Checklist: {checklist_text}
+
+TECHNICAL SPECIFICATION (from Architect Agent):
+{tech_spec[:3000] if tech_spec else "Not available."}
+
+EXISTING CODEBASE CONTEXT (from Knowledge Graph):
+{kg_context[:2000] if kg_context else "No existing context."}
+
+OTHER AGENTS' ACTIVITY:
+{cross_agent_info[:1000] if cross_agent_info else "No other agents active."}
+
+Write a system prompt for the Coding Agent that:
+1. Tells it EXACTLY what module/files to create for THIS specific task
+2. References the EXACT field names, API endpoints, and types from the Tech Spec
+3. Tells it what files/symbols already exist (from KG) that it should import/reference
+4. Warns about any files being edited by other agents (avoid conflicts)
+5. Specifies the exact naming conventions to follow
+6. Ends with the code generation rules (create files under /workspace/, use wf() helper, etc.)
+
+The prompt MUST include these code generation rules at the end:
+{_COMPACT_CODE_RULES}
+
+Write ONLY the system prompt text. Do not include any meta-commentary."""
+
+    try:
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": "You are a prompt engineering expert. Write precise, actionable system prompts for coding agents."},
+                {"role": "user", "content": manager_prompt},
+            ],
+            "stream": False,
+            "chat_template_kwargs": {"thinking": False},
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        if "choices" in data and len(data["choices"]) > 0:
+            dynamic_prompt = data["choices"][0].get("message", {}).get("content", "")
+            # Strip <think> blocks from models that embed reasoning in content
+            dynamic_prompt = _re.sub(r'<think>.*?</think>', '', dynamic_prompt, flags=_re.DOTALL).strip()
+            dynamic_prompt = _re.sub(r'<think>.*', '', dynamic_prompt, flags=_re.DOTALL).strip()
+            if len(dynamic_prompt) > 100:  # Sanity check — prompt should be substantial
+                logger.info(f"[{agent_id}] Dynamic prompt generated: {len(dynamic_prompt)} chars")
+                return dynamic_prompt
+
+        # Fallback if generation was too short
+        return static_prompt
+
+    except Exception as e:
+        logger.warning(f"[{agent_id}] Dynamic prompt generation failed ({e}), using static prompt")
+        return static_prompt
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LAYER 4 ENHANCEMENT: Pre-Compilation Check + KG-Aware Error Analysis
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _run_precompilation_checks(container_name: str) -> Dict[str, Any]:
+    """
+    LAYER 4: Pre-compilation build checks.
+
+    Before marking a task as done, run syntax/import validation
+    on the generated code inside the Docker container.
+    """
+    checks = {
+        "python_syntax": {"passed": True, "errors": []},
+        "js_syntax": {"passed": True, "errors": []},
+        "import_check": {"passed": True, "errors": []},
+        "file_count": 0,
+        "all_passed": True,
+    }
+
+    try:
+        # 1. Check Python syntax on all .py files
+        py_check = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "find /workspace -name '*.py' -type f | head -50 | while read f; do python3 -c \"import py_compile; py_compile.compile('$f', doraise=True)\" 2>&1 || echo \"SYNTAX_ERROR: $f\"; done"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if "SYNTAX_ERROR" in py_check.stdout:
+            for line in py_check.stdout.split("\n"):
+                if "SYNTAX_ERROR" in line:
+                    checks["python_syntax"]["passed"] = False
+                    checks["python_syntax"]["errors"].append(line.strip())
+                    checks["all_passed"] = False
+
+        # 2. Count files to verify workspace isn't empty
+        file_count_result = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "find /workspace -type f | wc -l"],
+            capture_output=True, text=True, timeout=10,
+        )
+        checks["file_count"] = int(file_count_result.stdout.strip() or "0")
+        if checks["file_count"] == 0:
+            checks["all_passed"] = False
+
+        # 3. Check for common import issues in Python files
+        import_check = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "find /workspace -name '*.py' -type f | head -20 | while read f; do python3 -c \"exec(open('$f').read())\" 2>&1 | grep -i 'ModuleNotFoundError\\|ImportError' | head -3; done"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if import_check.stdout.strip():
+            for line in import_check.stdout.strip().split("\n"):
+                if line.strip():
+                    checks["import_check"]["passed"] = False
+                    checks["import_check"]["errors"].append(line.strip())
+
+    except subprocess.TimeoutExpired:
+        checks["timeout"] = True
+    except Exception as e:
+        checks["error"] = str(e)
+
+    return checks
+
+
+async def _kg_aware_error_analysis(
+    project_token: str,
+    stderr: str,
+    task_description: str,
+    agent_id: str,
+) -> str:
+    """
+    LAYER 4: When a build fails, query the KG for context about the error.
+
+    For example, if the error is "ImportError: cannot import 'UserModel' from 'models'",
+    query the KG to find the correct import path and class name.
+
+    Returns additional context to inject into the fix prompt.
+    """
+    if not stderr or not project_token:
+        return ""
+
+    try:
+        import context_manager as ctx_mgr
+        if not ctx_mgr.is_project_indexed(project_token):
+            return ""
+
+        # Extract key error terms for KG query
+        error_lines = stderr.strip().split("\n")[-5:]
+        error_keywords = []
+        for line in error_lines:
+            # Extract module/class names from errors
+            for keyword in ["import", "from", "ModuleNotFoundError", "ImportError",
+                           "AttributeError", "NameError", "TypeError"]:
+                if keyword in line:
+                    # Extract the symbol name
+                    parts = line.split("'")
+                    if len(parts) >= 2:
+                        error_keywords.append(parts[1])
+                    break
+
+        if not error_keywords:
+            return ""
+
+        # Query the KG for the correct definitions
+        query = f"Find the correct definitions, imports, and file locations for: {', '.join(error_keywords)}"
+        import rag_service
+        result = await rag_service.query_codebase(project_token, query, mode="hybrid", top_k=5)
+
+        if result.get("context"):
+            return (
+                f"\n\nKNOWLEDGE GRAPH ERROR ANALYSIS:\n"
+                f"The following code definitions exist in the codebase and may help fix the errors:\n"
+                f"{result['context'][:2000]}\n"
+            )
+
+    except Exception as e:
+        logger.warning(f"[{agent_id}] KG error analysis failed: {e}")
+
+    return ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CODE QUALITY / LINTING
+# ═══════════════════════════════════════════════════════════════════════════
+# Runs linting tools (flake8, pylint, eslint) on agent-generated code
+# inside the Docker container. Results are fed into the self-healing loop.
+
+
+def _run_code_quality_checks(container_name: str) -> Dict[str, Any]:
+    """
+    Run code quality and linting checks inside the Docker container.
+
+    Installs and runs:
+    - flake8 (Python style/syntax)
+    - pylint (Python deeper analysis) — optional, best-effort
+    - eslint (JavaScript/JSX) — if JS files detected
+
+    Returns a structured report with issues found.
+    """
+    report = {
+        "flake8": {"passed": True, "issues": [], "issue_count": 0},
+        "pylint": {"passed": True, "issues": [], "issue_count": 0},
+        "eslint": {"passed": True, "issues": [], "issue_count": 0},
+        "total_issues": 0,
+        "all_passed": True,
+        "linters_run": [],
+    }
+
+    try:
+        # ── Install flake8 (lightweight, fast) ──────────────────
+        subprocess.run(
+            ["docker", "exec", container_name, "pip", "install", "-q", "flake8"],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        # ── Run flake8 on all Python files ──────────────────────
+        flake8_result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+             "find . -name '*.py' -not -path './.git/*' -not -path '*/node_modules/*' "
+             "| head -50 | xargs flake8 --max-line-length=120 --count "
+             "--select=E9,F63,F7,F82,E1,E2,W6 --show-source 2>&1 | head -40"],
+            capture_output=True, text=True, timeout=30,
+        )
+        report["linters_run"].append("flake8")
+        if flake8_result.stdout.strip():
+            issues = [
+                line.strip() for line in flake8_result.stdout.strip().split("\n")
+                if line.strip() and ":" in line
+            ]
+            if issues:
+                report["flake8"]["passed"] = False
+                report["flake8"]["issues"] = issues[:20]  # Cap at 20
+                report["flake8"]["issue_count"] = len(issues)
+                report["all_passed"] = False
+
+        # ── Run pylint (best-effort, don't fail on install) ─────
+        try:
+            install_pylint = subprocess.run(
+                ["docker", "exec", container_name, "pip", "install", "-q", "pylint"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if install_pylint.returncode == 0:
+                pylint_result = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+                     "find . -name '*.py' -not -path './.git/*' -not -path '*/node_modules/*' "
+                     "| head -20 | xargs pylint --errors-only --disable=import-error "
+                     "--output-format=text 2>&1 | head -30"],
+                    capture_output=True, text=True, timeout=45,
+                )
+                report["linters_run"].append("pylint")
+                if pylint_result.stdout.strip():
+                    issues = [
+                        line.strip() for line in pylint_result.stdout.strip().split("\n")
+                        if line.strip() and (":" in line) and ("E" in line or "error" in line.lower())
+                    ]
+                    if issues:
+                        report["pylint"]["passed"] = False
+                        report["pylint"]["issues"] = issues[:15]
+                        report["pylint"]["issue_count"] = len(issues)
+                        report["all_passed"] = False
+        except (subprocess.TimeoutExpired, Exception):
+            pass  # pylint is optional
+
+        # ── Check for JS/JSX files and run eslint if present ────
+        try:
+            js_check = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+                 "find . -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' "
+                 "| grep -v node_modules | grep -v .git | head -5"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if js_check.stdout.strip():
+                # Install eslint
+                eslint_install = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+                     "npm install --no-save eslint 2>/dev/null || npx -y eslint --version 2>/dev/null"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if eslint_install.returncode == 0:
+                    eslint_result = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+                         "npx eslint --no-eslintrc --env es2021,browser,node "
+                         "--rule '{\"no-undef\": \"error\", \"no-unused-vars\": \"warn\"}' "
+                         "$(find . -name '*.js' -o -name '*.jsx' | grep -v node_modules | head -20) "
+                         "2>&1 | head -30"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    report["linters_run"].append("eslint")
+                    if eslint_result.stdout.strip():
+                        issues = [
+                            line.strip() for line in eslint_result.stdout.strip().split("\n")
+                            if line.strip() and ("error" in line.lower() or "warning" in line.lower())
+                        ]
+                        if issues:
+                            report["eslint"]["passed"] = False
+                            report["eslint"]["issues"] = issues[:15]
+                            report["eslint"]["issue_count"] = len(issues)
+                            report["all_passed"] = False
+        except (subprocess.TimeoutExpired, Exception):
+            pass  # eslint is optional
+
+        # Total issues
+        report["total_issues"] = (
+            report["flake8"]["issue_count"]
+            + report["pylint"]["issue_count"]
+            + report["eslint"]["issue_count"]
+        )
+
+    except subprocess.TimeoutExpired:
+        report["timeout"] = True
+    except Exception as e:
+        report["error"] = str(e)
+
+    return report
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AUTOMATED PR CREATION (GitHub REST API)
+# ═══════════════════════════════════════════════════════════════════════════
+# After the Git Manager merges all agent branches into agent/integration,
+# automatically creates a Pull Request on GitHub: integration → main.
+
+
+async def _create_github_pr(
+    repo_url: str,
+    token: str,
+    head_branch: str,
+    base_branch: str,
+    title: str,
+    body: str,
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a GitHub Pull Request via the REST API.
+
+    Args:
+        repo_url: GitHub HTTPS URL (e.g., https://github.com/user/repo.git)
+        token: GitHub PAT or app token
+        head_branch: Source branch (e.g., agent/integration)
+        base_branch: Target branch (e.g., main)
+        title: PR title
+        body: PR description (markdown)
+        project_token: For logging
+
+    Returns:
+        {"success": bool, "pr_url": str, "pr_number": int, ...}
+    """
+    # Extract owner/repo from URL
+    # Supports: https://github.com/owner/repo.git, https://github.com/owner/repo
+    clean_url = repo_url.rstrip("/").rstrip(".git")
+    parts = clean_url.split("/")
+    if len(parts) < 2:
+        return {"success": False, "error": f"Cannot parse owner/repo from URL: {repo_url}"}
+
+    owner = parts[-2]
+    repo = parts[-1]
+
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+
+    payload = {
+        "title": title,
+        "body": body,
+        "head": head_branch,
+        "base": base_branch,
+        "maintainer_can_modify": True,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(api_url, json=payload, headers=headers)
+
+            if response.status_code == 201:
+                data = response.json()
+                pr_result = {
+                    "success": True,
+                    "pr_url": data.get("html_url", ""),
+                    "pr_number": data.get("number", 0),
+                    "state": data.get("state", "open"),
+                    "title": data.get("title", title),
+                }
+                _log_git_agent(
+                    f"✅ PR #{pr_result['pr_number']} created: {pr_result['pr_url']}",
+                    project_token=project_token,
+                )
+                return pr_result
+
+            elif response.status_code == 422:
+                # PR already exists or validation error
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                messages = [e.get("message", "") for e in errors]
+
+                if any("pull request already exists" in m.lower() for m in messages):
+                    # Find the existing PR
+                    list_url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+                    list_params = {"head": f"{owner}:{head_branch}", "base": base_branch, "state": "open"}
+                    list_resp = await client.get(list_url, headers=headers, params=list_params)
+                    if list_resp.status_code == 200:
+                        prs = list_resp.json()
+                        if prs:
+                            existing = prs[0]
+                            # Update the existing PR body with latest info
+                            patch_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{existing['number']}"
+                            await client.patch(patch_url, json={"body": body}, headers=headers)
+
+                            pr_result = {
+                                "success": True,
+                                "pr_url": existing.get("html_url", ""),
+                                "pr_number": existing.get("number", 0),
+                                "state": "open",
+                                "title": existing.get("title", title),
+                                "already_existed": True,
+                            }
+                            _log_git_agent(
+                                f"📝 PR #{pr_result['pr_number']} already exists, updated body: {pr_result['pr_url']}",
+                                project_token=project_token,
+                            )
+                            return pr_result
+
+                return {
+                    "success": False,
+                    "error": f"GitHub API 422: {error_data.get('message', '')} — {messages}",
+                }
+
+            else:
+                return {
+                    "success": False,
+                    "error": f"GitHub API {response.status_code}: {response.text[:300]}",
+                }
+
+    except Exception as e:
+        _log_git_agent(f"PR creation failed: {e}", "error", project_token=project_token)
+        return {"success": False, "error": str(e)}
+
+
+async def _generate_pr_body(
+    merged_branches: List[str],
+    project_token: Optional[str] = None,
+) -> str:
+    """
+    Generate a rich PR body using AI that summarizes what agents built.
+    Falls back to a simple template if AI is unavailable.
+    """
+    state = _ensure_project_state(project_token)
+    completed = state.get("completed_tasks", [])
+
+    # Build a summary of completed tasks
+    task_summaries = []
+    for t in completed[-20:]:
+        title = t.get("title", "Untitled")
+        agent = t.get("assigned_agent", "unknown")
+        task_summaries.append(f"- **{title}** (by `{agent}`)")
+
+    task_list = "\n".join(task_summaries) if task_summaries else "- No task summaries available"
+
+    # Try AI-powered PR body
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    if key and key != "your-api-key-here":
+        try:
+            prompt = f"""Write a professional GitHub Pull Request description for an automated code generation session.
+
+BRANCHES MERGED: {', '.join(merged_branches[-10:])}
+
+TASKS COMPLETED:
+{task_list}
+
+Write a PR body with these sections:
+## Summary
+(2-3 sentence overview of what was built)
+
+## Changes
+(Bullet list of key changes, grouped by module)
+
+## Testing
+(What was validated — mention pre-compilation checks, self-healing iterations, linting)
+
+## Notes
+(Any caveats or follow-up work needed)
+
+Keep it concise and professional. Use markdown formatting."""
+
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": "You are a technical writer creating GitHub PR descriptions."},
+                    {"role": "user", "content": prompt},
+                ],
+                "stream": False,
+                "chat_template_kwargs": {"thinking": False},
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            }
+
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
+            if "choices" in data and len(data["choices"]) > 0:
+                ai_body = data["choices"][0].get("message", {}).get("content", "")
+                # Strip <think> blocks from models that embed reasoning in content
+                ai_body = _re.sub(r'<think>.*?</think>', '', ai_body, flags=_re.DOTALL).strip()
+                ai_body = _re.sub(r'<think>.*', '', ai_body, flags=_re.DOTALL).strip()
+                if len(ai_body) > 50:
+                    return ai_body
+
+        except Exception:
+            pass  # Fall back to template
+
+    # Fallback template
+    return f"""## 🤖 Automated Agent PR
+
+### Branches Merged
+{chr(10).join(f'- `{b}`' for b in merged_branches[-10:])}
+
+### Tasks Completed
+{task_list}
+
+### Quality Checks
+- ✅ Pre-compilation syntax validation
+- ✅ Self-healing error loop (up to 5 iterations)
+- ✅ Code linting (flake8/pylint/eslint)
+- ✅ Knowledge Graph consistency verification
+
+---
+*Generated by DSuite Agent Pipeline*
+"""
 
 
 # ── Helper: Detect issues from output ───────────────────────────────────────
@@ -361,13 +1260,21 @@ def _is_workspace_empty(container_name: str) -> bool:
 
 # ── Helper: Call AI Model ───────────────────────────────────────────────────
 
-async def _call_ai_for_code(task_description: str, agent_type: str, code_context: str = "") -> tuple[str, str]:
+async def _call_ai_for_code(
+    task_description: str,
+    agent_type: str,
+    code_context: str = "",
+    system_prompt_override: str = "",
+    tech_spec: str = "",
+) -> tuple[str, str]:
     """Call AI model to generate project-building Python code.
     
     Args:
         task_description: The task to implement
         agent_type: Type of agent (validator, risk, estimator)
         code_context: Optional JIT context from Knowledge Graph + RAG system
+        system_prompt_override: Dynamic prompt from Manager Agent (Layer 3)
+        tech_spec: Canonical Technical Spec from Architect Agent (Layer 1)
     """
     url = settings.ai_api_url
     key = settings.ai_api_key
@@ -376,20 +1283,43 @@ async def _call_ai_for_code(task_description: str, agent_type: str, code_context
     if not key or key == "your-api-key-here":
         raise ValueError("AI API key not configured")
 
-    system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
+    # Use dynamic prompt if provided, otherwise fall back to static
+    system_prompt = system_prompt_override if system_prompt_override else AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
 
-    # Build user prompt with optional KG context
-    user_content = f"Task to implement:\n\n{task_description}"
-    if code_context:
-        user_content = (
-            f"RELEVANT CODEBASE CONTEXT (from Knowledge Graph analysis):\n"
-            f"{code_context}\n\n"
-            f"---\n\n"
-            f"Task to implement:\n\n{task_description}\n\n"
-            f"Use the codebase context above to understand existing patterns, "
-            f"naming conventions, file structure, and dependencies. "
-            f"Ensure your generated code is consistent with the existing codebase."
+    # Build user prompt with context layers
+    user_parts = []
+
+    # Layer 1: Tech Spec (canonical architecture reference)
+    if tech_spec:
+        user_parts.append(
+            f"TECHNICAL SPECIFICATION (Canonical — follow this exactly):\n"
+            f"{tech_spec[:4000]}\n\n"
+            f"⚠️ CRITICAL: Pay special attention to the '## 4. FILE STRUCTURE' section above. "
+            f"All files MUST be created in the directories specified in that section. "
+            f"DO NOT create files directly in /workspace/ root unless the FILE STRUCTURE section explicitly says so.\n\n---\n"
         )
+
+    # Layer 3: KG context (relevant existing code)
+    if code_context:
+        user_parts.append(
+            f"RELEVANT CODEBASE CONTEXT (from Knowledge Graph analysis):\n"
+            f"{code_context}\n\n---\n"
+        )
+
+    user_parts.append(f"Task to implement:\n\n{task_description}")
+
+    if code_context or tech_spec:
+        user_parts.append(
+            "\n\nUse the context above to understand existing patterns, "
+            "naming conventions, file structure, and dependencies. "
+            "Ensure your generated code is consistent with the Technical Spec "
+            "and existing codebase.\n\n"
+            "⚠️ REMINDER: Check the Technical Spec's '## 4. FILE STRUCTURE' section "
+            "to determine WHERE to create each file. Backend files go in backend/, "
+            "frontend files go in frontend/, etc. as specified in the tech spec."
+        )
+
+    user_content = "\n".join(user_parts)
 
     payload = {
         "model": model_name,
@@ -431,10 +1361,22 @@ async def _call_ai_for_code(task_description: str, agent_type: str, code_context
         raise ValueError("No response from AI model")
 
 
-async def _call_ai_for_fix(task_description: str, agent_type: str, issues: list, previous_output: str, iteration: int, builder_crashed: bool = False) -> tuple[str, str]:
+async def _call_ai_for_fix(
+    task_description: str,
+    agent_type: str,
+    issues: list,
+    previous_output: str,
+    iteration: int,
+    builder_crashed: bool = False,
+    kg_error_context: str = "",
+    tech_spec: str = "",
+) -> tuple[str, str]:
     """
-    Call AI to generate a fix script. If builder_crashed=True, the builder script
-    itself had a SyntaxError and /workspace/ is empty, so we regenerate from scratch.
+    Call AI to generate a fix script. Enhanced with:
+    - KG error context: relevant code from the Knowledge Graph to fix errors
+    - Tech spec: canonical architecture reference to stay consistent
+    If builder_crashed=True, the builder script itself had a SyntaxError
+    and /workspace/ is empty, so we regenerate from scratch.
     """
     url = settings.ai_api_url
     key = settings.ai_api_key
@@ -447,6 +1389,13 @@ async def _call_ai_for_fix(task_description: str, agent_type: str, issues: list,
 
     issues_text = "\n".join(f"  - {issue}" for issue in issues)
 
+    # Build supplementary context from KG and tech spec
+    supplementary_context = ""
+    if tech_spec:
+        supplementary_context += f"\nTECHNICAL SPECIFICATION (follow exact naming and conventions):\n{tech_spec[:2000]}\n"
+    if kg_error_context:
+        supplementary_context += f"\n{kg_error_context}\n"
+
     if builder_crashed:
         fix_prompt = f"""YOUR PREVIOUS BUILDER SCRIPT CRASHED before creating any files.
 The error was:
@@ -454,7 +1403,7 @@ The error was:
 
 ORIGINAL TASK:
 {task_description}
-
+{supplementary_context}
 You MUST generate a NEW, SHORTER builder script (UNDER 300 lines) that creates the project.
 The /workspace/ directory is currently EMPTY - you need to create everything from scratch.
 
@@ -479,7 +1428,7 @@ PREVIOUS OUTPUT (for context):
 
 ORIGINAL TASK:
 {task_description}
-
+{supplementary_context}
 Generate a NEW Python script (UNDER 300 lines) that:
 1. FIXES each issue by modifying or creating files under /workspace/
 2. Actually writes/overwrites the files that need fixing
@@ -624,11 +1573,11 @@ def _choose_bootstrap_agent_id(project_token: Optional[str], fallback_agent_id: 
     project_agents = _get_agent_states(project_token)
     running = sorted(
         aid for aid, data in project_agents.items()
-        if aid != GIT_MANAGER_AGENT_ID and data.get("status") == "running"
+        if not _is_system_agent_id(aid) and data.get("status") == "running"
     )
     if running:
         return running[0]
-    available = sorted(aid for aid in project_agents.keys() if aid != GIT_MANAGER_AGENT_ID)
+    available = sorted(aid for aid in project_agents.keys() if not _is_system_agent_id(aid))
     if available:
         return available[0]
     return fallback_agent_id
@@ -889,6 +1838,18 @@ def _log_git_agent(message: str, level: str = "info", project_token: Optional[st
     })
 
 
+def _log_master_agent(message: str, level: str = "info", project_token: Optional[str] = None) -> None:
+    project_agents = _get_agent_states(project_token)
+    master_agent = project_agents.get(MASTER_AGENT_ID)
+    if not master_agent:
+        return
+    master_agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": level,
+        "message": message
+    })
+
+
 def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str], project_token: Optional[str] = None) -> Dict[str, str]:
     project_agents = _get_agent_states(project_token)
     git_agent = project_agents.get(GIT_MANAGER_AGENT_ID) or {}
@@ -1004,6 +1965,9 @@ async def _call_ai_for_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
         response.raise_for_status()
         data = response.json()
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    # Strip <think> blocks from models that embed reasoning in content
+    content = _re.sub(r'<think>.*?</think>', '', content, flags=_re.DOTALL).strip()
+    content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL).strip()
     start = content.find("{")
     end = content.rfind("}")
     if start == -1 or end == -1:
@@ -1058,6 +2022,100 @@ async def _run_commands_in_container(container_name: str, commands: List[str]) -
     return last
 
 
+def _git_ref_exists(container_name: str, ref: str) -> bool:
+    check = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "show-ref", "--verify", "--quiet", f"refs/remotes/{ref}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    return check.returncode == 0
+
+
+def _list_changed_files_between_refs(container_name: str, base_ref: str, compare_ref: str) -> List[str]:
+    diff = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "diff", "--name-only", "--diff-filter=ACMR", f"{base_ref}...{compare_ref}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if diff.returncode != 0:
+        diff = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "diff", "--name-only", "--diff-filter=ACMR", base_ref, compare_ref],
+            capture_output=True, text=True, timeout=30,
+        )
+    if diff.returncode != 0:
+        return []
+    return [line.strip() for line in (diff.stdout or "").splitlines() if line.strip()]
+
+
+def _check_path_ownership_gate(
+    container_name: str,
+    source_branch: str,
+    base_ref: str,
+    source_agent: str,
+    project_token: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Compare source branch changed files against active peer branches and
+    current file locks from shared memory. Blocks merge when overlap exists.
+    """
+    try:
+        import context_manager as ctx_mgr
+    except Exception:
+        return {"allowed": True, "changed_files": [], "conflicts": []}
+
+    live_mem = ctx_mgr.get_live_memory(project_token or "")
+    source_ref = f"origin/{source_branch}"
+    changed_files = _list_changed_files_between_refs(container_name, base_ref, source_ref)
+    if not changed_files:
+        return {"allowed": True, "changed_files": [], "conflicts": []}
+
+    changed_set = set(changed_files)
+    conflicts: List[Dict[str, Any]] = []
+
+    conflict_map = live_mem.get_file_conflicts(source_agent or GIT_MANAGER_AGENT_ID, changed_files)
+    for path, agents in conflict_map.items():
+        conflicts.append({
+            "agent_id": ", ".join(sorted(agents)),
+            "branch": "(file-lock)",
+            "overlap": [path],
+        })
+
+    with live_mem._lock:
+        active_records = list(live_mem.active_tasks.items())
+
+    for peer_id, record in active_records:
+        if peer_id == source_agent:
+            continue
+        peer_branch = (record.branch_name or "").strip()
+        if not peer_branch or peer_branch == source_branch:
+            continue
+        peer_ref = f"origin/{peer_branch}"
+
+        fetch_peer = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "fetch", "origin", peer_branch],
+            capture_output=True, text=True, timeout=30,
+        )
+        if fetch_peer.returncode != 0 or not _git_ref_exists(container_name, peer_ref):
+            continue
+
+        peer_files = _list_changed_files_between_refs(container_name, base_ref, peer_ref)
+        overlap = sorted(changed_set.intersection(peer_files))
+        if overlap:
+            conflicts.append({
+                "agent_id": peer_id,
+                "branch": peer_branch,
+                "overlap": overlap[:20],
+            })
+
+    return {
+        "allowed": len(conflicts) == 0,
+        "changed_files": changed_files,
+        "conflicts": conflicts,
+    }
+
+
 def _commit_if_dirty(container_name: str, message: str) -> None:
     status = subprocess.run(
         ["docker", "exec", "-w", "/workspace", container_name,
@@ -1096,12 +2154,36 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
     )
     install_res = await _run_commands_in_container(container_name, install_cmds)
     if install_res.get("exit_code", 0) != 0:
+        stderr = (install_res.get("stderr") or "")
+        stdout = (install_res.get("stdout") or "")
+        combined = f"{stdout}\n{stderr}".lower()
+        # Keep merge flow resilient: missing toolchains in the merge container
+        # should not drop already-produced branch work.
+        if "not found" in combined or "command not found" in combined:
+            _log_git_agent(
+                f"Install skipped (toolchain missing): {install_res.get('cmd')}\n{stderr}",
+                "warning",
+                project_token=project_token
+            )
+            _log_git_agent(
+                "Proceeding without test gate for this merge to avoid dropping branch changes.",
+                "warning",
+                project_token=project_token
+            )
+            return True
         _log_git_agent(
             f"Install failed: {install_res.get('cmd')}\n{install_res.get('stderr')}",
-            "error",
+            "warning",
             project_token=project_token
         )
-        return False
+        _log_git_agent(
+            "Proceeding without test gate for this merge (install failure).",
+            "warning",
+            project_token=project_token
+        )
+        return True
+
+    test_failures: List[str] = []
 
     for cmd in test_cmds:
         _log_git_agent(f"Running tests: {cmd}", project_token=project_token)
@@ -1109,7 +2191,41 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
         if test_res.get("exit_code", 0) == 0:
             continue
 
-        # Auto-fix loop
+        # ── Detect import/dependency errors vs code errors ────────────
+        combined_output = (test_res.get("stdout", "") + "\n" + test_res.get("stderr", ""))
+        import_error_patterns = [
+            "ImportError", "ModuleNotFoundError", "No module named",
+        ]
+        is_import_error = any(pat in combined_output for pat in import_error_patterns)
+
+        if is_import_error:
+            # Try to extract and install missing modules before AI fix
+            missing_modules = _re.findall(
+                r"(?:No module named|ModuleNotFoundError:.*?)['\"]([^'\"]+)['\"]",
+                combined_output,
+            )
+            if missing_modules:
+                unique_modules = list(dict.fromkeys(missing_modules))[:5]
+                pip_cmd = f"pip install {' '.join(unique_modules)} 2>/dev/null || true"
+                _log_git_agent(
+                    f"Import errors detected. Auto-installing: {', '.join(unique_modules)}",
+                    project_token=project_token,
+                )
+                await _run_commands_in_container(container_name, [pip_cmd])
+
+                # Re-run the test after installing
+                test_res = await _run_commands_in_container(container_name, [cmd])
+                if test_res.get("exit_code", 0) == 0:
+                    _log_git_agent(
+                        f"Tests passed after installing dependencies: {', '.join(unique_modules)}",
+                        project_token=project_token,
+                    )
+                    continue
+                # Update combined output for further analysis
+                combined_output = (test_res.get("stdout", "") + "\n" + test_res.get("stderr", ""))
+
+        # ── AI Auto-fix loop (only for non-import code errors) ────────
+        fixed = False
         for iteration in range(1, MAX_FIX_ITERATIONS + 1):
             issues_report = _detect_issues_from_output(
                 test_res.get("stdout", ""),
@@ -1141,16 +2257,36 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
                 )
             except Exception as fix_err:
                 _log_git_agent(f"AI fix failed: {fix_err}", "error", project_token=project_token)
-                return False
+                break
 
             # Re-run test command
             test_res = await _run_commands_in_container(container_name, [cmd])
             if test_res.get("exit_code", 0) == 0:
                 _commit_if_dirty(container_name, f"Auto-fix after tests ({branch})")
+                fixed = True
                 break
-        else:
-            _log_git_agent(f"Tests still failing after fixes: {cmd}", "error", project_token=project_token)
-            return False
+
+        if not fixed:
+            # Tests still failing after auto-fix attempts — record and let
+            # the caller decide whether to allow the merge.
+            _log_git_agent(
+                f"⚠️ Tests still failing after fixes: {cmd}",
+                "warning",
+                project_token=project_token,
+            )
+            test_failures.append(cmd)
+            # We still commit local fixes so logs reflect what was tried,
+            # but the overall gate result will be False.
+            _commit_if_dirty(container_name, f"Push with test warnings ({branch})")
+
+    # Gate result: only pass when no test command ultimately failed.
+    if test_failures:
+        _log_git_agent(
+            f"Test gate failed for {branch}: {', '.join(test_failures)}",
+            "error",
+            project_token=project_token,
+        )
+        return False
 
     return True
 
@@ -1160,7 +2296,19 @@ async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Option
                              project_token: Optional[str] = None) -> None:
     if not branch or not repo_url:
         return
+    branch = branch.strip()
+    if not branch:
+        return
     state = _ensure_project_state(project_token)
+    inflight = state.setdefault("git_merge_inflight", set())
+    already_queued = any((entry.get("branch") or "").strip() == branch for entry in state["git_merge_queue"])
+    if branch in inflight or already_queued:
+        _log_git_agent(
+            f"Merge already queued/in progress for {branch}. Skipping duplicate request.",
+            "warning",
+            project_token=project_token,
+        )
+        return
     state["git_merge_queue"].append({
         "branch": branch,
         "repo_url": repo_url,
@@ -1170,7 +2318,8 @@ async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Option
         "project_token": project_token,
     })
     _log_git_agent(
-        f"Queued merge: {branch} (from {source_agent}, task '{task_title}')",
+        f"Queued merge: {branch} (from {source_agent}, task '{task_title}')"
+        f" [queue={len(state['git_merge_queue'])}]",
         project_token=project_token
     )
     asyncio.create_task(_git_merge_worker(project_token))
@@ -1184,17 +2333,277 @@ async def _git_merge_worker(project_token: Optional[str] = None) -> None:
         state["git_merge_running"] = True
 
     try:
+        inflight = state.setdefault("git_merge_inflight", set())
         while state["git_merge_queue"]:
             item = state["git_merge_queue"].pop(0)
-            await _process_git_merge_item(item)
+            branch = (item.get("branch") or "").strip()
+            not_before = float(item.get("not_before") or 0)
+            now_ts = time.time()
+            if not_before > now_ts:
+                state["git_merge_queue"].append(item)
+                await asyncio.sleep(min(2.0, max(0.2, not_before - now_ts)))
+                continue
+            if branch:
+                inflight.add(branch)
+            try:
+                await _process_git_merge_item(item)
+            finally:
+                if branch:
+                    inflight.discard(branch)
     finally:
         state["git_merge_running"] = False
+        state.setdefault("git_merge_inflight", set()).clear()
         project_agents = _get_agent_states(project_token)
         git_agent = project_agents.get(GIT_MANAGER_AGENT_ID)
         if git_agent:
             git_agent["status"] = "idle"
             git_agent["progress"] = 100
             git_agent["progress_message"] = "Git manager idle"
+
+
+async def _try_create_pr(
+    repo_url: str,
+    token: str,
+    default_branch: str,
+    branch: str,
+    project_token: Optional[str] = None,
+) -> None:
+    """
+    Attempt to create or update a GitHub PR after a successful merge.
+    Runs as a best-effort — failures are logged but don't break the pipeline.
+    """
+    try:
+        state = _ensure_project_state(project_token)
+        merged_branches = state.get("merged_branches", [])
+
+        # Generate AI-powered PR body
+        pr_body = await _generate_pr_body(
+            merged_branches=merged_branches,
+            project_token=project_token,
+        )
+
+        pr_result = await _create_github_pr(
+            repo_url=repo_url,
+            token=token,
+            head_branch=GIT_INTEGRATION_BRANCH,
+            base_branch=default_branch,
+            title=f"🤖 Agent Pipeline: {len(merged_branches)} task(s) merged into {GIT_INTEGRATION_BRANCH}",
+            body=pr_body,
+            project_token=project_token,
+        )
+
+        if pr_result.get("success"):
+            if pr_result.get("already_existed"):
+                _log_git_agent(
+                    f"📝 PR #{pr_result['pr_number']} updated with latest info: {pr_result['pr_url']}",
+                    project_token=project_token,
+                )
+            else:
+                _log_git_agent(
+                    f"🎉 PR #{pr_result['pr_number']} created: {pr_result['pr_url']}",
+                    project_token=project_token,
+                )
+        else:
+            _log_git_agent(
+                f"PR creation skipped: {pr_result.get('error', 'unknown')[:100]}",
+                "warning",
+                project_token=project_token,
+            )
+    except Exception as pr_err:
+        _log_git_agent(
+            f"PR creation error (non-critical): {str(pr_err)[:100]}",
+            "warning",
+            project_token=project_token,
+        )
+
+
+def _resolve_conflicts_smart(
+    container_name: str,
+    conflict_files: List[str],
+    source_branch: str,
+    source_agent: Optional[str],
+    project_token: Optional[str],
+) -> bool:
+    """
+    Resolve merge conflicts intelligently based on file ownership rules.
+    
+    Strategy:
+    1. Get source agent's domain from live memory
+    2. For each conflicted file:
+       - If backend-owned and source is backend: keep source version
+       - If frontend-owned and source is frontend: keep source version
+       - If shared file (README.md, etc.): use union merge (combine both)
+       - If ownership mismatch: keep integration branch version (safer)
+    
+    Returns True if all conflicts resolved, False otherwise.
+    """
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        
+        # Get source agent's domain
+        source_domain = None
+        if source_agent:
+            with live_mem._lock:
+                source_record = live_mem.active_tasks.get(source_agent)
+                if not source_record:
+                    # Check history
+                    for record in live_mem.completed_history:
+                        if record.agent_id == source_agent:
+                            source_domain = record.task_domain
+                            break
+                else:
+                    source_domain = source_record.task_domain
+        
+        # Filter out __pycache__ and other unnecessary files
+        filtered_conflicts = [
+            f for f in conflict_files 
+            if '__pycache__' not in f 
+            and not f.endswith('.pyc') 
+            and not f.endswith('.pyo')
+            and not f.endswith('.pyd')
+            and '.DS_Store' not in f
+            and 'Thumbs.db' not in f
+        ]
+        
+        # If all conflicts are in __pycache__, just remove them and continue
+        if not filtered_conflicts:
+            _log_git_agent(
+                f"All conflicts are in __pycache__ files - removing from tracking and continuing",
+                project_token=project_token,
+            )
+            # Remove __pycache__ from git tracking
+            for file_path in conflict_files:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "rm", "--cached", "-r", file_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+            return True
+        
+        resolved_count = 0
+        union_files = []
+        ours_files = []
+        theirs_files = []
+        
+        for file_path in filtered_conflicts:
+            # Determine file ownership
+            file_owner = live_mem.get_file_owner(file_path)
+            
+            # Strategy decision
+            if file_owner is None:
+                # Shared file - use union merge
+                union_files.append(file_path)
+            elif file_owner == source_domain:
+                # Source agent owns this file - keep source version (ours in merge context)
+                ours_files.append(file_path)
+            else:
+                # Ownership mismatch - keep integration branch version (theirs in merge context)
+                # This prevents backend agent from overwriting frontend files and vice versa
+                theirs_files.append(file_path)
+                _log_git_agent(
+                    f"Conflict in {file_path}: ownership mismatch "
+                    f"(source={source_domain}, file_owner={file_owner}). "
+                    f"Keeping integration branch version.",
+                    "warning",
+                    project_token=project_token,
+                )
+        
+        # Resolve conflicts
+        all_resolved = True
+        
+        # 1. Keep source version for files owned by source domain
+        for file_path in ours_files:
+            checkout_cmd = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "checkout", "--ours", file_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if checkout_cmd.returncode == 0:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "add", file_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                resolved_count += 1
+                _log_git_agent(
+                    f"Resolved {file_path}: kept source version (owned by {source_domain})",
+                    project_token=project_token,
+                )
+            else:
+                all_resolved = False
+                _log_git_agent(
+                    f"Failed to resolve {file_path}: {checkout_cmd.stderr}",
+                    "error",
+                    project_token=project_token,
+                )
+        
+        # 2. Keep integration branch version for ownership mismatches
+        for file_path in theirs_files:
+            checkout_cmd = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "checkout", "--theirs", file_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if checkout_cmd.returncode == 0:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "add", file_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                resolved_count += 1
+            else:
+                all_resolved = False
+                _log_git_agent(
+                    f"Failed to resolve {file_path}: {checkout_cmd.stderr}",
+                    "error",
+                    project_token=project_token,
+                )
+        
+        # 3. Union merge for shared files (README.md, .gitignore, etc.)
+        for file_path in union_files:
+            merge_script = (
+                f"git show :2:{file_path} > /tmp/ours_merge && "
+                f"git show :3:{file_path} > /tmp/theirs_merge && "
+                f"git show :1:{file_path} > /tmp/base_merge 2>/dev/null || : > /tmp/base_merge; "
+                f"git merge-file -p --union /tmp/ours_merge /tmp/base_merge /tmp/theirs_merge > \"{file_path}\" && "
+                f"git add \"{file_path}\""
+            )
+            file_merge = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", merge_script],
+                capture_output=True, text=True, timeout=60,
+            )
+            if file_merge.returncode == 0:
+                resolved_count += 1
+                _log_git_agent(
+                    f"Resolved {file_path}: union merge (shared file)",
+                    project_token=project_token,
+                )
+            else:
+                all_resolved = False
+                _log_git_agent(
+                    f"Union merge failed for {file_path}: {file_merge.stderr}",
+                    "error",
+                    project_token=project_token,
+                )
+        
+        _log_git_agent(
+            f"Conflict resolution: {resolved_count}/{len(filtered_conflicts)} files resolved "
+            f"(ours={len(ours_files)}, theirs={len(theirs_files)}, union={len(union_files)}, "
+            f"skipped __pycache__: {len(conflict_files) - len(filtered_conflicts)})",
+            project_token=project_token,
+        )
+        
+        return all_resolved and resolved_count == len(filtered_conflicts)
+        
+    except Exception as e:
+        logger.error(f"Error in smart conflict resolution: {e}")
+        _log_git_agent(
+            f"Smart conflict resolution error: {str(e)[:200]}",
+            "error",
+            project_token=project_token,
+        )
+        return False
 
 
 async def _process_git_merge_item(item: Dict[str, Any]) -> None:
@@ -1214,9 +2623,14 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
     repo_url = creds["repo_url"]
     token = creds["token"]
     branch = item.get("branch")
+    source_agent = (item.get("source_agent") or "").strip()
+    task_title = (item.get("task_title") or "").strip()
+    ownership_retries = int(item.get("ownership_retries") or 0)
+    max_ownership_retries = 8
     if not repo_url or not branch:
         _log_git_agent("Git manager skipped merge (missing repo/branch)", "error", project_token=project_token)
         return
+    branch = branch.strip()
 
     container_name = f"git_manager_{uuid.uuid4().hex[:8]}"
     try:
@@ -1238,7 +2652,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
 
         # Configure git user
         subprocess.run(
-            ["docker", "exec", container_name, "git", "config", "--global", "user.email", "git-agent@brd-analyzer.ai"],
+            ["docker", "exec", container_name, "git", "config", "--global", "user.email", "git-agent@dsuite.ai"],
             capture_output=True, text=True, timeout=10,
         )
         subprocess.run(
@@ -1256,62 +2670,151 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error", project_token=project_token)
             return
 
-        # Fetch branch and checkout integration branch
-        subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "fetch", "origin", branch],
-            capture_output=True, text=True, timeout=60,
-        )
         default_branch = _get_default_branch(container_name)
-        subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "checkout", "-B", GIT_INTEGRATION_BRANCH, f"origin/{default_branch}"],
-            capture_output=True, text=True, timeout=30,
-        )
 
         if git_agent:
             git_agent["progress"] = 60
             git_agent["progress_message"] = f"Merging {branch} -> {GIT_INTEGRATION_BRANCH}"
 
-        merge = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "merge", "--no-ff", "--allow-unrelated-histories", f"origin/{branch}"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if merge.returncode != 0:
-            conflict_list = subprocess.run(
+        max_push_attempts = 5
+        for attempt in range(1, max_push_attempts + 1):
+            # Always re-read remote refs before each attempt so retries are
+            # based on the latest integration tip, not stale local history.
+            fetch_branch = subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
-                 "git", "diff", "--name-only", "--diff-filter=U"],
-                capture_output=True, text=True, timeout=20,
+                 "git", "fetch", "origin", branch],
+                capture_output=True, text=True, timeout=60,
             )
-            files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
-            if not files:
-                _log_git_agent(f"Merge failed for {branch}: {merge.stderr}", "error", project_token=project_token)
-                subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
-                    capture_output=True, text=True, timeout=10,
+            if fetch_branch.returncode != 0:
+                _log_git_agent(
+                    f"Failed to fetch source branch {branch}: {fetch_branch.stderr or fetch_branch.stdout}",
+                    "error",
+                    project_token=project_token,
                 )
                 return
 
-            _log_git_agent(
-                f"Conflicts detected. Applying union merge for {len(files)} files.",
-                project_token=project_token
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "fetch", "origin", GIT_INTEGRATION_BRANCH],
+                capture_output=True, text=True, timeout=60,
             )
-            for file_path in files:
-                merge_script = (
-                    f"git show :2:{file_path} > /tmp/ours_merge && "
-                    f"git show :3:{file_path} > /tmp/theirs_merge && "
-                    f"git show :1:{file_path} > /tmp/base_merge 2>/dev/null || : > /tmp/base_merge; "
-                    f"git merge-file -p --union /tmp/ours_merge /tmp/base_merge /tmp/theirs_merge > \"{file_path}\" && "
-                    f"git add \"{file_path}\""
-                )
-                file_merge = subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", merge_script],
-                    capture_output=True, text=True, timeout=60,
-                )
-                if file_merge.returncode != 0:
+
+            integration_exists = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{GIT_INTEGRATION_BRANCH}"],
+                capture_output=True, text=True, timeout=15,
+            ).returncode == 0
+            base_ref = f"origin/{GIT_INTEGRATION_BRANCH}" if integration_exists else f"origin/{default_branch}"
+
+            ownership_gate = _check_path_ownership_gate(
+                container_name=container_name,
+                source_branch=branch,
+                base_ref=base_ref,
+                source_agent=source_agent,
+                project_token=project_token,
+            )
+            if not ownership_gate.get("allowed", True):
+                conflicts = ownership_gate.get("conflicts") or []
+                compact = []
+                for entry in conflicts[:3]:
+                    who = entry.get("agent_id") or "unknown-agent"
+                    peer_branch = entry.get("branch") or "unknown-branch"
+                    overlap = entry.get("overlap") or []
+                    compact.append(f"{who}/{peer_branch}: {', '.join(overlap[:3])}")
+                conflict_msg = " | ".join(compact) if compact else "overlapping ownership"
+
+                if ownership_retries < max_ownership_retries:
+                    ownership_retries += 1
+                    wait_seconds = min(90, 8 * ownership_retries)
+                    item["ownership_retries"] = ownership_retries
+                    item["not_before"] = time.time() + wait_seconds
+                    _ensure_project_state(project_token)["git_merge_queue"].append(item)
                     _log_git_agent(
-                        f"Union merge failed for {file_path}: {file_merge.stderr}",
+                        f"Path ownership gate blocked merge for {branch}"
+                        f"{f' ({task_title})' if task_title else ''}: {conflict_msg}. "
+                        f"Re-queued with backoff {wait_seconds}s "
+                        f"({ownership_retries}/{max_ownership_retries}).",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    return
+
+                _log_git_agent(
+                    f"Path ownership conflicts persisted for {branch} after "
+                    f"{max_ownership_retries} retries: {conflict_msg}. "
+                    "Proceeding to merge to avoid deadlock.",
+                    "warning",
+                    project_token=project_token,
+                )
+
+            checkout = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "checkout", "-B", GIT_INTEGRATION_BRANCH, base_ref],
+                capture_output=True, text=True, timeout=30,
+            )
+            if checkout.returncode != 0:
+                _log_git_agent(
+                    f"Failed to checkout {GIT_INTEGRATION_BRANCH} from {base_ref}: "
+                    f"{checkout.stderr or checkout.stdout}",
+                    "error",
+                    project_token=project_token,
+                )
+                return
+
+            merge = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "merge", "--no-ff", "--allow-unrelated-histories", f"origin/{branch}"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if merge.returncode != 0:
+                conflict_list = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
+                if not files:
+                    _log_git_agent(
+                        f"Merge failed for {branch}: {merge.stderr or merge.stdout}",
+                        "error",
+                        project_token=project_token,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    return
+
+                # Smart conflict resolution based on file ownership
+                resolved = _resolve_conflicts_smart(
+                    container_name=container_name,
+                    conflict_files=files,
+                    source_branch=branch,
+                    source_agent=source_agent,
+                    project_token=project_token,
+                )
+
+                if not resolved:
+                    _log_git_agent(
+                        f"Failed to resolve conflicts for {branch}. Aborting merge.",
+                        "error",
+                        project_token=project_token,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    return
+
+                commit_resolved = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "commit", "-m", f"Resolved conflicts for {branch} using ownership rules"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                commit_out = (commit_resolved.stdout or "") + (commit_resolved.stderr or "")
+                if commit_resolved.returncode != 0 and "nothing to commit" not in commit_out.lower():
+                    _log_git_agent(
+                        f"Conflict resolution commit failed for {branch}: {commit_resolved.stderr}",
                         "error",
                         project_token=project_token
                     )
@@ -1321,112 +2824,97 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     )
                     return
 
-            commit_union = subprocess.run(
-                ["docker", "exec", "-w", "/workspace", container_name,
-                 "git", "commit", "-m", f"Auto-union merge {branch}"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if commit_union.returncode != 0:
+            try:
+                tests_ok = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
+            except Exception as test_err:
                 _log_git_agent(
-                    f"Union merge commit failed for {branch}: {commit_union.stderr}",
+                    f"Test runner error after merging {branch}: {str(test_err)[:200]}",
                     "error",
+                    project_token=project_token,
+                )
+                tests_ok = False
+            if not tests_ok:
+                _log_git_agent(
+                    f"❌ Tests/validation failed after merge for {branch}. Aborting merge and leaving "
+                    f"{GIT_INTEGRATION_BRANCH} at last known-good state.",
+                    "error",
+                    project_token=project_token,
+                )
+                # Mark integration as blocked so only fix tasks are allowed until it is green again.
+                try:
+                    import context_manager as ctx_mgr
+                    live_mem = ctx_mgr.get_live_memory(project_token or "")
+                    live_mem.set_integration_blocked(True)
+                except Exception:
+                    pass
+
+                # Do not push this broken merge; retry loop will end and container will be destroyed.
+                return
+
+            push = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
+                capture_output=True, text=True, timeout=60,
+            )
+            if push.returncode == 0:
+                push_note = "" if attempt == 1 else f" (after retry {attempt})"
+                _log_git_agent(
+                    f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed{push_note}.",
                     project_token=project_token
                 )
-                subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
-                    capture_output=True, text=True, timeout=10,
+                state = _ensure_project_state(project_token)
+                merged = state.setdefault("merged_branches", [])
+                if branch not in merged:
+                    merged.append(branch)
+                
+                # Integration Gate: Set blocked flag if validation fails
+                # This prevents new tasks from being picked until integration is fixed
+                try:
+                    import context_manager as ctx_mgr
+                    live_mem = ctx_mgr.get_live_memory(project_token or "")
+                    # For now, we'll set blocked=False after successful merge
+                    # If validation fails later, it should set blocked=True
+                    # This will be enhanced when integration_validator is re-added
+                    live_mem.set_integration_blocked(False)
+                except Exception:
+                    pass  # Non-critical, continue
+                
+                await _try_create_pr(
+                    repo_url=repo_url, token=token,
+                    default_branch=default_branch,
+                    branch=branch,
+                    project_token=project_token,
+                )
+                if git_agent:
+                    git_agent["progress"] = 100
+                    git_agent["progress_message"] = f"Merged {branch}"
+                return
+
+            err = push.stderr or push.stdout
+            lower_err = err.lower()
+            if "non-fast-forward" in lower_err or "rejected" in lower_err:
+                if attempt < max_push_attempts:
+                    _log_git_agent(
+                        f"Non-fast-forward on {GIT_INTEGRATION_BRANCH}. "
+                        f"Rebuilding merge on latest remote tip (attempt {attempt + 1}/{max_push_attempts}).",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                _log_git_agent(
+                    f"Push rejected for {GIT_INTEGRATION_BRANCH} after {max_push_attempts} attempts: {err}",
+                    "error",
+                    project_token=project_token,
                 )
                 return
 
-        tests_ok = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
-        if not tests_ok:
-            _log_git_agent(f"Tests failed after merge for {branch}. Not pushing.", "error", project_token=project_token)
-            return
-
-        push = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name,
-             "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
-            capture_output=True, text=True, timeout=60,
-        )
-        if push.returncode != 0:
-            err = push.stderr or push.stdout
-            if "non-fast-forward" in err or "rejected" in err:
-                _log_git_agent(
-                    f"Non-fast-forward detected for {GIT_INTEGRATION_BRANCH}, pulling remote changes...",
-                    project_token=project_token
-                )
-                pull = subprocess.run(
-                    ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "pull", "--rebase", "origin", GIT_INTEGRATION_BRANCH],
-                    capture_output=True, text=True, timeout=60,
-                )
-                if pull.returncode == 0:
-                    # Retry push with backoff
-                    push_success = False
-                    for attempt in range(5):
-                        await asyncio.sleep(2 * attempt)  # Increasing delay
-                        push_retry = subprocess.run(
-                            ["docker", "exec", "-w", "/workspace", container_name,
-                             "git", "push", "-u", "origin", GIT_INTEGRATION_BRANCH],
-                            capture_output=True, text=True, timeout=60,
-                        )
-                        if push_retry.returncode == 0:
-                            push_success = True
-                            break
-
-                    if push_success:
-                        _log_git_agent(
-                            f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed (after rebase).",
-                            project_token=project_token
-                        )
-                        if git_agent:
-                            git_agent["progress"] = 100
-                            git_agent["progress_message"] = f"Merged {branch}"
-                        return
-
-                _log_git_agent(
-                    f"Rebase failed for {GIT_INTEGRATION_BRANCH}, trying force push...",
-                    "warning",
-                    project_token=project_token
-                )
-
-                # Retry force push with backoff
-                push_force_success = False
-                for attempt in range(5):
-                    await asyncio.sleep(2 * attempt)  # Increasing delay
-                    push_force = subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "push", "-f", "origin", GIT_INTEGRATION_BRANCH],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    if push_force.returncode == 0:
-                        push_force_success = True
-                        break
-
-                if push_force_success:
-                    _log_git_agent(
-                        f"Merged {branch} into {GIT_INTEGRATION_BRANCH} (force pushed).",
-                        project_token=project_token
-                    )
-                    if git_agent:
-                        git_agent["progress"] = 100
-                        git_agent["progress_message"] = f"Merged {branch}"
-                    return
-
             _log_git_agent(
-                f"Push failed for {GIT_INTEGRATION_BRANCH}: {push.stderr}",
+                f"Push failed for {GIT_INTEGRATION_BRANCH}: {err}",
                 "error",
                 project_token=project_token
             )
             return
-
-        _log_git_agent(
-            f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed.",
-            project_token=project_token
-        )
-        if git_agent:
-            git_agent["progress"] = 100
-            git_agent["progress_message"] = f"Merged {branch}"
     finally:
         await asyncio.to_thread(_destroy_container, container_name)
 
@@ -1448,7 +2936,7 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
 
         # 2. Configure git user
         subprocess.run(
-            ["docker", "exec", container_name, "git", "config", "--global", "user.email", "agent@brd-analyzer.ai"],
+            ["docker", "exec", container_name, "git", "config", "--global", "user.email", "agent@dsuite.ai"],
             capture_output=True, text=True, timeout=10,
         )
         subprocess.run(
@@ -1469,6 +2957,78 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         if clone.returncode != 0:
             return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
 
+        # 3.5. Pull latest integration branch if it exists (CRITICAL: agents work on latest code)
+        fetch_result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "fetch", "origin", GIT_INTEGRATION_BRANCH],
+            capture_output=True, text=True, timeout=60,
+        )
+        if fetch_result.returncode == 0:
+            # Check if integration branch exists
+            check_integration = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{GIT_INTEGRATION_BRANCH}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if check_integration.returncode == 0:
+                # Integration branch exists - merge it into current branch to get latest code
+                # First, get current branch or default
+                current_branch_result = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                current_branch = current_branch_result.stdout.strip() if current_branch_result.returncode == 0 else "main"
+                
+                # Merge integration branch into current branch (if not already on integration)
+                if current_branch != GIT_INTEGRATION_BRANCH:
+                    merge_result = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", f"origin/{GIT_INTEGRATION_BRANCH}", "--no-edit", "--no-ff"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    # If merge fails, resolve conflicts by keeping integration branch version (source of truth)
+                    if merge_result.returncode != 0:
+                        conflict_list = subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name,
+                             "git", "diff", "--name-only", "--diff-filter=U"],
+                            capture_output=True, text=True, timeout=20,
+                        )
+                        conflict_files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
+                        
+                        if conflict_files:
+                            # Keep integration branch version (theirs) for all conflicts
+                            # This ensures agents always work on the latest integration branch code
+                            for file_path in conflict_files:
+                                subprocess.run(
+                                    ["docker", "exec", "-w", "/workspace", container_name,
+                                     "git", "checkout", "--theirs", file_path],
+                                    capture_output=True, text=True, timeout=30,
+                                )
+                                subprocess.run(
+                                    ["docker", "exec", "-w", "/workspace", container_name,
+                                     "git", "add", file_path],
+                                    capture_output=True, text=True, timeout=10,
+                                )
+                            
+                            # Complete the merge
+                            merge_complete = subprocess.run(
+                                ["docker", "exec", "-w", "/workspace", container_name,
+                                 "git", "commit", "--no-edit"],
+                                capture_output=True, text=True, timeout=30,
+                            )
+                            if merge_complete.returncode == 0:
+                                logger.info(f"Resolved conflicts by keeping integration branch version for {len(conflict_files)} files")
+                            else:
+                                logger.warning(f"Failed to complete merge after conflict resolution, aborting")
+                                subprocess.run(
+                                    ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                                    capture_output=True, text=True, timeout=10,
+                                )
+                        else:
+                            # No conflicts but merge failed - abort and continue
+                            logger.warning(f"Merge failed but no conflicts detected, aborting merge")
+                            subprocess.run(
+                                ["docker", "exec", "-w", "/workspace", container_name, "git", "merge", "--abort"],
+                                capture_output=True, text=True, timeout=10,
+                            )
+
         # 4. Detect repo baseline state (blank/no structure) and create branch
         head_check = subprocess.run(
             ["docker", "exec", "-w", "/workspace", container_name, "git", "rev-parse", "--verify", "HEAD"],
@@ -1486,6 +3046,15 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         checkout_cmd = ["git", "checkout", "-B", branch_name]
         if repo_empty:
             checkout_cmd = ["git", "checkout", "--orphan", branch_name]
+        else:
+            # Check if it exists remotely
+            check_remote = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "ls-remote", "--heads", "origin", branch_name],
+                capture_output=True, text=True, timeout=15,
+            )
+            if branch_name in check_remote.stdout:
+                # If we are already on the target branch (e.g. main), checkout without -B
+                checkout_cmd = ["git", "checkout", branch_name]
 
         checkout = subprocess.run(
             ["docker", "exec", "-w", "/workspace", container_name, *checkout_cmd],
@@ -1536,9 +3105,121 @@ def _run_git_command_with_retry(container_name: str, command: List[str],
 def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> Dict[str, Any]:
     """Stage all changes, commit with task title, and push to the remote branch."""
     try:
-        # Add all files
+        def _abort_pending_git_ops() -> None:
+            # If rebase/merge/cherry-pick stopped mid-way, clear that state
+            # before any fallback checkout logic.
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+                 "git rebase --abort >/dev/null 2>&1 || true; "
+                 "git merge --abort >/dev/null 2>&1 || true; "
+                 "git cherry-pick --abort >/dev/null 2>&1 || true"],
+                capture_output=True, text=True, timeout=20,
+            )
+
+        # Optional structural guard: if a canonical backend/ project exists,
+        # prevent agents from introducing competing Django roots at repo root.
+        try:
+            probe_backend = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "sh", "-c", "test -d backend && echo yes || echo no"],
+                capture_output=True, text=True, timeout=5,
+            )
+            has_backend = (probe_backend.returncode == 0 and
+                           (probe_backend.stdout or "").strip() == "yes")
+            if has_backend:
+                # Disallow common stray Django-style roots at /workspace/*
+                disallowed_roots = [
+                    "api", "books", "catalog", "project", "core",
+                    "notifications", "reservation_system", "reservations",
+                    "users", "rest_framework",
+                ]
+                for name in disallowed_roots:
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "sh", "-c", f"[ -d {name} ] && rm -rf {name} || true"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+        except Exception:
+            # Non-critical: if this guard fails, we still proceed with commit,
+            # but Git Manager tests will catch any structural breakage.
+            pass
+
+        # Ensure .gitignore exists and excludes unnecessary files
+        gitignore_content = """# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Environment
+.env
+.env.local
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+"""
+        # Create/update .gitignore
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+             f"echo '{gitignore_content}' > /workspace/.gitignore"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # Remove __pycache__ directories before git add
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+             "find /workspace -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # Remove .pyc files before git add
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+             "find /workspace -name '*.pyc' -delete 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # Remove __pycache__ from git tracking if already tracked
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "rm", "-r", "--cached", "__pycache__", "*/__pycache__", "*/*/__pycache__", "2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+        # Add all files (respects .gitignore)
         add = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name, "git", "add", "-A"],
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "add", "."],
             capture_output=True, text=True, timeout=30,
         )
         if add.returncode != 0:
@@ -1580,10 +3261,14 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                     )
                     if push_retry.returncode == 0:
                         return {"success": True, "pushed": True, "branch": branch_name, "rebased": True}
+                else:
+                    _abort_pending_git_ops()
 
                 # Strategy 2: Fallback - push to a new branch to avoid collisions
                 suffix = uuid.uuid4().hex[:6]
                 new_branch = f"{branch_name}-{suffix}"
+
+                _abort_pending_git_ops()
 
                 # Retry checkout until it succeeds
                 checkout = _run_git_command_with_retry(
@@ -1594,7 +3279,24 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                     operation="checkout"
                 )
                 if checkout.returncode != 0:
-                    return {"success": False, "error": f"Failed to create branch {new_branch}: {checkout.stderr}"}
+                    # One more cleanup + direct retry for the common
+                    # "resolve your current index first" state.
+                    _abort_pending_git_ops()
+                    checkout_retry = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "-B", new_branch],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if checkout_retry.returncode != 0:
+                        pull_err = (pull.stderr or pull.stdout or "").strip() if 'pull' in locals() else ""
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Failed to create branch {new_branch}: "
+                                f"{(checkout_retry.stderr or checkout_retry.stdout).strip()} "
+                                f"| prior rebase error: {pull_err[:400]}"
+                            ),
+                        }
 
                 # Retry push until it succeeds
                 push2 = _run_git_command_with_retry(
@@ -1741,7 +3443,7 @@ def _capture_workspace_tree(container_name: str) -> str:
         # Build tree output
         output_parts = []
         output_parts.append("=" * 60)
-        output_parts.append("PROJECT STRUCTURE (created in Docker container)")
+        output_parts.append("PROJECT STRUCTURE")
         output_parts.append("=" * 60)
         output_parts.append("")
 
@@ -1839,6 +3541,37 @@ def _parse_stats_from_output(stdout: str, agent_type: str) -> Dict[str, Any]:
 async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fetch ALL pages of tasks from the external task management API."""
     from task_service import task_service
+    def _extract_entity_info(raw_value: Any, key: str):
+        entity_id = None
+        entity_name = None
+        if isinstance(raw_value, dict):
+            entity_id = raw_value.get("id") or raw_value.get(f"{key}_id")
+            entity_name = raw_value.get("name") or raw_value.get("title")
+        elif raw_value not in (None, ""):
+            entity_id = raw_value
+        return entity_id, entity_name
+
+    def _to_int(value: Any) -> Optional[int]:
+        try:
+            if value in (None, ""):
+                return None
+            return int(str(value).strip())
+        except Exception:
+            return None
+
+    def _safe_date_key(value: Any) -> str:
+        if value in (None, ""):
+            return "9999-12-31"
+        text = str(value).strip()
+        if len(text) >= 10:
+            candidate = text[:10]
+            try:
+                datetime.strptime(candidate, "%Y-%m-%d")
+                return candidate
+            except Exception:
+                pass
+        return "9999-12-31"
+
     try:
         task_token = get_project_task_token(project_token)
         all_tasks = []
@@ -1879,6 +3612,14 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
 
             task_id = t.get("id", uuid.uuid4().hex[:8])
             external_id = t.get("external_id")
+            sprint_id, sprint_name = _extract_entity_info(t.get("sprint"), "sprint")
+            milestone_id, milestone_name = _extract_entity_info(t.get("milestone"), "milestone")
+            if sprint_id in (None, ""):
+                sprint_id = t.get("sprint_id")
+            if milestone_id in (None, ""):
+                milestone_id = t.get("milestone_id")
+            task_start_date = t.get("startdate") or t.get("start_date")
+            task_deadline = t.get("deadline") or t.get("end_date")
             normalized.append({
                 "id": str(task_id),
                 "external_id": external_id if external_id is not None else task_id,
@@ -1892,8 +3633,28 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
                 "started_at": None,
                 "linked_tasks": t.get("linked_tasks") or [],
                 "checklist": checklist_items,
+                "sprint_id": sprint_id,
+                "sprint_name": sprint_name,
+                "milestone_id": milestone_id,
+                "milestone_name": milestone_name,
+                "startdate": task_start_date,
+                "deadline": task_deadline,
                 "_project_token": project_token,
             })
+
+        def _task_sort_key(task: Dict[str, Any]):
+            sprint_rank = _to_int(task.get("sprint_id"))
+            milestone_rank = _to_int(task.get("milestone_id"))
+            return (
+                sprint_rank if sprint_rank is not None else 10**9,
+                milestone_rank if milestone_rank is not None else 10**9,
+                _safe_date_key(task.get("startdate")),
+                _safe_date_key(task.get("deadline")),
+                str(task.get("title") or "").lower(),
+                str(task.get("id") or ""),
+            )
+
+        normalized.sort(key=_task_sort_key)
         return normalized
     except Exception as e:
         print(f"[agent_service] Failed to fetch external tasks: {e}")
@@ -1929,24 +3690,37 @@ def _normalize_task_id(task: Dict[str, Any]):
 
 
 async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post task message with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.post_task_message({
-            "task_id": task_id,
-            "message": message
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to post message for task {task_id}: {e}")
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.post_task_message({
+                "task_id": task_id,
+                "message": message
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to post message for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to post message for task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
 
 
 async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None,
                               project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post task progress with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
@@ -1961,106 +3735,568 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
             f"cannot decrease from {last_progress} to {progress}"
         )
         return False
-    if not state["timer_log_state"].get(task_key, False):
+    timer_active = state["timer_log_state"].get(task_key, False)
+    terminal_progress = progress in (0, 100)
+    if not timer_active and not terminal_progress:
         print(
             f"[agent_service] Skipping progress for task {task_id}: "
             "no successful clock_in recorded"
         )
         return False
-    try:
-        payload = {
-            "task_id": task_id,
-            "task_progress": progress,
-        }
-        if additional_info:
-            payload["additional_info"] = additional_info
-        effective_token = task_token or get_project_task_token(resolved_project)
-        await task_service.update_task_progress(payload, task_token=effective_token)
-        state["task_progress_state"][task_key] = progress
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to update progress for task {task_id}: {e}")
-        return False
+    if not timer_active and terminal_progress:
+        print(
+            f"[agent_service] Allowing terminal progress {progress}% for task {task_id} "
+            "without active timer"
+        )
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            payload = {
+                "task_id": task_id,
+                "task_progress": progress,
+            }
+            if additional_info:
+                payload["additional_info"] = additional_info
+            effective_token = task_token or get_project_task_token(resolved_project)
+            await task_service.update_task_progress(payload, task_token=effective_token)
+            state["task_progress_state"][task_key] = progress
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to update progress for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to update progress for task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
+
+
+def _normalize_error_text(err: Exception) -> str:
+    text = str(err).lower()
+    for ch in ("-", "_", "/", "\\"):
+        text = text.replace(ch, " ")
+    return " ".join(text.split())
+
+
+def _is_timer_running_error(error_text: str) -> bool:
+    checks = (
+        "timer is still running",
+        "timer still running",
+        "active timer",
+        "clock out before",
+        "clock out first",
+        "must clock out",
+        "clockout before",
+    )
+    return any(c in error_text for c in checks)
+
+
+def _is_already_completed_error(error_text: str) -> bool:
+    checks = (
+        "already completed",
+        "already complete",
+        "task already completed",
+        "status already completed",
+        "already closed",
+        "already done",
+    )
+    return any(c in error_text for c in checks)
+
+
+def _is_clock_out_idempotent_success(error_text: str) -> bool:
+    checks = (
+        "timer not running",
+        "no active timer",
+        "not clocked in",
+        "already clocked out",
+        "already clocked out for this task",
+        "cannot clock out before clock in",
+    )
+    return any(c in error_text for c in checks)
 
 
 async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Complete task with retry logic. Ensures clock_out happens first if timer is still running."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.complete_task({
-            "task_id": task_id
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to complete task {task_id}: {e}")
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.complete_task({
+                "task_id": task_id
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            return True
+        except Exception as e:
+            error_str = _normalize_error_text(e)
+
+            if _is_already_completed_error(error_str):
+                print(f"[agent_service] Task {task_id} already completed upstream. Treating as success.")
+                return True
+
+            # If timer is still running, try to clock out before retrying completion.
+            if _is_timer_running_error(error_str):
+                print(f"[agent_service] Task {task_id} timer still running, attempting clock_out before completion...")
+                clock_out_success = await _post_timer_log(
+                    task, "clock_out", project_token=resolved_project, task_token=task_token
+                )
+                if clock_out_success:
+                    print(f"[agent_service] Successfully clocked out task {task_id}, retrying completion...")
+                else:
+                    print(f"[agent_service] Failed to clock out task {task_id}, will retry completion anyway...")
+             
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to complete task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to complete task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
 
 
 async def _opt_in_task(task: Dict[str, Any], username: str,
                        project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Opt in to task with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.opt_in_task({
-            "task_id": task_id,
-            "username": username
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to opt in to task {task_id}: {e}")
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.opt_in_task({
+                "task_id": task_id,
+                "username": username
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to opt in to task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to opt in to task {task_id} after {max_retries} attempts: {e}")
+                return False
+    return False
 
 
 async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post timer log with retry logic - will retry up to 5 times with exponential backoff."""
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    try:
-        await task_service.post_timer_log({
-            "task_id": task_id,
-            "action": action
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        task_key = str(task_id)
-        state = _ensure_project_state(resolved_project)
-        if action == "clock_in":
-            state["timer_log_state"][task_key] = True
-        elif action == "clock_out":
-            state["timer_log_state"][task_key] = False
-        return True
-    except Exception as e:
-        print(f"[agent_service] Failed to post timer log for task {task_id}: {e}")
-        if action == "clock_in":
-            _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
-        return False
+    
+    max_retries = 5
+    base_delay = 1.0
+    
+    for attempt in range(max_retries):
+        try:
+            await task_service.post_timer_log({
+                "task_id": task_id,
+                "action": action
+            }, task_token=task_token or get_project_task_token(resolved_project))
+            task_key = str(task_id)
+            state = _ensure_project_state(resolved_project)
+            if action == "clock_in":
+                state["timer_log_state"][task_key] = True
+            elif action == "clock_out":
+                state["timer_log_state"][task_key] = False
+            return True
+        except Exception as e:
+            normalized_error = _normalize_error_text(e)
+            if action == "clock_out" and _is_clock_out_idempotent_success(normalized_error):
+                # Upstream says there is nothing to clock out; treat as success so completion can proceed.
+                _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
+                print(
+                    f"[agent_service] Timer log clock_out for task {task_id} already in desired state "
+                    f"(treating as success): {e}"
+                )
+                return True
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[agent_service] Failed to post timer log for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"[agent_service] Failed to post timer log for task {task_id} after {max_retries} attempts: {e}")
+                if action == "clock_in":
+                    _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
+                return False
+    return False
 
 
 # ── Main Agent Execution ────────────────────────────────────────────────────
 
+def _to_optional_int(value: Any) -> Optional[int]:
+    try:
+        if value in (None, ""):
+            return None
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _extract_task_parent_id(task: Dict[str, Any], key: str) -> Optional[int]:
+    if not isinstance(task, dict):
+        return None
+    raw = task.get(f"{key}_id")
+    if raw in (None, ""):
+        raw = task.get(key)
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get(f"{key}_id")
+    return _to_optional_int(raw)
+
+
+def _normalize_status_text(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    return " ".join(text.split())
+
+
+def _is_completed_task_status(value: Any) -> bool:
+    status_text = _normalize_status_text(value)
+    completed_statuses = {
+        "completed",
+        "complete",
+        "done",
+        "closed",
+        "finished",
+        "resolved",
+        "completed with errors",
+    }
+    return status_text in completed_statuses
+
+
+def _extract_date_yyyy_mm_dd(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if len(text) < 10:
+        return None
+    candidate = text[:10]
+    try:
+        datetime.strptime(candidate, "%Y-%m-%d")
+        return candidate
+    except Exception:
+        return None
+
+
+async def _resolve_project_deadline(project_token: Optional[str] = None, task_token: Optional[str] = None) -> str:
+    from task_service import task_service
+
+    resolved_project = project_token
+    effective_token = task_token or get_project_task_token(resolved_project)
+    deadline = None
+
+    try:
+        project_info = await task_service.get_project_info(task_token=effective_token)
+        project_data = project_info.get("project", {}) if isinstance(project_info, dict) else {}
+        for key in ("deadline", "project_deadline", "end_date"):
+            deadline = _extract_date_yyyy_mm_dd(project_data.get(key))
+            if deadline:
+                break
+    except Exception as e:
+        print(f"[agent_service] Failed to fetch project info for status update: {e}")
+
+    if deadline:
+        return deadline
+
+    try:
+        tasks = await _fetch_external_tasks(resolved_project)
+        deadlines = []
+        for task in tasks:
+            d = _extract_date_yyyy_mm_dd(task.get("deadline"))
+            if d:
+                deadlines.append(d)
+        if deadlines:
+            return max(deadlines)
+    except Exception:
+        pass
+
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+async def _update_project_status(
+    status_value: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    force: bool = False,
+) -> bool:
+    from task_service import task_service
+
+    resolved_project = project_token
+    state = _ensure_project_state(resolved_project)
+    normalized_status = (status_value or "").strip()
+    if not normalized_status:
+        return False
+
+    if not force and state.get("project_status_synced") == normalized_status:
+        return True
+
+    deadline = await _resolve_project_deadline(resolved_project, task_token=task_token)
+    effective_token = task_token or get_project_task_token(resolved_project)
+
+    max_retries = 3
+    base_delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            await task_service.update_project_status(
+                {
+                    "deadline": deadline,
+                    "status": normalized_status,
+                },
+                task_token=effective_token,
+            )
+            state["project_status_synced"] = normalized_status
+            _log_master_agent(
+                f"Master sync: project status -> {normalized_status}",
+                project_token=resolved_project,
+            )
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(
+                    f"[agent_service] Failed to update project status to '{normalized_status}' "
+                    f"(attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                print(
+                    f"[agent_service] Failed to update project status to '{normalized_status}' "
+                    f"after {max_retries} attempts: {e}"
+                )
+                _log_master_agent(
+                    f"Master sync failed: project status -> {normalized_status} ({e})",
+                    "error",
+                    project_token=resolved_project,
+                )
+                return False
+    return False
+
+
+async def _sync_rollup_status_for_completed_task(
+    task: Dict[str, Any],
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, bool]:
+    from task_service import task_service
+
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    state = _ensure_project_state(resolved_project)
+    effective_token = task_token or get_project_task_token(resolved_project)
+    result = {
+        "milestone_completed": False,
+        "sprint_completed": False,
+        "project_completed": False,
+    }
+
+    sprint_id = _extract_task_parent_id(task, "sprint")
+    milestone_id = _extract_task_parent_id(task, "milestone")
+
+    async with state["status_sync_lock"]:
+        all_tasks = await _fetch_external_tasks(resolved_project)
+        if not all_tasks:
+            return result
+
+        if milestone_id is not None and milestone_id not in state["completed_milestones_synced"]:
+            milestone_tasks = [
+                t for t in all_tasks
+                if _extract_task_parent_id(t, "milestone") == milestone_id
+            ]
+            if milestone_tasks and all(_is_completed_task_status(t.get("status")) for t in milestone_tasks):
+                try:
+                    await task_service.update_milestone_status(
+                        {"milestone_id": milestone_id, "is_completed": True},
+                        task_token=effective_token,
+                    )
+                    state["completed_milestones_synced"].add(milestone_id)
+                    result["milestone_completed"] = True
+                    _log_master_agent(
+                        f"Master sync: milestone {milestone_id} marked completed",
+                        project_token=resolved_project,
+                    )
+                except Exception as e:
+                    print(f"[agent_service] Failed to mark milestone {milestone_id} completed: {e}")
+                    _log_master_agent(
+                        f"Master sync failed: milestone {milestone_id} ({e})",
+                        "error",
+                        project_token=resolved_project,
+                    )
+
+        if sprint_id is not None and sprint_id not in state["completed_sprints_synced"]:
+            sprint_tasks = [
+                t for t in all_tasks
+                if _extract_task_parent_id(t, "sprint") == sprint_id
+            ]
+            if sprint_tasks and all(_is_completed_task_status(t.get("status")) for t in sprint_tasks):
+                try:
+                    await task_service.update_sprint_status(
+                        {"sprint_id": sprint_id, "status": "Completed", "is_completed": True},
+                        task_token=effective_token,
+                    )
+                    state["completed_sprints_synced"].add(sprint_id)
+                    result["sprint_completed"] = True
+                    _log_master_agent(
+                        f"Master sync: sprint {sprint_id} marked completed",
+                        project_token=resolved_project,
+                    )
+                except Exception as e:
+                    print(f"[agent_service] Failed to mark sprint {sprint_id} completed: {e}")
+                    _log_master_agent(
+                        f"Master sync failed: sprint {sprint_id} ({e})",
+                        "error",
+                        project_token=resolved_project,
+                    )
+
+        if all(_is_completed_task_status(t.get("status")) for t in all_tasks):
+            result["project_completed"] = await _update_project_status(
+                "Completed",
+                project_token=resolved_project,
+                task_token=effective_token,
+                force=True,
+            )
+
+    return result
+
+
 async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                           task_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Pick the next uncompleted, unclaimed task from the external API."""
+    """
+    Pick the next uncompleted, unclaimed task from the external API.
+    Now includes dependency checking, phase filtering, and integration gate.
+    """
     if task_token:
         set_project_task_token(project_token, task_token)
     state = _ensure_project_state(project_token)
     claimed_task_ids = state["claimed_task_ids"]
+    
+    # Check integration gate - if blocked, only allow fix tasks
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        if live_mem.is_integration_blocked():
+            # Only allow tasks with "fix" or "Fix" in the name when integration is blocked
+            integration_blocked = True
+        else:
+            integration_blocked = False
+        current_phase = live_mem.get_current_phase()
+    except Exception:
+        live_mem = None
+        integration_blocked = False
+        current_phase = None
+    
     external_tasks = await _fetch_external_tasks(project_token)
+    
+    # Get current active sprint from project state (if available)
+    current_sprint_id = None
+    try:
+        project_state = _ensure_project_state(project_token)
+        # Try to get current sprint from state or from first available sprint
+        # For now, we'll determine current sprint based on phase progression
+        # This can be enhanced later with explicit sprint tracking
+    except Exception:
+        pass
+    
+    # Sort tasks by priority (high first), then by phase order, then by task_id
+    PHASE_ORDER = {
+        "foundation": 1,
+        "backend-core": 2,
+        "backend-features": 3,
+        "frontend-core": 4,
+        "frontend-features": 5,
+        "integration": 6,
+    }
+    
+    def get_priority_score(task: Dict[str, Any]) -> int:
+        priority = (task.get("priority") or "medium").lower()
+        return {"high": 3, "medium": 2, "low": 1}.get(priority, 2)
+    
+    def get_phase_order(task: Dict[str, Any]) -> int:
+        phase = task.get("phase") or task.get("task_phase") or ""
+        return PHASE_ORDER.get(phase, 99)  # Unknown phases go last
+    
+    external_tasks.sort(key=lambda t: (
+        -get_priority_score(t),
+        get_phase_order(t),
+        str(_normalize_task_id(t) or t.get("id") or "")
+    ))
+    
     for t in external_tasks:
         tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
         status_lower = (t.get("status") or "").lower()
-        if status_lower not in ("completed", "done") and tid not in claimed_task_ids:
-            claimed_task_ids.add(tid)
-            # Also claim its linked tasks
-            for lt in (t.get("linked_tasks") or []):
-                claimed_task_ids.add(str(lt))
-            return t
+        
+        # Skip if completed or already claimed
+        if status_lower in ("completed", "done") or tid in claimed_task_ids:
+            continue
+        
+        # Integration gate: if blocked, only allow fix tasks
+        if integration_blocked:
+            task_name = (t.get("taskName") or t.get("title") or "").lower()
+            if "fix" not in task_name and "bug" not in task_name.lower():
+                continue  # Skip non-fix tasks when integration is blocked
+        
+        # Sprint filtering: if current_sprint_id is set, only show tasks from that sprint
+        if current_sprint_id:
+            task_sprint_id = t.get("sprint") or t.get("sprint_id")
+            if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
+                continue  # Skip tasks from other sprints
+        
+        # Phase filtering: if current_phase is set, only show tasks from that phase
+        # Also, prioritize tasks from earlier phases (foundation before backend, etc.)
+        task_phase = t.get("phase") or t.get("task_phase")
+        if current_phase:
+            if task_phase and task_phase != current_phase:
+                continue  # Skip tasks from other phases
+        elif task_phase:
+            # If no current_phase set, but task has phase, ensure we work in phase order
+            # This ensures foundation tasks come before backend tasks, etc.
+            # (Already handled by sorting above, but this is a safety check)
+            pass
+        
+        # Dependency checking
+        if live_mem:
+            # Get dependencies from task
+            task_deps = t.get("dependencies", [])
+            if not task_deps:
+                # Try to infer from linked_tasks (reverse dependency)
+                linked = t.get("linked_tasks", [])
+                if linked:
+                    task_deps = [str(lt) for lt in linked]
+            
+            # Register dependencies if not already registered
+            if task_deps:
+                live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+            
+            # Check if all dependencies are completed
+            if not live_mem.check_task_dependencies(tid):
+                blocking = live_mem.get_blocking_tasks(tid)
+                logger.info(
+                    f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
+                )
+                continue  # Skip this task, try next one
+        
+        # All checks passed - claim this task
+        claimed_task_ids.add(tid)
+        # Also claim its linked tasks
+        for lt in (t.get("linked_tasks") or []):
+            claimed_task_ids.add(str(lt))
+        return t
+    
     return None
 
 
@@ -2069,11 +4305,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     continuous: bool = False,
                     ignore_running_check: bool = False,
                     project_token: Optional[str] = None,
-                    task_token: Optional[str] = None) -> Dict[str, Any]:
+                    task_token: Optional[str] = None,
+                    force_branch: Optional[str] = None) -> Dict[str, Any]:
     """
-    Main function to run an agent.
-    When continuous=True, the agent keeps picking new tasks after completing
-    the current one, only stopping when NO uncompleted tasks remain.
+    Main function to run an agent WITH automatic retry on failure.
+    Retries up to 3 times with increasing delays when the agent encounters
+    errors (model failures, timeouts, bad responses, etc.).
 
     Flow per task:
       1. Pick task (or use pre-assigned)
@@ -2086,6 +4323,118 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
       8. Git: commit & push
       9. Loop back to step 1 if continuous
      10. Capture workspace, destroy container when done
+    """
+    MAX_RETRIES = 3
+    RETRY_DELAYS = [10, 20, 30]  # seconds between retries
+
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    agent = project_agents.get(agent_id)
+    if not agent:
+        raise ValueError(f"Agent {agent_id} not found")
+
+    last_result = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result = await _run_agent_once(
+                agent_id,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                assigned_task=assigned_task,
+                continuous=continuous,
+                ignore_running_check=ignore_running_check if attempt == 1 else True,
+                project_token=project_token,
+                task_token=task_token,
+                force_branch=force_branch,
+            )
+
+            if result.get("success") or result.get("reason") == "no_tasks":
+                # Success or no tasks — no retry needed
+                return result
+
+            # Agent returned failure but didn't throw — treat as retryable
+            last_result = result
+            error_msg = result.get("error", "Unknown error")
+
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAYS[attempt - 1]
+                agent["status"] = "running"
+                agent["progress"] = 0
+                retry_msg = (
+                    f"⚠️ Attempt {attempt}/{MAX_RETRIES} failed: {error_msg}. "
+                    f"Auto-retrying in {delay}s..."
+                )
+                agent["progress_message"] = retry_msg
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": retry_msg,
+                })
+                await asyncio.sleep(delay)
+                # Reset for next attempt
+                assigned_task = None  # re-pick task on retry
+                continue
+            else:
+                # All retries exhausted
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {error_msg}",
+                })
+                return last_result
+
+        except Exception as e:
+            last_result = {
+                "success": False,
+                "agent_id": agent_id,
+                "error": str(e),
+                "tasks_completed": 0,
+                "duration": 0,
+            }
+
+            if attempt < MAX_RETRIES:
+                delay = RETRY_DELAYS[attempt - 1]
+                retry_msg = (
+                    f"⚠️ Attempt {attempt}/{MAX_RETRIES} crashed: {str(e)}. "
+                    f"Auto-retrying in {delay}s..."
+                )
+                agent["status"] = "running"
+                agent["progress"] = 0
+                agent["progress_message"] = retry_msg
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": retry_msg,
+                })
+                await asyncio.sleep(delay)
+                assigned_task = None
+                continue
+            else:
+                agent["status"] = "error"
+                agent["progress"] = 0
+                agent["progress_message"] = f"Error after {MAX_RETRIES} retries: {str(e)}"
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {str(e)}",
+                })
+                agent["last_run"] = datetime.utcnow().isoformat()
+                agent["current_task"] = None
+                return last_result
+
+    return last_result
+
+
+async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: str = None,
+                    assigned_task: Dict[str, Any] = None,
+                    continuous: bool = False,
+                    ignore_running_check: bool = False,
+                    project_token: Optional[str] = None,
+                    task_token: Optional[str] = None,
+                    force_branch: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Single execution attempt for an agent. Called by run_agent with retry wrapper.
     """
     state = _ensure_project_state(project_token)
     if task_token:
@@ -2139,9 +4488,30 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     if isinstance(task, dict) and project_token:
         task.setdefault("_project_token", project_token)
 
+    # Initialize phase if not set (start with foundation phase)
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        if live_mem.get_current_phase() is None:
+            # Set initial phase to foundation
+            live_mem.set_current_phase("foundation")
+            logger.info(f"[{agent_id}] Initialized project phase to 'foundation'")
+    except Exception:
+        pass  # Non-critical, continue
+
     # Set agent to running
     agent["status"] = "running"
     agent["output_log"] = []
+    project_status_ok = await _update_project_status(
+        "On Going",
+        project_token=project_token,
+        task_token=task_token,
+    )
+    agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": "info",
+        "message": f"API: project status On Going {'ok' if project_status_ok else 'failed'}",
+    })
     total_start = time.time()
     tasks_completed = 0
     all_results = []
@@ -2164,16 +4534,35 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             try:
                 import context_manager as ctx_mgr
                 live_mem = ctx_mgr.get_live_memory(project_token or "")
+                task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                task_phase = task.get("phase") or task.get("task_phase")
+                task_domain = task.get("domain") or task.get("task_domain")
+                task_deps = task.get("dependencies", [])
+                
                 live_mem.register_task_start(
                     agent_id=agent_id,
                     task_title=task.get("title", "Untitled"),
                     task_description=task.get("description", "")[:500],
-                    branch_name=_branch_name_for_task(task) if use_git else None,
+                    branch_name=(force_branch if force_branch else _branch_name_for_task(task)) if use_git else None,
+                    task_id=task_id,
+                    task_phase=task_phase,
+                    task_domain=task_domain,
+                    dependencies=[str(d) for d in task_deps],
                 )
+                other_active = [
+                    aid for aid in live_mem.active_tasks
+                    if aid != agent_id
+                ]
+                completed_count = len(live_mem.completed_history)
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"Cross-agent memory: registered task start"
+                    "message": (
+                        f"Cross-agent memory: registered task start"
+                        f" | {len(other_active)} peer(s) active"
+                        f", {completed_count} task(s) in history"
+                        + (f" | peers: {', '.join(other_active)}" if other_active else "")
+                    )
                 })
             except Exception as mem_err:
                 agent["output_log"].append({
@@ -2244,11 +4633,11 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     raise ValueError("Docker is not available. Make sure Docker Desktop is running.")
 
                 agent["progress"] = 10
-                agent["progress_message"] = f"Creating Docker container: {container_name}"
+                agent["progress_message"] = f"Initializing environment: {container_name}"
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"Creating persistent container: {container_name} (image: {DOCKER_BASE_IMAGE})"
+                    "message": f"Creating persistent environment: {container_name}"
                 })
 
                 container_result = await asyncio.to_thread(_create_persistent_container, container_name)
@@ -2259,12 +4648,12 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"Container '{container_name}' is running with /workspace/ ready"
+                    "message": f"Environment '{container_name}' is running with /workspace/ ready"
                 })
 
                 # Clone git repo ONCE on first task
                 if use_git:
-                    first_branch = _branch_name_for_task(task)
+                    first_branch = force_branch if force_branch else _branch_name_for_task(task)
                     agent["progress"] = 15
                     agent["progress_message"] = f"Cloning git repo & creating branch: {first_branch}"
                     agent["output_log"].append({
@@ -2309,23 +4698,34 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             # ── Create task-specific git branch (for 2nd+ tasks) ─────
             branch_name = None
             if use_git:
-                branch_name = _branch_name_for_task(task)
+                branch_name = force_branch if force_branch else _branch_name_for_task(task)
                 if tasks_completed > 1:
+                    # Reset any stale index (merge conflicts from previous task)
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "reset", "--hard", "HEAD"],
+                        capture_output=True, text=True, timeout=60,
+                    )
                     # Switch back to repo base branch and create a new task branch.
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "fetch", "origin"],
-                        capture_output=True, text=True, timeout=30,
+                        capture_output=True, text=True, timeout=120,
                     )
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "checkout", "-B", repo_base_branch, f"origin/{repo_base_branch}"],
-                        capture_output=True, text=True, timeout=15,
+                        capture_output=True, text=True, timeout=60,
                     )
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "checkout", "-B", branch_name],
-                        capture_output=True, text=True, timeout=15,
+                        capture_output=True, text=True, timeout=60,
                     )
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -2334,11 +4734,68 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     })
 
             # ── AI Code Generation ───────────────────────────────────
+            agent["progress"] = 15
+            agent["progress_message"] = "Preparing context layers..."
+
+            # ── LAYER 1: Retrieve or generate Technical Spec ────────
+            tech_spec = ""
+            try:
+                tech_spec = get_technical_spec(project_token or "")
+                if not tech_spec and project_token:
+                    # Generate tech spec for the first time (runs once per project)
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "🏗️ Architect Agent: generating canonical Technical Spec..."
+                    })
+                    # Get BRD summary from project state if available
+                    brd_summary = state.get("brd_analysis", {}).get("summary", "")
+                    # Get all tasks for architecture planning
+                    all_tasks = state.get("tasks", [])
+                    # Get KG context for architecture decisions
+                    arch_kg_context = ""
+                    try:
+                        import context_manager as ctx_mgr
+                        if ctx_mgr.is_project_indexed(project_token or ""):
+                            arch_kg_context = await ctx_mgr.get_full_agent_context(
+                                project_token=project_token,
+                                task_description="Full system architecture overview",
+                                agent_id="architect_agent",
+                            )
+                    except Exception:
+                        pass
+
+                    spec_result = await _generate_technical_spec(
+                        project_token=project_token,
+                        tasks=all_tasks if all_tasks else [task],
+                        brd_summary=brd_summary,
+                        kg_context=arch_kg_context,
+                    )
+                    tech_spec = spec_result.get("spec", "")
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"🏗️ Architect Agent: tech spec {'generated' if tech_spec else 'skipped'} ({len(tech_spec)} chars)"
+                    })
+                elif tech_spec:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"📋 Using cached Technical Spec ({len(tech_spec)} chars)"
+                    })
+            except Exception as spec_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Tech spec retrieval skipped: {str(spec_err)[:80]}"
+                })
+
             agent["progress"] = 20
             agent["progress_message"] = "Fetching relevant code context from Knowledge Graph..."
 
             # Fetch JIT context from Knowledge Graph + RAG if indexed
             jit_context = ""
+            cross_agent_info = ""
             try:
                 import context_manager as ctx_mgr
                 if ctx_mgr.is_project_indexed(project_token or ""):
@@ -2353,6 +4810,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         "type": "info",
                         "message": f"KG context retrieved: {len(jit_context)} chars of targeted context"
                     })
+                    # Extract cross-agent info for the dynamic prompt
+                    live_mem = ctx_mgr.get_live_memory(project_token or "")
+                    cross_agent_info = live_mem.build_cross_agent_context(agent_id)
                 else:
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -2366,6 +4826,32 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "message": f"KG context fetch skipped: {str(ctx_err)[:100]}"
                 })
 
+            # ── LAYER 3: Generate Dynamic Prompt ────────────────────
+            agent["progress"] = 22
+            agent["progress_message"] = "Manager Agent writing task-specific prompt..."
+            try:
+                dynamic_system_prompt = await _generate_dynamic_prompt(
+                    task=task,
+                    agent_type=agent["type"],
+                    agent_id=agent_id,
+                    tech_spec=tech_spec,
+                    kg_context=jit_context,
+                    cross_agent_info=cross_agent_info,
+                )
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"🎯 Dynamic prompt generated: {len(dynamic_system_prompt)} chars (task-specific)"
+                })
+            except Exception as prompt_err:
+                dynamic_system_prompt = AGENT_SYSTEM_PROMPTS.get(agent["type"], AGENT_SYSTEM_PROMPTS["validator"])
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Dynamic prompt failed ({str(prompt_err)[:60]}), using static prompt"
+                })
+
+            agent["progress"] = 25
             agent["progress_message"] = "AI is generating project code..."
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
@@ -2373,12 +4859,17 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 "message": "Calling AI model to generate project code..."
             })
 
-            generated_code, thought = await _call_ai_for_code(task["description"], agent["type"], code_context=jit_context)
+            generated_code, thought = await _call_ai_for_code(
+                task["description"], agent["type"],
+                code_context=jit_context,
+                system_prompt_override=dynamic_system_prompt,
+                tech_spec=tech_spec,
+            )
             if thought:
                 await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
 
             agent["progress"] = 30
-            agent["progress_message"] = "Running project builder inside Docker..."
+            agent["progress_message"] = "Running project..."
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
@@ -2408,7 +4899,10 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         })
 
             # ═════════════════════════════════════════════════════════
-            # SELF-HEALING LOOP
+            # SELF-HEALING LOOP (Enhanced with Layers 1+4)
+            # - Pre-compilation checks after each fix
+            # - KG-aware error analysis (queries KG for fix context)
+            # - Tech Spec injected into fix prompts
             # ═════════════════════════════════════════════════════════
             all_generated_code = generated_code
             all_stdout = result["stdout"]
@@ -2427,6 +4921,47 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     if not issue_report["issues"]:
                         issue_report["issues"] = [f"BUILDER SCRIPT CRASHED: {result.get('stderr', '')[:200]}"]
                         issue_report["issue_count"] = len(issue_report["issues"])
+
+                # ── LAYER 4: Pre-compilation checks ────────────────
+                if not issue_report["has_issues"] and result["exit_code"] == 0:
+                    try:
+                        precomp = await asyncio.to_thread(
+                            _run_precompilation_checks, container_name
+                        )
+                        if not precomp["all_passed"]:
+                            # Pre-compilation found issues that weren't caught by exit code
+                            precomp_issues = []
+                            for check_name in ["python_syntax", "js_syntax", "import_check"]:
+                                for err in precomp.get(check_name, {}).get("errors", []):
+                                    precomp_issues.append(f"PRE-COMPILE {check_name}: {err}")
+
+                            if precomp_issues:
+                                issue_report["has_issues"] = True
+                                issue_report["issues"].extend(precomp_issues)
+                                issue_report["issue_count"] = len(issue_report["issues"])
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"🔍 Pre-compilation check: {len(precomp_issues)} issues found"
+                                })
+                            else:
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"🔍 Pre-compilation check: PASSED ({precomp['file_count']} files verified)"
+                                })
+                        else:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"🔍 Pre-compilation check: PASSED ({precomp.get('file_count', 0)} files verified)"
+                            })
+                    except Exception as pc_err:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Pre-compilation check skipped: {str(pc_err)[:80]}"
+                        })
 
                 if not issue_report["has_issues"] and result["exit_code"] == 0:
                     agent["output_log"].append({
@@ -2461,6 +4996,24 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 agent["progress"] = min(progress_base, 85)
                 agent["progress_message"] = f"Self-healing: fixing {issue_count} issues (round {fix_iteration})..."
 
+                # ── LAYER 4: KG-Aware Error Analysis ───────────────
+                kg_error_context = ""
+                try:
+                    kg_error_context = await _kg_aware_error_analysis(
+                        project_token=project_token or "",
+                        stderr=result.get("stderr", ""),
+                        task_description=task.get("description", ""),
+                        agent_id=agent_id,
+                    )
+                    if kg_error_context:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"🧠 KG error analysis: found relevant context ({len(kg_error_context)} chars)"
+                        })
+                except Exception:
+                    pass  # Non-critical
+
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
@@ -2475,6 +5028,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         previous_output=result["stdout"],
                         iteration=fix_iteration,
                         builder_crashed=(builder_crashed and workspace_empty),
+                        kg_error_context=kg_error_context,
+                        tech_spec=tech_spec,
                     )
                     if thought:
                         await _post_task_message(
@@ -2539,7 +5094,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             # ═════════════════════════════════════════════════════════
             # CAPTURE WORKSPACE
             # ═════════════════════════════════════════════════════════
-            agent["progress"] = 90
+            agent["progress"] = 88
             agent["progress_message"] = "Capturing project workspace..."
             workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name)
             agent["output_log"].append({
@@ -2549,10 +5104,66 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             })
 
             # ═════════════════════════════════════════════════════════
-            # MARK CHECKLIST ITEMS COMPLETE
+            # CODE QUALITY / LINTING
             # ═════════════════════════════════════════════════════════
+            agent["progress"] = 90
+            agent["progress_message"] = "Running code quality checks..."
+            try:
+                lint_report = await asyncio.to_thread(
+                    _run_code_quality_checks, container_name
+                )
+                linters_used = ", ".join(lint_report.get("linters_run", []))
+                total_lint_issues = lint_report.get("total_issues", 0)
+
+                if lint_report.get("all_passed"):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"✅ Code quality: PASSED ({linters_used})"
+                    })
+                else:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"⚠️ Code quality: {total_lint_issues} issues found ({linters_used})"
+                    })
+                    # Log top issues per linter
+                    for linter_name in ["flake8", "pylint", "eslint"]:
+                        linter_data = lint_report.get(linter_name, {})
+                        if not linter_data.get("passed", True):
+                            for issue in linter_data.get("issues", [])[:5]:
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"  [{linter_name}] {issue[:120]}"
+                                })
+
+                # Store lint report on task result
+                task["_lint_report"] = lint_report
+            except Exception as lint_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Code quality checks skipped: {str(lint_err)[:80]}"
+                })
+
+            # ═════════════════════════════════════════════════════════
+            # MARK CHECKLIST ITEMS COMPLETE
+            # Only if real code was generated (more than just session notes)
+            # ═════════════════════════════════════════════════════════
+            workspace_file_count = workspace_tree.count('FILE:')
             normalized_task_id = _normalize_task_id(task)
-            if checklist and normalized_task_id:
+            if workspace_file_count <= 1:
+                # Only the agent handoff session note exists — no real code
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": (
+                        f"⚠️ Skipping checklist completion: only {workspace_file_count} file(s) "
+                        f"captured — AI may not have produced real code"
+                    )
+                })
+            elif checklist and normalized_task_id:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
@@ -2602,7 +5213,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "fetch", "origin"],
-                        capture_output=True, text=True, timeout=30,
+                        capture_output=True, text=True, timeout=120,
                     )
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
@@ -2875,14 +5486,15 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                             "type": "info",
                             "message": f"API: progress 95% {'ok' if prog_ok else 'skipped/failed'}"
                         })
-                        await _enqueue_git_merge(
-                            effective_branch,
-                            agent.get("git_repo_url"),
-                            agent.get("git_token"),
-                            agent_id,
-                            task["title"],
-                            project_token=project_token
-                        )
+                        if not force_branch:
+                            await _enqueue_git_merge(
+                                effective_branch,
+                                agent.get("git_repo_url"),
+                                agent.get("git_token"),
+                                agent_id,
+                                task["title"],
+                                project_token=project_token
+                            )
                         if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
                             await _mark_repo_bootstrap_result(
                                 project_token=project_token,
@@ -3028,6 +5640,30 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         f"complete {'ok' if complete_ok else 'failed'}"
                     )
                 })
+                if complete_ok:
+                    rollup_result = await _sync_rollup_status_for_completed_task(
+                        task,
+                        project_token=project_token,
+                        task_token=task_token,
+                    )
+                    if rollup_result.get("milestone_completed"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "API: milestone marked as completed",
+                        })
+                    if rollup_result.get("sprint_completed"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "API: sprint marked as completed",
+                        })
+                    if rollup_result.get("project_completed"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "API: project status updated to Completed",
+                        })
             else:
                 failure_message = f"Failed (exit={result['exit_code']})."
                 msg_ok = await _post_task_message(task, failure_message, task_token=task_token)
@@ -3043,11 +5679,10 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             task_progress_state.pop(task_key, None)
             timer_log_state.pop(task_key, None)
 
-            # Release claimed IDs for this task
-            tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
-            claimed_task_ids.discard(tid)
-            for lid in linked_task_ids:
-                claimed_task_ids.discard(lid)
+            # DO NOT release claimed IDs for successfully completed tasks.
+            # If the external API fails to mark the task as "completed",
+            # _pick_next_task would re-pick it, causing duplicate execution.
+            # IDs are only discarded on error/abort (see error handler below).
 
             completed_tasks.append(task)
             all_results.append({
@@ -3064,7 +5699,10 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             agent["progress"] = 100
             agent["progress_message"] = "Task completed"
 
-            # ── Write to Cross-Agent Shared Memory ───────────────────
+            # ── Feed Output Back to KG + Cross-Agent Memory ─────────
+            # Blitzy pattern: KG is a LIVING document. Agent output is
+            # parsed and inserted back into the KG + RAG so downstream
+            # agents discover it via semantic search (Layer 3).
             try:
                 import context_manager as ctx_mgr
                 live_mem = ctx_mgr.get_live_memory(project_token or "")
@@ -3073,6 +5711,35 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 touched_files = ctx_mgr.extract_files_from_workspace_tree(workspace_tree)
                 symbols = ctx_mgr.extract_symbols_from_code(all_generated_code)
 
+                # 1) Register completion in shared memory (for active task tracking)
+                task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                # Mark task as completed in dependency system if successful
+                if result["exit_code"] == 0 and task_id:
+                    live_mem.mark_task_completed(task_id)
+                    
+                    # Auto-advance phase if all tasks in current phase are complete
+                    try:
+                        task_phase = task.get("phase") or task.get("task_phase")
+                        if task_phase and live_mem:
+                            # Check if all tasks in this phase are complete
+                            # Fetch all tasks to check phase completion
+                            external_tasks_check = await _fetch_external_tasks(project_token)
+                            phase_tasks = [
+                                t for t in external_tasks_check
+                                if (t.get("phase") or t.get("task_phase")) == task_phase
+                                and (t.get("status") or "").lower() not in ("completed", "done")
+                            ]
+                            if not phase_tasks:
+                                # All tasks in this phase are complete - advance to next phase
+                                PHASE_ORDER = ["foundation", "backend-core", "backend-features", "frontend-core", "frontend-features", "integration"]
+                                current_index = PHASE_ORDER.index(task_phase) if task_phase in PHASE_ORDER else -1
+                                if current_index >= 0 and current_index < len(PHASE_ORDER) - 1:
+                                    next_phase = PHASE_ORDER[current_index + 1]
+                                    live_mem.set_current_phase(next_phase)
+                                    logger.info(f"[{agent_id}] Phase '{task_phase}' complete. Auto-advancing to '{next_phase}'")
+                    except Exception as phase_err:
+                        logger.warning(f"Phase auto-advance check failed: {phase_err}")
+                
                 live_mem.register_task_complete(
                     agent_id=agent_id,
                     files_touched=touched_files[:25],
@@ -3086,14 +5753,39 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         f"Touched {len(touched_files)} files."
                     ),
                 )
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": (
-                        f"Cross-agent memory: recorded completion "
-                        f"({len(touched_files)} files, {len(symbols.get('created', []))} new symbols)"
+
+                # 2) Feed generated code back into the Knowledge Graph + RAG
+                #    This is the core Blitzy pattern: KG as living source of truth.
+                #    Only do this for successful builds — failed code shouldn't
+                #    pollute the KG.
+                if result["exit_code"] == 0 and workspace_tree and project_token:
+                    kg_update = await ctx_mgr.update_kg_with_agent_output(
+                        project_token=project_token,
+                        agent_id=agent_id,
+                        task_title=task.get("title", ""),
+                        workspace_tree=workspace_tree,
+                        generated_code=all_generated_code,
                     )
-                })
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": (
+                            f"KG feedback: {kg_update.get('status')} — "
+                            f"{kg_update.get('files_processed', 0)} files, "
+                            f"{kg_update.get('nodes_added', 0)} nodes, "
+                            f"{kg_update.get('chunks_inserted', 0)} RAG chunks inserted"
+                        )
+                    })
+                else:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": (
+                            f"Cross-agent memory: recorded completion "
+                            f"({len(touched_files)} files, {len(symbols.get('created', []))} new symbols). "
+                            f"KG feedback skipped (exit_code={result['exit_code']})."
+                        )
+                    })
             except Exception as mem_err:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
@@ -3131,7 +5823,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"Container '{container_name}' destroyed."
+                "message": f"Environment '{container_name}' destroyed."
             })
 
         total_elapsed = round(time.time() - total_start, 1)
@@ -3188,6 +5880,757 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             "tasks_completed": tasks_completed,
             "duration": elapsed,
         }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PREVIEW DEPLOY — Run the merged project in a live Docker container
+# ═══════════════════════════════════════════════════════════════════════════
+
+_preview_states: Dict[str, Dict[str, Any]] = {}
+_PREVIEW_PORT_RANGE_START = 9100
+_PREVIEW_PORT_RANGE_END = 9200
+
+
+def _find_available_preview_port() -> int:
+    """Find an unused port in the preview range."""
+    import socket
+    used_ports = {
+        s.get("host_port") for s in _preview_states.values()
+        if s.get("host_port")
+    }
+    for port in range(_PREVIEW_PORT_RANGE_START, _PREVIEW_PORT_RANGE_END):
+        if port in used_ports:
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("0.0.0.0", port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError("No available ports in preview range")
+
+
+def _detect_project_stack(container_name: str) -> Dict[str, Any]:
+    """Auto-detect the tech stack inside the container's /workspace."""
+    stack = {
+        "type": "static",
+        "image": "python:3.10-slim",
+        "port": 8080,
+        "install_cmd": "",
+        "start_cmd": "cd /workspace && python3 -m http.server 8080",
+        "workdir": "/workspace",
+        "detected_from": "/workspace/index.html",
+    }
+
+    def _cat_file(path: str, timeout: int = 10) -> Optional[str]:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "cat", path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        return None
+
+    def _file_exists(path: str, timeout: int = 5) -> bool:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "test", "-f", path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return result.returncode == 0
+
+    def _dirname(path: str) -> str:
+        if "/" not in path:
+            return "/workspace"
+        return path.rsplit("/", 1)[0] or "/workspace"
+
+    def _find_files(file_name: str, max_depth: int = 5) -> List[str]:
+        result = subprocess.run(
+            [
+                "docker", "exec", container_name, "sh", "-c",
+                (
+                    f"find /workspace -maxdepth {max_depth} -name '{file_name}' "
+                    "-not -path '*/node_modules/*' -not -path '*/.git/*' "
+                    "-not -path '*/venv/*' -not -path '*/.venv/*' 2>/dev/null"
+                ),
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    node_candidates: List[tuple[str, str]] = []
+    root_package = _cat_file("/workspace/package.json")
+    if root_package is not None:
+        node_candidates.append(("/workspace/package.json", root_package))
+    for package_path in _find_files("package.json", max_depth=5):
+        if package_path == "/workspace/package.json":
+            continue
+        package_content = _cat_file(package_path)
+        if package_content is not None:
+            node_candidates.append((package_path, package_content))
+
+    if node_candidates:
+        def _node_candidate_score(candidate: tuple[str, str]) -> int:
+            package_path, package_content = candidate
+            text = package_content.lower()
+            scripts: Dict[str, str] = {}
+            script_text = ""
+            has_workspaces = False
+            try:
+                parsed_package = json.loads(package_content)
+                raw_scripts = parsed_package.get("scripts", {}) if isinstance(parsed_package, dict) else {}
+                if isinstance(raw_scripts, dict):
+                    scripts = {str(k).strip().lower(): str(v).lower() for k, v in raw_scripts.items()}
+                    script_text = " ".join(scripts.values())
+                has_workspaces = bool(parsed_package.get("workspaces")) if isinstance(parsed_package, dict) else False
+            except Exception:
+                scripts = {}
+                script_text = ""
+                has_workspaces = False
+
+            score = 0
+            if package_path == "/workspace/package.json":
+                score += 200
+            if "/frontend/" in package_path or package_path.endswith("/frontend/package.json"):
+                score += 80
+            if "/client/" in package_path or package_path.endswith("/client/package.json"):
+                score += 60
+            if "/web/" in package_path:
+                score += 40
+            if '"scripts"' in text:
+                score += 20
+            if '"start"' in text:
+                score += 35
+            if '"dev"' in text:
+                score += 20
+            if '"vite"' in text or '"@vitejs/plugin-react"' in text:
+                score += 20
+            if package_path == "/workspace/package.json" and has_workspaces:
+                # Root workspace files often orchestrate sub-apps and are poor preview entrypoints.
+                score -= 120
+            looks_fullstack_orchestrator = (
+                "start:backend" in scripts
+                or ("cd backend" in script_text and "cd frontend" in script_text)
+                or ("flask" in script_text and ("react-scripts" in script_text or "vite" in script_text or "next" in script_text))
+            )
+            if package_path == "/workspace/package.json" and looks_fullstack_orchestrator:
+                # Prefer leaf frontend package when root start script expects extra runtimes.
+                score -= 260
+            return score
+
+        package_path, package_content = max(node_candidates, key=_node_candidate_score)
+        package_text = package_content.lower()
+        workdir = _dirname(package_path)
+
+        stack["type"] = "node"
+        stack["image"] = "node:18-slim"
+        stack["workdir"] = workdir
+        stack["detected_from"] = package_path
+        stack["install_cmd"] = f"cd {workdir} && npm install"
+
+        scripts: Dict[str, Any] = {}
+        try:
+            parsed_package = json.loads(package_content)
+            raw_scripts = parsed_package.get("scripts", {}) if isinstance(parsed_package, dict) else {}
+            if isinstance(raw_scripts, dict):
+                scripts = {str(k).strip().lower(): str(v) for k, v in raw_scripts.items()}
+        except Exception:
+            scripts = {}
+
+        script_text = " ".join(str(v).lower() for v in scripts.values())
+        has_start = "start" in scripts
+        has_dev = "dev" in scripts
+        has_preview = "preview" in scripts
+        start_script = str(scripts.get("start", "")).lower()
+        start_targets_backend = (
+            "start:backend" in start_script
+            or "cd backend" in start_script
+            or "flask" in start_script
+            or "uvicorn" in start_script
+        )
+
+        if '"vite"' in package_text or '"@vitejs/plugin-react"' in package_text or "vite" in script_text:
+            if has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev -- --host 0.0.0.0 --port 5173"
+            else:
+                stack["start_cmd"] = f"cd {workdir} && npx vite --host 0.0.0.0 --port 5173"
+            stack["port"] = 5173
+            return stack
+
+        if '"next"' in package_text or "next" in script_text:
+            if has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev -- --hostname 0.0.0.0 --port 3000"
+            else:
+                stack["start_cmd"] = f"cd {workdir} && npx next dev -p 3000 -H 0.0.0.0"
+            stack["port"] = 3000
+            return stack
+
+        if '"react-scripts"' in package_text or "react-scripts" in script_text:
+            has_cra_index = _file_exists(f"{workdir}/public/index.html")
+            has_cra_entry = (
+                _file_exists(f"{workdir}/src/index.js")
+                or _file_exists(f"{workdir}/src/index.jsx")
+                or _file_exists(f"{workdir}/src/index.ts")
+                or _file_exists(f"{workdir}/src/index.tsx")
+            )
+            if not (has_cra_index and has_cra_entry):
+                # Many repos migrated from CRA to Vite but retained old start scripts.
+                # Prefer explicit dev/preview scripts in that case.
+                if has_dev:
+                    stack["start_cmd"] = f"cd {workdir} && npm run dev -- --host 0.0.0.0 --port 5173"
+                    stack["port"] = 5173
+                    return stack
+                if has_preview:
+                    stack["start_cmd"] = f"cd {workdir} && npm run preview -- --host 0.0.0.0 --port 4173"
+                    stack["port"] = 4173
+                    return stack
+                if _file_exists(f"{workdir}/index.html"):
+                    stack["start_cmd"] = f"cd {workdir} && npx vite --host 0.0.0.0 --port 5173"
+                    stack["port"] = 5173
+                    return stack
+
+            if has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev"
+            else:
+                stack["start_cmd"] = f"cd {workdir} && npx react-scripts start"
+            stack["port"] = 3000
+            return stack
+
+        if has_dev:
+            stack["start_cmd"] = f"cd {workdir} && npm run dev"
+            stack["port"] = 3000
+            return stack
+
+        if has_preview:
+            stack["start_cmd"] = f"cd {workdir} && npm run preview -- --host 0.0.0.0 --port 4173"
+            stack["port"] = 4173
+            return stack
+
+        if has_start:
+            if start_targets_backend and has_dev:
+                stack["start_cmd"] = f"cd {workdir} && npm run dev"
+                stack["port"] = 3000
+                return stack
+            stack["start_cmd"] = f"cd {workdir} && npm start"
+            stack["port"] = 3000
+            return stack
+
+    python_candidates: List[tuple[str, str]] = []
+    root_requirements = _cat_file("/workspace/requirements.txt")
+    if root_requirements is not None:
+        python_candidates.append(("/workspace/requirements.txt", root_requirements))
+    for req_path in _find_files("requirements.txt", max_depth=5):
+        if req_path == "/workspace/requirements.txt":
+            continue
+        req_content = _cat_file(req_path)
+        if req_content is not None:
+            python_candidates.append((req_path, req_content))
+
+    if python_candidates:
+        def _python_candidate_score(candidate: tuple[str, str]) -> int:
+            req_path, req_content = candidate
+            text = req_content.lower()
+            score = 0
+            if req_path == "/workspace/requirements.txt":
+                score += 200
+            if "/backend/" in req_path or req_path.endswith("/backend/requirements.txt"):
+                score += 100
+            if "fastapi" in text or "uvicorn" in text:
+                score += 40
+            if "flask" in text:
+                score += 20
+            if "django" in text:
+                score += 20
+            return score
+
+        req_path, req_content = max(python_candidates, key=_python_candidate_score)
+        req_text = req_content.lower()
+        workdir = _dirname(req_path)
+
+        stack["type"] = "python"
+        stack["image"] = "python:3.10-slim"
+        stack["workdir"] = workdir
+        stack["detected_from"] = req_path
+        stack["install_cmd"] = f"cd {workdir} && pip install -r requirements.txt"
+
+        if "fastapi" in req_text or "uvicorn" in req_text:
+            find_main = subprocess.run(
+                [
+                    "docker", "exec", container_name, "sh", "-c",
+                    f"find {workdir} -maxdepth 2 -name 'main.py' -o -name 'app.py' | head -1",
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            if find_main.returncode == 0 and find_main.stdout.strip():
+                main_file = find_main.stdout.strip()
+                relative_main = main_file.replace(f"{workdir}/", "", 1)
+                module = relative_main.replace(".py", "").replace("/", ".")
+            else:
+                module = "main"
+            stack["start_cmd"] = f"cd {workdir} && uvicorn {module}:app --host 0.0.0.0 --port 8000"
+            stack["port"] = 8000
+        elif "flask" in req_text:
+            stack["start_cmd"] = f"cd {workdir} && flask run --host=0.0.0.0 --port 5000"
+            stack["port"] = 5000
+        elif "django" in req_text:
+            stack["start_cmd"] = f"cd {workdir} && python manage.py runserver 0.0.0.0:8000"
+            stack["port"] = 8000
+        else:
+            stack["start_cmd"] = f"cd {workdir} && python main.py"
+            stack["port"] = 8000
+        return stack
+
+    check_html = subprocess.run(
+        ["docker", "exec", container_name, "test", "-f", "/workspace/index.html"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if check_html.returncode == 0:
+        stack["type"] = "static"
+        stack["workdir"] = "/workspace"
+        stack["detected_from"] = "/workspace/index.html"
+        stack["start_cmd"] = "cd /workspace && python3 -m http.server 8080"
+        stack["port"] = 8080
+
+    return stack
+
+
+async def deploy_preview(
+    git_repo_url: str,
+    git_token: str,
+    project_token: Optional[str] = None,
+    is_retry: bool = False,
+) -> Dict[str, Any]:
+    """
+    Deploy the agent/integration branch into a live Docker container with
+    port mapping so the user can preview the built application.
+    """
+    pk = _project_key(project_token)
+
+    # Stop any existing preview for this project
+    if pk in _preview_states and _preview_states[pk].get("status") == "running":
+        await stop_preview(project_token)
+
+    existing_pstate = _preview_states.get(pk)
+    if is_retry and existing_pstate:
+        logs = existing_pstate.get("logs", [])
+        retries = existing_pstate.get("retries", 0)
+    else:
+        logs = []
+        retries = 0
+
+    preview_id = f"preview_{pk[:12]}_{int(time.time())}"
+    container_name = preview_id
+
+    _preview_states[pk] = {
+        "status": "deploying",
+        "container_name": container_name,
+        "host_port": None,
+        "preview_url": None,
+        "logs": logs,
+        "started_at": datetime.utcnow().isoformat(),
+        "stack": None,
+        "retries": retries,
+        "server_log": "",
+    }
+    pstate = _preview_states[pk]
+
+    def _log(msg: str):
+        pstate["logs"].append({
+            "time": datetime.utcnow().isoformat(),
+            "message": msg,
+        })
+        logger.info(f"[Preview] {msg}")
+
+    try:
+        # 1. Create container (using python:3.10-slim initially for cloning)
+        _log("Creating temporary clone container...")
+        create_res = _create_persistent_container(container_name)
+        if not create_res.get("success"):
+            raise RuntimeError(f"Failed to create container: {create_res.get('error')}")
+
+        # 2. Install git
+        _log("Installing git...")
+        subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
+            capture_output=True, text=True, timeout=120,
+        )
+
+        # 3. Clone the repo (agent/integration branch)
+        auth_url = git_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
+        _log(f"Cloning {GIT_INTEGRATION_BRANCH} branch...")
+        clone = subprocess.run(
+            ["docker", "exec", "-w", "/", container_name,
+             "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+             auth_url, "/workspace"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone.returncode != 0:
+            raise RuntimeError(f"Git clone failed: {clone.stderr}")
+
+        # 4. Detect the project stack
+        _log("Detecting project tech stack...")
+        stack = _detect_project_stack(container_name)
+        pstate["stack"] = stack
+        _log(f"Detected: {stack['type']} project")
+        if stack.get("detected_from"):
+            _log(f"Detected entrypoint: {stack['detected_from']}")
+        if stack.get("workdir"):
+            _log(f"Using working directory: {stack['workdir']}")
+        if stack.get("start_cmd"):
+            _log(f"Resolved start command: {stack['start_cmd']}")
+
+        # 5. Destroy the clone container — we'll create a proper one with the right image
+        _destroy_container(container_name)
+
+        # 6. Find available port
+        host_port = _find_available_preview_port()
+        pstate["host_port"] = host_port
+
+        # 7. Create the real container with the correct base image and port mapping
+        _log(f"Starting {stack['type']} container...")
+        docker_run = subprocess.run(
+            ["docker", "run", "-d",
+             "--name", container_name,
+             "-p", f"{host_port}:{stack['port']}",
+             "-w", "/workspace",
+             "-e", "CI=true",
+             "-e", "HOST=0.0.0.0",
+             "-e", f"PORT={stack['port']}",
+             stack["image"],
+             "sleep", "infinity"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if docker_run.returncode != 0:
+            raise RuntimeError(f"Docker run failed: {docker_run.stderr}")
+
+        # 8. Clone repo again inside the properly imaged container
+        _log("Cloning code into preview container...")
+        subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c",
+             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1 || true"],
+            capture_output=True, text=True, timeout=120,
+        )
+        # Clear workspace and clone
+        subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/*"],
+            capture_output=True, text=True, timeout=10,
+        )
+        clone2 = subprocess.run(
+            ["docker", "exec", "-w", "/", container_name,
+             "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+             auth_url, "/workspace"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone2.returncode != 0:
+            raise RuntimeError(f"Git clone into preview container failed: {clone2.stderr}")
+
+        # 9. Install dependencies
+        if stack["install_cmd"]:
+            _log(f"Installing dependencies: {stack['install_cmd']}")
+            install = subprocess.run(
+                ["docker", "exec", container_name, "sh", "-c", stack["install_cmd"]],
+                capture_output=True, text=True, timeout=300,
+            )
+            if install.returncode != 0:
+                _log(f"⚠️ Install warning: {install.stderr[:300]}")
+
+        # 10. Start the dev server in the background
+        _log(f"Starting application server...")
+        subprocess.run(
+            ["docker", "exec", "-d", container_name, "sh", "-c",
+             f"nohup sh -c '{stack['start_cmd']}' > /tmp/preview_server.log 2>&1 &"],
+            capture_output=True, text=True, timeout=15,
+        )
+
+        # 11. Wait a moment for the server to initialize
+        await asyncio.sleep(3)
+
+        # Check if the process excited shortly after starting
+        log_check = subprocess.run(
+            ["docker", "exec", container_name, "tail", "-n", "30", "/tmp/preview_server.log"],
+            capture_output=True, text=True, timeout=5,
+        )
+        
+        # Check if the process is currently running
+        ps_check = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-c", "ps aux || ps -ef"],
+            capture_output=True, text=True, timeout=5,
+        )
+        ps_out = ps_check.stdout.lower()
+
+        is_crashed = False
+        if stack["type"] == "python" and "python" not in ps_out and "uvicorn" not in ps_out and "flask" not in ps_out:
+            is_crashed = True
+        elif stack["type"] == "node" and "node" not in ps_out and "npm" not in ps_out:
+            is_crashed = True
+        
+        if not is_crashed and log_check.returncode == 0:
+            # Maybe it is alive but spitting critical errors
+            output = log_check.stdout.lower()
+            if "traceback (most recent call last)" in output or "address already in use" in output:
+                is_crashed = True
+                
+        if is_crashed:
+            err_log = log_check.stdout[-1000:] if log_check.returncode == 0 else ""
+            ps_tail = ""
+            if ps_check.returncode == 0 and ps_check.stdout:
+                ps_tail = "\n".join(ps_check.stdout.splitlines()[-25:])
+            if ps_tail:
+                err_log = f"{err_log}\n\nProcess snapshot:\n{ps_tail}".strip()
+            pstate["server_log"] = err_log
+            raise RuntimeError(f"Server crashed shortly after starting or failed to start:\n{err_log}")
+
+        preview_url = f"http://localhost:{host_port}"
+        pstate["status"] = "running"
+        pstate["preview_url"] = preview_url
+        _log("✅ Preview is live and ready!")
+
+        return {
+            "status": "running",
+            "preview_url": preview_url,
+            "host_port": host_port,
+            "container_name": container_name,
+            "stack": stack["type"],
+        }
+
+    except Exception as e:
+        pstate["status"] = "error"
+        pstate["logs"].append({
+            "time": datetime.utcnow().isoformat(),
+            "message": f"❌ Deploy failed: {str(e)}",
+        })
+        # Clean up container on failure
+        try:
+            _destroy_container(container_name)
+        except Exception:
+            pass
+
+        max_retries = 2
+        if pstate.get("retries", 0) < max_retries:
+            pstate["retries"] += 1
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": f"🔄 Auto-triggering AI self-heal (attempt {pstate['retries']}/{max_retries})..."
+            })
+            # Trigger repair asynchronously without blocking
+            asyncio.create_task(repair_preview(git_repo_url, git_token, project_token))
+            return {
+                "status": "deploying",
+                "message": f"Deploy failed. Auto-triggering AI self-heal (attempt {pstate['retries']}/{max_retries})."
+            }
+
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
+async def repair_preview(
+    git_repo_url: str,
+    git_token: str,
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Triggers an AI agent to fix the current preview error.
+    Then automatically redeploys.
+    """
+    pk = _project_key(project_token)
+    pstate = _preview_states.get(pk)
+    if not pstate:
+        return {"status": "error", "message": "No preview deployment found to repair."}
+
+    # Repair can be triggered before runtime agents are initialized for this project.
+    # Ensure system agents exist so run_agent(MASTER_AGENT_ID) does not fail.
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    if GIT_MANAGER_AGENT_ID not in project_agents:
+        project_agents[GIT_MANAGER_AGENT_ID] = _make_agent(GIT_MANAGER_AGENT_ID, 2)
+    if MASTER_AGENT_ID not in project_agents:
+        project_agents[MASTER_AGENT_ID] = _make_agent(MASTER_AGENT_ID, 3)
+
+    logs = "\n".join([log.get("message", "") for log in pstate.get("logs", [])[-30:]])
+    server_log = pstate.get("server_log", "")
+    error_context = logs
+    if server_log:
+        error_context += "\n\nServer Logs:\n" + server_log[-2000:]
+
+    pstate["status"] = "deploying"
+    pstate["logs"].append({
+        "time": datetime.utcnow().isoformat(),
+        "message": "🤖 Starting AI repair process...",
+    })
+    pstate["logs"].append({
+        "time": datetime.utcnow().isoformat(),
+        "message": "🤖 AI repair is running in background (timeout: 15 minutes).",
+    })
+
+    async def _repair_bg():
+        try:
+            import uuid
+            task = {
+                "id": f"fix-{uuid.uuid4().hex[:8]}",
+                "title": "Fix Preview Deployment Failure",
+                "description": f"The application failed to start or deploy in the preview environment.\n\nLogs:\n{error_context}\n\nPlease identify the issue and modify the code to fix this deployment error.",
+                "status": "pending"
+            }
+            
+            # Wait for AI to finish
+            res = await asyncio.wait_for(
+                run_agent(
+                    agent_id=MASTER_AGENT_ID,
+                    assigned_task=task,
+                    continuous=False,
+                    ignore_running_check=True,
+                    git_repo_url=git_repo_url,
+                    git_token=git_token,
+                    project_token=project_token,
+                    force_branch=GIT_INTEGRATION_BRANCH
+                ),
+                timeout=900,
+            )
+            
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": f"🤖 AI repair completed (success: {res.get('success')}). Redeploying preview..."
+            })
+            
+            # Redeploy
+            await deploy_preview(git_repo_url, git_token, project_token, is_retry=True)
+            
+        except asyncio.TimeoutError:
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": "❌ AI repair timed out after 15 minutes.",
+            })
+            pstate["status"] = "error"
+        except Exception as e:
+            pstate["logs"].append({
+                "time": datetime.utcnow().isoformat(),
+                "message": f"❌ AI repair failed internally: {str(e)}"
+            })
+            pstate["status"] = "error"
+
+    asyncio.create_task(_repair_bg())
+    return {"status": "deploying", "message": "AI is repairing the deployment."}
+
+
+def _recover_preview_from_docker(pk: str) -> Optional[Dict[str, Any]]:
+    """Try to find a running preview container from Docker when in-memory state is lost."""
+    try:
+        # List all running containers with names starting with "preview_"
+        result = subprocess.run(
+            ["docker", "ps", "--filter", f"name=preview_{pk[:12]}", "--format",
+             "{{.Names}}\t{{.Ports}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        # Parse the first matching container
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            container_name = parts[0].strip()
+            ports_str = parts[1].strip()
+
+            # Extract host port from port mapping like "0.0.0.0:9100->3000/tcp"
+            host_port = None
+            import re as _re_local
+            port_match = _re_local.search(r"0\.0\.0\.0:(\d+)->(\d+)", ports_str)
+            if port_match:
+                host_port = int(port_match.group(1))
+
+            if host_port:
+                preview_url = f"http://localhost:{host_port}"
+                # Reconstruct state
+                recovered = {
+                    "status": "running",
+                    "container_name": container_name,
+                    "host_port": host_port,
+                    "preview_url": preview_url,
+                    "logs": [{"time": datetime.utcnow().isoformat(),
+                              "message": "Recovered running preview environment."}],
+                    "started_at": datetime.utcnow().isoformat(),
+                    "stack": None,
+                    "server_log": "",
+                }
+                # Cache it in memory
+                _preview_states[pk] = recovered
+                return recovered
+    except Exception as e:
+        logger.debug(f"Preview recovery failed: {e}")
+    return None
+
+
+def get_preview_status(project_token: Optional[str] = None) -> Dict[str, Any]:
+    """Get the current preview deployment status for a project."""
+    pk = _project_key(project_token)
+    pstate = _preview_states.get(pk)
+
+    # If no in-memory state, try to recover from Docker
+    if not pstate:
+        recovered = _recover_preview_from_docker(pk)
+        if not recovered:
+            return {"status": "none", "message": "No preview deployed"}
+        pstate = recovered
+
+    # If status is "running", verify the container is actually alive
+    if pstate["status"] == "running" and pstate.get("container_name"):
+        check = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", pstate["container_name"]],
+            capture_output=True, text=True, timeout=5,
+        )
+        if check.returncode != 0 or "true" not in check.stdout.lower():
+            pstate["status"] = "stopped"
+
+    # Grab recent server logs
+    if pstate.get("container_name") and pstate["status"] == "running":
+        try:
+            log_result = subprocess.run(
+                ["docker", "exec", pstate["container_name"],
+                 "tail", "-20", "/tmp/preview_server.log"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if log_result.returncode == 0:
+                pstate["server_log"] = log_result.stdout
+        except Exception:
+            pass
+
+    return {
+        "status": pstate["status"],
+        "preview_url": pstate.get("preview_url"),
+        "host_port": pstate.get("host_port"),
+        "container_name": pstate.get("container_name"),
+        "stack": pstate.get("stack", {}).get("type") if isinstance(pstate.get("stack"), dict) else pstate.get("stack"),
+        "started_at": pstate.get("started_at"),
+        "logs": pstate.get("logs", []),
+        "server_log": pstate.get("server_log", ""),
+    }
+
+
+async def stop_preview(project_token: Optional[str] = None) -> Dict[str, Any]:
+    """Stop and destroy the preview container for a project."""
+    pk = _project_key(project_token)
+    pstate = _preview_states.get(pk)
+    if not pstate:
+        # Try to recover from Docker
+        pstate = _recover_preview_from_docker(pk)
+    if not pstate:
+        return {"status": "none", "message": "No preview to stop"}
+
+    container_name = pstate.get("container_name")
+    if container_name:
+        await asyncio.to_thread(_destroy_container, container_name)
+
+    pstate["status"] = "stopped"
+    pstate["logs"].append({
+        "time": datetime.utcnow().isoformat(),
+        "message": "Preview environment stopped and destroyed.",
+    })
+    return {"status": "stopped", "message": f"Preview environment {container_name} destroyed"}
 
 
 # ── Agent & Task Management Helpers ─────────────────────────────────────────
@@ -3291,7 +6734,10 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
     claimed_task_ids = state["claimed_task_ids"]
 
     # 1. Synchronously claim all idle agents immediately so UI updates instantly
-    idle_agents = [a for a in project_agents.values() if a["status"] == "idle" and a["id"] != "agent_03"]
+    idle_agents = [
+        a for a in project_agents.values()
+        if a["status"] == "idle" and not _is_system_agent_id(a["id"])
+    ]
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
 

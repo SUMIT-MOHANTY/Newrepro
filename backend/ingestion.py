@@ -3,7 +3,6 @@ import uuid
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True  # Allow loading truncated images to fix Pillow errors
 from typing import Optional
-from docling.document_converter import DocumentConverter
 
 # Configure upload directory
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
