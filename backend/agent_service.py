@@ -183,6 +183,13 @@ def clear_project_runtime_state(project_token: Optional[str]) -> None:
     if token:
         _project_tech_specs.pop(token, None)
 
+
+def clear_all_runtime_state() -> None:
+    """Clear all in-memory runtime state after structural agent changes."""
+    _project_states.clear()
+    _preview_states.clear()
+    _project_tech_specs.clear()
+
 def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
     atype = _AGENT_TYPES[idx % len(_AGENT_TYPES)]
@@ -224,8 +231,6 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
 
 def get_default_agents() -> List[Dict[str, Any]]:
     return [
-        _make_agent("agent_01", 0),
-        _make_agent("agent_02", 1),
         _make_agent("agent_03", 2),
         _make_agent("agent_04", 3),
     ]
@@ -6677,15 +6682,26 @@ def seed_sample_tasks():
 # ── Dynamic Agent Management ────────────────────────────────────────────────
 
 def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None,
-              project_token: Optional[str] = None) -> Dict[str, Any]:
+              kind: Optional[str] = None, project_token: Optional[str] = None) -> Dict[str, Any]:
     """Add a new agent dynamically."""
     project_agents = _get_agent_states(project_token)
-    idx = len(project_agents)
-    agent_id = f"agent_{idx + 1:02d}"
-    while agent_id in project_agents:
-        idx += 1
-        agent_id = f"agent_{idx + 1:02d}"
-    agent = _make_agent(agent_id, idx)
+    normalized_kind = str(kind or "").strip().lower()
+
+    if normalized_kind in {"shared", "dedicated"}:
+        prefix = f"{normalized_kind}_agent_"
+        idx = 1
+        while f"{prefix}{idx:02d}" in project_agents:
+            idx += 1
+        agent_id = f"{prefix}{idx:02d}"
+        seed_idx = len(project_agents)
+    else:
+        seed_idx = len(project_agents)
+        agent_id = f"agent_{seed_idx + 1:02d}"
+        while agent_id in project_agents:
+            seed_idx += 1
+            agent_id = f"agent_{seed_idx + 1:02d}"
+
+    agent = _make_agent(agent_id, seed_idx)
     if name:
         agent["name"] = name
     if git_repo_url:

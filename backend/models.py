@@ -117,6 +117,38 @@ class Agent(Base):
     project_token = Column(String, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class OrganizationAgentQuota(Base):
+    """
+    Organization-wide capacity (license) for agent slots.
+    - shared_quota: how many shared agents the org is allowed to create (in addition to defaults)
+    - dedicated_quota: how many dedicated agents the org is allowed to create across ALL projects (in addition to defaults)
+    """
+    __tablename__ = "organization_agent_quotas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_name = Column(String, unique=True, index=True, nullable=False)
+    shared_quota = Column(Integer, nullable=False, default=0)
+    dedicated_quota = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class OrganizationAgentMapping(Base):
+    """
+    Maps an agent record in `agents` table to an organization, and flags whether it is a built-in default.
+    This avoids changing the existing `agents` schema while allowing org-scoped listing/quotas.
+    """
+    __tablename__ = "organization_agent_mappings"
+    __table_args__ = (
+        UniqueConstraint("organization_name", "agent_id", name="uq_org_agent_mapping"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_name = Column(String, index=True, nullable=False)
+    agent_id = Column(String, ForeignKey("agents.id"), index=True, nullable=False)
+    project_token = Column(String, index=True, nullable=True)
+    agent_kind = Column(String, index=True, nullable=True)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class Document(Base):
     __tablename__ = "documents"
 

@@ -14,6 +14,8 @@ export const API_ENDPOINTS = {
     USERS: `${API_BASE_URL}/users/`,
     USERS_ME: `${API_BASE_URL}/users/me`,
     ORG_SSO_SETTINGS: `${API_BASE_URL}/organization/sso-settings`,
+    ORG_AGENT_QUOTA: `${API_BASE_URL}/organization/agent-quota`,
+    ORG_AGENT_QUOTA_INCREASE: `${API_BASE_URL}/organization/agent-quota/increase`,
 
     // Documents
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,
