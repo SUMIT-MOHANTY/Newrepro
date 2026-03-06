@@ -157,6 +157,7 @@ export default function TaskCreation({
     const [sprints, setSprints] = useState([]);
     const [milestones, setMilestones] = useState([]);
     const [tasks, setTasks] = useState([]);
+    const [taskTotalCount, setTaskTotalCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [error, setError] = useState('');
@@ -165,7 +166,7 @@ export default function TaskCreation({
     const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
     const autoStartRunKeysRef = useRef(new Set());
     const credentialRefreshAttemptedRef = useRef(new Set());
-    const generationSnapshotRef = useRef({ tasks: 0, sprints: 0, milestones: 0 });
+    const generationSnapshotRef = useRef({ tasks: 0, sprints: 0, milestones: 0, taskTotalCount: 0 });
     const generationPollTimerRef = useRef(null);
     const [isRefreshingCredentials, setIsRefreshingCredentials] = useState(false);
     const [customRules, setCustomRules] = useState(() => {
@@ -196,6 +197,7 @@ export default function TaskCreation({
         setSprints([]);
         setMilestones([]);
         setTasks([]);
+        setTaskTotalCount(0);
         setError('');
         setSuccess('');
     }, [selectedProjectKey]);
@@ -295,6 +297,15 @@ export default function TaskCreation({
         return [];
     }, []);
 
+    const getTaskTotalCount = useCallback(
+        (taskPayload) => {
+            const raw = taskPayload?.count;
+            if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+            return extractTaskResults(taskPayload).length;
+        },
+        [extractTaskResults]
+    );
+
     const loadData = useCallback(async () => {
         if (!selectedProjectKey || !hasValidTaskToken) return;
         setIsLoading(true);
@@ -316,10 +327,12 @@ export default function TaskCreation({
             const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
             const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
             const nextTasks = extractTaskResults(taskData);
+            const nextTaskTotalCount = getTaskTotalCount(taskData);
 
             setSprints(nextSprints);
             setMilestones(nextMilestones);
             setTasks(nextTasks);
+            setTaskTotalCount(nextTaskTotalCount);
 
             let normalizedDeadline = '';
             const deadline = projectInfoData?.project?.deadline;
@@ -331,6 +344,7 @@ export default function TaskCreation({
                 sprints: nextSprints,
                 milestones: nextMilestones,
                 tasks: nextTasks,
+                taskTotalCount: nextTaskTotalCount,
                 projectDeadline: normalizedDeadline,
             };
         } catch (e) {
@@ -340,7 +354,7 @@ export default function TaskCreation({
             setIsLoading(false);
             setHasCompletedInitialBootstrap(true);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults]);
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults, getTaskTotalCount]);
 
     useEffect(() => {
         loadData();
@@ -409,14 +423,20 @@ export default function TaskCreation({
             const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
             const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
             const nextTasks = extractTaskResults(taskData);
+            const nextTaskTotalCount = getTaskTotalCount(taskData);
 
             setSprints(nextSprints);
             setMilestones(nextMilestones);
             setTasks(nextTasks);
+            setTaskTotalCount(nextTaskTotalCount);
 
             const createdSprintCount = Math.max(0, nextSprints.length - generationSnapshotRef.current.sprints);
             const createdMilestoneCount = Math.max(0, nextMilestones.length - generationSnapshotRef.current.milestones);
-            const createdTaskCount = Math.max(0, nextTasks.length - generationSnapshotRef.current.tasks);
+            const baselineTotalCount =
+                typeof generationSnapshotRef.current.taskTotalCount === 'number'
+                    ? generationSnapshotRef.current.taskTotalCount
+                    : generationSnapshotRef.current.tasks;
+            const createdTaskCount = Math.max(0, nextTaskTotalCount - baselineTotalCount);
 
             setLiveCreatedTaskCount(createdTaskCount);
 
@@ -430,7 +450,7 @@ export default function TaskCreation({
         } catch {
             // Ignore polling errors while the main generation request is still running.
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults]);
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults, getTaskTotalCount]);
 
     useEffect(() => {
         return () => {
@@ -488,11 +508,6 @@ export default function TaskCreation({
         setError('');
         setSuccess('');
         setCreationStageIndex(0);
-        generationSnapshotRef.current = {
-            tasks: tasks.length,
-            sprints: sprints.length,
-            milestones: milestones.length,
-        };
         setLiveCreatedTaskCount(0);
         stopGenerationPolling();
         generationPollTimerRef.current = window.setInterval(() => {
@@ -500,8 +515,27 @@ export default function TaskCreation({
         }, 30000);
 
         try {
+            const baseHeaders = buildHeaders();
+            let baselineTaskTotalCount = taskTotalCount;
+            try {
+                const baselineRes = await fetch(API_ENDPOINTS.AGENT_TASKS, { headers: baseHeaders });
+                if (baselineRes.ok) {
+                    const baselineJson = await baselineRes.json().catch(() => ({}));
+                    baselineTaskTotalCount = getTaskTotalCount(baselineJson);
+                }
+            } catch {
+                // Ignore baseline fetch errors; fall back to local state.
+            }
+
+            generationSnapshotRef.current = {
+                tasks: tasks.length,
+                sprints: sprints.length,
+                milestones: milestones.length,
+                taskTotalCount: baselineTaskTotalCount,
+            };
+
             const headers = {
-                ...buildHeaders(),
+                ...baseHeaders,
                 'Content-Type': 'application/json',
             };
 
