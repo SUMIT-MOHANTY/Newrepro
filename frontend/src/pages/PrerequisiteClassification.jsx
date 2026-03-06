@@ -7,6 +7,58 @@ import {
     Lock, FileKey, Cloud, Package, Info, Sparkles, Loader2
 } from 'lucide-react';
 
+const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
+
+function decodeJwtExpiry(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length < 2) return null;
+        const payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const padded = payloadB64 + '='.repeat((4 - (payloadB64.length % 4)) % 4);
+        const payload = JSON.parse(atob(padded));
+        return typeof payload.exp === 'number' ? payload.exp : null;
+    } catch {
+        return null;
+    }
+}
+
+function readTaskTokenCache() {
+    try {
+        const raw = localStorage.getItem(TASK_TOKEN_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function getCachedTaskToken(projectKey) {
+    if (!projectKey) return null;
+    const cache = readTaskTokenCache();
+    const entry = cache[projectKey];
+    if (!entry || !entry.token) return null;
+    if (entry.expiresAt) {
+        const now = Math.floor(Date.now() / 1000);
+        if (entry.expiresAt <= now) {
+            delete cache[projectKey];
+            localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
+            return null;
+        }
+    }
+    return entry.token;
+}
+
+function cacheTaskToken(projectKey, token) {
+    if (!projectKey || !token) return;
+    const cache = readTaskTokenCache();
+    cache[projectKey] = {
+        token,
+        expiresAt: decodeJwtExpiry(token),
+    };
+    localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
+}
+
 /* ─────────────────────────────────────────────────────────
    CATEGORY CONFIG — icon + colour for each prerequisite type
 ───────────────────────────────────────────────────────── */
@@ -491,6 +543,40 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
+    const selectedProject = useMemo(
+        () => projects?.find((project) => project.key === selectedProjectKey) || null,
+        [projects, selectedProjectKey]
+    );
+
+    const prefetchTaskToken = useCallback(async () => {
+        if (!selectedProjectKey || !selectedProject?.client_id || !selectedProject?.client_secret) {
+            return null;
+        }
+
+        const cachedToken = getCachedTaskToken(selectedProjectKey);
+        if (cachedToken) {
+            return cachedToken;
+        }
+
+        const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                client_id: selectedProject.client_id,
+                client_secret: selectedProject.client_secret,
+            }),
+        });
+        if (!res.ok) {
+            return null;
+        }
+
+        const data = await res.json().catch(() => ({}));
+        if (data?.access) {
+            cacheTaskToken(selectedProjectKey, data.access);
+            return data.access;
+        }
+        return null;
+    }, [selectedProject, selectedProjectKey]);
 
     const loadStoredProjectRepoSuggestion = useCallback(() => {
         const currentProject = projects?.find((p) => p.key === selectedProjectKey);
@@ -921,6 +1007,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             // Save selected execution mode
             saveProcessModeForProject(selectedProjectKey, processMode);
 
+            try {
+                await prefetchTaskToken();
+            } catch (prefetchError) {
+                console.error('Task token prefetch failed', prefetchError);
+            }
+
             if (processMode === 'developer_only') {
                 // Redirect immediately without showing the checkmark screen
                 window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
@@ -929,7 +1021,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 setSubmitted(true);
                 // After a brief success animation, redirect to Task Creation
                 setTimeout(() => {
-                    navigate('/task-creation');
+                    navigate('/task-creation', { state: { fromPrerequisites: true } });
                 }, 1500);
             }
         } catch (err) {
