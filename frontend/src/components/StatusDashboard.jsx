@@ -6,6 +6,7 @@ import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
 import { API_ENDPOINTS } from '../config';
+import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 // import KnowledgeGraphCard from './KnowledgeGraphCard';
 // import PrStatusCard from './PrStatusCard';
 
@@ -326,23 +327,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         ];
     }, [agents, devAgents]);
 
-    const agentDisplayNames = useMemo(() => {
-        const names = {
-            agent_04: 'Master Agent',
-            agent_03: 'Git Manager',
-        };
-
-        devAgents.forEach((agent, index) => {
-            names[agent.id] = `Dev Agent ${index + 1}`;
-        });
-
-        return names;
-    }, [devAgents]);
-
     const getAgentDisplayName = useCallback((agent) => {
         if (!agent) return 'Agent';
-        return agentDisplayNames[agent.id] || agent.name || agent.id;
-    }, [agentDisplayNames]);
+        return getNeutralAgentName(agent);
+    }, []);
 
     const setAgents = useCallback((updater) => {
         queryClient.setQueryData(['agents', selectedProjectKey], updater);
@@ -1068,7 +1056,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     {displayName}
                                 </h4>
                             </div>
-                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{agent.id.replace('_', ' ').toUpperCase()}</p>
+                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
                             {!isSystemAgent && (
                                 <p className="text-[10px] text-app-text-light">
                                     Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
