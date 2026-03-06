@@ -92,6 +92,18 @@ def _join_contract_root(root: str, rel: str) -> str:
     return f"{norm_root}/{norm_rel}"
 
 
+def _path_matches_pattern(path: str, pattern: str) -> bool:
+    import fnmatch
+
+    norm_path = _normalize_contract_path(path)
+    norm_pattern = _normalize_contract_path(pattern)
+    if fnmatch.fnmatch(norm_path, norm_pattern):
+        return True
+    if norm_pattern.startswith("**/"):
+        return fnmatch.fnmatch(norm_path, norm_pattern[3:])
+    return False
+
+
 def _is_config_like_path(path: str) -> bool:
     base = os.path.basename(_normalize_contract_path(path))
     if base in _MANIFEST_BASENAMES:
@@ -490,7 +502,7 @@ def validate_paths_against_workspace_contract(
 ) -> Dict[str, Any]:
     contract = get_workspace_contract(project_token)
     normalized_paths = [
-        _normalize_contract_path(path)
+        _remap_path_to_workspace_contract(path, contract, task_domain=task_domain)
         for path in (file_paths or [])
         if _normalize_contract_path(path) not in {"", "."}
     ]
@@ -553,6 +565,94 @@ def validate_paths_against_workspace_contract(
         "contract_ready": True,
         "contract": contract,
     }
+
+
+def _remap_path_to_workspace_contract(
+    path: str,
+    contract: Dict[str, Any],
+    task_domain: Optional[str] = None,
+) -> str:
+    normalized = _normalize_contract_path(path)
+    parts = normalized.split("/")
+    if len(parts) <= 1:
+        return normalized
+
+    top_level = parts[0]
+    if top_level in set(contract.get("allowed_top_level_dirs") or []):
+        return normalized
+    if top_level in _COMMON_SAFE_TOP_LEVEL_DIRS:
+        return normalized
+
+    modules = contract.get("modules") or []
+    preferred_kinds = {task_domain} if task_domain in {"backend", "frontend"} else set()
+    preferred_roots: Set[str] = set()
+    candidate_roots: Set[str] = set()
+    backend_candidate_roots: Set[str] = set()
+    frontend_candidate_roots: Set[str] = set()
+    next_segment = parts[1].lower() if len(parts) > 1 else ""
+
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        kind = str(module.get("kind") or "").strip().lower()
+        source_roots = module.get("source_roots") or [module.get("root") or "."]
+        for source_root in source_roots:
+            normalized_root = _normalize_contract_path(str(source_root or ""))
+            if normalized_root == ".":
+                continue
+            if os.path.basename(normalized_root) != top_level:
+                continue
+            candidate_roots.add(normalized_root)
+            if preferred_kinds and kind in preferred_kinds:
+                preferred_roots.add(normalized_root)
+            if kind == "backend":
+                backend_candidate_roots.add(normalized_root)
+            elif kind == "frontend":
+                frontend_candidate_roots.add(normalized_root)
+
+    selected_root = ""
+    if len(preferred_roots) == 1:
+        selected_root = next(iter(preferred_roots))
+    elif next_segment in {"components", "pages", "hooks", "styles", "contexts", "context", "providers", "layouts", "assets"} and len(frontend_candidate_roots) == 1:
+        selected_root = next(iter(frontend_candidate_roots))
+    elif next_segment in {"routes", "controllers", "services", "models", "schemas", "middleware", "repositories", "db"} and len(backend_candidate_roots) == 1:
+        selected_root = next(iter(backend_candidate_roots))
+    elif len(candidate_roots) == 1:
+        selected_root = next(iter(candidate_roots))
+
+    if not selected_root:
+        return normalized
+
+    suffix = "/".join(parts[1:]) if len(parts) > 1 else "."
+    return _join_contract_root(selected_root, suffix or ".")
+
+
+def normalize_paths_for_workspace_contract(
+    project_token: str,
+    file_paths: List[str],
+    task_domain: Optional[str] = None,
+) -> List[str]:
+    contract = get_workspace_contract(project_token)
+    if contract.get("status") != "ready":
+        return [
+            _normalize_contract_path(path)
+            for path in (file_paths or [])
+            if _normalize_contract_path(path) not in {"", "."}
+        ]
+
+    normalized_paths: List[str] = []
+    seen = set()
+    for raw_path in file_paths or []:
+        candidate = _remap_path_to_workspace_contract(
+            raw_path,
+            contract,
+            task_domain=task_domain,
+        )
+        if candidate in {"", "."} or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized_paths.append(candidate)
+    return normalized_paths
 
 
 # ---------------------------------------------------------------------------
@@ -711,11 +811,9 @@ class ProjectLiveMemory:
             self._contract_partition_signature = signature
 
     def is_shared_file(self, file_path: str) -> bool:
-        import fnmatch
-
         normalized_path = _normalize_contract_path(file_path)
         for pattern in self._shared_files:
-            if fnmatch.fnmatch(normalized_path, pattern):
+            if _path_matches_pattern(normalized_path, pattern):
                 return True
         return False
 
@@ -749,8 +847,6 @@ class ProjectLiveMemory:
 
     def get_file_owner(self, file_path: str) -> Optional[str]:
         """Determine which domain should own a file based on its path."""
-        import fnmatch
-
         normalized_path = _normalize_contract_path(file_path)
         contract_owner = self._resolve_domain_owner_from_contract(normalized_path)
         if contract_owner:
@@ -758,12 +854,12 @@ class ProjectLiveMemory:
 
         # Check backend ownership
         for pattern in self._backend_files:
-            if fnmatch.fnmatch(normalized_path, pattern):
+            if _path_matches_pattern(normalized_path, pattern):
                 return "backend"
 
         # Check frontend ownership
         for pattern in self._frontend_files:
-            if fnmatch.fnmatch(normalized_path, pattern):
+            if _path_matches_pattern(normalized_path, pattern):
                 return "frontend"
 
         # Default to shared (requires coordination)

@@ -6746,6 +6746,20 @@ def _check_task_conflicts(
     task_domain = _normalize_task_domain(task)
     predicted_files = _predict_task_file_intents(task)
     predicted_source = str(task.get("_predicted_files_source") or "").strip().lower()
+    if predicted_files and project_token:
+        try:
+            import context_manager as ctx_mgr
+
+            normalized_predicted_files = ctx_mgr.normalize_paths_for_workspace_contract(
+                project_token,
+                predicted_files,
+                task_domain=task_domain,
+            )
+            if normalized_predicted_files:
+                predicted_files = normalized_predicted_files
+                task["_predicted_files"] = predicted_files[:25]
+        except Exception:
+            pass
     if predicted_files and live_mem:
         try:
             inferred_domain = live_mem.infer_domain_for_files(predicted_files)
