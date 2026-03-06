@@ -278,6 +278,18 @@ class TaskManagementService:
         """Fetch dashboard insights from the external task management API."""
         return await self._make_request("GET", "/api/agent/dashboard/", task_token=task_token)
 
+    async def upsert_note(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Create or update an agent note in the external task management API."""
+        return await self._make_request("PUT", "/api/agent/notes/", task_token=task_token, json=payload)
+
+    async def list_notes(self, task_token: Optional[str] = None) -> list:
+        """Fetch the list of agent notes from the external task management API."""
+        return await self._make_request("GET", "/api/agent/notes/", task_token=task_token)
+
+    async def get_note_detail(self, note_id: int, task_token: Optional[str] = None) -> dict:
+        """Fetch a single agent note by ID from the external task management API."""
+        return await self._make_request("GET", f"/api/agent/notes/{note_id}/", task_token=task_token)
+
     async def opt_in_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Opt in to a task in the external task management API using X-API-Key."""
         if task_token:
