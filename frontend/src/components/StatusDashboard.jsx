@@ -200,7 +200,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [editingAgentToken, setEditingAgentToken] = useState('');
     const [isSavingAgentName, setIsSavingAgentName] = useState(false);
     const [showAddAgentModal, setShowAddAgentModal] = useState(false);
-    const [newAgentConfig, setNewAgentConfig] = useState({ name: '', git_repo_url: '', git_token: '' });
+    const [agentQuota, setAgentQuota] = useState(null);
+    const [agentQuotaLoading, setAgentQuotaLoading] = useState(false);
+    const [agentQuotaError, setAgentQuotaError] = useState('');
+    const [sharedAgentsToAdd, setSharedAgentsToAdd] = useState(0);
+    const [dedicatedAgentsToAdd, setDedicatedAgentsToAdd] = useState(0);
+    const [isAddingAgents, setIsAddingAgents] = useState(false);
+    const [addAgentModalError, setAddAgentModalError] = useState('');
 
     // ── Preview Deploy State ─────────────────────────────────────────
     const [previewStatus, setPreviewStatus] = useState({ status: 'none' });
@@ -294,7 +300,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const hasGlobalGitConfigured = agents.some(agent => Boolean(agent.git_repo_url && agent.has_git_token));
     const devAgents = useMemo(() => {
         const parseAgentNumber = (agentId) => {
-            const match = String(agentId || '').match(/^agent_(\d+)$/i);
+            const match = String(agentId || '').match(/(\d+)$/);
             if (!match) return Number.MAX_SAFE_INTEGER;
             return Number.parseInt(match[1], 10);
         };
@@ -475,6 +481,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const fetchAgents = useCallback(() => {
         queryClient.invalidateQueries({ queryKey: ['agents', selectedProjectKey] });
     }, [queryClient, selectedProjectKey]);
+
+    const clampAgentCount = useCallback((value, max = 1000) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return 0;
+        return Math.max(0, Math.min(max, Math.floor(n)));
+    }, []);
 
     const refreshRoadmap = useCallback(async () => {
         if (!fetchRoadmapData || !selectedProjectKey) return;
@@ -757,39 +769,114 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Add/Remove Agent ─────────────────────────────────────────────
     const handleAddAgent = () => {
-        if (hasGlobalGitConfigured) {
-            setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
-        }
+        setSharedAgentsToAdd(0);
+        setDedicatedAgentsToAdd(0);
+        setAddAgentModalError('');
+        setAgentQuotaError('');
         setShowAddAgentModal(true);
+        setAgentQuotaLoading(true);
+        fetch(API_ENDPOINTS.ORG_AGENT_QUOTA, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then(async (res) => {
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || 'Failed to load organization capacity');
+                setAgentQuota(data);
+            })
+            .catch((e) => {
+                setAgentQuota(null);
+                setAgentQuotaError(e.message || 'Failed to load organization capacity');
+            })
+            .finally(() => {
+                setAgentQuotaLoading(false);
+            });
     };
 
     const submitAddAgent = async () => {
-        const nextName = (newAgentConfig.name || '').trim();
-        const nextRepo = (newAgentConfig.git_repo_url || '').trim();
-        const nextToken = (newAgentConfig.git_token || '').trim();
-        const payload = {};
-        if (nextName) payload.name = nextName;
-        if (!hasGlobalGitConfigured) {
-            if (nextRepo) payload.git_repo_url = nextRepo;
-            if (nextToken) payload.git_token = nextToken;
+        const sharedAvailable = Number(agentQuota?.shared_available ?? 0);
+        const dedicatedAvailable = Number(agentQuota?.dedicated_available ?? 0);
+        const sharedCount = clampAgentCount(sharedAgentsToAdd, sharedAvailable);
+        const dedicatedCount = clampAgentCount(dedicatedAgentsToAdd, dedicatedAvailable);
+
+        if (!selectedProjectKey) {
+            setAddAgentModalError('Select a project before adding agents.');
+            return;
+        }
+        if (sharedCount === 0 && dedicatedCount === 0) {
+            setAddAgentModalError('Enter at least one shared or dedicated agent to add.');
+            return;
+        }
+        if (sharedCount > sharedAvailable || dedicatedCount > dedicatedAvailable) {
+            setAddAgentModalError('Requested count exceeds available organization capacity.');
+            return;
         }
 
-        setShowAddAgentModal(false);
+        setIsAddingAgents(true);
+        setAddAgentModalError('');
         try {
             const headers = {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
             };
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
-            await fetch(withProjectToken(API_ENDPOINTS.AGENT_ADD), {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(payload),
+
+            const createOne = async (kind) => {
+                const url = new URL(API_ENDPOINTS.AGENT_ADD);
+                url.searchParams.set('project_token', selectedProjectKey);
+                const res = await fetch(url.toString(), {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ kind }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    throw new Error(data.detail || `Failed to add ${kind} agent`);
+                }
+                return data?.agent?.id || null;
+            };
+
+            const createdAgentIds = [];
+            for (let i = 0; i < sharedCount; i += 1) {
+                const createdId = await createOne('shared');
+                if (createdId) createdAgentIds.push(createdId);
+            }
+            for (let i = 0; i < dedicatedCount; i += 1) {
+                const createdId = await createOne('dedicated');
+                if (createdId) createdAgentIds.push(createdId);
+            }
+
+            if (createdAgentIds.length > 0 && hasGlobalGitConfigured && taskList.some(t => (t.taskStatus || '').toLowerCase() !== 'completed')) {
+                for (const agentId of createdAgentIds) {
+                    try {
+                        await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN(agentId)), {
+                            method: 'POST',
+                            headers,
+                        });
+                    } catch (e) {
+                        console.error('Auto-start failed for agent', agentId, e);
+                    }
+                }
+            }
+
+            const quotaRes = await fetch(API_ENDPOINTS.ORG_AGENT_QUOTA, {
+                headers: { Authorization: `Bearer ${token}` },
             });
-            setNewAgentConfig({ name: '', git_repo_url: '', git_token: '' });
+            const quotaData = await quotaRes.json().catch(() => null);
+            if (quotaRes.ok && quotaData) {
+                setAgentQuota(quotaData);
+            }
+
+            setShowAddAgentModal(false);
+            setSharedAgentsToAdd(0);
+            setDedicatedAgentsToAdd(0);
             fetchAgents();
+            fetchTasks(false, 1, true);
+            refreshRoadmap();
         } catch (e) {
             console.error('Add agent failed', e);
+            setAddAgentModalError(e.message || 'Failed to add agents');
+        } finally {
+            setIsAddingAgents(false);
         }
     };
 
@@ -2664,37 +2751,89 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             {
                 showAddAgentModal && (
                     <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
-                                    <PlusCircle className="w-5 h-5 text-indigo-500" /> Add New Agent
+                                    <PlusCircle className="w-5 h-5 text-indigo-500" /> Add Dev Agents
                                 </h3>
                                 <button type="button" onClick={() => setShowAddAgentModal(false)} className="text-app-text-light hover:text-app-text-label hover:bg-app-bg-muted p-1.5 rounded-full transition-colors">
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>
                             <div className="p-6">
-                                <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Agent Name (optional)</label>
-                                <input type="text" value={newAgentConfig.name} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, name: e.target.value })} placeholder="e.g. Code Reviewer" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
+                                <p className="text-sm text-app-text-muted mb-5 font-medium">
+                                    Add shared and dedicated dev agents for the current project. Master Agent and Git Manager stay available by default.
+                                </p>
 
-                                {hasGlobalGitConfigured ? (
-                                    <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-6">
-                                        Git repository and PAT are already configured for this project. This agent will use those automatically.
-                                    </p>
-                                ) : (
-                                    <>
-                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Git Repository URL (optional)</label>
-                                        <input type="text" value={newAgentConfig.git_repo_url} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_repo_url: e.target.value })} placeholder="https://github.com/org/repo.git" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-4" />
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
+                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                            <div>
+                                                <p className="text-sm font-bold text-emerald-900">Shared Dev Agents</p>
+                                                <p className="text-[11px] text-emerald-700">Available capacity: {agentQuotaLoading ? '...' : Number(agentQuota?.shared_available ?? 0)}</p>
+                                            </div>
+                                            <Users className="w-5 h-5 text-emerald-600" />
+                                        </div>
+                                        <label className="block text-[10px] font-bold text-emerald-800 mb-2 uppercase tracking-widest">How many to add</label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max={Number(agentQuota?.shared_available ?? 0)}
+                                            value={sharedAgentsToAdd}
+                                            onChange={(e) => setSharedAgentsToAdd(clampAgentCount(e.target.value, Number(agentQuota?.shared_available ?? 0)))}
+                                            className="w-full px-4 py-3 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400 text-sm bg-white text-app-text-main font-bold"
+                                        />
+                                    </div>
 
-                                        <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Global Personal Access Token (optional)</label>
-                                        <input type="password" value={newAgentConfig.git_token} onChange={(e) => setNewAgentConfig({ ...newAgentConfig, git_token: e.target.value })} placeholder="Leave blank to keep existing global PAT" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
-                                    </>
+                                    <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-4">
+                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                            <div>
+                                                <p className="text-sm font-bold text-blue-900">Dedicated Dev Agents</p>
+                                                <p className="text-[11px] text-blue-700">Available capacity: {agentQuotaLoading ? '...' : Number(agentQuota?.dedicated_available ?? 0)}</p>
+                                            </div>
+                                            <Bot className="w-5 h-5 text-blue-600" />
+                                        </div>
+                                        <label className="block text-[10px] font-bold text-blue-800 mb-2 uppercase tracking-widest">How many to add</label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max={Number(agentQuota?.dedicated_available ?? 0)}
+                                            value={dedicatedAgentsToAdd}
+                                            onChange={(e) => setDedicatedAgentsToAdd(clampAgentCount(e.target.value, Number(agentQuota?.dedicated_available ?? 0)))}
+                                            className="w-full px-4 py-3 border border-blue-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-app-text-main font-bold"
+                                        />
+                                    </div>
+                                </div>
+
+                                {(agentQuotaLoading || agentQuotaError || addAgentModalError || !hasGlobalGitConfigured) && (
+                                    <div className="mt-4 space-y-2">
+                                        {agentQuotaLoading && (
+                                            <p className="text-xs text-app-text-light">Loading available capacity...</p>
+                                        )}
+                                        {agentQuotaError && (
+                                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{agentQuotaError}</p>
+                                        )}
+                                        {addAgentModalError && (
+                                            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{addAgentModalError}</p>
+                                        )}
+                                        {!hasGlobalGitConfigured && (
+                                            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                                Agents will be added now. Configure global Git in prerequisites if you want them to auto-start immediately.
+                                            </p>
+                                        )}
+                                    </div>
                                 )}
 
-                                <div className="flex items-center gap-3">
-                                    <button type="button" onClick={() => setShowAddAgentModal(false)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
-                                    <button type="button" onClick={submitAddAgent} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30">
-                                        Add Agent
+                                <div className="flex items-center gap-3 mt-6">
+                                    <button type="button" onClick={() => setShowAddAgentModal(false)} disabled={isAddingAgents} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors disabled:opacity-50">Cancel</button>
+                                    <button
+                                        type="button"
+                                        onClick={submitAddAgent}
+                                        disabled={isAddingAgents || agentQuotaLoading}
+                                        className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                    >
+                                        {isAddingAgents ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlusCircle className="w-4 h-4" />}
+                                        {isAddingAgents ? 'Adding...' : 'Add Agents'}
                                     </button>
                                 </div>
                             </div>

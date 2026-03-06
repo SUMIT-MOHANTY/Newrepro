@@ -392,8 +392,8 @@ def _resolve_login_sso_setting(
         raise HTTPException(status_code=400, detail="Organization SSO client ID is not configured.")
     if not _normalized_text(setting.client_secret):
         raise HTTPException(status_code=400, detail="Organization SSO client secret is not configured.")
-    if not _normalized_text(setting.authority_url):
-        raise HTTPException(status_code=400, detail="Organization SSO authority URL is not configured.")
+    # Authority URL is now derived in the backend from tenant / environment,
+    # so we no longer block if the stored authority_url is empty here.
 
     return setting, resolved_org_name, email_hint
 
@@ -427,7 +427,12 @@ def _build_frontend_sso_redirect(
 async def _fetch_oidc_metadata(setting: models.OrganizationSSOSetting) -> Dict[str, str]:
     authority_url = _normalized_text(setting.authority_url)
     if not authority_url:
-        raise HTTPException(status_code=400, detail="Organization authority URL is missing.")
+        # Derive a default authority URL from tenant_id if available (Azure AD / Entra ID)
+        tenant = _normalized_text(setting.tenant_id)
+        if tenant:
+            authority_url = f"https://login.microsoftonline.com/{tenant}"
+        else:
+            raise HTTPException(status_code=400, detail="Organization authority URL is missing.")
 
     if "/.well-known/openid-configuration" in authority_url:
         metadata_url = authority_url
@@ -1253,6 +1258,140 @@ def _require_org_admin(current_user: models.User) -> str:
         raise HTTPException(status_code=400, detail="Organization not configured for this account")
     return organization_name
 
+def _require_organization(current_user: models.User) -> str:
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if not organization_name:
+        raise HTTPException(status_code=400, detail="Organization not configured for this account")
+    return organization_name
+
+def _bootstrap_org_agent_mappings_if_missing(
+    db: Session,
+    organization_name: str,
+    project_token: Optional[str],
+) -> None:
+    """
+    Backward-compatibility: if an org has no mappings yet for this project_token context,
+    map all existing agents in that context to this org.
+    """
+    organization_name = _normalized_text(organization_name)
+    project_token = _normalize_project_token(project_token)
+    if not organization_name:
+        return
+
+    mapping_q = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+    )
+    if project_token:
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
+    else:
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+    if mapping_q.first():
+        return
+
+    agent_q = db.query(models.Agent)
+    if project_token:
+        agent_q = agent_q.filter(models.Agent.project_token == project_token)
+    else:
+        agent_q = agent_q.filter(models.Agent.project_token.is_(None))
+    existing = agent_q.all()
+    if not existing:
+        return
+
+    for agent in existing:
+        inferred_kind = _normalize_agent_kind(None, getattr(agent, "project_token", project_token), is_default=False)
+        db.add(
+            models.OrganizationAgentMapping(
+                organization_name=organization_name,
+                agent_id=agent.id,
+                project_token=project_token,
+                agent_kind=inferred_kind,
+                is_default=False,
+            )
+        )
+    db.commit()
+
+def _ensure_org_agent_mapping(
+    db: Session,
+    organization_name: str,
+    agent_id: str,
+    project_token: Optional[str],
+    *,
+    agent_kind: Optional[str] = None,
+    is_default: bool,
+) -> None:
+    organization_name = _normalized_text(organization_name)
+    if not organization_name:
+        return
+    project_token = _normalize_project_token(project_token)
+    normalized_kind = _normalize_agent_kind(agent_kind, project_token, is_default=is_default)
+    existing = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+        models.OrganizationAgentMapping.agent_id == agent_id,
+    ).first()
+    if existing:
+        # Keep latest project_token/default flag consistent
+        existing.project_token = project_token
+        existing.agent_kind = normalized_kind
+        existing.is_default = bool(is_default)
+        db.add(existing)
+        db.commit()
+        return
+    db.add(
+        models.OrganizationAgentMapping(
+            organization_name=organization_name,
+            agent_id=agent_id,
+            project_token=project_token,
+            agent_kind=normalized_kind,
+            is_default=bool(is_default),
+        )
+    )
+    db.commit()
+
+def _count_org_agent_usage(
+    db: Session,
+    organization_name: str,
+) -> tuple[int, int]:
+    """Returns (shared_used, dedicated_used) excluding built-in defaults."""
+    org = _normalized_text(organization_name)
+    if not org:
+        return 0, 0
+    rows = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == org.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+    ).all()
+    shared_used = 0
+    dedicated_used = 0
+    for row in rows:
+        kind = _normalize_agent_kind(row.agent_kind, row.project_token, is_default=bool(row.is_default))
+        if kind == "shared":
+            shared_used += 1
+        elif kind == "dedicated":
+            dedicated_used += 1
+    return shared_used, dedicated_used
+
+def _get_or_init_org_agent_quota(
+    db: Session,
+    organization_name: str,
+) -> models.OrganizationAgentQuota:
+    org = _normalized_text(organization_name)
+    quota = db.query(models.OrganizationAgentQuota).filter(
+        func.lower(models.OrganizationAgentQuota.organization_name) == org.lower()
+    ).first()
+    if quota:
+        return quota
+
+    # Initialize quotas to current usage so existing installs don't suddenly break.
+    shared_used, dedicated_used = _count_org_agent_usage(db, org)
+    quota = models.OrganizationAgentQuota(
+        organization_name=org,
+        shared_quota=int(shared_used),
+        dedicated_quota=int(dedicated_used),
+    )
+    db.add(quota)
+    db.commit()
+    db.refresh(quota)
+    return quota
+
 @app.get("/organization/sso-settings", response_model=schemas.OrganizationSSOSettingsResponse)
 def get_organization_sso_settings(
     current_user: models.User = Depends(auth.get_current_user),
@@ -1304,13 +1443,83 @@ def update_organization_sso_settings(
     row.redirect_uri = payload.redirect_uri
     row.logout_url = payload.logout_url
     row.scopes = payload.scopes
-    row.domain_hint = payload.domain_hint
+
+    # Domain hint is no longer configured from the frontend UI; if it is not
+    # explicitly provided, derive it from the org admin's email domain so that
+    # all users with that domain (e.g. *@company.com) can use SSO.
+    if payload.domain_hint is not None:
+        row.domain_hint = payload.domain_hint
+    if not _normalized_text(row.domain_hint):
+        admin_email = _normalized_text(current_user.email)
+        if "@" in admin_email:
+            row.domain_hint = admin_email.split("@", 1)[1].lower()
+
     row.sso_enabled = payload.sso_enabled
     row.admin_user_id = current_user.id
 
     db.commit()
     db.refresh(row)
     return row
+
+
+@app.get("/organization/agent-quota", response_model=schemas.OrganizationAgentQuotaResponse)
+def get_organization_agent_quota(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_organization(current_user)
+    quota = _get_or_init_org_agent_quota(db, organization_name)
+    shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
+    shared_quota = int(quota.shared_quota or 0)
+    dedicated_quota = int(quota.dedicated_quota or 0)
+    return schemas.OrganizationAgentQuotaResponse(
+        organization_name=organization_name,
+        shared_quota=shared_quota,
+        dedicated_quota=dedicated_quota,
+        shared_used=shared_used,
+        dedicated_used=dedicated_used,
+        shared_available=max(0, shared_quota - shared_used),
+        dedicated_available=max(0, dedicated_quota - dedicated_used),
+        updated_at=quota.updated_at,
+    )
+
+
+@app.post("/organization/agent-quota/increase", response_model=schemas.OrganizationAgentQuotaResponse)
+def increase_organization_agent_quota(
+    payload: schemas.OrganizationAgentQuotaIncreaseRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    kind = _normalized_text(payload.kind).lower()
+    amount = int(payload.amount or 0)
+    if kind not in ("shared", "dedicated"):
+        raise HTTPException(status_code=400, detail="kind must be 'shared' or 'dedicated'")
+    if amount <= 0 or amount > 1000:
+        raise HTTPException(status_code=400, detail="amount must be between 1 and 1000")
+
+    quota = _get_or_init_org_agent_quota(db, organization_name)
+    if kind == "shared":
+        quota.shared_quota = int(quota.shared_quota or 0) + amount
+    else:
+        quota.dedicated_quota = int(quota.dedicated_quota or 0) + amount
+    db.add(quota)
+    db.commit()
+    db.refresh(quota)
+
+    shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
+    shared_quota = int(quota.shared_quota or 0)
+    dedicated_quota = int(quota.dedicated_quota or 0)
+    return schemas.OrganizationAgentQuotaResponse(
+        organization_name=organization_name,
+        shared_quota=shared_quota,
+        dedicated_quota=dedicated_quota,
+        shared_used=shared_used,
+        dedicated_used=dedicated_used,
+        shared_available=max(0, shared_quota - shared_used),
+        dedicated_available=max(0, dedicated_quota - dedicated_used),
+        updated_at=quota.updated_at,
+    )
 
 # --- Document Endpoints ---
 @app.post("/documents/upload")
@@ -2906,6 +3115,20 @@ def _normalize_project_token(project_token: Optional[str]) -> Optional[str]:
     return token or None
 
 
+def _normalize_agent_kind(
+    agent_kind: Optional[str],
+    project_token: Optional[str],
+    *,
+    is_default: bool = False,
+) -> str:
+    kind = _normalized_text(agent_kind).lower()
+    if is_default:
+        return "system"
+    if kind in {"shared", "dedicated"}:
+        return kind
+    return "dedicated" if _normalize_project_token(project_token) else "shared"
+
+
 def _stored_agent_id(agent_id: str, project_token: Optional[str]) -> str:
     project_token = _normalize_project_token(project_token)
     if not project_token:
@@ -2950,6 +3173,16 @@ def _ensure_agent_project_columns() -> None:
         if "project_token" not in columns:
             conn.execute(text("ALTER TABLE agent_credentials ADD COLUMN project_token VARCHAR"))
             conn.commit()
+
+
+def _ensure_org_agent_mapping_kind_column() -> None:
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(organization_agent_mappings)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "agent_kind" not in columns:
+            conn.execute(text("ALTER TABLE organization_agent_mappings ADD COLUMN agent_kind VARCHAR"))
+            conn.commit()
+
 
 def _ensure_user_organization_columns() -> None:
     with engine.connect() as conn:
@@ -3037,6 +3270,7 @@ def _startup_init() -> None:
     db = SessionLocal()
     try:
         _ensure_agent_project_columns()
+        _ensure_org_agent_mapping_kind_column()
         _ensure_user_organization_columns()
         _ensure_default_oauth_clients(db)
         _ensure_default_agents(db)
@@ -3083,8 +3317,36 @@ def _list_legacy_agent_credentials(
     return cred_query.all()
 
 
+def _legacy_default_dev_agent_filter(column):
+    return or_(
+        column.in_(("agent_01", "agent_02")),
+        column.like("%::agent_01"),
+        column.like("%::agent_02"),
+    )
+
+
+def _cleanup_legacy_default_dev_agents(db: Session) -> None:
+    """
+    Remove the old built-in dev agents so only system agents remain default.
+    New dev agents must come from org shared/dedicated capacity.
+    """
+    deleted_mappings = db.query(models.OrganizationAgentMapping).filter(
+        models.OrganizationAgentMapping.is_default.is_(True),
+        _legacy_default_dev_agent_filter(models.OrganizationAgentMapping.agent_id),
+    ).delete(synchronize_session=False)
+
+    deleted_agents = db.query(models.Agent).filter(
+        _legacy_default_dev_agent_filter(models.Agent.id),
+    ).delete(synchronize_session=False)
+
+    if deleted_mappings or deleted_agents:
+        db.commit()
+        agent_service.clear_all_runtime_state()
+
+
 def _ensure_default_agents(db: Session, project_token: Optional[str] = None) -> None:
     project_token = _normalize_project_token(project_token)
+    _cleanup_legacy_default_dev_agents(db)
     existing_query = db.query(models.Agent.id)
     if project_token:
         existing_query = existing_query.filter(models.Agent.project_token == project_token)
@@ -3104,6 +3366,23 @@ def _ensure_default_agents(db: Session, project_token: Optional[str] = None) -> 
             )
         )
     db.commit()
+
+def _ensure_default_agents_for_org(
+    db: Session,
+    organization_name: str,
+    project_token: Optional[str] = None,
+) -> None:
+    """
+    Ensure default agents exist in the legacy `agents` table AND are mapped to the org as defaults.
+    """
+    project_token = _normalize_project_token(project_token)
+    _ensure_default_agents(db, project_token)
+    org = _normalized_text(organization_name)
+    if not org:
+        return
+    for agent in agent_service.get_default_agents():
+        stored_id = _stored_agent_id(agent["id"], project_token)
+        _ensure_org_agent_mapping(db, org, stored_id, project_token, is_default=True)
 
 
 def _upsert_agent_record(
@@ -3260,11 +3539,32 @@ async def list_agents(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    include_defaults: bool = True,
+    kind: Optional[str] = None,
 ):
     """Get status of all AI agents."""
+    organization_name = _require_organization(current_user)
     project_token = _normalize_project_token(project_token)
-    _ensure_default_agents(db, project_token)
-    query = db.query(models.Agent)
+    requested_kind = _normalized_text(kind).lower() or None
+    _ensure_default_agents_for_org(db, organization_name, project_token)
+    _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
+
+    mapping_q = db.query(
+        models.OrganizationAgentMapping.agent_id,
+        models.OrganizationAgentMapping.is_default,
+        models.OrganizationAgentMapping.project_token,
+        models.OrganizationAgentMapping.agent_kind,
+    ).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+    )
+    if project_token:
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
+    else:
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+    mapping_rows = mapping_q.all()
+    mapped_ids = [row[0] for row in mapping_rows]
+
+    query = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids))
     if project_token:
         query = query.filter(models.Agent.project_token == project_token)
     else:
@@ -3272,10 +3572,25 @@ async def list_agents(
     records = query.all()
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
+    visible_runtime_ids: Dict[str, str] = {}
+    for row in mapping_rows:
+        row_is_default = bool(row[1])
+        row_project_token = row[2]
+        row_kind = _normalize_agent_kind(row[3], row_project_token, is_default=row_is_default)
+        if not include_defaults and row_is_default:
+            continue
+        if requested_kind and row_kind != requested_kind:
+            continue
+        visible_runtime_ids[_public_agent_id(row[0], project_token)] = row_kind
+
     global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
     agents = [
-        _sanitize_agent_for_user(agent, global_cred)
+        {
+            **_sanitize_agent_for_user(agent, global_cred),
+            "agent_kind": visible_runtime_ids[agent.get("id")],
+        }
         for agent in agent_service.get_all_agents(project_token)
+        if agent.get("id") in visible_runtime_ids
     ]
     return {"agents": agents}
 
@@ -3628,6 +3943,7 @@ class AddAgentRequest(BaseModel):
     name: Optional[str] = None
     git_repo_url: Optional[str] = None
     git_token: Optional[str] = None
+    kind: Optional[str] = None
 
 
 class UpdateAgentRequest(BaseModel):
@@ -3639,9 +3955,9 @@ class UpdateAgentRequest(BaseModel):
 def _build_external_agent_username(agent_id: Optional[str], fallback_name: Optional[str] = None) -> str:
     """Map local agent id to upstream username format, e.g. agent_04 -> agent4."""
     source_id = str(agent_id or "").strip().lower()
-    digits = "".join(re.findall(r"\d", source_id))
-    if digits:
-        return f"agent{int(digits)}"
+    match = re.fullmatch(r"agent_(\d+)", source_id)
+    if match:
+        return f"agent{int(match.group(1))}"
 
     fallback = str(fallback_name or source_id or "agent").strip().lower()
     normalized = re.sub(r"[^a-z0-9_]", "", fallback)
@@ -3657,11 +3973,31 @@ async def add_agent(
     x_task_token: Optional[str] = Header(None),
 ):
     """Dynamically add a new agent."""
+    organization_name = _require_organization(current_user)
     name = request.name if request else None
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
     project_token = _normalize_project_token(project_token)
-    _ensure_default_agents(db, project_token)
+    agent_kind = _normalize_agent_kind(request.kind if request else None, project_token, is_default=False)
+    _ensure_default_agents_for_org(db, organization_name, project_token)
+    _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
+
+    # Enforce org quota by requested agent kind.
+    quota = _get_or_init_org_agent_quota(db, organization_name)
+    shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
+    if agent_kind == "dedicated":
+        if dedicated_used >= int(quota.dedicated_quota or 0):
+            raise HTTPException(
+                status_code=400,
+                detail="Dedicated agent capacity exceeded. Add more dedicated agents in Organization before creating new ones.",
+            )
+    else:
+        if shared_used >= int(quota.shared_quota or 0):
+            raise HTTPException(
+                status_code=400,
+                detail="Shared agent capacity exceeded. Add more shared agents in Organization before creating new ones.",
+            )
+
     query = db.query(models.Agent)
     if project_token:
         query = query.filter(models.Agent.project_token == project_token)
@@ -3672,9 +4008,18 @@ async def add_agent(
 
     agent = agent_service.add_agent(
         name=name,
+        kind=agent_kind,
         project_token=project_token,
     )
-    _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
+    record = _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
+    _ensure_org_agent_mapping(
+        db,
+        organization_name,
+        record.id,
+        project_token,
+        agent_kind=agent_kind,
+        is_default=False,
+    )
     if git_repo_url or git_token:
         _upsert_project_global_credentials(
             db,

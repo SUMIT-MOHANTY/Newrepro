@@ -64,12 +64,16 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
   const [submitError, setSubmitError] = useState('');
   const [submitWarning, setSubmitWarning] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [quota, setQuota] = useState(null);
+  const [quotaError, setQuotaError] = useState('');
+  const [quotaLoading, setQuotaLoading] = useState(false);
 
   const taskToken = useMemo(() => getCachedTaskToken(selectedProjectKey), [selectedProjectKey]);
   const hasValidTaskToken = Boolean(taskToken);
 
   const existingSharedCount = existingSharedAgents.length;
-  const existingDedicatedCount = existingDedicatedAgents.length;
+  const sharedAvailableCount = Number(quota?.shared_available ?? 0);
+  const dedicatedAvailableCount = Number(quota?.dedicated_available ?? 0);
 
   const clampCount = (value) => {
     const n = Number(value);
@@ -90,6 +94,11 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
 
         const sharedUrl = new URL(API_ENDPOINTS.AGENTS);
         const dedicatedUrl = new URL(API_ENDPOINTS.AGENTS);
+        sharedUrl.searchParams.set('include_defaults', 'false');
+        sharedUrl.searchParams.set('kind', 'shared');
+        dedicatedUrl.searchParams.set('include_defaults', 'false');
+        dedicatedUrl.searchParams.set('kind', 'dedicated');
+        if (selectedProjectKey) sharedUrl.searchParams.set('project_token', selectedProjectKey);
         if (selectedProjectKey) dedicatedUrl.searchParams.set('project_token', selectedProjectKey);
 
         const [sharedRes, dedicatedRes] = await Promise.all([
@@ -122,6 +131,40 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
     };
   }, [token, selectedProjectKey]);
 
+  useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+
+    const fetchQuota = async () => {
+      if (!token) return;
+      setQuotaLoading(true);
+      setQuotaError('');
+      try {
+        const res = await fetch(API_ENDPOINTS.ORG_AGENT_QUOTA, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(json.detail || 'Failed to load organization capacity');
+        }
+        if (isMounted) setQuota(json);
+      } catch (e) {
+        if (!isMounted) return;
+        if (e?.name === 'AbortError') return;
+        setQuotaError(e?.message || 'Failed to load organization capacity');
+      } finally {
+        if (isMounted) setQuotaLoading(false);
+      }
+    };
+
+    fetchQuota();
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [token]);
+
   const handleSubmit = async () => {
     setIsSubmitting(true);
     setSubmitError('');
@@ -131,13 +174,26 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
       const sharedToCreate = clampCount(sharedRequested);
       const dedicatedToCreate = clampCount(dedicatedRequested);
 
+      if (quota) {
+        const sharedAvailable = Number(quota.shared_available ?? 0);
+        const dedicatedAvailable = Number(quota.dedicated_available ?? 0);
+        if (sharedToCreate > sharedAvailable) {
+          setSubmitError(`Shared agent capacity exceeded. Available: ${sharedAvailable}. Please add more Shared agents from Agents page.`);
+          return;
+        }
+        if (dedicatedToCreate > dedicatedAvailable) {
+          setSubmitError(`Dedicated agent capacity exceeded. Available: ${dedicatedAvailable}. Please add more Dedicated agents from Agents page.`);
+          return;
+        }
+      }
+
       if (sharedToCreate === 0 && dedicatedToCreate === 0) {
         setSubmitError('Please select how many Shared and/or Dedicated agents you want to add.');
         return;
       }
 
-      if (dedicatedToCreate > 0 && !selectedProjectKey) {
-        setSubmitError('Select a project before creating dedicated agents.');
+      if ((sharedToCreate > 0 || dedicatedToCreate > 0) && !selectedProjectKey) {
+        setSubmitError('Select a project before creating dev agents.');
         return;
       }
 
@@ -159,13 +215,13 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
 
       const warnings = [];
 
-      const createOne = async (projectToken, idx) => {
+      const createOne = async (kind, projectToken) => {
         const url = new URL(API_ENDPOINTS.AGENT_ADD);
         if (projectToken) url.searchParams.set('project_token', projectToken);
         const res = await fetch(url.toString(), {
           method: 'POST',
           headers,
-          body: JSON.stringify({ name: null }),
+          body: JSON.stringify({ name: null, kind }),
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -176,33 +232,41 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
         return json?.agent || null;
       };
 
-      // Create shared agents (org-wide, project_token is omitted)
+      // Create shared-capacity dev agents for this project.
       for (let i = 0; i < sharedToCreate; i += 1) {
-        await createOne(null, i);
+        await createOne('shared', selectedProjectKey);
       }
-      // Create dedicated agents (project specific, project_token = selectedProjectKey)
+      // Create dedicated-capacity dev agents for this project.
       for (let i = 0; i < dedicatedToCreate; i += 1) {
-        await createOne(selectedProjectKey, i);
+        await createOne('dedicated', selectedProjectKey);
       }
 
       if (warnings.length > 0) {
         setSubmitWarning((prev) => prev || `Created agents, but upstream provisioning returned warnings: ${warnings.slice(0, 2).join(' | ')}${warnings.length > 2 ? '…' : ''}`);
       }
 
-      // Refresh existing counts for the UI, then go to dashboard.
+      // Refresh existing counts and quota for the UI, then go to dashboard.
       try {
         const agentsHeaders = { Authorization: `Bearer ${token}` };
         const sharedUrl = new URL(API_ENDPOINTS.AGENTS);
         const dedicatedUrl = new URL(API_ENDPOINTS.AGENTS);
+        sharedUrl.searchParams.set('include_defaults', 'false');
+        sharedUrl.searchParams.set('kind', 'shared');
+        dedicatedUrl.searchParams.set('include_defaults', 'false');
+        dedicatedUrl.searchParams.set('kind', 'dedicated');
+        if (selectedProjectKey) sharedUrl.searchParams.set('project_token', selectedProjectKey);
         if (selectedProjectKey) dedicatedUrl.searchParams.set('project_token', selectedProjectKey);
-        const [sharedRes, dedicatedRes] = await Promise.all([
+        const [sharedRes, dedicatedRes, quotaRes] = await Promise.all([
           fetch(sharedUrl.toString(), { headers: agentsHeaders }),
           fetch(dedicatedUrl.toString(), { headers: agentsHeaders }),
+          fetch(API_ENDPOINTS.ORG_AGENT_QUOTA, { headers: agentsHeaders }),
         ]);
         const sharedJson = sharedRes.ok ? await sharedRes.json() : null;
         const dedicatedJson = dedicatedRes.ok ? await dedicatedRes.json() : null;
+        const quotaJson = quotaRes.ok ? await quotaRes.json() : null;
         setExistingSharedAgents(Array.isArray(sharedJson?.agents) ? sharedJson.agents : existingSharedAgents);
         setExistingDedicatedAgents(Array.isArray(dedicatedJson?.agents) ? dedicatedJson.agents : existingDedicatedAgents);
+        if (quotaJson) setQuota(quotaJson);
       } catch {
         // ignore refresh errors
       }
@@ -224,7 +288,7 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
               <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">AI Resource Setup</p>
               <h2 className="text-2xl sm:text-3xl font-extrabold text-app-text-main mt-1">Resource Onboarding</h2>
               <p className="text-sm sm:text-base text-app-text-muted mt-2 max-w-2xl">
-                Select how you want your agent to be allocated for this organization. You can use a shared agent that serves multiple projects or a dedicated agent focused only on this project.
+                Select how many dev agents you want for this project. Shared and dedicated capacity both create dev agents, while Master Agent and Git Manager stay available by default.
               </p>
             </div>
             <div className="hidden sm:flex flex-col items-end gap-1 text-xs text-app-text-muted">
@@ -249,11 +313,11 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
                 <Users className={`w-5 h-5 ${agentType === 'shared' ? 'text-emerald-600' : 'text-app-text-muted'}`} />
                 <p className="font-semibold text-app-text-main">Shared Agent</p>
                 <span className="ml-auto text-[11px] font-bold px-2 py-1 rounded-full border border-app-border-light bg-white text-app-text-muted">
-                  Existing: {isLoadingExisting ? '…' : existingSharedCount}
+                  Available: {quotaLoading ? '…' : sharedAvailableCount}
                 </span>
               </div>
               <p className="text-xs text-app-text-muted">
-                One agent that can work across all eligible projects in this organization. Best for smaller teams or pilots.
+                Uses shared organization capacity to add dev agents that can be reused across projects.
               </p>
               <div className="mt-1 flex items-center justify-between">
                 <p className="text-[11px] font-semibold text-app-text-muted">Add more shared agents</p>
@@ -309,11 +373,11 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
                 <Bot className={`w-5 h-5 ${agentType === 'dedicated' ? 'text-emerald-600' : 'text-app-text-muted'}`} />
                 <p className="font-semibold text-app-text-main">Dedicated Agent</p>
                 <span className="ml-auto text-[11px] font-bold px-2 py-1 rounded-full border border-app-border-light bg-white text-app-text-muted">
-                  Existing: {isLoadingExisting ? '…' : existingDedicatedCount}
+                  Available: {quotaLoading ? '…' : dedicatedAvailableCount}
                 </span>
               </div>
               <p className="text-xs text-app-text-muted">
-                A dedicated agent assigned only to this project. Best when you need stricter isolation or heavy usage.
+                Uses dedicated organization capacity to add dev agents only for this project.
               </p>
               <div className="mt-1 flex items-center justify-between">
                 <p className="text-[11px] font-semibold text-app-text-muted">Add more dedicated agents</p>
@@ -364,9 +428,36 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
             </div>
           )}
 
+          {(quotaLoading || quotaError || quota) && (
+            <div className="rounded-xl border border-app-border-light bg-app-bg-muted px-4 py-3">
+              <p className="text-xs font-bold text-app-text-main">Organization capacity</p>
+              {quotaLoading && (
+                <p className="text-[11px] text-app-text-muted mt-1">Loading capacity…</p>
+              )}
+              {quotaError && !quotaLoading && (
+                <p className="text-[11px] text-amber-700 mt-1">{quotaError}</p>
+              )}
+              {quota && !quotaLoading && (
+                <p className="text-[11px] text-app-text-muted mt-1">
+                  Shared available: <span className="font-semibold text-app-text-main">{quota.shared_available ?? 0}</span> · Dedicated available:{' '}
+                  <span className="font-semibold text-app-text-main">{quota.dedicated_available ?? 0}</span>
+                </p>
+              )}
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => navigate('/agents')}
+                  className="text-xs font-bold text-app-primary hover:underline"
+                >
+                  Add more agents in Organization →
+                </button>
+              </div>
+            </div>
+          )}
+
           {agentType === 'shared' && existingSharedCount > 0 && (
             <div className="rounded-xl border border-app-border-light bg-app-bg-muted px-4 py-3">
-              <p className="text-xs font-bold text-app-text-main">Shared agents already available (org-wide)</p>
+              <p className="text-xs font-bold text-app-text-main">Shared agents already created (org-wide)</p>
               <p className="text-[11px] text-app-text-muted mt-1">
                 These shared agents can work across <span className="font-semibold text-app-text-main">all projects</span> in this organization.
               </p>
@@ -393,7 +484,7 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
             <div className="text-xs text-app-text-muted space-y-1">
               <p className="font-semibold text-app-text-main">What happens next?</p>
               <ul className="list-disc list-inside space-y-0.5">
-                <li>We create the number of shared and/or dedicated agents you selected.</li>
+                <li>We create exactly the number of dev agents you selected, as long as it is within available capacity.</li>
                 <li>The Status Dashboard will use this configuration for all future runs.</li>
               </ul>
             </div>

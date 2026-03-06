@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Users, Trash2, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -13,6 +13,12 @@ export default function AgentsPage({ selectedProjectKey }) {
   const [error, setError] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [filter, setFilter] = useState('all'); // 'all', 'shared', 'dedicated'
+  const [quota, setQuota] = useState(null);
+  const [quotaError, setQuotaError] = useState('');
+  const [quotaLoading, setQuotaLoading] = useState(false);
+  const [sharedToAdd, setSharedToAdd] = useState(1);
+  const [dedicatedToAdd, setDedicatedToAdd] = useState(1);
+  const [quotaUpdatingKind, setQuotaUpdatingKind] = useState('');
 
   const fetchAgents = async () => {
     setLoading(true);
@@ -23,12 +29,19 @@ export default function AgentsPage({ selectedProjectKey }) {
     try {
       // Fetch shared agents (no project_token)
       const sharedUrl = new URL(API_ENDPOINTS.AGENTS);
+      sharedUrl.searchParams.set('include_defaults', 'false');
+      sharedUrl.searchParams.set('kind', 'shared');
+      if (selectedProjectKey) {
+        sharedUrl.searchParams.set('project_token', selectedProjectKey);
+      }
       const sharedRes = await fetch(sharedUrl.toString(), {
         headers: { Authorization: `Bearer ${token}` },
       });
 
       // Fetch dedicated agents (with project_token)
       const dedicatedUrl = new URL(API_ENDPOINTS.AGENTS);
+      dedicatedUrl.searchParams.set('include_defaults', 'false');
+      dedicatedUrl.searchParams.set('kind', 'dedicated');
       if (selectedProjectKey) {
         dedicatedUrl.searchParams.set('project_token', selectedProjectKey);
       }
@@ -74,11 +87,74 @@ export default function AgentsPage({ selectedProjectKey }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectKey]);
 
+  const fetchQuota = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    setQuotaLoading(true);
+    setQuotaError('');
+    try {
+      const res = await fetch(API_ENDPOINTS.ORG_AGENT_QUOTA, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to load organization agent quota');
+      }
+      setQuota(data);
+    } catch (e) {
+      setQuotaError(e?.message || 'Failed to load organization agent quota');
+    } finally {
+      setQuotaLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchQuota();
+  }, []);
+
+  const clampPositiveInt = (value, max = 1000) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 1;
+    return Math.max(1, Math.min(max, Math.floor(n)));
+  };
+
+  const increaseQuota = async (kind, amount) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    setQuotaUpdatingKind(kind);
+    setQuotaError('');
+    try {
+      const res = await fetch(API_ENDPOINTS.ORG_AGENT_QUOTA_INCREASE, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ kind, amount }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to update agent quota');
+      }
+      setQuota(data);
+      await fetchAgents();
+      await fetchQuota();
+    } catch (e) {
+      setQuotaError(e?.message || 'Failed to update agent quota');
+    } finally {
+      setQuotaUpdatingKind('');
+    }
+  };
+
   const handleDeleteAgent = async (agentId) => {
     setDeletingId(agentId);
     const token = localStorage.getItem('token');
     try {
-      const res = await fetch(API_ENDPOINTS.AGENT_REMOVE(agentId), {
+      const deleteUrl = new URL(API_ENDPOINTS.AGENT_REMOVE(agentId));
+      if (selectedProjectKey) {
+        deleteUrl.searchParams.set('project_token', selectedProjectKey);
+      }
+      const res = await fetch(deleteUrl.toString(), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -88,6 +164,7 @@ export default function AgentsPage({ selectedProjectKey }) {
       setDedicatedAgents((prev) => prev.filter((a) => a.id !== agentId));
       // Refetch to ensure consistency
       await fetchAgents();
+      await fetchQuota();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -148,6 +225,20 @@ export default function AgentsPage({ selectedProjectKey }) {
   const filteredAgents = getFilteredAgents();
   const totalAgents = sharedAgents.length + dedicatedAgents.length;
 
+  const quotaSummary = useMemo(() => {
+    if (!quota) return null;
+    const sharedAvailable = Number(quota.shared_available ?? 0);
+    const dedicatedAvailable = Number(quota.dedicated_available ?? 0);
+    return {
+      sharedQuota: Number(quota.shared_quota ?? 0),
+      dedicatedQuota: Number(quota.dedicated_quota ?? 0),
+      sharedUsed: Number(quota.shared_used ?? 0),
+      dedicatedUsed: Number(quota.dedicated_used ?? 0),
+      sharedAvailable,
+      dedicatedAvailable,
+    };
+  }, [quota]);
+
   return (
     <div className="h-full w-full flex flex-col bg-app-bg-page text-app-text-main">
       {/* Header */}
@@ -167,6 +258,74 @@ export default function AgentsPage({ selectedProjectKey }) {
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
+        </div>
+      </div>
+
+      {/* Organization Capacity */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-app-border-light bg-app-bg-card/30">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-[240px]">
+            <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">Organization Capacity</p>
+            <p className="text-sm text-app-text-main mt-1">
+              {quotaLoading ? 'Loading capacity…' : quotaSummary ? (
+                <>
+                  Shared: <span className="font-semibold">{quotaSummary.sharedUsed}</span>/<span className="font-semibold">{quotaSummary.sharedQuota}</span>{' '}
+                  (Available <span className="font-semibold">{quotaSummary.sharedAvailable}</span>) ·{' '}
+                  Dedicated: <span className="font-semibold">{quotaSummary.dedicatedUsed}</span>/<span className="font-semibold">{quotaSummary.dedicatedQuota}</span>{' '}
+                  (Available <span className="font-semibold">{quotaSummary.dedicatedAvailable}</span>)
+                </>
+              ) : (
+                'Capacity not available.'
+              )}
+            </p>
+            {quotaError && (
+              <p className="text-xs text-red-500 mt-2">{quotaError}</p>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="rounded-xl border border-app-border-light bg-white px-4 py-3 w-[280px]">
+              <p className="text-sm font-bold text-app-text-main">Add more Shared agents</p>
+              <p className="text-[11px] text-app-text-muted mt-0.5">Lower cost · usable across projects</p>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  value={sharedToAdd}
+                  onChange={(e) => setSharedToAdd(clampPositiveInt(e.target.value))}
+                  className="w-20 h-9 rounded-lg border border-app-border-light bg-white px-2 text-sm font-bold text-app-text-main text-center"
+                  inputMode="numeric"
+                />
+                <button
+                  type="button"
+                  onClick={() => increaseQuota('shared', clampPositiveInt(sharedToAdd))}
+                  disabled={quotaUpdatingKind === 'shared'}
+                  className="flex-1 h-9 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {quotaUpdatingKind === 'shared' ? 'Updating…' : 'Add capacity'}
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-app-border-light bg-white px-4 py-3 w-[280px]">
+              <p className="text-sm font-bold text-app-text-main">Add more Dedicated agents</p>
+              <p className="text-[11px] text-app-text-muted mt-0.5">Higher cost · best for heavy usage</p>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  value={dedicatedToAdd}
+                  onChange={(e) => setDedicatedToAdd(clampPositiveInt(e.target.value))}
+                  className="w-20 h-9 rounded-lg border border-app-border-light bg-white px-2 text-sm font-bold text-app-text-main text-center"
+                  inputMode="numeric"
+                />
+                <button
+                  type="button"
+                  onClick={() => increaseQuota('dedicated', clampPositiveInt(dedicatedToAdd))}
+                  disabled={quotaUpdatingKind === 'dedicated'}
+                  className="flex-1 h-9 rounded-lg bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {quotaUpdatingKind === 'dedicated' ? 'Updating…' : 'Add capacity'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

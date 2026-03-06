@@ -76,6 +76,20 @@ class OrganizationSSOSettingsResponse(OrganizationSSOSettingsUpdate):
     class Config:
         from_attributes = True
 
+class OrganizationAgentQuotaResponse(BaseModel):
+    organization_name: str
+    shared_quota: int = 0
+    dedicated_quota: int = 0
+    shared_used: int = 0
+    dedicated_used: int = 0
+    shared_available: int = 0
+    dedicated_available: int = 0
+    updated_at: Optional[datetime] = None
+
+class OrganizationAgentQuotaIncreaseRequest(BaseModel):
+    kind: str  # "shared" | "dedicated"
+    amount: int = 1
+
 class DocumentBase(BaseModel):
     filename: str
     content_preview: Optional[str] = None
