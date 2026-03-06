@@ -15,6 +15,48 @@ import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
 import { upsertDraftProject } from '../utils/draftProjects';
 
+const GitHubIcon = ({ className = 'w-4 h-4' }) => (
+    <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className={className}
+        role="img"
+    >
+        <path
+            fill="currentColor"
+            d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.48
+            0-.24-.01-1.03-.01-1.87-2.49.55-3.01-1.09-3.01-1.09-.45-1.17-1.11-1.48-1.11-1.48-.91-.63.07-.62.07-.62
+            1 .07 1.53 1.06 1.53 1.06.9 1.57 2.36 1.12 2.94.86.09-.67.35-1.12.63-1.38-1.99-.23-4.09-1.03-4.09-4.6
+            0-1.02.36-1.86.95-2.51-.1-.24-.41-1.21.09-2.52 0 0 .77-.25 2.53.96a8.4 8.4 0 0 1 4.6 0c1.76-1.21 2.53-.96 2.53-.96
+            .5 1.31.19 2.28.09 2.52.59.65.95 1.49.95 2.51 0 3.58-2.1 4.37-4.11 4.6.36.32.68.94.68 1.9
+            0 1.37-.01 2.48-.01 2.82 0 .27.18.59.69.48A10.02 10.02 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"
+        />
+    </svg>
+);
+
+const AzureDevOpsIcon = ({ className = 'w-4 h-4' }) => (
+    <svg
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+        className={className}
+        role="img"
+    >
+        <defs>
+            <linearGradient id="azureDevopsGradient" x1="8" x2="8" y1="14.956" y2="1.026">
+                <stop stopColor="#0078D4" />
+                <stop offset="0.16" stopColor="#1380DA" />
+                <stop offset="0.53" stopColor="#3C91E5" />
+                <stop offset="0.82" stopColor="#559CEC" />
+                <stop offset="1" stopColor="#5EA0EF" />
+            </linearGradient>
+        </defs>
+        <path
+            fill="url(#azureDevopsGradient)"
+            d="M15 3.622v8.512L11.5 15l-5.425-1.975v1.958L3.004 10.97l8.951.7V4.005L15 3.622zm-2.984.428L6.994 1v2.001L2.382 4.356 1 6.13v4.029l1.978.873V5.869l9.038-1.818z"
+        />
+    </svg>
+);
+
 const parseAIResponse = (text) => {
     // Strip <think>...</think> blocks that some models (e.g. minimax-m2.5) embed in content
     let source = String(text || '');
@@ -2681,14 +2723,20 @@ const Dashboard = ({
                                                         onClick={() => { setRepoLinkProvider('github'); setAzureLinkError(''); }}
                                                         className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                     >
-                                                        GitHub
+                                                        <span className="flex items-center gap-1">
+                                                            <GitHubIcon className="w-4 h-4" />
+                                                            <span>GitHub</span>
+                                                        </span>
                                                     </button>
                                                     <button
                                                         type="button"
                                                         onClick={() => { setRepoLinkProvider('azure-devops'); setGithubLinkError(''); }}
                                                         className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                     >
-                                                        Azure DevOps
+                                                        <span className="flex items-center gap-1">
+                                                            <AzureDevOpsIcon className="w-4 h-4" />
+                                                            <span>Azure DevOps</span>
+                                                        </span>
                                                     </button>
                                                 </div>
                                                 {repoLinkProvider === 'github' && (
