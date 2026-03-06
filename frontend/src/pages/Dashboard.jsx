@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
@@ -13,6 +13,7 @@ import AIConfig from '../components/AIConfig';
 import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
+import { upsertDraftProject } from '../utils/draftProjects';
 
 const parseAIResponse = (text) => {
     // Strip <think>...</think> blocks that some models (e.g. minimax-m2.5) embed in content
@@ -257,6 +258,26 @@ const buildGovernanceContextFromResult = (resultData) => {
     };
 };
 
+const parseStoredDocumentAnalysis = (doc) => {
+    try {
+        return doc?.analysis_result ? JSON.parse(doc.analysis_result) : null;
+    } catch {
+        return null;
+    }
+};
+
+const isPendingGovernanceAnalysis = (analysis) =>
+    Boolean(analysis && analysis.screening_status === 'pending_governance_analysis');
+
+const hasCompletedStoredAnalysis = (analysis) => {
+    if (!analysis || isPendingGovernanceAnalysis(analysis)) {
+        return false;
+    }
+    return String(analysis.analysis || '').trim().length > 0;
+};
+
+const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
+
 
 
 
@@ -265,6 +286,7 @@ const Dashboard = ({
     user: propUser,
     projects: propProjects,
     projectsLoading: propProjectsLoading,
+    fetchHistory: refreshProjects,
     selectedProjectKey: propSelectedProjectKey,
     setSelectedProjectKey: propSetSelectedProjectKey,
     showSettings: propShowSettings,
@@ -335,6 +357,8 @@ const Dashboard = ({
             return { ...prev, [key]: next };
         });
     };
+    const projectStateUpdaterRef = useRef(setProjectState);
+    projectStateUpdaterRef.current = setProjectState;
 
     const activeState = getProjectState(selectedProjectKey);
     const {
@@ -428,6 +452,7 @@ const Dashboard = ({
         return allAnswersSkipped || hasSkipFollowUpDescription;
     })();
     const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
+    const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
     const isEnterpriseUploadBlocked = isEnterpriseProject && !isAllGovernanceSkippedCase;
     const getEnterpriseUploadBlockMessage = () => {
         const description = String(governanceContext?.classification_description || '').trim();
@@ -499,17 +524,13 @@ const Dashboard = ({
     }, []);
 
     const extractProjectMetaFromDocument = useCallback((doc) => {
-        let parsedAnalysis = null;
-        try {
-            parsedAnalysis = doc?.analysis_result ? JSON.parse(doc.analysis_result) : null;
-        } catch {
-            parsedAnalysis = null;
-        }
+        const parsedAnalysis = parseStoredDocumentAnalysis(doc);
 
         const governanceMeta = parsedAnalysis?.governanceContext || {};
         const projectMeta = parsedAnalysis?.projectMeta || {};
         const projectName = projectMeta.project_name || governanceMeta.project_name || 'Unassigned Project';
         const governanceResultId = projectMeta.governance_result_id || governanceMeta.result_id || null;
+        const projectToken = projectMeta.project_token || governanceMeta.project_token || null;
         const revisionReason = projectMeta.revision_reason || null;
         const revisionNumber = projectMeta.revision_number || null;
 
@@ -517,58 +538,139 @@ const Dashboard = ({
             parsedAnalysis,
             projectName,
             governanceResultId,
+            projectToken,
             revisionReason,
             revisionNumber,
         };
     }, []);
 
+    const persistHistoryDocument = useCallback(async (payload, documentId = null) => {
+        const token = localStorage.getItem('token');
+        const response = await fetch(
+            documentId ? API_ENDPOINTS.HISTORY_ITEM(documentId) : API_ENDPOINTS.HISTORY,
+            {
+                method: documentId ? 'PUT' : 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify(payload)
+            }
+        );
+
+        if (response.status === 401) {
+            handleLogout();
+            return null;
+        }
+
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || 'History save failed');
+        }
+
+        return response.json();
+    }, [handleLogout]);
+
+    const savePendingScreeningToHistory = useCallback(async ({
+        filename,
+        markdown,
+        taskKey = selectedProjectKey,
+        repoContextState = repoContext,
+    }) => {
+        if (!filename || !markdown) return null;
+
+        const project = projects.find((p) => p.key === taskKey);
+        const currentRevisionCount = project?.documents?.length || 0;
+        const nextRevisionNumber = currentRevisionCount + 1;
+        const repoContextMeta = buildRepoContextMeta(repoContextState);
+        const pendingAnalysis = {
+            screening_status: 'pending_governance_analysis',
+            governanceContext: null,
+            repoContextState: repoContextState || null,
+            repoContextMeta: repoContextMeta || null,
+            projectMeta: {
+                project_name: project?.name || 'Project',
+                project_token: project?.projectToken || taskKey || null,
+                governance_result_id: project?.governanceResultId || null,
+                revision_number: nextRevisionNumber,
+                revision_reason: revisionReason || null,
+                repo_context: repoContextMeta || null,
+            }
+        };
+
+        try {
+            const savedDoc = await persistHistoryDocument({
+                filename,
+                content_preview: `${String(markdown).substring(0, 200)}...`,
+                full_content: markdown,
+                analysis_result: JSON.stringify(pendingAnalysis),
+            });
+
+            if (!savedDoc) return null;
+
+            upsertDraftProject({
+                key: taskKey,
+                name: project?.name || 'Project',
+                status: 'screening_complete',
+                latestRevision: nextRevisionNumber,
+                submissionDate: new Date().toISOString(),
+            });
+            fetchHistory();
+            refreshProjects?.();
+            return savedDoc;
+        } catch (e) {
+            console.error('Pending screening save failed', e);
+            throw e;
+        }
+    }, [selectedProjectKey, projects, revisionReason, repoContext, persistHistoryDocument, fetchHistory, refreshProjects]);
+
     // Save history
-    const saveToHistory = async (newResult, taskKey = selectedProjectKey) => {
+    const saveToHistory = async (newResult, taskKey = selectedProjectKey, analysisRepoContext = repoContext) => {
         if (!newResult?.filename) return;
 
         try {
-            const token = localStorage.getItem('token');
-            const nextRevisionNumber = ((projects.find(p => p.key === taskKey)?.documents?.length) || 0) + 1;
-            const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(repoContext);
+            const project = projects.find((p) => p.key === taskKey);
+            const currentRevisionCount = project?.documents?.length || 0;
+            const hasExistingDocument = Boolean(newResult?.id);
+            const nextRevisionNumber = newResult?.revisionNumber
+                || (hasExistingDocument ? Math.max(currentRevisionCount, 1) : currentRevisionCount + 1);
+            const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(analysisRepoContext);
             const storedAnalysis = {
                 ...(newResult.analysis || {}),
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
                 projectMeta: {
-                    project_name: (projects.find(p => p.key === taskKey)?.name) || governanceContext?.project_name || 'Project',
-                    project_token: (projects.find(p => p.key === taskKey)?.projectToken) || taskKey || null,
-                    governance_result_id: governanceContext?.result_id || (projects.find(p => p.key === taskKey)?.governanceResultId) || null,
+                    project_name: project?.name || governanceContext?.project_name || 'Project',
+                    project_token: project?.projectToken || taskKey || null,
+                    governance_result_id: governanceContext?.result_id || project?.governanceResultId || null,
                     revision_number: nextRevisionNumber,
                     revision_reason: revisionReason || null,
                     repo_context: repoContextMeta || null,
                 }
             };
 
-            const res = await fetch(API_ENDPOINTS.HISTORY, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    filename: newResult.filename,
-                    content_preview: newResult.extraction?.markdown?.substring(0, 200) + '...',
-                    full_content: newResult.extraction?.markdown,
-                    analysis_result: JSON.stringify(storedAnalysis)
-                })
-            });
+            const savedDoc = await persistHistoryDocument({
+                filename: newResult.filename,
+                content_preview: `${newResult.extraction?.markdown?.substring(0, 200) || ''}...`,
+                full_content: newResult.extraction?.markdown,
+                analysis_result: JSON.stringify(storedAnalysis)
+            }, newResult?.id || null);
 
-            if (res.status === 401) {
-                handleLogout();
-                return;
-            }
-
-            if (res.ok) {
-                const savedDoc = await res.json();
-                setProjectState(taskKey, prev => ({ result: { ...prev.result, id: savedDoc.id }, revisionUnlocked: false, revisionReason: '' }));
-                fetchHistory(); // refresh sidebar
-
-
+            if (savedDoc) {
+                upsertDraftProject({
+                    key: taskKey,
+                    name: project?.name || governanceContext?.project_name || 'Project',
+                    status: 'analysis_complete',
+                    latestRevision: nextRevisionNumber,
+                    submissionDate: new Date().toISOString(),
+                });
+                setProjectState(taskKey, prev => ({
+                    result: { ...prev.result, id: savedDoc.id, revisionNumber: nextRevisionNumber },
+                    revisionUnlocked: false,
+                    revisionReason: ''
+                }));
+                fetchHistory();
+                refreshProjects?.();
             }
         } catch (e) {
             console.error('History save failed', e);
@@ -780,12 +882,13 @@ const Dashboard = ({
                 const docs = [...project.documents].sort(
                     (a, b) => new Date(b.upload_date || 0).getTime() - new Date(a.upload_date || 0).getTime()
                 );
+                const hasCompletedAnalysis = docs.some((doc) => hasCompletedDocumentAnalysis(doc));
                 return {
                     ...project,
                     documents: docs,
                     latestDocument: docs[0] || null,
                     latestRevision: docs.length,
-                    status: docs.length > 0 ? 'analysis_complete' : 'ready_for_upload',
+                    status: hasCompletedAnalysis ? 'analysis_complete' : (docs.length > 0 ? 'screening_complete' : 'ready_for_upload'),
                 };
             })
             .sort((a, b) => {
@@ -795,7 +898,7 @@ const Dashboard = ({
             });
 
         setProjects(builtProjects);
-    }, [governanceHistory, history, extractProjectMetaFromDocument]);
+    }, [governanceHistory, history, extractProjectMetaFromDocument, setProjects]);
 
     useEffect(() => {
         if (projects.length === 0) {
@@ -821,7 +924,7 @@ const Dashboard = ({
             : null;
 
         setSelectedProjectKey(preferredByToken?.key || preferredById?.key || preferredByName?.key || projects[0].key);
-    }, [projects, selectedProjectKey, governanceContext, isNewProjectMode]);
+    }, [projects, selectedProjectKey, governanceContext, isNewProjectMode, projectToken, setSelectedProjectKey]);
 
     useEffect(() => {
         if (!selectedProject?.governanceResultId) return;
@@ -836,6 +939,10 @@ const Dashboard = ({
         try {
             const { parsedAnalysis, governanceResultId } = extractProjectMetaFromDocument(doc);
             if (!parsedAnalysis) return;
+            if (isPendingGovernanceAnalysis(parsedAnalysis)) {
+                setError('Requirement Screening is saved. Complete Governance to start Agent Analysis.');
+                return;
+            }
             const normalized = parseAIResponse(parsedAnalysis.analysis || '');
             // Load questions/answers from saved state
             const questions = (parsedAnalysis.questions?.length ? parsedAnalysis.questions : normalized.questions) || [];
@@ -980,10 +1087,6 @@ const Dashboard = ({
             setError('Select a project from the sidebar before uploading a BRD.');
             return;
         }
-        if (!governanceContext) {
-            setError('Governance context is missing for the selected project. Please open Governance Assessment.');
-            return;
-        }
         if (isEnterpriseUploadBlocked) {
             setError(getEnterpriseUploadBlockMessage());
             return;
@@ -1122,6 +1225,29 @@ const Dashboard = ({
                 return;
             }
 
+            if (!hasGovernanceAssessment) {
+                setProjectState(taskKey, {
+                    progress: 85,
+                    progressMessage: 'Requirement screening complete. Saving BRD before Governance...',
+                });
+
+                await savePendingScreeningToHistory({
+                    filename,
+                    markdown: extractedMarkdown,
+                    taskKey,
+                    repoContextState: repoContext,
+                });
+
+                setProjectState(taskKey, {
+                    processing: false,
+                    progress: 100,
+                    progressMessage: 'Requirement screening complete. Continue with Governance.',
+                    result: null,
+                });
+                navigate('/new-project/governance');
+                return;
+            }
+
             // Set initial result
             const initialResult = {
                 filename: filename,
@@ -1169,7 +1295,13 @@ const Dashboard = ({
     };
 
     // NOTE: Keep fetchAnalysis and other functions unchanged, but they are used inside the loop.
-    const fetchAnalysis = async (payload, token, initialContext = null, taskKey = selectedProjectKey) => {
+    const fetchAnalysis = async (
+        payload,
+        token,
+        initialContext = null,
+        taskKey = selectedProjectKey,
+        analysisOptions = {}
+    ) => {
         try {
             const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
                 method: 'POST',
@@ -1194,6 +1326,8 @@ const Dashboard = ({
             const { report, questions, metrics, title, prerequisites } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
+            const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
+            const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result).filename;
 
             const finalResult = {
@@ -1207,12 +1341,12 @@ const Dashboard = ({
                     prerequisites: prerequisites,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
-                    governanceContext: governanceContext,
-                    repoContextMeta: buildRepoContextMeta(repoContext),
+                    governanceContext: effectiveGovernanceContext,
+                    repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
                 }
             };
             setProjectState(taskKey, { result: finalResult, progress: 100, progressMessage: 'Analysis complete!' });
-            await saveToHistory(finalResult, taskKey);
+            await saveToHistory(finalResult, taskKey, effectiveRepoContext);
             createProjectFromMetrics(finalResult, metrics);
 
             // Auto-refresh roadmap stepper after analysis completes
@@ -1307,7 +1441,7 @@ const Dashboard = ({
                 }
             }
 
-            await fetch(projectCreationUrl, {
+            const createProjectResponse = await fetch(projectCreationUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1322,12 +1456,32 @@ const Dashboard = ({
                     project_token: pToken
                 }),
             });
+
+            if (createProjectResponse.ok) {
+                const createdProject = await createProjectResponse.json().catch(() => ({}));
+                const projectApplication = createdProject?.project_application || null;
+                if (projectApplication && (selectedProjectKey || pToken)) {
+                    upsertDraftProject({
+                        key: selectedProjectKey || pToken,
+                        name: projName,
+                        client_id: projectApplication.client_id || null,
+                        client_secret: projectApplication.client_secret || null,
+                    });
+                    refreshProjects?.();
+                }
+            }
         } catch (err) {
             console.error("Project generation error:", err);
         }
     };
 
-    const streamAnalysis = async (payload, token, initialContext = null, taskKey = selectedProjectKey) => {
+    const streamAnalysis = async (
+        payload,
+        token,
+        initialContext = null,
+        taskKey = selectedProjectKey,
+        analysisOptions = {}
+    ) => {
         try {
             const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
                 method: 'POST',
@@ -1418,6 +1572,8 @@ const Dashboard = ({
             // Save history after stream completes
             const { report, questions, metrics, title, prerequisites } = parseAIResponse(aiText);
 
+            const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
+            const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result).filename;
 
             const finalResult = {
@@ -1430,8 +1586,8 @@ const Dashboard = ({
                     prerequisites: prerequisites,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
-                    governanceContext: governanceContext,
-                    repoContextMeta: buildRepoContextMeta(repoContext),
+                    governanceContext: effectiveGovernanceContext,
+                    repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
                     reasoning: aiReasoning,
                     model: payload.model || 'Streaming...'
                 }
@@ -1442,7 +1598,7 @@ const Dashboard = ({
                 progressMessage: 'Analysis complete!',
                 aiQuestions: questions?.length ? questions : []
             });
-            await saveToHistory(finalResult, taskKey);
+            await saveToHistory(finalResult, taskKey, effectiveRepoContext);
             createProjectFromMetrics(finalResult, metrics);
 
             // Auto-refresh roadmap stepper after analysis completes
@@ -1453,6 +1609,97 @@ const Dashboard = ({
             setProjectState(taskKey, { error: `Stream Error: ${err.message}` });
         }
     };
+    const fetchAnalysisRef = useRef(fetchAnalysis);
+    const streamAnalysisRef = useRef(streamAnalysis);
+    fetchAnalysisRef.current = fetchAnalysis;
+    streamAnalysisRef.current = streamAnalysis;
+
+    useEffect(() => {
+        const latestDocument = selectedProject?.latestDocument;
+        if (!selectedProjectKey || !hasGovernanceAssessment || !latestDocument) return;
+        if (selectedProject?.governanceResultId && !governanceContext) return;
+        if (processing || result) return;
+        const pendingAnalysis = parseStoredDocumentAnalysis(latestDocument);
+        if (!isPendingGovernanceAnalysis(pendingAnalysis) || !latestDocument.full_content) return;
+
+        const runPendingAnalysis = async () => {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                handleLogout();
+                return;
+            }
+
+            const pendingRepoContext = pendingAnalysis?.repoContextState || null;
+            const effectiveGovernanceContext = governanceContext || pendingAnalysis?.governanceContext || null;
+            const initialResult = {
+                id: latestDocument.id,
+                filename: latestDocument.filename,
+                extraction: {
+                    markdown: latestDocument.full_content,
+                    html: '',
+                    num_pages: null,
+                },
+                analysis: analyzeWithAi ? { analysis: '', reasoning: '' } : null,
+                revisionNumber: pendingAnalysis?.projectMeta?.revision_number || (selectedProject?.documents?.length || 1),
+            };
+
+            setRepoContext(pendingRepoContext);
+            projectStateUpdaterRef.current(selectedProjectKey, {
+                processing: true,
+                error: '',
+                result: initialResult,
+                aiQuestions: [],
+                userAnswers: {},
+                userFeedback: '',
+                progress: 70,
+                progressMessage: 'Governance completed. Starting Agent Analysis...',
+            });
+
+            const aiPayload = {
+                document_content: pendingRepoContext?.context
+                    ? `${latestDocument.full_content}\n\n${pendingRepoContext.context}`
+                    : latestDocument.full_content,
+                api_url: aiConfig?.apiUrl || undefined,
+                api_key: aiConfig?.apiKey || undefined,
+                model: aiConfig?.model || undefined,
+                stream: streamResponse,
+                governance_context: effectiveGovernanceContext || undefined,
+            };
+
+            try {
+                if (streamResponse) {
+                    await streamAnalysisRef.current(aiPayload, token, initialResult, selectedProjectKey, {
+                        repoContext: pendingRepoContext,
+                        governanceContext: effectiveGovernanceContext,
+                    });
+                } else {
+                    await fetchAnalysisRef.current(aiPayload, token, initialResult, selectedProjectKey, {
+                        repoContext: pendingRepoContext,
+                        governanceContext: effectiveGovernanceContext,
+                    });
+                }
+            } catch (err) {
+                projectStateUpdaterRef.current(selectedProjectKey, { error: err.message || 'Agent Analysis failed.' });
+            } finally {
+                projectStateUpdaterRef.current(selectedProjectKey, { processing: false });
+            }
+        };
+
+        runPendingAnalysis();
+    }, [
+        selectedProject,
+        selectedProjectKey,
+        hasGovernanceAssessment,
+        governanceContext,
+        processing,
+        result,
+        analyzeWithAi,
+        aiConfig?.apiUrl,
+        aiConfig?.apiKey,
+        aiConfig?.model,
+        streamResponse,
+        handleLogout,
+    ]);
 
     const handleRefineAnalysis = async () => {
         const taskKey = selectedProjectKey; const taskResult = result;
@@ -2074,7 +2321,7 @@ const Dashboard = ({
     };
 
     const goToGovernanceAssessment = () => {
-        navigate('/new-project');
+        navigate(selectedProjectKey ? '/new-project/governance' : '/new-project');
     };
 
     if (!user) {
@@ -2145,7 +2392,11 @@ const Dashboard = ({
                                                         {selectedProject.name} • {selectedProject.classification || 'N/A'} • Score {selectedProject.weightedScore ?? 'N/A'}/10
                                                     </p>
                                                     <p className="text-xs text-emerald-800 mt-1">
-                                                        Status: {selectedProject.status === 'analysis_complete' ? 'Analysis Complete (Locked)' : 'Ready for Initial Upload'}
+                                                        Status: {selectedProject.status === 'analysis_complete'
+                                                            ? 'Analysis Complete (Locked)'
+                                                            : selectedProject.status === 'screening_complete'
+                                                                ? 'Requirement Screening Complete'
+                                                                : 'Ready for Initial Upload'}
                                                     </p>
                                                     {isEnterpriseUploadBlocked && (
                                                         <p className="text-xs text-red-700 mt-1">
@@ -2166,7 +2417,7 @@ const Dashboard = ({
                                                     >
                                                         Change Governance
                                                     </button>
-                                                    {selectedProject.latestDocument && (
+                                                    {selectedProject.latestDocument && hasCompletedDocumentAnalysis(selectedProject.latestDocument) && (
                                                         <button
                                                             type="button"
                                                             onClick={handleViewLatestProjectAnalysis}
@@ -2620,7 +2871,11 @@ const Dashboard = ({
                                                 }`}
                                         >
                                             <Zap className={`w-4 h-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
-                                            {processing ? 'Analyzing...' : selectedProject?.documents.length > 0 ? 'Start Revision Analysis' : 'Start Analysis'}
+                                            {processing
+                                                ? (hasGovernanceAssessment ? 'Analyzing...' : 'Saving Screening...')
+                                                : selectedProject?.documents.length > 0
+                                                    ? (hasGovernanceAssessment ? 'Start Revision Analysis' : 'Continue to Governance')
+                                                    : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
                                         </button>
                                     </div>
                                 </form>
@@ -2660,25 +2915,45 @@ const Dashboard = ({
                                     </div>
                                 </div>
 
-                                {/* Prerequisites Review Banner */}
-                                <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 flex items-center justify-center shadow-lg shadow-amber-200">
-                                            <KeyRound className="w-5 h-5 text-white" />
+                                {hasGovernanceAssessment ? (
+                                    <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 flex items-center justify-center shadow-lg shadow-amber-200">
+                                                <KeyRound className="w-5 h-5 text-white" />
+                                            </div>
+                                            <div>
+                                                <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
+                                                <p className="text-xs text-amber-700">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
-                                            <p className="text-xs text-amber-700">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
-                                        </div>
+                                        <button
+                                            onClick={() => navigate('/prerequisites')}
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                        >
+                                            <KeyRound className="w-4 h-4" />
+                                            Review Prerequisites
+                                        </button>
                                     </div>
-                                    <button
-                                        onClick={() => navigate('/prerequisites')}
-                                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
-                                    >
-                                        <KeyRound className="w-4 h-4" />
-                                        Review Prerequisites
-                                    </button>
-                                </div>
+                                ) : (
+                                    <div className="bg-gradient-to-r from-sky-50 to-indigo-50 rounded-xl shadow-sm border border-sky-200/70 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-sky-200">
+                                                <CheckCircle2 className="w-5 h-5 text-white" />
+                                            </div>
+                                            <div>
+                                                <h3 className="text-sm font-bold text-sky-950">Governance Assessment</h3>
+                                                <p className="text-xs text-sky-800">Requirement Screening is complete. Finish Governance next, then continue through Agent Analysis and prerequisites.</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={goToGovernanceAssessment}
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-sky-600 to-indigo-600 rounded-lg shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                        >
+                                            <CheckCircle2 className="w-4 h-4" />
+                                            Complete Governance
+                                        </button>
+                                    </div>
+                                )}
 
                                 <div id="analysis-content" className="bg-transparent space-y-6">
 

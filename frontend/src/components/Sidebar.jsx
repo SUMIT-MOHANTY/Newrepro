@@ -154,17 +154,6 @@ export default function Sidebar({
                             )}
                         </div>
                     </div>
-
-                    {/* Agents Section – navigates to full page */}
-                    <div className="mb-4">
-                        <button
-                            onClick={() => navigate('/agents')}
-                            className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 bg-blue-900/40 text-blue-100 border border-blue-800"
-                        >
-                            <Users className="w-4 h-4 mr-3" />
-                            Agents
-                        </button>
-                    </div>
                 </div>
 
                 <div className="p-4 border-t border-gray-800 bg-app-text-main shrink-0">
@@ -188,6 +177,16 @@ export default function Sidebar({
                             SSO Configuration
                         </button>
                     )}
+                    <button
+                        onClick={() => {
+                            navigate('/agents');
+                            setIsSidebarOpen(false);
+                        }}
+                        className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 bg-blue-900/40 text-blue-100 border border-blue-800"
+                    >
+                        <Users className="w-4 h-4 mr-3" />
+                        Agents
+                    </button>
                     <button
                         onClick={() => setShowSettings(true)}
                         className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2"

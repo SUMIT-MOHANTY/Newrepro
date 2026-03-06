@@ -918,13 +918,6 @@ const LandingPage = () => {
             <section ref={heroRef} className="pt-24 pb-6 lg:pt-32 lg:pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto relative z-10">
                 <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
                     <div className="hero-content space-y-6 lg:space-y-8 text-center lg:text-left">
-                        <div className="inline-flex items-center gap-2 px-3 py-1 bg-app-primary-light border border-app-primary-light rounded-full text-app-primary text-xs font-semibold mx-auto lg:mx-0">
-                            <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                            </span>
-                            AI-Powered Analysis v1.0
-                        </div>
                         <h1 className="text-4xl sm:text-5xl lg:text-7xl font-extrabold tracking-tight leading-tight text-app-text-main">
                             Transform <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Ideas</span> with Intelligence
                         </h1>

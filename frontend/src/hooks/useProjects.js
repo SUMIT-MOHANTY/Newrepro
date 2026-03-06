@@ -1,5 +1,22 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchProjectsData, fetchRoadmapStep } from '../api/projects';
+import { getDraftProjects } from '../utils/draftProjects';
+
+const parseDocumentAnalysis = (doc) => {
+    try {
+        return doc?.analysis_result ? JSON.parse(doc.analysis_result) : null;
+    } catch {
+        return null;
+    }
+};
+
+const hasCompletedDocumentAnalysis = (doc) => {
+    const parsedAnalysis = parseDocumentAnalysis(doc);
+    if (!parsedAnalysis || parsedAnalysis.screening_status === 'pending_governance_analysis') {
+        return false;
+    }
+    return String(parsedAnalysis.analysis || '').trim().length > 0;
+};
 
 export const useProjects = () => {
     return useQuery({
@@ -10,6 +27,7 @@ export const useProjects = () => {
             const { govPayload, historyPayload } = data;
             const submissions = Array.isArray(govPayload?.submissions) ? govPayload.submissions : [];
             const history = Array.isArray(historyPayload) ? historyPayload : [];
+            const draftProjects = getDraftProjects();
 
             // Build project map
             const normalizeProjectName = (name) => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -36,8 +54,7 @@ export const useProjects = () => {
             });
 
             history.forEach((doc) => {
-                let parsedAnalysis = null;
-                try { parsedAnalysis = doc?.analysis_result ? JSON.parse(doc.analysis_result) : null; } catch { /* ignore */ }
+                const parsedAnalysis = parseDocumentAnalysis(doc);
 
                 const meta = parsedAnalysis?.projectMeta || {};
                 const govMeta = parsedAnalysis?.governanceContext || {};
@@ -80,19 +97,41 @@ export const useProjects = () => {
                 }
 
                 project.documents.push(doc);
-                if (!project.latestDocument) project.latestDocument = doc;
+                if (!project.latestDocument) {
+                    project.latestDocument = doc;
+                }
             });
 
             const builtProjects = Array.from(projectMap.values())
                 .map(project => {
+                    const draft = draftProjects.find((entry) => entry.key === project.key);
                     const docs = [...project.documents].sort(
                         (a, b) => new Date(b.upload_date || 0).getTime() - new Date(a.upload_date || 0).getTime()
                     );
-                    return { ...project, documents: docs, latestDocument: docs[0] || null, latestRevision: docs.length, status: docs.length > 0 ? 'analysis_complete' : 'ready_for_upload' };
+                    const hasCompletedAnalysis = docs.some((doc) => hasCompletedDocumentAnalysis(doc));
+                    return {
+                        ...draft,
+                        ...project,
+                        projectToken: project.projectToken || draft?.projectToken || project.key,
+                        client_id: project.client_id || draft?.client_id || null,
+                        client_secret: project.client_secret || draft?.client_secret || null,
+                        documents: docs,
+                        latestDocument: docs[0] || null,
+                        latestRevision: docs.length,
+                        status: hasCompletedAnalysis
+                            ? 'analysis_complete'
+                            : (docs.length > 0 ? 'screening_complete' : (draft?.status || 'ready_for_upload')),
+                        isDraft: !project.governanceResultId && docs.length === 0,
+                    };
                 })
+                .concat(
+                    draftProjects
+                        .filter((draft) => !projectMap.has(draft.key))
+                        .map((draft) => ({ ...draft }))
+                )
                 .sort((a, b) => {
-                    const aDate = new Date(a.submissionDate || a.latestDocument?.upload_date || 0).getTime();
-                    const bDate = new Date(b.submissionDate || b.latestDocument?.upload_date || 0).getTime();
+                    const aDate = new Date(a.submissionDate || a.createdAt || a.latestDocument?.upload_date || 0).getTime();
+                    const bDate = new Date(b.submissionDate || b.createdAt || b.latestDocument?.upload_date || 0).getTime();
                     return bDate - aDate;
                 });
 

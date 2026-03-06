@@ -72,6 +72,7 @@ export const fetchRoadmapStep = async (projectKey) => {
     const taskToken = getCachedTaskToken(projectKey);
     if (taskToken) headers['x-task-token'] = taskToken;
     const res = await fetch(API_ENDPOINTS.GOVERNANCE_ROADMAP_STEP(projectKey), { headers });
+    if (res.status === 404) return null;
     if (!res.ok) throw new Error('Failed to fetch roadmap step');
     return res.json();
 };

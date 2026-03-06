@@ -15,7 +15,7 @@ import { API_ENDPOINTS } from '../config';
 
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
-const PLAN_CREATION_STEPS = ['Onboarding', 'Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
+const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
 
 function decodeJwtExpiry(token) {
@@ -150,18 +150,24 @@ export default function TaskCreation({
     const [taskToken, setTaskToken] = useState(null);
     const [taskTokenProjectKey, setTaskTokenProjectKey] = useState(null);
     const hasValidTaskToken = Boolean(taskToken) && taskTokenProjectKey === selectedProjectKey;
+    const [isFetchingTaskToken, setIsFetchingTaskToken] = useState(false);
+    const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(false);
 
     const [projectDeadline, setProjectDeadline] = useState('');
     const [sprints, setSprints] = useState([]);
     const [milestones, setMilestones] = useState([]);
     const [tasks, setTasks] = useState([]);
+    const [taskTotalCount, setTaskTotalCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [creationStageIndex, setCreationStageIndex] = useState(0);
+    const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
     const autoStartRunKeysRef = useRef(new Set());
     const credentialRefreshAttemptedRef = useRef(new Set());
+    const generationSnapshotRef = useRef({ tasks: 0, sprints: 0, milestones: 0, taskTotalCount: 0 });
+    const generationPollTimerRef = useRef(null);
     const [isRefreshingCredentials, setIsRefreshingCredentials] = useState(false);
     const [customRules, setCustomRules] = useState(() => {
         if (selectedProjectKey) {
@@ -179,6 +185,21 @@ export default function TaskCreation({
     const processMode = useMemo(() => {
         const map = readProcessModeMap();
         return selectedProjectKey ? map[selectedProjectKey] || 'ai_first' : 'ai_first';
+    }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setHasCompletedInitialBootstrap(true);
+            return;
+        }
+        setHasCompletedInitialBootstrap(false);
+        setProjectDeadline('');
+        setSprints([]);
+        setMilestones([]);
+        setTasks([]);
+        setTaskTotalCount(0);
+        setError('');
+        setSuccess('');
     }, [selectedProjectKey]);
 
     useEffect(() => {
@@ -223,19 +244,31 @@ export default function TaskCreation({
             if (!shouldRefresh) return;
 
             try {
+                if (isMounted) setIsFetchingTaskToken(true);
                 const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
                 });
-                if (!res.ok) return;
+                if (!res.ok) {
+                    if (isMounted && !cached?.token) {
+                        setError('Failed to load project info token for the selected project.');
+                        setHasCompletedInitialBootstrap(true);
+                    }
+                    return;
+                }
                 const data = await res.json();
                 if (!isMounted) return;
                 setTaskToken(data.access);
                 setTaskTokenProjectKey(selectedProjectKey);
                 cacheTaskToken(selectedProjectKey, data.access);
             } catch {
-                // Ignore token refresh failures; user can retry.
+                if (isMounted && !cached?.token) {
+                    setError('Failed to load project info token for the selected project.');
+                    setHasCompletedInitialBootstrap(true);
+                }
+            } finally {
+                if (isMounted) setIsFetchingTaskToken(false);
             }
         };
 
@@ -245,11 +278,33 @@ export default function TaskCreation({
         };
     }, [selectedProjectKey, selectedProject]);
 
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        if (!projectsLoading && !isRefreshingCredentials && !hasProjectCredentials) {
+            setHasCompletedInitialBootstrap(true);
+        }
+    }, [selectedProjectKey, projectsLoading, isRefreshingCredentials, hasProjectCredentials]);
+
     const buildHeaders = useCallback(() => {
         const headers = { Authorization: `Bearer ${token}` };
         if (hasValidTaskToken) headers['x-task-token'] = taskToken;
         return headers;
     }, [token, hasValidTaskToken, taskToken]);
+
+    const extractTaskResults = useCallback((taskPayload) => {
+        if (Array.isArray(taskPayload)) return taskPayload;
+        if (Array.isArray(taskPayload?.results)) return taskPayload.results;
+        return [];
+    }, []);
+
+    const getTaskTotalCount = useCallback(
+        (taskPayload) => {
+            const raw = taskPayload?.count;
+            if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+            return extractTaskResults(taskPayload).length;
+        },
+        [extractTaskResults]
+    );
 
     const loadData = useCallback(async () => {
         if (!selectedProjectKey || !hasValidTaskToken) return;
@@ -271,16 +326,13 @@ export default function TaskCreation({
 
             const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
             const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
-            let nextTasks = [];
-            if (Array.isArray(taskData)) {
-                nextTasks = taskData;
-            } else if (Array.isArray(taskData?.results)) {
-                nextTasks = taskData.results;
-            }
+            const nextTasks = extractTaskResults(taskData);
+            const nextTaskTotalCount = getTaskTotalCount(taskData);
 
             setSprints(nextSprints);
             setMilestones(nextMilestones);
             setTasks(nextTasks);
+            setTaskTotalCount(nextTaskTotalCount);
 
             let normalizedDeadline = '';
             const deadline = projectInfoData?.project?.deadline;
@@ -292,6 +344,7 @@ export default function TaskCreation({
                 sprints: nextSprints,
                 milestones: nextMilestones,
                 tasks: nextTasks,
+                taskTotalCount: nextTaskTotalCount,
                 projectDeadline: normalizedDeadline,
             };
         } catch (e) {
@@ -299,8 +352,9 @@ export default function TaskCreation({
             return null;
         } finally {
             setIsLoading(false);
+            setHasCompletedInitialBootstrap(true);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders]);
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults, getTaskTotalCount]);
 
     useEffect(() => {
         loadData();
@@ -340,16 +394,69 @@ export default function TaskCreation({
     useEffect(() => {
         if (!isGenerating) {
             setCreationStageIndex(0);
-            return;
+            setLiveCreatedTaskCount(0);
         }
-        setCreationStageIndex(0);
-        const toMilestone = window.setTimeout(() => setCreationStageIndex(1), 1800);
-        const toTasks = window.setTimeout(() => setCreationStageIndex(2), 3600);
-        return () => {
-            window.clearTimeout(toMilestone);
-            window.clearTimeout(toTasks);
-        };
     }, [isGenerating]);
+
+    const stopGenerationPolling = useCallback(() => {
+        if (generationPollTimerRef.current) {
+            window.clearInterval(generationPollTimerRef.current);
+            generationPollTimerRef.current = null;
+        }
+    }, []);
+
+    const pollGenerationProgress = useCallback(async () => {
+        if (!selectedProjectKey || !hasValidTaskToken) return;
+
+        try {
+            const headers = buildHeaders();
+            const [sprintRes, milestoneRes, taskRes] = await Promise.all([
+                fetch(API_ENDPOINTS.AGENT_SPRINTS, { headers }),
+                fetch(API_ENDPOINTS.AGENT_MILESTONES, { headers }),
+                fetch(API_ENDPOINTS.AGENT_TASKS, { headers }),
+            ]);
+
+            const sprintData = sprintRes.ok ? await sprintRes.json() : { sprints: [] };
+            const milestoneData = milestoneRes.ok ? await milestoneRes.json() : { milestones: [] };
+            const taskData = taskRes.ok ? await taskRes.json() : { results: [] };
+
+            const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
+            const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
+            const nextTasks = extractTaskResults(taskData);
+            const nextTaskTotalCount = getTaskTotalCount(taskData);
+
+            setSprints(nextSprints);
+            setMilestones(nextMilestones);
+            setTasks(nextTasks);
+            setTaskTotalCount(nextTaskTotalCount);
+
+            const createdSprintCount = Math.max(0, nextSprints.length - generationSnapshotRef.current.sprints);
+            const createdMilestoneCount = Math.max(0, nextMilestones.length - generationSnapshotRef.current.milestones);
+            const baselineTotalCount =
+                typeof generationSnapshotRef.current.taskTotalCount === 'number'
+                    ? generationSnapshotRef.current.taskTotalCount
+                    : generationSnapshotRef.current.tasks;
+            const createdTaskCount = Math.max(0, nextTaskTotalCount - baselineTotalCount);
+
+            setLiveCreatedTaskCount(createdTaskCount);
+
+            if (createdSprintCount > 0 && createdMilestoneCount > 0) {
+                setCreationStageIndex(2);
+            } else if (createdSprintCount > 0) {
+                setCreationStageIndex(1);
+            } else {
+                setCreationStageIndex(0);
+            }
+        } catch {
+            // Ignore polling errors while the main generation request is still running.
+        }
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults, getTaskTotalCount]);
+
+    useEffect(() => {
+        return () => {
+            stopGenerationPolling();
+        };
+    }, [stopGenerationPolling]);
 
     const groupedTasks = useMemo(() => {
         const sprintById = new Map(sprints.map((s) => [String(s.id), s]));
@@ -400,10 +507,35 @@ export default function TaskCreation({
         setIsGenerating(true);
         setError('');
         setSuccess('');
+        setCreationStageIndex(0);
+        setLiveCreatedTaskCount(0);
+        stopGenerationPolling();
+        generationPollTimerRef.current = window.setInterval(() => {
+            pollGenerationProgress();
+        }, 30000);
 
         try {
+            const baseHeaders = buildHeaders();
+            let baselineTaskTotalCount = taskTotalCount;
+            try {
+                const baselineRes = await fetch(API_ENDPOINTS.AGENT_TASKS, { headers: baseHeaders });
+                if (baselineRes.ok) {
+                    const baselineJson = await baselineRes.json().catch(() => ({}));
+                    baselineTaskTotalCount = getTaskTotalCount(baselineJson);
+                }
+            } catch {
+                // Ignore baseline fetch errors; fall back to local state.
+            }
+
+            generationSnapshotRef.current = {
+                tasks: tasks.length,
+                sprints: sprints.length,
+                milestones: milestones.length,
+                taskTotalCount: baselineTaskTotalCount,
+            };
+
             const headers = {
-                ...buildHeaders(),
+                ...baseHeaders,
                 'Content-Type': 'application/json',
             };
 
@@ -457,14 +589,18 @@ export default function TaskCreation({
             } else {
                 setSuccess(`Created ${createdCount} task(s).`);
             }
+            setLiveCreatedTaskCount(createdCount);
+            setCreationStageIndex(2);
+            await pollGenerationProgress();
             await loadData();
             if (fetchRoadmapData) await fetchRoadmapData(selectedProjectKey);
         } catch (e) {
             setError(e?.message || 'Task creation failed');
         } finally {
+            stopGenerationPolling();
             setIsGenerating(false);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData, customRules]);
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData, customRules, tasks.length, sprints.length, milestones.length, pollGenerationProgress, stopGenerationPolling]);
 
     useEffect(() => {
         const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
@@ -509,6 +645,34 @@ export default function TaskCreation({
             navigate('/resource-onboarding', { state: { processMode } });
         }
     };
+
+    const showInitialProjectLoader = Boolean(selectedProjectKey) && !hasCompletedInitialBootstrap && (
+        projectsLoading ||
+        isRefreshingCredentials ||
+        isFetchingTaskToken ||
+        hasProjectCredentials
+    );
+
+    if (showInitialProjectLoader) {
+        return (
+            <div className="h-full min-h-[70vh] bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+                <div className="fixed inset-0 z-[220] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 text-center">
+                        <div className="flex justify-center">
+                            <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                        </div>
+                        <h3 className="mt-4 text-lg font-extrabold text-slate-900">Loading Task Creation</h3>
+                        <p className="mt-2 text-sm text-slate-600">
+                            Fetching project info for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                            The page will open as soon as project info is ready.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
@@ -661,6 +825,10 @@ export default function TaskCreation({
                         <p className="mt-2 text-sm text-slate-600">
                             Creating plan for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>. Please wait.
                         </p>
+                        <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 flex items-center justify-between">
+                            <span className="text-sm font-semibold text-indigo-900">Tasks created so far</span>
+                            <span className="text-2xl font-extrabold text-indigo-700 tabular-nums">{liveCreatedTaskCount}</span>
+                        </div>
                         <div className="mt-5 space-y-3">
                             {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
                                 const isDone = idx < creationStageIndex;
