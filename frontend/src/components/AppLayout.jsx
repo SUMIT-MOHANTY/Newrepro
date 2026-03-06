@@ -97,11 +97,12 @@ export default function AppLayout({ children }) {
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
-        : location.pathname === '/new-project' || location.pathname.startsWith('/new-project/') ? 'governance'
-            : location.pathname === '/prerequisites' ? 'prerequisites'
-                : location.pathname === '/task-creation' ? 'taskCreation'
-                    : location.pathname === '/resource-onboarding' ? 'resourceOnboarding'
-                        : 'main';
+        : location.pathname === '/organization-admin' ? 'organizationAdmin'
+            : location.pathname === '/new-project' || location.pathname.startsWith('/new-project/') ? 'governance'
+                : location.pathname === '/prerequisites' ? 'prerequisites'
+                    : location.pathname === '/task-creation' ? 'taskCreation'
+                        : location.pathname === '/resource-onboarding' ? 'resourceOnboarding'
+                            : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {

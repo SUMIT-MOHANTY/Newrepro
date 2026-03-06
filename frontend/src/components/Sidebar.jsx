@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users } from 'lucide-react';
+import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
 
@@ -179,12 +179,13 @@ export default function Sidebar({
                         <button
                             onClick={() => {
                                 setCurrentView('organizationAdmin');
+                                setIsSidebarOpen(false);
                             }}
                             className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin' ? 'bg-indigo-900/40 text-indigo-100 border border-indigo-800' : 'text-app-border hover:bg-app-text-label hover:text-white'
                                 }`}
                         >
                             <ShieldCheck className="w-4 h-4 mr-3" />
-                            Organization Admin
+                            SSO Configuration
                         </button>
                     )}
                     <button
