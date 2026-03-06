@@ -590,8 +590,9 @@ class ProjectLiveMemory:
     in the same process.
     """
 
-    def __init__(self):
+    def __init__(self, project_token: Optional[str] = None):
         self._lock = threading.Lock()
+        self._project_token = str(project_token or "").strip()
         # agent_id -> AgentTaskRecord (current or most recent task)
         self.active_tasks: Dict[str, AgentTaskRecord] = {}
         # Ordered history of completed records (newest first, capped)
@@ -611,6 +612,10 @@ class ProjectLiveMemory:
         self._file_ownership: Dict[str, str] = {}
         # Shared files that require coordination
         self._shared_files: Set[str] = set()
+        # Domain roots inferred from workspace contract
+        self._contract_backend_roots: Set[str] = set()
+        self._contract_frontend_roots: Set[str] = set()
+        self._contract_partition_signature: str = ""
         # Initialize file partitioning rules
         self._init_file_partitioning_rules()
 
@@ -632,7 +637,7 @@ class ProjectLiveMemory:
         # Frontend-owned files (exclusive)
         self._frontend_files = {
             # React/Vue/Angular files
-            "**/frontend/src/**", "**/client/src/**", "**/src/**",
+            "**/frontend/src/**", "**/client/src/**", "src/**",
             "**/public/**", "**/static/**",
             # Frontend config
             "**/package.json", "**/yarn.lock", "**/pnpm-lock.yaml",
@@ -648,18 +653,117 @@ class ProjectLiveMemory:
             "**/.env.example",  # Both backend and frontend env vars
         }
 
+    def _refresh_contract_domain_roots(self) -> None:
+        token = self._project_token
+        if not token:
+            return
+        try:
+            contract = get_workspace_contract(token)
+        except Exception:
+            return
+        if not isinstance(contract, dict):
+            return
+
+        backend_roots: Set[str] = set()
+        frontend_roots: Set[str] = set()
+
+        for root in (contract.get("canonical_backend_roots") or []):
+            normalized = _normalize_contract_path(str(root or ""))
+            if normalized != ".":
+                backend_roots.add(normalized)
+        for root in (contract.get("canonical_frontend_roots") or []):
+            normalized = _normalize_contract_path(str(root or ""))
+            if normalized != ".":
+                frontend_roots.add(normalized)
+
+        for module in (contract.get("modules") or []):
+            if not isinstance(module, dict):
+                continue
+            kind = str(module.get("kind") or "").strip().lower()
+            if kind not in {"backend", "frontend"}:
+                continue
+            roots = module.get("source_roots") or [module.get("root") or "."]
+            for root in roots:
+                normalized = _normalize_contract_path(str(root or ""))
+                if normalized == ".":
+                    continue
+                if kind == "backend":
+                    backend_roots.add(normalized)
+                else:
+                    frontend_roots.add(normalized)
+
+        signature = json.dumps(
+            {
+                "status": contract.get("status"),
+                "detected_at": contract.get("detected_at"),
+                "source": contract.get("source"),
+                "backend_roots": sorted(backend_roots),
+                "frontend_roots": sorted(frontend_roots),
+            },
+            sort_keys=True,
+        )
+        if signature == self._contract_partition_signature:
+            return
+
+        with self._lock:
+            self._contract_backend_roots = backend_roots
+            self._contract_frontend_roots = frontend_roots
+            self._contract_partition_signature = signature
+
+    def is_shared_file(self, file_path: str) -> bool:
+        import fnmatch
+
+        normalized_path = _normalize_contract_path(file_path)
+        for pattern in self._shared_files:
+            if fnmatch.fnmatch(normalized_path, pattern):
+                return True
+        return False
+
+    def _resolve_domain_owner_from_contract(self, file_path: str) -> Optional[str]:
+        self._refresh_contract_domain_roots()
+        normalized = _normalize_contract_path(file_path)
+        if normalized == ".":
+            return None
+
+        backend_matches = [
+            root for root in self._contract_backend_roots
+            if _path_is_under(normalized, root)
+        ]
+        frontend_matches = [
+            root for root in self._contract_frontend_roots
+            if _path_is_under(normalized, root)
+        ]
+
+        if backend_matches and not frontend_matches:
+            return "backend"
+        if frontend_matches and not backend_matches:
+            return "frontend"
+        if backend_matches and frontend_matches:
+            backend_depth = max(len(root) for root in backend_matches)
+            frontend_depth = max(len(root) for root in frontend_matches)
+            if backend_depth > frontend_depth:
+                return "backend"
+            if frontend_depth > backend_depth:
+                return "frontend"
+        return None
+
     def get_file_owner(self, file_path: str) -> Optional[str]:
         """Determine which domain should own a file based on its path."""
         import fnmatch
 
+        normalized_path = _normalize_contract_path(file_path)
+        contract_owner = self._resolve_domain_owner_from_contract(normalized_path)
+        if contract_owner:
+            return contract_owner
+
         # Check backend ownership
         for pattern in self._backend_files:
-            if fnmatch.fnmatch(file_path, pattern):
+            if fnmatch.fnmatch(normalized_path, pattern):
                 return "backend"
 
         # Check frontend ownership
         for pattern in self._frontend_files:
-            if fnmatch.fnmatch(file_path, pattern):
+            if fnmatch.fnmatch(normalized_path, pattern):
                 return "frontend"
 
         # Default to shared (requires coordination)
@@ -670,35 +774,38 @@ class ProjectLiveMemory:
         Check if an agent can edit a file based on domain ownership.
         Returns (allowed, reason).
         """
-        import fnmatch
+        normalized_path = _normalize_contract_path(file_path)
 
         # Check if it's a shared file
-        for pattern in self._shared_files:
-            if fnmatch.fnmatch(file_path, pattern):
-                # Shared files need coordination - check if anyone else is editing
-                editors = self.file_locks.get(file_path, set())
-                if editors:
-                    return False, f"Shared file '{file_path}' currently being edited by: {editors}"
-                return True, "Shared file - coordination required"
+        if self.is_shared_file(normalized_path):
+            return True, "Shared file - coordination required"
 
-        # Check backend ownership
-        for pattern in self._backend_files:
-            if fnmatch.fnmatch(file_path, pattern):
-                if agent_domain == "backend":
-                    return True, "Backend-owned file"
-                else:
-                    return False, f"File '{file_path}' is owned by backend domain"
-
-        # Check frontend ownership
-        for pattern in self._frontend_files:
-            if fnmatch.fnmatch(file_path, pattern):
-                if agent_domain == "frontend":
-                    return True, "Frontend-owned file"
-                else:
-                    return False, f"File '{file_path}' is owned by frontend domain"
+        owner = self.get_file_owner(normalized_path)
+        if owner == "backend":
+            if agent_domain == "backend":
+                return True, "Backend-owned file"
+            return False, f"File '{normalized_path}' is owned by backend domain"
+        if owner == "frontend":
+            if agent_domain == "frontend":
+                return True, "Frontend-owned file"
+            return False, f"File '{normalized_path}' is owned by frontend domain"
 
         # Unknown file - allow but log warning
         return True, "Unknown file type - allowing edit"
+
+    def infer_domain_for_files(self, file_paths: List[str]) -> Optional[str]:
+        owners: Set[str] = set()
+        for file_path in file_paths or []:
+            owner = self.get_file_owner(file_path)
+            if owner in {"backend", "frontend"}:
+                owners.add(owner)
+        if owners == {"backend"}:
+            return "backend"
+        if owners == {"frontend"}:
+            return "frontend"
+        if len(owners) > 1:
+            return "integration"
+        return None
 
     def register_task_start(
         self,
@@ -767,7 +874,7 @@ class ProjectLiveMemory:
         normalized_paths = []
         seen = set()
         for file_path in file_paths or []:
-            candidate = str(file_path or "").strip()
+            candidate = _normalize_contract_path(file_path)
             if not candidate or candidate in seen:
                 continue
             seen.add(candidate)
@@ -793,7 +900,10 @@ class ProjectLiveMemory:
     def release_file_intent(self, agent_id: str, file_paths: Optional[List[str]] = None):
         """Release file intent locks for a specific agent."""
         with self._lock:
-            targets = list(file_paths or self.file_locks.keys())
+            targets = [
+                _normalize_contract_path(path)
+                for path in (file_paths or self.file_locks.keys())
+            ]
             for fp in list(targets):
                 editors = self.file_locks.get(fp)
                 if not editors:
@@ -810,9 +920,12 @@ class ProjectLiveMemory:
         with self._lock:
             conflicts = {}
             for fp in target_files:
-                others = self.file_locks.get(fp, set()) - {agent_id}
+                normalized = _normalize_contract_path(fp)
+                if self.is_shared_file(normalized):
+                    continue
+                others = self.file_locks.get(normalized, set()) - {agent_id}
                 if others:
-                    conflicts[fp] = list(others)
+                    conflicts[normalized] = list(others)
             return conflicts
 
     def get_agent_domain(self, agent_id: str) -> Optional[str]:
@@ -985,7 +1098,7 @@ _project_live_memories: Dict[str, ProjectLiveMemory] = {}
 def get_live_memory(project_token: str) -> ProjectLiveMemory:
     """Get or create the shared live memory for a project."""
     if project_token not in _project_live_memories:
-        _project_live_memories[project_token] = ProjectLiveMemory()
+        _project_live_memories[project_token] = ProjectLiveMemory(project_token=project_token)
     return _project_live_memories[project_token]
 
 
@@ -1231,6 +1344,20 @@ def _parse_note_payload(raw_content: Any) -> Dict[str, Any]:
             return parsed
     except Exception:
         pass
+    payload_match = re.search(
+        r"<!--\s*AGENT_NOTE_PAYLOAD\s*(?P<payload>[\s\S]*?)-->",
+        text,
+        flags=re.DOTALL,
+    )
+    if payload_match:
+        candidate = str(payload_match.group("payload") or "").strip()
+        if candidate:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
     return {"summary": text}
 
 

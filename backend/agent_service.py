@@ -107,7 +107,7 @@ GIT_INTEGRATION_BRANCH = "agent/integration"
 MASTER_NOTE_PREFIX = "MASTER_PLAN"
 MASTER_NOTE_SCOPE = "Canonical Project Tree and Task Plan"
 DEFAULT_PROJECT_TOKEN = "__default__"
-AGENT_SESSION_NOTES_DIR = "agent_handoff"
+NOTE_PAYLOAD_MARKER = "AGENT_NOTE_PAYLOAD"
 BOOTSTRAP_WAIT_TIMEOUT_SECONDS = 1800
 BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS = 20
 RUN_ALL_WAITING_MESSAGE = "Waiting for master plan..."
@@ -218,6 +218,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state = {
             "agent_states": {},
             "claimed_task_ids": set(),
+            "task_claim_lock": asyncio.Lock(),
             "task_progress_state": {},
             "timer_log_state": {},
             "completed_tasks": [],
@@ -251,6 +252,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state.setdefault("brd_analysis", {})
         state.setdefault("master_note_cache", {})
         state.setdefault("master_note_lock", asyncio.Lock())
+        state.setdefault("task_claim_lock", asyncio.Lock())
     return state
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
@@ -1951,59 +1953,6 @@ async def _coordinate_repo_bootstrap(
         ),
     })
     return {"role": "follower", "base_branch": source_branch, "waited_seconds": waited}
-
-
-def _append_agent_session_note(
-    container_name: str,
-    agent_id: str,
-    task: Dict[str, Any],
-    branch_name: str,
-    build_exit_code: int,
-    fix_iterations: int = 0,
-    linked_task: bool = False,
-) -> Dict[str, Any]:
-    task_title = (task.get("title") or task.get("taskName") or "Untitled task").strip()
-    task_id = _normalize_task_id(task) or task.get("external_id") or task.get("id") or "unknown"
-    task_description = _to_single_line(task.get("description") or "No description provided.")
-    safe_agent_id = _re.sub(r"[^a-zA-Z0-9_-]+", "", agent_id) or "agent"
-    rel_path = f"{AGENT_SESSION_NOTES_DIR}/{safe_agent_id}.md"
-    abs_path = f"/workspace/{rel_path}"
-
-    section = "Linked Task" if linked_task else "Main Task"
-    build_status = "success" if build_exit_code == 0 else f"failed (exit={build_exit_code})"
-    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-    entry = (
-        f"## {timestamp} - {section}\n"
-        f"- Agent: `{agent_id}`\n"
-        f"- Task: `{task_title}`\n"
-        f"- Task ID: `{task_id}`\n"
-        f"- Branch: `{branch_name}`\n"
-        f"- Build Status: `{build_status}`\n"
-        f"- Fix Iterations: `{fix_iterations}`\n"
-        f"- Summary: {task_description}\n\n"
-    )
-    header = f"# Session Notes for {agent_id}\n\n"
-
-    script = (
-        "from pathlib import Path\n"
-        f"path = Path({json.dumps(abs_path)})\n"
-        "path.parent.mkdir(parents=True, exist_ok=True)\n"
-        f"header = {json.dumps(header)}\n"
-        f"entry = {json.dumps(entry)}\n"
-        "if not path.exists():\n"
-        "    path.write_text(header, encoding='utf-8')\n"
-        "with path.open('a', encoding='utf-8') as f:\n"
-        "    f.write(entry)\n"
-    )
-
-    write = subprocess.run(
-        ["docker", "exec", "-w", "/workspace", container_name, "python3", "-c", script],
-        capture_output=True, text=True, timeout=20,
-    )
-    if write.returncode != 0:
-        err = write.stderr or write.stdout or "unknown error"
-        return {"success": False, "error": f"Failed writing session note: {err.strip()}"}
-    return {"success": True, "path": rel_path}
 
 
 def _log_git_agent(message: str, level: str = "info", project_token: Optional[str] = None) -> None:
@@ -4327,7 +4276,30 @@ def _parse_agent_note_content(raw_content: Any) -> Dict[str, Any]:
             return parsed
     except Exception:
         pass
+    payload_match = _re.search(
+        rf"<!--\s*{NOTE_PAYLOAD_MARKER}\s*(?P<payload>[\s\S]*?)-->",
+        text,
+        flags=_re.DOTALL,
+    )
+    if payload_match:
+        candidate = str(payload_match.group("payload") or "").strip()
+        if candidate:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
     return {"entries": [{"summary": text}]}
+
+
+def _embed_note_payload(content_text: str, content_payload: Dict[str, Any]) -> str:
+    body = str(content_text or "").rstrip()
+    payload_text = json.dumps(content_payload or {}, ensure_ascii=True, sort_keys=True, indent=2)
+    metadata_block = f"<!-- {NOTE_PAYLOAD_MARKER}\n{payload_text}\n-->"
+    if not body:
+        return metadata_block
+    return f"{body}\n\n{metadata_block}"
 
 
 def _extract_markdown_section(spec_text: str, section_pattern: str) -> str:
@@ -5130,6 +5102,47 @@ def _get_master_recommended_assignment_map(project_token: Optional[str] = None) 
     return mapping
 
 
+def _get_master_task_plan_map(project_token: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    state = _ensure_project_state(project_token)
+    cached = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+    tasks_considered = cached.get("tasks_considered")
+    if not isinstance(tasks_considered, list):
+        return {}
+
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for entry in tasks_considered:
+        if not isinstance(entry, dict):
+            continue
+        task_id = str(entry.get("task_id") or "").strip()
+        if task_id:
+            mapping[task_id] = entry
+    return mapping
+
+
+def _apply_master_task_metadata(task: Optional[Dict[str, Any]], project_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if not isinstance(task, dict):
+        return task
+
+    task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+    if not task_id:
+        return task
+
+    task_plan_entry = _get_master_task_plan_map(project_token).get(task_id) or {}
+    planned_files = [
+        str(path or "").strip()
+        for path in (task_plan_entry.get("planned_files") or [])
+        if str(path or "").strip()
+    ]
+    if planned_files:
+        task["_predicted_files"] = planned_files[:25]
+        task["_predicted_files_source"] = "master_plan"
+    if not task.get("phase") and task_plan_entry.get("phase"):
+        task["phase"] = task_plan_entry.get("phase")
+    if not task.get("task_phase") and task_plan_entry.get("phase"):
+        task["task_phase"] = task_plan_entry.get("phase")
+    return task
+
+
 def _resolve_locked_task_owner(
     task: Dict[str, Any],
     recommendation_map: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -5853,6 +5866,75 @@ async def _get_existing_note_payload(
         return {}
 
 
+async def _load_persisted_master_note(
+    *,
+    title: str,
+    project_token: Optional[str],
+    task_token: Optional[str],
+    tasks: List[Dict[str, Any]],
+    task_signature: str,
+    worker_signature: str,
+) -> Dict[str, Any]:
+    payload = await _get_existing_note_payload(
+        title=title,
+        project_token=project_token,
+        task_token=task_token,
+    )
+    if not isinstance(payload, dict) or payload.get("note_type") != "master_project_plan":
+        return {}
+
+    validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    if not validation.get("approved"):
+        return {}
+
+    persisted_task_signature = str(payload.get("task_signature") or "").strip()
+    if persisted_task_signature and persisted_task_signature != task_signature:
+        return {}
+
+    workspace_tree = str(payload.get("workspace_tree") or "").strip()
+    if not workspace_tree:
+        return {}
+
+    stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
+    workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
+    task_plan = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
+    if not task_plan:
+        task_plan = _build_master_task_plan(
+            tasks=tasks,
+            stack_profile=stack_profile,
+            workspace_contract=workspace_contract,
+        )
+
+    persisted_worker_signature = str(payload.get("worker_signature") or "").strip()
+    recommended_assignments = payload.get("recommended_assignments") if isinstance(payload.get("recommended_assignments"), list) else []
+    if persisted_worker_signature != worker_signature or not recommended_assignments:
+        recommended_assignments = _build_master_recommended_assignments(
+            tasks=tasks,
+            task_plan=task_plan,
+            project_token=project_token,
+        )
+
+    note_id = await _find_note_id_by_title(
+        title,
+        project_token=project_token,
+        task_token=task_token,
+    )
+
+    return {
+        "success": True,
+        "note_id": note_id,
+        "title": title,
+        "task_count": len(task_plan),
+        "validation": validation,
+        "approved": True,
+        "task_signature": task_signature,
+        "worker_signature": worker_signature,
+        "recommended_assignments": recommended_assignments,
+        "tasks_considered": task_plan,
+        "workspace_tree": workspace_tree,
+    }
+
+
 def _merge_agent_note_entry(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(existing or {})
 
@@ -5983,7 +6065,7 @@ async def _upsert_agent_note(
     payload = {
         "title": title,
         "content": (
-            str(content_text).strip()
+            _embed_note_payload(str(content_text).strip(), content_payload)
             if content_text not in (None, "")
             else json.dumps(content_payload, ensure_ascii=True, sort_keys=True, indent=2)
         ),
@@ -6058,10 +6140,37 @@ async def ensure_master_workspace_note(
                         _log_master_agent(
                             "Reused cached master tree to restore the workspace contract for parallel planning.",
                             project_token=project_token,
-                        )
+                    )
             except Exception as exc:
                 logger.warning("[%s] Failed to restore workspace contract from cached master tree: %s", effective_project, exc)
             return dict(cached_master_note)
+
+        persisted_master_note = await _load_persisted_master_note(
+            title=title,
+            project_token=project_token,
+            task_token=task_token,
+            tasks=tasks,
+            task_signature=task_signature,
+            worker_signature=worker_signature,
+        )
+        if persisted_master_note:
+            try:
+                import context_manager as ctx_mgr
+
+                persisted_tree = str(persisted_master_note.get("workspace_tree") or "").strip()
+                if persisted_tree:
+                    ctx_mgr.update_workspace_contract_from_canonical_tree(
+                        effective_project,
+                        persisted_tree,
+                    )
+            except Exception as exc:
+                logger.warning("[%s] Failed to restore workspace contract from persisted master note: %s", effective_project, exc)
+            _log_master_agent(
+                "Reusing published master project tree note for current task plan.",
+                project_token=project_token,
+            )
+            state["master_note_cache"] = dict(persisted_master_note)
+            return dict(persisted_master_note)
 
         _log_master_agent(
             "Creating canonical project tree note from the full task plan.",
@@ -6258,6 +6367,8 @@ async def ensure_master_workspace_note(
             "project_token": _note_scope_key(project_token),
             "author_agent_id": MASTER_AGENT_ID,
             "updated_at": _note_timestamp(),
+            "task_signature": task_signature,
+            "worker_signature": worker_signature,
             "summary": (
                 "Canonical project tree and implementation plan created by the master agent. "
                 "All worker agents must follow this tree, implement inside these boundaries, "
@@ -6289,7 +6400,7 @@ async def ensure_master_workspace_note(
                 "Every task below must be implemented inside this structure; do not create alternate app roots or duplicate folders.",
                 "Follow the master ownership plan: each task should be picked up and opted into by the recommended agent unless the plan is regenerated.",
                 "If another agent already has the relevant file in its status note, extend that file instead of recreating the same feature elsewhere.",
-                "Keep per-agent status notes updated so other agents can see live work, completed files, and handoff guidance.",
+                "Keep per-agent status notes updated so other agents can see live work, completed files, and coordination guidance.",
                 "If a task requires a structural change, update this master note first before coding.",
             ],
         }
@@ -6439,16 +6550,52 @@ def _get_task_phase_order(task: Dict[str, Any]) -> int:
     return _TASK_PHASE_ORDER.get(phase, 99)
 
 
+def _coerce_task_execution_order(value: Any) -> Optional[float]:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        match = _re.match(r"^\D*(\d+(?:\.\d+)?)", text)
+        if match:
+            try:
+                return float(match.group(1))
+            except Exception:
+                return None
+    return None
+
+
 def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ordered = list(tasks or [])
-    ordered.sort(
-        key=lambda task: (
-            -_get_task_priority_score(task),
-            _get_task_phase_order(task),
-            str(_normalize_task_id(task) or task.get("id") or ""),
-        )
+    indexed_tasks = list(enumerate(ordered))
+    order_fields = (
+        "task_number",
+        "number",
+        "sequence",
+        "sequence_number",
+        "position",
+        "sort_order",
+        "display_order",
+        "order",
+        "serial_number",
+        "serial",
     )
-    return ordered
+
+    def _task_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[int, float, int]:
+        index, task = item
+        for field in order_fields:
+            explicit = _coerce_task_execution_order(task.get(field))
+            if explicit is not None:
+                return (0, explicit, index)
+        return (1, float(index), index)
+
+    indexed_tasks.sort(key=_task_sort_key)
+    return [task for _, task in indexed_tasks]
 
 
 def _normalize_task_domain(task: Dict[str, Any]) -> Optional[str]:
@@ -6543,6 +6690,8 @@ def _extend_paths_from_value(target: List[str], value: Any) -> None:
 def _predict_task_file_intents(task: Dict[str, Any]) -> List[str]:
     predicted = list(task.get("_predicted_files") or [])
     if predicted:
+        if not task.get("_predicted_files_source"):
+            task["_predicted_files_source"] = "provided"
         return predicted
 
     candidates: List[str] = []
@@ -6575,6 +6724,7 @@ def _predict_task_file_intents(task: Dict[str, Any]) -> List[str]:
         normalized.append(candidate)
 
     task["_predicted_files"] = normalized[:25]
+    task["_predicted_files_source"] = "task_text"
     return task["_predicted_files"]
 
 
@@ -6591,6 +6741,22 @@ def _check_task_conflicts(
 ) -> tuple[bool, str]:
     task_domain = _normalize_task_domain(task)
     predicted_files = _predict_task_file_intents(task)
+    predicted_source = str(task.get("_predicted_files_source") or "").strip().lower()
+    if predicted_files and live_mem:
+        try:
+            inferred_domain = live_mem.infer_domain_for_files(predicted_files)
+        except Exception:
+            inferred_domain = None
+        if inferred_domain:
+            if inferred_domain == "integration" or not task_domain:
+                task_domain = inferred_domain
+            elif (
+                predicted_source == "master_plan"
+                and inferred_domain in {"backend", "frontend"}
+                and task_domain in {"backend", "frontend"}
+                and inferred_domain != task_domain
+            ):
+                task_domain = inferred_domain
     if task_domain:
         task["_resolved_task_domain"] = task_domain
 
@@ -7236,6 +7402,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         set_project_task_token(project_token, task_token)
     state = _ensure_project_state(project_token)
     claimed_task_ids = state["claimed_task_ids"]
+    task_claim_lock = state["task_claim_lock"]
     recommendation_map = _get_master_recommended_assignment_map(project_token)
     
     # Check integration gate - if blocked, only allow fix tasks
@@ -7248,12 +7415,10 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             integration_blocked = True
         else:
             integration_blocked = False
-        current_phase = live_mem.get_current_phase()
     except Exception:
         live_mem = None
         workspace_contract = {"status": "insufficient"}
         integration_blocked = False
-        current_phase = None
 
     if live_mem and workspace_contract.get("status") != "ready":
         with live_mem._lock:
@@ -7268,153 +7433,119 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             return None
     
     external_tasks = await _fetch_external_tasks(project_token)
-    active_owned_ids = _active_owned_task_ids(project_token)
-    external_status_by_id = {
-        str(_normalize_task_id(task) or task.get("external_id") or task.get("id")): str(task.get("status") or "").strip().lower()
-        for task in external_tasks
-    }
-    stale_claims = []
-    for claimed_id in list(claimed_task_ids):
-        if claimed_id in active_owned_ids:
-            continue
-        ext_status = external_status_by_id.get(str(claimed_id))
-        if ext_status is None or not _task_status_is_done(ext_status):
-            claimed_task_ids.discard(claimed_id)
-            stale_claims.append(str(claimed_id))
-    if stale_claims:
-        logger.info(
-            f"[{agent_id}] Released stale claimed task ids: {', '.join(sorted(stale_claims)[:10])}"
-        )
-    
-    # Get current active sprint from project state (if available)
-    current_sprint_id = None
-    try:
-        project_state = _ensure_project_state(project_token)
-        # Try to get current sprint from state or from first available sprint
-        # For now, we'll determine current sprint based on phase progression
-        # This can be enhanced later with explicit sprint tracking
-    except Exception:
-        pass
-    
-    external_tasks = _sort_tasks_for_execution(external_tasks)
-    if recommendation_map:
-        preferred_tasks = []
-        other_tasks = []
-        for task in external_tasks:
-            task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
-            recommendation = recommendation_map.get(task_id) or {}
-            recommended_agent_id = str(recommendation.get("recommended_agent_id") or "").strip()
-            if recommended_agent_id == agent_id:
-                preferred_tasks.append(task)
-            else:
-                other_tasks.append(task)
-        external_tasks = preferred_tasks + other_tasks
 
-    def _new_skip_reasons() -> Dict[str, int]:
-        return {
-            "completed_or_claimed": 0,
-            "integration_gate": 0,
-            "sprint_mismatch": 0,
-            "phase_mismatch": 0,
-            "dependency_blocked": 0,
-            "conflict_blocked": 0,
-            "master_assignment": 0,
+    async with task_claim_lock:
+        active_owned_ids = _active_owned_task_ids(project_token)
+        external_status_by_id = {
+            str(_normalize_task_id(task) or task.get("external_id") or task.get("id")): str(task.get("status") or "").strip().lower()
+            for task in external_tasks
         }
-
-    worker_agent_ids = {
-        aid for aid in state.get("agent_states", {})
-        if not _is_system_agent_id(aid)
-    }
-
-    def _try_pick_task(enforce_master_assignment: bool) -> tuple[Optional[Dict[str, Any]], Dict[str, int]]:
-        skip_reasons = _new_skip_reasons()
-
-        for t in external_tasks:
-            tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
-            status_lower = (t.get("status") or "").lower()
-            recommendation = recommendation_map.get(tid) or {}
-            recommended_agent_id = str(recommendation.get("recommended_agent_id") or "").strip()
-            locked_owner = _resolve_locked_task_owner(
-                t,
-                recommendation_map=recommendation_map,
-                worker_agent_ids=worker_agent_ids,
+        stale_claims = []
+        for claimed_id in list(claimed_task_ids):
+            if claimed_id in active_owned_ids:
+                continue
+            ext_status = external_status_by_id.get(str(claimed_id))
+            if ext_status is None or not _task_status_is_done(ext_status):
+                claimed_task_ids.discard(claimed_id)
+                stale_claims.append(str(claimed_id))
+        if stale_claims:
+            logger.info(
+                f"[{agent_id}] Released stale claimed task ids: {', '.join(sorted(stale_claims)[:10])}"
             )
 
-            # Skip if completed or already claimed
-            if _task_status_is_done(status_lower) or tid in claimed_task_ids:
-                skip_reasons["completed_or_claimed"] += 1
-                continue
+        # Get current active sprint from project state (if available)
+        current_sprint_id = None
+        try:
+            project_state = _ensure_project_state(project_token)
+            # Try to get current sprint from state or from first available sprint
+            # For now, we'll determine current sprint based on phase progression
+            # This can be enhanced later with explicit sprint tracking
+        except Exception:
+            pass
 
-            if (
-                locked_owner
-                and locked_owner != agent_id
-            ):
-                skip_reasons["master_assignment"] += 1
-                continue
+        external_tasks = _sort_tasks_for_execution(external_tasks)
 
-            # Integration gate: if blocked, only allow fix tasks
-            if integration_blocked:
-                task_name = (t.get("taskName") or t.get("title") or "").lower()
-                if "fix" not in task_name and "bug" not in task_name.lower():
-                    skip_reasons["integration_gate"] += 1
+        def _new_skip_reasons() -> Dict[str, int]:
+            return {
+                "completed_or_claimed": 0,
+                "integration_gate": 0,
+                "sprint_mismatch": 0,
+                "dependency_blocked": 0,
+                "conflict_blocked": 0,
+            }
+
+        def _try_pick_task() -> tuple[Optional[Dict[str, Any]], Dict[str, int]]:
+            skip_reasons = _new_skip_reasons()
+
+            for t in external_tasks:
+                _apply_master_task_metadata(t, project_token=project_token)
+                tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
+                status_lower = (t.get("status") or "").lower()
+                recommendation = recommendation_map.get(tid) or {}
+                recommended_agent_id = str(recommendation.get("recommended_agent_id") or "").strip()
+
+                # Skip if completed or already claimed
+                if _task_status_is_done(status_lower) or tid in claimed_task_ids:
+                    skip_reasons["completed_or_claimed"] += 1
                     continue
 
-            if current_sprint_id:
-                task_sprint_id = t.get("sprint") or t.get("sprint_id")
-                if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
-                    skip_reasons["sprint_mismatch"] += 1
-                    continue
+                # Integration gate: if blocked, only allow fix tasks
+                if integration_blocked:
+                    task_name = (t.get("taskName") or t.get("title") or "").lower()
+                    if "fix" not in task_name and "bug" not in task_name.lower():
+                        skip_reasons["integration_gate"] += 1
+                        continue
 
-            task_phase = t.get("phase") or t.get("task_phase")
-            if current_phase:
-                if task_phase and task_phase != current_phase:
-                    skip_reasons["phase_mismatch"] += 1
-                    continue
+                if current_sprint_id:
+                    task_sprint_id = t.get("sprint") or t.get("sprint_id")
+                    if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
+                        skip_reasons["sprint_mismatch"] += 1
+                        continue
 
-            if live_mem:
-                task_deps = t.get("dependencies", [])
-                if not task_deps:
-                    linked = t.get("linked_tasks", [])
-                    if linked:
-                        task_deps = [str(lt) for lt in linked]
+                if live_mem:
+                    task_deps = t.get("dependencies", [])
+                    if not task_deps:
+                        linked = t.get("linked_tasks", [])
+                        if linked:
+                            task_deps = [str(lt) for lt in linked]
 
-                if task_deps:
-                    live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+                    if task_deps:
+                        live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
 
-                if not live_mem.check_task_dependencies(tid):
-                    blocking = live_mem.get_blocking_tasks(tid)
-                    logger.info(
-                        f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
-                    )
-                    skip_reasons["dependency_blocked"] += 1
-                    continue
+                    if not live_mem.check_task_dependencies(tid):
+                        blocking = live_mem.get_blocking_tasks(tid)
+                        logger.info(
+                            f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
+                        )
+                        skip_reasons["dependency_blocked"] += 1
+                        continue
 
-                blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
-                if blocked:
-                    logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
-                    skip_reasons["conflict_blocked"] += 1
-                    continue
+                    blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+                    if blocked:
+                        logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                        skip_reasons["conflict_blocked"] += 1
+                        continue
 
-            claimed_task_ids.add(tid)
-            for lt in (t.get("linked_tasks") or []):
-                claimed_task_ids.add(str(lt))
+                claimed_task_ids.add(tid)
+                for lt in (t.get("linked_tasks") or []):
+                    claimed_task_ids.add(str(lt))
 
-            if recommendation:
-                t["_recommended_agent_id"] = recommended_agent_id
-                t["_recommended_opt_in_username"] = str(recommendation.get("opt_in_username") or "").strip()
-            return t, skip_reasons
+                if recommendation:
+                    t["_recommended_agent_id"] = recommended_agent_id
+                    t["_recommended_opt_in_username"] = str(recommendation.get("opt_in_username") or "").strip()
+                return t, skip_reasons
 
-        return None, skip_reasons
+            return None, skip_reasons
 
-    task, skip_reasons = _try_pick_task(enforce_master_assignment=bool(recommendation_map))
-    if task:
-        return task
+        task, skip_reasons = _try_pick_task()
+        if task:
+            return task
 
-    logger.info(
-        f"[{agent_id}] No eligible task found from {len(external_tasks)} fetched task(s). "
-        f"Skip summary: {skip_reasons}. Claimed ids remaining: {len(claimed_task_ids)}"
-    )
-    return None
+        logger.info(
+            f"[{agent_id}] No eligible task found from {len(external_tasks)} fetched task(s). "
+            f"Skip summary: {skip_reasons}. Claimed ids remaining: {len(claimed_task_ids)}"
+        )
+        return None
 
 
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
@@ -7618,19 +7749,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "tasks_completed": 0,
                 "duration": 0,
             }
+    task = _apply_master_task_metadata(task, project_token=project_token)
     if isinstance(task, dict) and project_token:
         task.setdefault("_project_token", project_token)
-
-    # Initialize phase if not set (start with foundation phase)
-    try:
-        import context_manager as ctx_mgr
-        live_mem = ctx_mgr.get_live_memory(project_token or "")
-        if live_mem.get_current_phase() is None:
-            # Set initial phase to foundation
-            live_mem.set_current_phase("foundation")
-            logger.info(f"[{agent_id}] Initialized project phase to 'foundation'")
-    except Exception:
-        pass  # Non-critical, continue
 
     # Set agent to running
     agent["status"] = "running"
@@ -8328,18 +8449,17 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # ═════════════════════════════════════════════════════════
             # MARK CHECKLIST ITEMS COMPLETE
-            # Only if real code was generated (more than just session notes)
+            # Only if the workspace capture contains real project files.
             # ═════════════════════════════════════════════════════════
             workspace_file_count = workspace_tree.count('FILE:')
             normalized_task_id = _normalize_task_id(task)
-            if workspace_file_count <= 1:
-                # Only the agent handoff session note exists — no real code
+            if workspace_file_count <= 0:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "warning",
                     "message": (
-                        f"⚠️ Skipping checklist completion: only {workspace_file_count} file(s) "
-                        f"captured — AI may not have produced real code"
+                        "⚠️ Skipping checklist completion: no files captured from /workspace/ "
+                        "— AI may not have produced real code"
                     )
                 })
             elif checklist and normalized_task_id:
@@ -8457,29 +8577,6 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
                             "message": f"API: linked task progress 40% {'ok' if prog_ok else 'skipped/failed'}"
-                        })
-
-                    linked_note_result = await asyncio.to_thread(
-                        _append_agent_session_note,
-                        container_name,
-                        agent_id,
-                        linked_task,
-                        lt_branch,
-                        lt_result.get("exit_code", -1),
-                        0,
-                        True,
-                    )
-                    if linked_note_result.get("success"):
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"Updated session note: {linked_note_result.get('path')}"
-                        })
-                    else:
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "error",
-                            "message": linked_note_result.get("error", "Failed to update session note.")
                         })
 
                     lt_commit = await asyncio.to_thread(
@@ -8612,29 +8709,6 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             if use_git and branch_name:
                 agent["progress"] = 95
                 agent["progress_message"] = f"Committing and pushing to {branch_name}..."
-
-                note_result = await asyncio.to_thread(
-                    _append_agent_session_note,
-                    container_name,
-                    agent_id,
-                    task,
-                    branch_name,
-                    result.get("exit_code", -1),
-                    fix_iteration,
-                    False,
-                )
-                if note_result.get("success"):
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"Updated session note: {note_result.get('path')}"
-                    })
-                else:
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "error",
-                        "message": note_result.get("error", "Failed to update session note.")
-                    })
 
                 commit_result = await asyncio.to_thread(
                     _commit_and_push, container_name, task["title"], branch_name
@@ -9023,6 +9097,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 task = None  # exit loop
             else:
                 task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+                task = _apply_master_task_metadata(task, project_token=project_token)
                 if isinstance(task, dict) and project_token:
                     task.setdefault("_project_token", project_token)
                 if task:
