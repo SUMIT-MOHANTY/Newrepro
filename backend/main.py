@@ -1369,6 +1369,32 @@ def _count_org_agent_usage(
             dedicated_used += 1
     return shared_used, dedicated_used
 
+
+def _count_org_dedicated_usage_for_project(
+    db: Session,
+    organization_name: str,
+    project_token: Optional[str],
+) -> int:
+    """Return dedicated usage for a single project, excluding built-in defaults."""
+    org = _normalized_text(organization_name)
+    normalized_project_token = _normalize_project_token(project_token)
+    if not org or not normalized_project_token:
+        return 0
+
+    rows = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == org.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.project_token == normalized_project_token,
+    ).all()
+
+    dedicated_used = 0
+    for row in rows:
+        kind = _normalize_agent_kind(row.agent_kind, row.project_token, is_default=bool(row.is_default))
+        if kind == "dedicated":
+            dedicated_used += 1
+    return dedicated_used
+
+
 def _get_or_init_org_agent_quota(
     db: Session,
     organization_name: str,
@@ -4042,7 +4068,12 @@ async def add_agent(
     quota = _get_or_init_org_agent_quota(db, organization_name)
     shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
     if agent_kind == "dedicated":
-        if dedicated_used >= int(quota.dedicated_quota or 0):
+        dedicated_used_for_project = _count_org_dedicated_usage_for_project(
+            db,
+            organization_name,
+            project_token,
+        )
+        if dedicated_used_for_project >= int(quota.dedicated_quota or 0):
             raise HTTPException(
                 status_code=400,
                 detail="Dedicated agent capacity exceeded. Add more dedicated agents in Organization before creating new ones.",

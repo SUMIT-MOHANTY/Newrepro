@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Users, Trash2, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+import ProjectDropdown from './ProjectDropdown';
 
 /**
  * AgentsPage – Full‑screen view of all agents for the current organization / project.
  * It lists shared and dedicated agents separately and allows deletion of dedicated agents only.
  */
-export default function AgentsPage({ selectedProjectKey }) {
+export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, projects = [] }) {
   const [sharedAgents, setSharedAgents] = useState([]);
   const [dedicatedAgents, setDedicatedAgents] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -227,17 +228,25 @@ export default function AgentsPage({ selectedProjectKey }) {
 
   const quotaSummary = useMemo(() => {
     if (!quota) return null;
-    const sharedAvailable = Number(quota.shared_available ?? 0);
-    const dedicatedAvailable = Number(quota.dedicated_available ?? 0);
+    const sharedQuota = Number(quota.shared_quota ?? 0);
+    const dedicatedQuota = Number(quota.dedicated_quota ?? 0);
+    const sharedUsed = selectedProjectKey
+      ? sharedAgents.length
+      : Number(quota.shared_used ?? 0);
+    const dedicatedUsed = selectedProjectKey
+      ? dedicatedAgents.length
+      : Number(quota.dedicated_used ?? 0);
+    const sharedAvailable = Math.max(0, sharedQuota - sharedUsed);
+    const dedicatedAvailable = Math.max(0, dedicatedQuota - dedicatedUsed);
     return {
-      sharedQuota: Number(quota.shared_quota ?? 0),
-      dedicatedQuota: Number(quota.dedicated_quota ?? 0),
-      sharedUsed: Number(quota.shared_used ?? 0),
-      dedicatedUsed: Number(quota.dedicated_used ?? 0),
+      sharedQuota,
+      dedicatedQuota,
+      sharedUsed,
+      dedicatedUsed,
       sharedAvailable,
       dedicatedAvailable,
     };
-  }, [quota]);
+  }, [quota, selectedProjectKey, sharedAgents.length, dedicatedAgents.length]);
 
   return (
     <div className="h-full w-full flex flex-col bg-app-bg-page text-app-text-main">
@@ -247,6 +256,16 @@ export default function AgentsPage({ selectedProjectKey }) {
           <Users className="w-6 h-6 mr-2" /> Agents
         </h1>
         <div className="flex items-center space-x-3">
+          <div className="w-56">
+            <ProjectDropdown
+              projects={projects}
+              selectedKey={selectedProjectKey}
+              onSelect={(project) => {
+                if (!project?.key || project.key === selectedProjectKey || typeof setSelectedProjectKey !== 'function') return;
+                setSelectedProjectKey(project.key);
+              }}
+            />
+          </div>
           <span className="text-sm text-app-text-muted">
             {totalAgents} agent{totalAgents !== 1 ? 's' : ''} ({sharedAgents.length} shared, {dedicatedAgents.length} dedicated)
           </span>
@@ -395,7 +414,7 @@ export default function AgentsPage({ selectedProjectKey }) {
           {!loading && !error && (
             <div className="space-y-4">
               {filteredAgents.length > 0 ? (
-                filteredAgents.map((agent, index) => (
+                filteredAgents.map((agent) => (
                   <div
                     key={agent.id}
                     className={`p-4 rounded-xl border transition-all duration-300 hover:shadow-lg hover:shadow-app-text-label/5 ${getStatusColor(

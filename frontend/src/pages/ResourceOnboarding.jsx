@@ -46,7 +46,7 @@ function getCachedTaskToken(projectKey) {
   return entry.token;
 }
 
-export default function ResourceOnboarding({ selectedProjectKey }) {
+export default function ResourceOnboarding({ selectedProjectKey, fetchHistory }) {
   const navigate = useNavigate();
   const location = useLocation();
   const processMode = location.state?.processMode || 'ai_first';
@@ -56,7 +56,7 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
   const [sharedRequested, setSharedRequested] = useState(0);
   const [dedicatedRequested, setDedicatedRequested] = useState(0);
 
-  const [isLoadingExisting, setIsLoadingExisting] = useState(false);
+  const [_isLoadingExisting, setIsLoadingExisting] = useState(false);
   const [existingError, setExistingError] = useState('');
   const [existingSharedAgents, setExistingSharedAgents] = useState([]);
   const [existingDedicatedAgents, setExistingDedicatedAgents] = useState([]);
@@ -72,8 +72,12 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
   const hasValidTaskToken = Boolean(taskToken);
 
   const existingSharedCount = existingSharedAgents.length;
+  const existingDedicatedCount = existingDedicatedAgents.length;
   const sharedAvailableCount = Number(quota?.shared_available ?? 0);
-  const dedicatedAvailableCount = Number(quota?.dedicated_available ?? 0);
+  const dedicatedQuotaCount = Number(quota?.dedicated_quota ?? 0);
+  const dedicatedAvailableCount = selectedProjectKey
+    ? Math.max(0, dedicatedQuotaCount - existingDedicatedCount)
+    : Number(quota?.dedicated_available ?? 0);
 
   const clampCount = (value) => {
     const n = Number(value);
@@ -176,7 +180,7 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
 
       if (quota) {
         const sharedAvailable = Number(quota.shared_available ?? 0);
-        const dedicatedAvailable = Number(quota.dedicated_available ?? 0);
+        const dedicatedAvailable = dedicatedAvailableCount;
         if (sharedToCreate > sharedAvailable) {
           setSubmitError(`Shared agent capacity exceeded. Available: ${sharedAvailable}. Please add more Shared agents from Agents page.`);
           return;
@@ -271,6 +275,9 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
         // ignore refresh errors
       }
 
+      if (typeof fetchHistory === 'function') {
+        fetchHistory();
+      }
       navigate('/status-dashboard', { state: { processMode } });
     } catch (e) {
       setSubmitError(e?.message || 'Failed to complete onboarding');
@@ -440,7 +447,7 @@ export default function ResourceOnboarding({ selectedProjectKey }) {
               {quota && !quotaLoading && (
                 <p className="text-[11px] text-app-text-muted mt-1">
                   Shared available: <span className="font-semibold text-app-text-main">{quota.shared_available ?? 0}</span> · Dedicated available:{' '}
-                  <span className="font-semibold text-app-text-main">{quota.dedicated_available ?? 0}</span>
+                  <span className="font-semibold text-app-text-main">{dedicatedAvailableCount}</span>
                 </p>
               )}
               <div className="mt-2">
