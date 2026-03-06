@@ -392,8 +392,8 @@ def _resolve_login_sso_setting(
         raise HTTPException(status_code=400, detail="Organization SSO client ID is not configured.")
     if not _normalized_text(setting.client_secret):
         raise HTTPException(status_code=400, detail="Organization SSO client secret is not configured.")
-    if not _normalized_text(setting.authority_url):
-        raise HTTPException(status_code=400, detail="Organization SSO authority URL is not configured.")
+    # Authority URL is now derived in the backend from tenant / environment,
+    # so we no longer block if the stored authority_url is empty here.
 
     return setting, resolved_org_name, email_hint
 
@@ -427,7 +427,12 @@ def _build_frontend_sso_redirect(
 async def _fetch_oidc_metadata(setting: models.OrganizationSSOSetting) -> Dict[str, str]:
     authority_url = _normalized_text(setting.authority_url)
     if not authority_url:
-        raise HTTPException(status_code=400, detail="Organization authority URL is missing.")
+        # Derive a default authority URL from tenant_id if available (Azure AD / Entra ID)
+        tenant = _normalized_text(setting.tenant_id)
+        if tenant:
+            authority_url = f"https://login.microsoftonline.com/{tenant}"
+        else:
+            raise HTTPException(status_code=400, detail="Organization authority URL is missing.")
 
     if "/.well-known/openid-configuration" in authority_url:
         metadata_url = authority_url
@@ -1304,7 +1309,17 @@ def update_organization_sso_settings(
     row.redirect_uri = payload.redirect_uri
     row.logout_url = payload.logout_url
     row.scopes = payload.scopes
-    row.domain_hint = payload.domain_hint
+
+    # Domain hint is no longer configured from the frontend UI; if it is not
+    # explicitly provided, derive it from the org admin's email domain so that
+    # all users with that domain (e.g. *@company.com) can use SSO.
+    if payload.domain_hint is not None:
+        row.domain_hint = payload.domain_hint
+    if not _normalized_text(row.domain_hint):
+        admin_email = _normalized_text(current_user.email)
+        if "@" in admin_email:
+            row.domain_hint = admin_email.split("@", 1)[1].lower()
+
     row.sso_enabled = payload.sso_enabled
     row.admin_user_id = current_user.id
 

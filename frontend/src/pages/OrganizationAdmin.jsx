@@ -100,6 +100,14 @@ export default function OrganizationAdmin({ user }) {
             return false;
         }
 
+        // Authority URL and Redirect URI are backend-managed only and should not
+        // be updated from the frontend payload. They will be derived from env/tenant.
+        const {
+            authority_url: _authorityUrl,
+            redirect_uri: _redirectUri,
+            ...sanitizedPayload
+        } = payload || {};
+
         setIsSaving(true);
         setError('');
         setSuccess('');
@@ -111,7 +119,7 @@ export default function OrganizationAdmin({ user }) {
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${token}`,
                 },
-                body: JSON.stringify(payload),
+                body: JSON.stringify(sanitizedPayload),
             });
             if (!response.ok) {
                 const data = await response.json().catch(() => ({}));
@@ -280,59 +288,10 @@ export default function OrganizationAdmin({ user }) {
                                     </button>
                                 </div>
                             </label>
-                            <label className="block">
-                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Authority URL</span>
-                                <input
-                                    type="text"
-                                    value={form.authority_url || ''}
-                                    onChange={(e) => handleChange('authority_url', e.target.value)}
-                                    placeholder="https://login.microsoftonline.com/{tenant}"
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
-                                />
-                            </label>
-                            <label className="block">
-                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Redirect URI</span>
-                                <input
-                                    type="text"
-                                    value={form.redirect_uri || ''}
-                                    onChange={(e) => handleChange('redirect_uri', e.target.value)}
-                                    placeholder="http://localhost:8000/auth/sso/callback"
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
-                                />
-                                <p className="mt-1 text-[11px] text-app-text-light">
-                                    Use backend callback URL (example: <code className="font-mono">/auth/sso/callback</code>).
-                                </p>
-                            </label>
-                            <label className="block">
-                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Logout URL</span>
-                                <input
-                                    type="text"
-                                    value={form.logout_url || ''}
-                                    onChange={(e) => handleChange('logout_url', e.target.value)}
-                                    placeholder="https://yourapp.com/logout"
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
-                                />
-                            </label>
-                            <label className="block">
-                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Scopes</span>
-                                <input
-                                    type="text"
-                                    value={form.scopes || ''}
-                                    onChange={(e) => handleChange('scopes', e.target.value)}
-                                    placeholder="openid profile email"
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
-                                />
-                            </label>
-                            <label className="block">
-                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Domain Hint</span>
-                                <input
-                                    type="text"
-                                    value={form.domain_hint || ''}
-                                    onChange={(e) => handleChange('domain_hint', e.target.value)}
-                                    placeholder="contoso.com"
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
-                                />
-                            </label>
+                            {/* Authority URL, Redirect URI, Logout URL, Scopes, and Domain Hint
+                                are intentionally hidden from the UI.
+                                They are still part of the form state and persisted in the backend,
+                                but are managed behind the scenes instead of being configured here. */}
                         </div>
 
                         <div className="flex items-center justify-between gap-4 rounded-xl border border-app-border-light bg-app-bg-page/50 px-4 py-3">
