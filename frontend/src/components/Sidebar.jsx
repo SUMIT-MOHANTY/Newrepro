@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
@@ -21,6 +21,7 @@ export default function Sidebar({
     deletingProjectKey,
 }) {
     const navigate = useNavigate();
+    const location = useLocation();
     // Agents state
     const [agents, setAgents] = useState([]);
     const [agentsLoading, setAgentsLoading] = useState(false);
@@ -166,10 +167,9 @@ export default function Sidebar({
                     </button>
                     {user?.is_org_admin && (
                         <button
-                            onClick={() => {
-                                setCurrentView('organizationAdmin');
-                                setIsSidebarOpen(false);
-                            }}
+onClick={() => {
+                            setCurrentView('organizationAdmin');
+                        }}
                             className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin' ? 'bg-indigo-900/40 text-indigo-100 border border-indigo-800' : 'text-app-border hover:bg-app-text-label hover:text-white'
                                 }`}
                         >
@@ -180,9 +180,8 @@ export default function Sidebar({
                     <button
                         onClick={() => {
                             navigate('/agents');
-                            setIsSidebarOpen(false);
                         }}
-                        className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 bg-blue-900/40 text-blue-100 border border-blue-800"
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents') ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
                     >
                         <Users className="w-4 h-4 mr-3" />
                         Agents
