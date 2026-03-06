@@ -1195,8 +1195,8 @@ async def get_agent_notes_context(
     max_notes: int = 8,
 ) -> str:
     """
-    Retrieve structured agent status/handoff notes from the external task API
-    and convert them into a concise prompt-friendly summary.
+    Retrieve the master project-plan note plus shared agent status notes
+    and convert them into prompt-friendly coordination context.
     """
     effective_token = str(task_token or "").strip()
     if not effective_token:
@@ -1216,21 +1216,151 @@ async def get_agent_notes_context(
     if not isinstance(notes, list):
         return ""
 
+    master_prefix = _note_title_for_prefix("MASTER_PLAN", project_token)
     status_prefix = _note_title_for_prefix("STATUS", project_token)
 
+    master_candidates = []
     relevant = []
     for note in notes:
         title = str((note or {}).get("title") or "").strip()
+        if title.startswith(master_prefix):
+            master_candidates.append(note)
         if title.startswith(status_prefix):
             relevant.append(note)
         if len(relevant) >= max_notes * 2:
-            break
-
-    if not relevant:
-        return ""
+            if len(master_candidates) >= 1:
+                break
 
     live_entries = []
     history_entries = []
+    lines = []
+    has_content = False
+
+    def _note_sort_key(note: Dict[str, Any]) -> int:
+        value = note.get("id") or note.get("note_id") or 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    if master_candidates:
+        master_candidates.sort(key=_note_sort_key, reverse=True)
+        master_note = master_candidates[0]
+        master_note_id = master_note.get("id") or master_note.get("note_id")
+        if master_note_id:
+            try:
+                detail = await task_service.get_note_detail(int(master_note_id), task_token=effective_token)
+                raw_content = str(detail.get("content") or "").strip()
+                payload = _parse_note_payload(raw_content)
+                title = str(detail.get("title") or master_note.get("title") or "").strip()
+                structured_master_note = any(
+                    key in payload
+                    for key in (
+                        "workspace_tree",
+                        "tasks_considered",
+                        "validation",
+                        "stack_profile",
+                    )
+                )
+                if not structured_master_note and raw_content:
+                    has_content = True
+                    lines.append("=== MASTER PROJECT PLAN NOTE ===")
+                    lines.append(raw_content[:7000])
+                    lines.append("=== END MASTER PROJECT PLAN NOTE ===")
+                    payload = {}
+                summary = str(payload.get("summary") or "").strip()
+                workspace_tree = str(payload.get("workspace_tree") or "").strip()
+                architecture_overview = str(payload.get("architecture_overview") or "").strip()
+                dependencies = str(payload.get("dependencies") or "").strip()
+                instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
+                tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
+                workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
+                validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+                stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
+                allowed_roots = [
+                    str(path or "").strip()
+                    for path in (workspace_contract.get("allowed_source_roots") or [])
+                    if str(path or "").strip()
+                ]
+
+                if structured_master_note:
+                    lines.append("=== MASTER PROJECT PLAN NOTE ===")
+                    lines.append(f"Title: {title}")
+                    if summary:
+                        has_content = True
+                        lines.append(summary)
+                    if stack_profile:
+                        has_content = True
+                        lines.append("\nSTACK DECISION:")
+                        lines.append(
+                            f"  - frontend={stack_profile.get('frontend')}"
+                            + (f" | backend={stack_profile.get('backend')}" if stack_profile.get("backend") else "")
+                            + (f" | confidence={stack_profile.get('confidence')}" if stack_profile.get("confidence") else "")
+                        )
+                    if tasks_considered:
+                        has_content = True
+                        lines.append("\nTASKS CONSIDERED BY MASTER AGENT:")
+                        for task in tasks_considered[:20]:
+                            if not isinstance(task, dict):
+                                continue
+                            task_title = str(task.get("title") or task.get("task_title") or "Untitled task")
+                            task_phase = str(task.get("phase") or "").strip()
+                            task_priority = str(task.get("priority") or "").strip()
+                            lines.append(
+                                f"  - {task_title}"
+                                + (f" | phase={task_phase}" if task_phase else "")
+                                + (f" | priority={task_priority}" if task_priority else "")
+                            )
+                            planned_files = [
+                                str(path or "").strip()
+                                for path in (task.get("planned_files") or [])
+                                if str(path or "").strip()
+                            ]
+                            if planned_files:
+                                lines.append(f"    Planned files: {', '.join(planned_files[:6])}")
+                    if workspace_tree:
+                        has_content = True
+                        lines.append("\nCANONICAL PROJECT TREE:")
+                        lines.append(workspace_tree[:4500])
+                    if architecture_overview:
+                        has_content = True
+                        lines.append("\nARCHITECTURE OVERVIEW:")
+                        lines.append(architecture_overview[:1500])
+                    if allowed_roots:
+                        has_content = True
+                        lines.append("\nCANONICAL SOURCE ROOTS:")
+                        for root in allowed_roots[:12]:
+                            lines.append(f"  - {root}")
+                    if dependencies:
+                        has_content = True
+                        lines.append("\nKEY DEPENDENCIES:")
+                        lines.append(dependencies[:900])
+                    if validation:
+                        has_content = True
+                        validator_agent_id = str(validation.get("validator_agent_id") or "structure_validator").strip()
+                        mode = str(validation.get("mode") or "").strip()
+                        confidence = validation.get("confidence")
+                        lines.append("\nVALIDATION:")
+                        lines.append(
+                            f"  - approved={bool(validation.get('approved'))}"
+                            + (f" | validator={validator_agent_id}" if validator_agent_id else "")
+                            + (f" | mode={mode}" if mode else "")
+                            + (f" | confidence={confidence}" if confidence not in (None, "") else "")
+                        )
+                        for issue in (validation.get("issues_missing_files") or [])[:6]:
+                            lines.append(f"  - missing/coverage: {str(issue)[:220]}")
+                        for issue in (validation.get("issues_conflicts") or [])[:6]:
+                            lines.append(f"  - conflict: {str(issue)[:220]}")
+                        for recommendation in (validation.get("recommendations") or [])[:6]:
+                            lines.append(f"  - recommendation: {str(recommendation)[:220]}")
+                    if instructions:
+                        has_content = True
+                        lines.append("\nMASTER INSTRUCTIONS:")
+                        for instruction in instructions[:8]:
+                            lines.append(f"  - {str(instruction)[:240]}")
+                    lines.append("=== END MASTER PROJECT PLAN NOTE ===")
+            except Exception as e:
+                logger.warning(f"[{project_token}] Failed to read master note: {e}")
 
     for note in relevant:
         note_id = (note or {}).get("id") or (note or {}).get("note_id")
@@ -1270,15 +1400,13 @@ async def get_agent_notes_context(
             if len(history_entries) >= max_notes * 3:
                 break
 
-    lines = ["=== STRUCTURED AGENT NOTES ==="]
-    has_content = False
-
     live_entries.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
     history_entries.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
 
     if live_entries:
         has_content = True
-        lines.append("\nLIVE STATUS NOTES:")
+        lines.append("\n=== SHARED AGENT STATUS NOTES ===")
+        lines.append("LIVE STATUS NOTES:")
         for entry in live_entries[:max_notes]:
             lines.append(
                 f"  - {entry.get('agent_id', 'unknown')} | "
@@ -1314,7 +1442,8 @@ async def get_agent_notes_context(
     if not has_content:
         return ""
 
-    lines.append("\n=== END STRUCTURED AGENT NOTES ===")
+    if live_entries or history_entries:
+        lines.append("\n=== END SHARED AGENT STATUS NOTES ===")
     return "\n".join(lines)
 
 
