@@ -16,6 +16,8 @@ class User(Base):
     is_org_admin = Column(Boolean, default=False)
     github_token = Column(String, nullable=True)
     github_username = Column(String, nullable=True)
+    azure_devops_token = Column(String, nullable=True)
+    azure_devops_username = Column(String, nullable=True)
 
     documents = relationship("Document", back_populates="owner")
     governance_responses = relationship("GovernanceResponse", back_populates="owner")

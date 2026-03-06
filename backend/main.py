@@ -30,6 +30,7 @@ import ai_service
 import governance_scoring
 import github_service
 import azure_devops_service
+import azure_devops_oauth_service
 import agent_service
 import rag_service
 import context_manager
@@ -2700,6 +2701,116 @@ async def github_repos(
         raise HTTPException(status_code=500, detail=f"Failed to fetch repos: {e}")
 
 
+@app.get("/azure-devops/auth-url")
+async def azure_devops_auth_url(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Return the Azure DevOps OAuth authorization URL."""
+    try:
+        url = azure_devops_oauth_service.get_oauth_url(state=str(current_user.id))
+        return {"url": url}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AzureDevOpsCallbackPayload(BaseModel):
+    code: str
+
+
+@app.post("/azure-devops/callback")
+async def azure_devops_callback(
+    payload: AzureDevOpsCallbackPayload,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Exchange an OAuth code for an Azure DevOps token and persist it."""
+    try:
+        token_data = await azure_devops_oauth_service.exchange_code_for_token(payload.code)
+        access_token = (token_data.get("access_token") or "").strip()
+        if not access_token:
+            raise HTTPException(status_code=400, detail="Failed to obtain Azure DevOps token")
+
+        profile = await azure_devops_oauth_service.get_current_profile(access_token)
+        display_name = str(
+            profile.get("displayName")
+            or profile.get("emailAddress")
+            or profile.get("id")
+            or ""
+        ).strip()
+
+        current_user.azure_devops_token = access_token
+        current_user.azure_devops_username = display_name or None
+        db.commit()
+
+        return {
+            "status": "connected",
+            "azure_devops_username": current_user.azure_devops_username,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        detail = "Azure DevOps OAuth error."
+        if e.response is not None:
+            try:
+                payload = e.response.json() or {}
+                detail = str(payload.get("error_description") or payload.get("message") or detail)
+            except Exception:
+                detail = str(e.response.text or detail)
+        raise HTTPException(status_code=status_code, detail=detail)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Azure DevOps OAuth error: {e}")
+
+
+@app.get("/azure-devops/status")
+async def azure_devops_status(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Check whether the user has connected their Azure DevOps account."""
+    return {
+        "connected": bool(current_user.azure_devops_token),
+        "azure_devops_username": current_user.azure_devops_username or None,
+    }
+
+
+@app.post("/azure-devops/disconnect")
+async def azure_devops_disconnect(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove the stored Azure DevOps token."""
+    current_user.azure_devops_token = None
+    current_user.azure_devops_username = None
+    db.commit()
+    return {"status": "disconnected"}
+
+
+@app.get("/azure-devops/repos")
+async def azure_devops_repos(
+    current_user: models.User = Depends(auth.get_current_user),
+    page: int = 1,
+    per_page: int = 30,
+):
+    """List Azure DevOps repositories available to the authenticated user."""
+    access_token = (current_user.azure_devops_token or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Azure DevOps not connected")
+    try:
+        repos = await azure_devops_oauth_service.list_repos(
+            access_token,
+            per_page=per_page,
+            page=page,
+        )
+        return {"repos": repos}
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        raise HTTPException(status_code=status_code, detail="Failed to fetch Azure DevOps repositories.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Azure DevOps repositories: {e}")
+
+
 class RepoContextRequest(BaseModel):
     owner: str
     repo: str
@@ -2864,12 +2975,14 @@ async def azure_devops_repo_context(
     suitable for feeding into the AI model alongside BRD content.
     """
     provided_token = (payload.token or "").strip() or None
+    saved_oauth_token = (current_user.azure_devops_token or "").strip() or None
+    token_to_use = provided_token if provided_token else saved_oauth_token
     branch = (payload.branch or "").strip() or None
 
     try:
         repo_data = await azure_devops_service.build_repo_context_from_url(
             repo_url=payload.repo_url,
-            pat=provided_token,
+            pat=token_to_use,
             branch=branch,
         )
         return {
@@ -2898,9 +3011,9 @@ async def azure_devops_repo_context(
             )
         elif status_code in (401, 403):
             if "pat" in response_msg_lc or "token" in response_msg_lc:
-                detail = "Azure DevOps authentication failed. Check your PAT permissions."
+                detail = "Azure DevOps authentication failed. Check your PAT permissions or reconnect OAuth."
             else:
-                detail = "Azure DevOps authentication failed or access denied. Provide a valid PAT."
+                detail = "Azure DevOps authentication failed or access denied. Provide a valid PAT or reconnect OAuth."
         else:
             detail = f"Failed to fetch repository context from Azure DevOps (HTTP {status_code})."
         raise HTTPException(status_code=status_code, detail=detail)
@@ -3292,6 +3405,14 @@ def _ensure_user_organization_columns() -> None:
 
         if "is_org_admin" not in columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN is_org_admin BOOLEAN DEFAULT 0"))
+            conn.commit()
+
+        if "azure_devops_token" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN azure_devops_token VARCHAR"))
+            conn.commit()
+
+        if "azure_devops_username" not in columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN azure_devops_username VARCHAR"))
             conn.commit()
 
 def _ensure_default_oauth_clients(db: Session) -> None:

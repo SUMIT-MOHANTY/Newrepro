@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # GitHub OAuth
     github_client_id: Optional[str] = None
     github_client_secret: Optional[str] = None
+    # Azure DevOps OAuth
+    azure_devops_client_id: Optional[str] = None
+    azure_devops_client_secret: Optional[str] = None
 
     # DSuite OAuth Provider (for plugin apps)
     oauth_issuer: str = "dsuite"

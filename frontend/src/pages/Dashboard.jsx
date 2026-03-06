@@ -13,6 +13,7 @@ import AIConfig from '../components/AIConfig';
 import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
+import AzureDevOpsIntegration from '../components/AzureDevOpsIntegration';
 import { upsertDraftProject } from '../utils/draftProjects';
 
 const GitHubIcon = ({ className = 'w-4 h-4' }) => (
@@ -2752,28 +2753,45 @@ const Dashboard = ({
                                                 <div className="mb-4">
                                                     <div className="flex items-center mb-2">
                                                         <div className="w-6 h-6 bg-app-primary-light text-app-primary rounded flex items-center justify-center mr-2 font-black text-xs">1</div>
-                                                        <h3 className="text-sm font-bold text-app-text-main">Connect Account</h3>
+                                                        <h3 className="text-sm font-bold text-app-text-main">
+                                                            {repoLinkProvider === 'azure-devops' ? 'Connect Azure DevOps' : 'Connect Account'}
+                                                        </h3>
                                                     </div>
                                                     <p className="text-xs text-app-text-muted mb-2">
                                                         {repoLinkProvider === 'azure-devops'
-                                                            ? 'Azure DevOps OAuth connect is not configured in this screen. Use Option 2 to fetch with Azure DevOps URL + PAT.'
+                                                            ? 'Authorize via OAuth to securely browse and select private or public repositories on your account.'
                                                             : 'Authorize via OAuth to securely browse and select private or public repositories on your account.'}
                                                     </p>
                                                 </div>
                                                 <div className="mt-auto">
                                                     {repoLinkProvider === 'azure-devops' ? (
-                                                        <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
-                                                            <div className="flex items-center gap-2 text-sm font-semibold text-sky-900">
-                                                                <AzureDevOpsIcon className="w-4 h-4" />
-                                                                Azure DevOps selected
-                                                            </div>
-                                                            <p className="text-xs text-sky-800 mt-2">
-                                                                Continue with Option 2 and click <span className="font-semibold">Fetch Repository</span> after entering your Azure DevOps repository URL.
-                                                            </p>
-                                                            <p className="text-xs text-sky-700 mt-1">
-                                                                PAT is required for private repositories.
-                                                            </p>
-                                                        </div>
+                                                        <AzureDevOpsIntegration
+                                                            repoContext={repoContext}
+                                                            onRepoSelected={() => setIsOAuthRepoSelected(true)}
+                                                            onRepoContextReady={(ctx) => {
+                                                                const nextCtx = {
+                                                                    ...ctx,
+                                                                    provider: 'azure-devops',
+                                                                    url: String(ctx?.url || '').trim(),
+                                                                };
+                                                                setRepoContext(nextCtx);
+                                                                persistRepoContextMetaForProject(nextCtx);
+                                                                setGithubLinkUrl('');
+                                                                setGithubLinkToken('');
+                                                                setGithubAuthMode('pat');
+                                                                setGithubLinkUsername('');
+                                                                setGithubLinkPassword('');
+                                                                setAzureLinkUrl('');
+                                                                setAzureLinkToken('');
+                                                                setAzureLinkBranch('');
+                                                                setAzureLinkError('');
+                                                                setGithubLinkError('');
+                                                            }}
+                                                            onClearRepo={() => {
+                                                                setRepoContext(null);
+                                                                setIsOAuthRepoSelected(false);
+                                                            }}
+                                                        />
                                                     ) : (
                                                         <GitHubIntegration
                                                             repoContext={repoContext}

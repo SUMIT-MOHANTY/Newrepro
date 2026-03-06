@@ -7,6 +7,7 @@ import GovernanceForm from './pages/GovernanceForm';
 import PrerequisiteClassification from './pages/PrerequisiteClassification';
 import TaskCreation from './pages/TaskCreation';
 import GitHubCallback from './pages/GitHubCallback';
+import AzureDevOpsCallback from './pages/AzureDevOpsCallback';
 import SsoCallback from './pages/SsoCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
@@ -25,6 +26,7 @@ function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/how-it-works" element={<HowItWorks />} />
         <Route path="/github/callback" element={<GitHubCallback />} />
+        <Route path="/azure-devops/callback" element={<AzureDevOpsCallback />} />
         <Route path="/sso/callback" element={<SsoCallback />} />
 
         {/* Authenticated routes — wrapped with AppLayout for uniform sidebar/navbar */}
