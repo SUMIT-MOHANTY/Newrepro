@@ -15,7 +15,7 @@ import { API_ENDPOINTS } from '../config';
 
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
-const PLAN_CREATION_STEPS = ['Onboarding', 'Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
+const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
 
 function decodeJwtExpiry(token) {
@@ -162,8 +162,11 @@ export default function TaskCreation({
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [creationStageIndex, setCreationStageIndex] = useState(0);
+    const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
     const autoStartRunKeysRef = useRef(new Set());
     const credentialRefreshAttemptedRef = useRef(new Set());
+    const generationSnapshotRef = useRef({ tasks: 0, sprints: 0, milestones: 0 });
+    const generationPollTimerRef = useRef(null);
     const [isRefreshingCredentials, setIsRefreshingCredentials] = useState(false);
     const [customRules, setCustomRules] = useState(() => {
         if (selectedProjectKey) {
@@ -286,6 +289,12 @@ export default function TaskCreation({
         return headers;
     }, [token, hasValidTaskToken, taskToken]);
 
+    const extractTaskResults = useCallback((taskPayload) => {
+        if (Array.isArray(taskPayload)) return taskPayload;
+        if (Array.isArray(taskPayload?.results)) return taskPayload.results;
+        return [];
+    }, []);
+
     const loadData = useCallback(async () => {
         if (!selectedProjectKey || !hasValidTaskToken) return;
         setIsLoading(true);
@@ -306,12 +315,7 @@ export default function TaskCreation({
 
             const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
             const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
-            let nextTasks = [];
-            if (Array.isArray(taskData)) {
-                nextTasks = taskData;
-            } else if (Array.isArray(taskData?.results)) {
-                nextTasks = taskData.results;
-            }
+            const nextTasks = extractTaskResults(taskData);
 
             setSprints(nextSprints);
             setMilestones(nextMilestones);
@@ -336,7 +340,7 @@ export default function TaskCreation({
             setIsLoading(false);
             setHasCompletedInitialBootstrap(true);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders]);
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults]);
 
     useEffect(() => {
         loadData();
@@ -376,16 +380,63 @@ export default function TaskCreation({
     useEffect(() => {
         if (!isGenerating) {
             setCreationStageIndex(0);
-            return;
+            setLiveCreatedTaskCount(0);
         }
-        setCreationStageIndex(0);
-        const toMilestone = window.setTimeout(() => setCreationStageIndex(1), 1800);
-        const toTasks = window.setTimeout(() => setCreationStageIndex(2), 3600);
-        return () => {
-            window.clearTimeout(toMilestone);
-            window.clearTimeout(toTasks);
-        };
     }, [isGenerating]);
+
+    const stopGenerationPolling = useCallback(() => {
+        if (generationPollTimerRef.current) {
+            window.clearInterval(generationPollTimerRef.current);
+            generationPollTimerRef.current = null;
+        }
+    }, []);
+
+    const pollGenerationProgress = useCallback(async () => {
+        if (!selectedProjectKey || !hasValidTaskToken) return;
+
+        try {
+            const headers = buildHeaders();
+            const [sprintRes, milestoneRes, taskRes] = await Promise.all([
+                fetch(API_ENDPOINTS.AGENT_SPRINTS, { headers }),
+                fetch(API_ENDPOINTS.AGENT_MILESTONES, { headers }),
+                fetch(API_ENDPOINTS.AGENT_TASKS, { headers }),
+            ]);
+
+            const sprintData = sprintRes.ok ? await sprintRes.json() : { sprints: [] };
+            const milestoneData = milestoneRes.ok ? await milestoneRes.json() : { milestones: [] };
+            const taskData = taskRes.ok ? await taskRes.json() : { results: [] };
+
+            const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
+            const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
+            const nextTasks = extractTaskResults(taskData);
+
+            setSprints(nextSprints);
+            setMilestones(nextMilestones);
+            setTasks(nextTasks);
+
+            const createdSprintCount = Math.max(0, nextSprints.length - generationSnapshotRef.current.sprints);
+            const createdMilestoneCount = Math.max(0, nextMilestones.length - generationSnapshotRef.current.milestones);
+            const createdTaskCount = Math.max(0, nextTasks.length - generationSnapshotRef.current.tasks);
+
+            setLiveCreatedTaskCount(createdTaskCount);
+
+            if (createdSprintCount > 0 && createdMilestoneCount > 0) {
+                setCreationStageIndex(2);
+            } else if (createdSprintCount > 0) {
+                setCreationStageIndex(1);
+            } else {
+                setCreationStageIndex(0);
+            }
+        } catch {
+            // Ignore polling errors while the main generation request is still running.
+        }
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults]);
+
+    useEffect(() => {
+        return () => {
+            stopGenerationPolling();
+        };
+    }, [stopGenerationPolling]);
 
     const groupedTasks = useMemo(() => {
         const sprintById = new Map(sprints.map((s) => [String(s.id), s]));
@@ -436,6 +487,17 @@ export default function TaskCreation({
         setIsGenerating(true);
         setError('');
         setSuccess('');
+        setCreationStageIndex(0);
+        generationSnapshotRef.current = {
+            tasks: tasks.length,
+            sprints: sprints.length,
+            milestones: milestones.length,
+        };
+        setLiveCreatedTaskCount(0);
+        stopGenerationPolling();
+        generationPollTimerRef.current = window.setInterval(() => {
+            pollGenerationProgress();
+        }, 30000);
 
         try {
             const headers = {
@@ -493,14 +555,18 @@ export default function TaskCreation({
             } else {
                 setSuccess(`Created ${createdCount} task(s).`);
             }
+            setLiveCreatedTaskCount(createdCount);
+            setCreationStageIndex(2);
+            await pollGenerationProgress();
             await loadData();
             if (fetchRoadmapData) await fetchRoadmapData(selectedProjectKey);
         } catch (e) {
             setError(e?.message || 'Task creation failed');
         } finally {
+            stopGenerationPolling();
             setIsGenerating(false);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData, customRules]);
+    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData, customRules, tasks.length, sprints.length, milestones.length, pollGenerationProgress, stopGenerationPolling]);
 
     useEffect(() => {
         const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
@@ -725,6 +791,10 @@ export default function TaskCreation({
                         <p className="mt-2 text-sm text-slate-600">
                             Creating plan for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>. Please wait.
                         </p>
+                        <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 flex items-center justify-between">
+                            <span className="text-sm font-semibold text-indigo-900">Tasks created so far</span>
+                            <span className="text-2xl font-extrabold text-indigo-700 tabular-nums">{liveCreatedTaskCount}</span>
+                        </div>
                         <div className="mt-5 space-y-3">
                             {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
                                 const isDone = idx < creationStageIndex;
