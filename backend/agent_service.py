@@ -1192,7 +1192,10 @@ async def _generate_pr_body(
     task_summaries = []
     for t in completed[-20:]:
         title = t.get("title", "Untitled")
-        agent = t.get("assigned_agent", "unknown")
+        agent = t.get("assigned_agent_name")
+        if not agent:
+            agent_id = t.get("assigned_agent")
+            agent = normalize_agent_name(agent_id, None) if agent_id else "unknown"
         task_summaries.append(f"- **{title}** (by `{agent}`)")
 
     task_list = "\n".join(task_summaries) if task_summaries else "- No task summaries available"
@@ -3708,6 +3711,7 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
                 "task_type": t.get("task_type", "TASK"),
                 "created_at": t.get("created_at") or datetime.utcnow().isoformat(),
                 "assigned_agent": None,
+                "assigned_agent_name": None,
                 "started_at": None,
                 "linked_tasks": t.get("linked_tasks") or [],
                 "checklist": checklist_items,
@@ -4604,8 +4608,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
         while task is not None:
             tasks_completed += 1
+            started_by_name = normalize_agent_name(agent_id, agent.get("name"))
             task["status"] = "in_progress"
             task["assigned_agent"] = agent_id
+            task["assigned_agent_name"] = started_by_name
             task["started_at"] = datetime.utcnow().isoformat()
 
             # ── Register in Cross-Agent Shared Memory ────────────────
@@ -4631,6 +4637,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     aid for aid in live_mem.active_tasks
                     if aid != agent_id
                 ]
+                other_active_names = [
+                    normalize_agent_name(aid, None)
+                    for aid in other_active
+                ]
                 completed_count = len(live_mem.completed_history)
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
@@ -4639,7 +4649,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         f"Cross-agent memory: registered task start"
                         f" | {len(other_active)} peer(s) active"
                         f", {completed_count} task(s) in history"
-                        + (f" | peers: {', '.join(other_active)}" if other_active else "")
+                        + (f" | peers: {', '.join(other_active_names)}" if other_active_names else "")
                     )
                 })
             except Exception as mem_err:
@@ -4663,7 +4673,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"API: timer log clock_in {'ok' if clock_in_ok else 'failed'}"
             })
-            msg_ok = await _post_task_message(task, f"Started by {agent_id}.", task_token=task_token)
+            msg_ok = await _post_task_message(task, f"Started by {started_by_name}.", task_token=task_token)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
@@ -5309,7 +5319,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "type": "info",
                         "message": f"API: linked task clock_in {'ok' if lt_clock_in_ok else 'failed'}"
                     })
-                    msg_ok = await _post_task_message(linked_task, f"Started by {agent_id}.", task_token=task_token)
+                    linked_task["assigned_agent"] = agent_id
+                    linked_task["assigned_agent_name"] = started_by_name
+                    msg_ok = await _post_task_message(linked_task, f"Started by {started_by_name}.", task_token=task_token)
                     prog_ok = await _post_task_progress(linked_task, 10, "Started", task_token=task_token)
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
