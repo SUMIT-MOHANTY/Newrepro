@@ -23,8 +23,8 @@ const DEFAULT_ROADMAP = {
     steps: [
         'Project Initiation',
         'Requirement Screening',
-        'Agent Analysis',
         'Governance',
+        'Agent Analysis',
         'Prerequisite Classification',
         'Task Creation',
         'Resource Onboarding',
@@ -285,6 +285,7 @@ export default function AppLayout({ children }) {
         }
     }, [projects, selectedProjectKey, location.pathname, isNewProjectMode]);
 
+    const [storageNonce, forceUpdate] = React.useReducer(x => x + 1, 0);
     const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
     const hasServerRoadmap = !!roadmapDataResult;
     let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
@@ -303,12 +304,56 @@ export default function AppLayout({ children }) {
                 : projectFromList.status,
         };
     })();
+    const hasSelectedProjectGovernance = useMemo(() => {
+        const _ = storageNonce;
+
+        if (selectedProject?.governanceResultId) return true;
+
+        const candidateIds = new Set(
+            [
+                selectedProjectKey,
+                selectedProject?.key,
+                selectedProject?.projectToken,
+                selectedProject?.governanceResultId != null ? String(selectedProject.governanceResultId) : null,
+            ]
+                .filter(Boolean)
+                .map((value) => String(value))
+        );
+        const selectedName = String(selectedProject?.name || '').trim().toLowerCase();
+
+        const matchesStoredContext = (rawValue) => {
+            if (!rawValue) return false;
+
+            try {
+                const parsed = JSON.parse(rawValue);
+                const contextIds = [
+                    parsed?.project_token,
+                    parsed?.result_id != null ? String(parsed.result_id) : null,
+                ]
+                    .filter(Boolean)
+                    .map((value) => String(value));
+
+                if (contextIds.some((value) => candidateIds.has(value))) {
+                    return true;
+                }
+
+                const contextName = String(parsed?.project_name || '').trim().toLowerCase();
+                return Boolean(selectedName && contextName && selectedName === contextName);
+            } catch {
+                return false;
+            }
+        };
+
+        return matchesStoredContext(sessionStorage.getItem('governanceContext'))
+            || matchesStoredContext(localStorage.getItem('governanceContext'));
+    }, [selectedProjectKey, selectedProject, storageNonce]);
+
     if (selectedProject?.classification === 'ENTERPRISE') {
         roadmapData = {
             ...roadmapData,
-            current_step: 3,
-            failed_step: 3,
-            step_statuses: ['completed', 'completed', 'completed', 'failed', 'pending', 'pending', 'pending', 'pending', 'pending']
+            current_step: 2,
+            failed_step: 2,
+            step_statuses: ['completed', 'completed', 'failed', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending']
         };
     }
 
@@ -325,17 +370,15 @@ export default function AppLayout({ children }) {
                 : DEFAULT_ROADMAP.steps;
             const statuses = Array(steps.length).fill('pending');
             const screeningIndex = steps.indexOf('Requirement Screening');
-            const analysisIndex = steps.indexOf('Agent Analysis');
             const governanceIndex = steps.indexOf('Governance');
             const isGovernanceRoute = location.pathname.startsWith('/new-project/governance');
-            const hasAnalysis = Boolean(selectedProject?.latestDocument?.analysis_result || selectedProject?.documents?.length);
+            const hasUploadedRequirements = Boolean(selectedProject?.latestDocument || selectedProject?.documents?.length);
 
             if (!isGovernanceRoute) {
                 statuses[0] = 'active';
             } else {
                 statuses[0] = 'completed';
-                if (hasAnalysis && screeningIndex !== -1) statuses[screeningIndex] = 'completed';
-                if (hasAnalysis && analysisIndex !== -1) statuses[analysisIndex] = 'completed';
+                if (hasUploadedRequirements && screeningIndex !== -1) statuses[screeningIndex] = 'completed';
                 if (governanceIndex !== -1) statuses[governanceIndex] = 'active';
             }
 
@@ -393,8 +436,6 @@ export default function AppLayout({ children }) {
         return roadmapData;
     }, [roadmapData, currentView, hasServerRoadmap, location.pathname, selectedProject]);
 
-    const [storageNonce, forceUpdate] = React.useReducer(x => x + 1, 0);
-
     // Watch for storage changes to keep roadmap synced with the governance wizard on /new-project
     useEffect(() => {
         const handleStorage = () => forceUpdate();
@@ -429,7 +470,7 @@ export default function AppLayout({ children }) {
 
         if (path === '/new-project' || path.startsWith('/new-project/')) {
             if (path.startsWith('/new-project/governance')) {
-                return idx('Governance') ?? 3;
+                return idx('Governance') ?? 2;
             }
             return idx('Project Initiation') ?? 0;
         }
@@ -453,25 +494,26 @@ export default function AppLayout({ children }) {
             const showingResults = !!sessionStorage.getItem('dashboard_showing_results');
             // Upload form → Requirement Screening; Analysis results → Agent Analysis
             const reqIdx = idx('Requirement Screening') ?? 1;
-            const agentIdx = idx('Agent Analysis') ?? 2;
-            return showingResults ? agentIdx : reqIdx;
+            const governanceIdx = idx('Governance') ?? 2;
+            const agentIdx = idx('Agent Analysis') ?? 3;
+            if (showingResults) {
+                return hasSelectedProjectGovernance ? agentIdx : governanceIdx;
+            }
+            return hasSelectedProjectGovernance ? agentIdx : reqIdx;
         }
 
         return null;
-    }, [location.pathname, roadmapData?.current_step, roadmapData?.steps, storageNonce]);
+    }, [location.pathname, roadmapData?.current_step, roadmapData?.steps, storageNonce, hasSelectedProjectGovernance]);
 
     // When the focused step is already done, render it green+highlighted instead of yellow
     const forcedStepCompleted = useMemo(() => {
         const path = location.pathname;
         if (path === '/dashboard' || path.startsWith('/a/')) {
             const showingResults = !!sessionStorage.getItem('dashboard_showing_results');
-            if (showingResults) return true; // Agent Analysis completed
-            // On upload form: if project already has analysis, screening is done too
-            const hasExistingAnalysis = !!selectedProject?.latestDocument?.analysis_result;
-            return hasExistingAnalysis;
+            return showingResults && hasSelectedProjectGovernance;
         }
         return false;
-    }, [location.pathname, selectedProject]);
+    }, [location.pathname, hasSelectedProjectGovernance]);
 
     // Backward compatibility for components expecting the old fetch logic
     const fetchRoadmapData = useCallback(() => {

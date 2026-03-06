@@ -1690,6 +1690,32 @@ def save_document_history(
     db.refresh(db_doc)
     return db_doc
 
+@app.put("/history/{document_id}", response_model=schemas.Document)
+def update_document_history(
+    document_id: int,
+    document: schemas.DocumentCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update an existing document history entry for the current user."""
+    db_doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.owner_id == current_user.id,
+    ).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    payload = document.dict()
+    db_doc.filename = payload["filename"]
+    db_doc.content_preview = payload.get("content_preview")
+    db_doc.full_content = payload.get("full_content")
+    db_doc.analysis_result = payload.get("analysis_result")
+
+    db.add(db_doc)
+    db.commit()
+    db.refresh(db_doc)
+    return db_doc
+
 @app.post("/documents/upload-and-analyze")
 async def upload_and_analyze_document(
     file: UploadFile = File(...),
@@ -2250,8 +2276,8 @@ async def get_project_roadmap_step(
     Steps:
         0 - Project Initiation           (project created)
         1 - Requirement Screening        (awaiting BRD analysis)
-        2 - Agent Analysis               (BRD analysis completed)
-        3 - Governance                   (governance questionnaire submitted)
+        2 - Governance                   (governance questionnaire submitted)
+        3 - Agent Analysis               (BRD analysis completed)
         4 - Prerequisite Classification  (prerequisites / credentials identified)
         5 - Task Creation                (tasks auto-generated via external API)
         6 - Resource Onboarding          (agents configured for execution)
@@ -2265,8 +2291,8 @@ async def get_project_roadmap_step(
     STEP_LABELS = [
         "Project Initiation",
         "Requirement Screening",
-        "Agent Analysis",
         "Governance",
+        "Agent Analysis",
         "Prerequisite Classification",
         "Task Creation",
         "Resource Onboarding",
@@ -2287,8 +2313,8 @@ async def get_project_roadmap_step(
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Step 0 (Project Initiation) is always complete once governance exists.
-    # Governance is intentionally shown after analysis in the roadmap sequence.
-    current_step = 1  # default active step before analysis is completed
+    # Governance sits between Requirement Screening and Agent Analysis.
+    current_step = 3  # default active step after governance is Agent Analysis
     failed_step = None
     roadmap_project_token = _normalize_project_token(governance.project_token or str(governance.id))
 
@@ -2391,13 +2417,13 @@ async def get_project_roadmap_step(
         print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
 
     # Backend roadmap progression:
-    # Project Initiation -> Requirement Screening -> Agent Analysis -> Governance ->
+    # Project Initiation -> Requirement Screening -> Governance -> Agent Analysis ->
     # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
     # On Flight -> Complete
     PROJECT_INIT_IDX = 0
     REQUIREMENT_SCREENING_IDX = 1
-    AGENT_ANALYSIS_IDX = 2
-    GOVERNANCE_IDX = 3
+    GOVERNANCE_IDX = 2
+    AGENT_ANALYSIS_IDX = 3
     PREREQ_IDX = 4
     TASK_CREATION_IDX = 5
     RESOURCE_ONBOARDING_IDX = 6
@@ -2407,12 +2433,13 @@ async def get_project_roadmap_step(
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[PROJECT_INIT_IDX] = "completed"
 
+    step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
+    step_statuses[GOVERNANCE_IDX] = "completed"
+
     if not has_analysis:
-        step_statuses[REQUIREMENT_SCREENING_IDX] = "active"
+        step_statuses[AGENT_ANALYSIS_IDX] = "active"
     else:
-        step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
         step_statuses[AGENT_ANALYSIS_IDX] = "completed"
-        step_statuses[GOVERNANCE_IDX] = "completed"
         step_statuses[PREREQ_IDX] = "completed" if prerequisites_done else "active"
 
         if prerequisites_done:

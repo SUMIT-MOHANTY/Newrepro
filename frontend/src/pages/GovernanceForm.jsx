@@ -113,9 +113,7 @@ const GovernanceForm = ({
         };
     })();
     const hasExistingAnalysis = Boolean(
-        selectedProject?.status === 'analysis_complete' ||
-        selectedProject?.latestDocument?.analysis_result ||
-        selectedProject?.documents?.length
+        selectedProject?.status === 'analysis_complete'
     );
 
     const questions = questionsData?.questions || [];
@@ -348,7 +346,7 @@ const GovernanceForm = ({
                         if (tokenToUse) fetchRoadmapData(tokenToUse);
                     }
 
-                    // If all questions were skipped, jump straight to Requirement Screening (BRD upload)
+                    // If all questions were skipped, jump straight to Agent Analysis on the dashboard.
                     if (allSkipped && resultData.project_token && !hasExistingAnalysis) {
                         window.location.href = `/a/${resultData.project_token}`;
                     }
@@ -378,7 +376,7 @@ const GovernanceForm = ({
     }
 
     if (result) {
-        return <GovernanceResult result={result} onBack={() => setResult(null)} hasAnalysis={hasExistingAnalysis} />;
+        return <GovernanceResult result={result} onBack={() => setResult(null)} />;
     }
 
     /* ── build dimension list ── */
@@ -391,7 +389,7 @@ const GovernanceForm = ({
 
     // Cross-page flow:
     // /new-project -> Project Initiation only
-    // /new-project/governance -> Governance questionnaire after screening + analysis
+    // /new-project/governance -> Governance questionnaire after Requirement Screening
     const TOTAL_STEPS = dimensions.length + 2;
     const governanceStepLabels = [...dimensions.map((d) => d.split(' ')[0]), 'Review'];
     const sidebarStepLabels = isGovernanceQuestionsPage ? governanceStepLabels : ['Project Initiation'];
@@ -828,7 +826,7 @@ const ScoreRing = ({ score, max = 10, size = 120, stroke = 10 }) => {
     );
 };
 
-const GovernanceResult = ({ result, onBack, hasAnalysis = false }) => {
+const GovernanceResult = ({ result, onBack }) => {
     if (!result) {
         return <div className="text-red-700 p-6">Error: No result data available.</div>;
     }
@@ -1099,11 +1097,11 @@ const GovernanceResult = ({ result, onBack, hasAnalysis = false }) => {
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
-                                window.location.href = hasAnalysis ? '/prerequisites' : `/a/${result.project_token}`;
+                                window.location.href = `/a/${result.project_token}`;
                             }}
                             className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
                         >
-                            <ArrowRight className="w-4 h-4" /> {hasAnalysis ? 'Proceed to Prerequisites' : 'Proceed to Requirement Screening'}
+                            <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
                         </button>
                     )}
                     <button

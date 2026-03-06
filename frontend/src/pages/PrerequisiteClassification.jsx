@@ -1346,7 +1346,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                         ) : (
                                                             <Circle className="w-3.5 h-3.5 text-gray-400" />
                                                         )}
-                                                        Sensitive (exclude from AI)
+                                                        Sensitive
                                                     </button>
                                                 </div>
                                             </div>

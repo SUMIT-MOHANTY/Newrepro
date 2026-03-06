@@ -26,6 +26,7 @@ export const API_ENDPOINTS = {
     AI_CONFIG: `${API_BASE_URL}/ai/config`,
     AI_ANALYZE: `${API_BASE_URL}/ai/analyze`,
     HISTORY: `${API_BASE_URL}/history`,
+    HISTORY_ITEM: (id) => `${API_BASE_URL}/history/${id}`,
 
     // Governance
     GOVERNANCE_QUESTIONS: `${API_BASE_URL}/governance/questions`,
