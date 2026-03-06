@@ -112,6 +112,79 @@ BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS = 20
 def _is_system_agent_id(agent_id: Optional[str]) -> bool:
     return agent_id in {GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID}
 
+
+def _extract_dev_agent_sequence(agent_id: Optional[str]) -> Optional[int]:
+    source = str(agent_id or "").strip().lower()
+    if not source or _is_system_agent_id(source):
+        return None
+    match = _re.search(r"(\d+)$", source)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def get_default_agent_name(agent_id: Optional[str]) -> str:
+    if agent_id == GIT_MANAGER_AGENT_ID:
+        return "Git Manager"
+    if agent_id == MASTER_AGENT_ID:
+        return "Master Agent"
+    sequence = _extract_dev_agent_sequence(agent_id)
+    if sequence is None:
+        return "Agent"
+    return f"Agent {sequence}"
+
+
+def normalize_agent_name(agent_id: Optional[str], name: Optional[str]) -> str:
+    default_name = get_default_agent_name(agent_id)
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        return default_name
+    if _is_system_agent_id(agent_id):
+        return default_name
+
+    normalized = cleaned.lower()
+    raw_id = str(agent_id or "").strip().lower()
+    if normalized in {
+        "requirements validator",
+        "risk assessment",
+        "resource estimation",
+    }:
+        return default_name
+    if normalized == raw_id or normalized == raw_id.replace("_", " "):
+        return default_name
+    if _re.fullmatch(r"(shared|dedicated|dev)[ _-]*agent(?:[ _-]*\d+)?", normalized):
+        return default_name
+    if _re.fullmatch(r"agent(?:[ _-]*\d+)?", normalized):
+        return default_name
+    return cleaned
+
+
+def _next_dev_agent_sequence(project_agents: Dict[str, Dict[str, Any]]) -> int:
+    used_numbers = {
+        sequence
+        for sequence in (_extract_dev_agent_sequence(agent_id) for agent_id in project_agents)
+        if sequence is not None
+    }
+    next_number = 1
+    while next_number in used_numbers:
+        next_number += 1
+    return next_number
+
+
+def build_external_agent_username(agent_id: Optional[str], fallback_name: Optional[str] = None) -> str:
+    source_id = str(agent_id or "").strip().lower()
+    match = _re.search(r"(\d+)$", source_id)
+    if match:
+        return f"agent{int(match.group(1))}"
+
+    fallback = normalize_agent_name(agent_id, fallback_name)
+    fallback_match = _re.search(r"(\d+)$", fallback.lower())
+    if fallback_match:
+        return f"agent{int(fallback_match.group(1))}"
+
+    normalized = _re.sub(r"[^a-z0-9]", "", fallback.strip().lower())
+    return normalized or "agent"
+
 _project_states: Dict[str, Dict[str, Any]] = {}
 
 
@@ -196,8 +269,10 @@ def clear_all_runtime_state() -> None:
 
 def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
     """Create a fresh agent state dict."""
-    atype = _AGENT_TYPES[idx % len(_AGENT_TYPES)]
-    aname = _AGENT_NAMES[idx % len(_AGENT_NAMES)]
+    sequence = _extract_dev_agent_sequence(agent_id)
+    type_index = (sequence - 1) if sequence is not None else idx
+    atype = _AGENT_TYPES[type_index % len(_AGENT_TYPES)]
+    aname = get_default_agent_name(agent_id)
     agent = {
         "id": agent_id,
         "name": aname,
@@ -261,8 +336,7 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
         name = getattr(rec, "name", None) or (rec.get("name") if isinstance(rec, dict) else None)
         atype = getattr(rec, "type", None) or (rec.get("type") if isinstance(rec, dict) else None)
         agent = _make_agent(agent_id, idx)
-        if name:
-            agent["name"] = name
+        agent["name"] = normalize_agent_name(agent_id, name)
         if atype:
             agent["type"] = atype
         agent_states[agent_id] = agent
@@ -280,8 +354,7 @@ def ensure_project_initialized(project_token: Optional[str], records: List[Any])
         name = getattr(rec, "name", None) or (rec.get("name") if isinstance(rec, dict) else None)
         atype = getattr(rec, "type", None) or (rec.get("type") if isinstance(rec, dict) else None)
         agent = _make_agent(agent_id, idx)
-        if name:
-            agent["name"] = name
+        agent["name"] = normalize_agent_name(agent_id, name)
         if atype:
             agent["type"] = atype
         agent_states[agent_id] = agent
@@ -1123,7 +1196,10 @@ async def _generate_pr_body(
     task_summaries = []
     for t in completed[-20:]:
         title = t.get("title", "Untitled")
-        agent = t.get("assigned_agent", "unknown")
+        agent = t.get("assigned_agent_name")
+        if not agent:
+            agent_id = t.get("assigned_agent")
+            agent = normalize_agent_name(agent_id, None) if agent_id else "unknown"
         task_summaries.append(f"- **{title}** (by `{agent}`)")
 
     task_list = "\n".join(task_summaries) if task_summaries else "- No task summaries available"
@@ -4063,6 +4139,7 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
                 "task_type": t.get("task_type", "TASK"),
                 "created_at": t.get("created_at") or datetime.utcnow().isoformat(),
                 "assigned_agent": None,
+                "assigned_agent_name": None,
                 "started_at": None,
                 "linked_tasks": t.get("linked_tasks") or [],
                 "checklist": checklist_items,
@@ -5591,8 +5668,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
         while task is not None:
             tasks_completed += 1
+            started_by_name = normalize_agent_name(agent_id, agent.get("name"))
             task["status"] = "in_progress"
             task["assigned_agent"] = agent_id
+            task["assigned_agent_name"] = started_by_name
             task["started_at"] = datetime.utcnow().isoformat()
             coordination_branch = (force_branch if force_branch else _branch_name_for_task(task)) if use_git else None
 
@@ -5622,6 +5701,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     aid for aid in live_mem.active_tasks
                     if aid != agent_id
                 ]
+                other_active_names = [
+                    normalize_agent_name(aid, None)
+                    for aid in other_active
+                ]
                 completed_count = len(live_mem.completed_history)
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
@@ -5630,8 +5713,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         f"Cross-agent memory: registered task start"
                         f" | {len(other_active)} peer(s) active"
                         f", {completed_count} task(s) in history"
-                        + (f" | peers: {', '.join(other_active)}" if other_active else "")
-                        + (f" | planned files: {', '.join(predicted_files[:4])}" if predicted_files else "")
+                        + (f" | peers: {', '.join(other_active_names)}" if other_active_names else "")
                     )
                 })
             except Exception as mem_err:
@@ -5640,34 +5722,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "type": "info",
                     "message": f"Cross-agent memory: skipped ({str(mem_err)[:80]})"
                 })
-
-            try:
-                planned_files = _predict_task_file_intents(task)
-                note_result = await _publish_agent_status_note(
-                    agent_id=agent_id,
-                    task=task,
-                    status="in_progress",
-                    project_token=project_token,
-                    task_token=task_token,
-                    branch_name=coordination_branch,
-                    planned_files=planned_files,
-                    summary=_to_single_line(task.get("description") or ""),
-                )
-                if note_result.get("success"):
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": "Coordination note updated: live status published"
-                    })
-            except Exception as note_err:
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"Coordination note skipped: {str(note_err)[:80]}"
-                })
             
-            # Map "agent_01" -> "agent1"
-            username = agent_id.replace("agent_0", "agent")
+            username = build_external_agent_username(agent_id, agent.get("name"))
             opt_in_ok = await _opt_in_task(task, username, task_token=task_token)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
@@ -5681,7 +5737,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"API: timer log clock_in {'ok' if clock_in_ok else 'failed'}"
             })
-            msg_ok = await _post_task_message(task, f"Started by {agent_id}.", task_token=task_token)
+            msg_ok = await _post_task_message(task, f"Started by {started_by_name}.", task_token=task_token)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
@@ -6329,7 +6385,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "type": "info",
                         "message": f"API: linked task clock_in {'ok' if lt_clock_in_ok else 'failed'}"
                     })
-                    msg_ok = await _post_task_message(linked_task, f"Started by {agent_id}.", task_token=task_token)
+                    linked_task["assigned_agent"] = agent_id
+                    linked_task["assigned_agent_name"] = started_by_name
+                    msg_ok = await _post_task_message(linked_task, f"Started by {started_by_name}.", task_token=task_token)
                     prog_ok = await _post_task_progress(linked_task, 10, "Started", task_token=task_token)
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -7863,24 +7921,25 @@ def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None,
     """Add a new agent dynamically."""
     project_agents = _get_agent_states(project_token)
     normalized_kind = str(kind or "").strip().lower()
+    sequence = _next_dev_agent_sequence(project_agents)
 
     if normalized_kind in {"shared", "dedicated"}:
         prefix = f"{normalized_kind}_agent_"
-        idx = 1
-        while f"{prefix}{idx:02d}" in project_agents:
-            idx += 1
-        agent_id = f"{prefix}{idx:02d}"
-        seed_idx = len(project_agents)
-    else:
-        seed_idx = len(project_agents)
-        agent_id = f"agent_{seed_idx + 1:02d}"
+        agent_id = f"{prefix}{sequence:02d}"
         while agent_id in project_agents:
-            seed_idx += 1
-            agent_id = f"agent_{seed_idx + 1:02d}"
+            sequence += 1
+            agent_id = f"{prefix}{sequence:02d}"
+        seed_idx = sequence - 1
+    else:
+        seed_idx = sequence - 1
+        agent_id = f"agent_{sequence:02d}"
+        while agent_id in project_agents:
+            sequence += 1
+            seed_idx = sequence - 1
+            agent_id = f"agent_{sequence:02d}"
 
     agent = _make_agent(agent_id, seed_idx)
-    if name:
-        agent["name"] = name
+    agent["name"] = normalize_agent_name(agent_id, name)
     if git_repo_url:
         agent["git_repo_url"] = git_repo_url.strip()
     if git_token:
@@ -7894,7 +7953,7 @@ def update_agent_name(agent_id: str, name: str, project_token: Optional[str] = N
     agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
-    agent["name"] = name.strip()
+    agent["name"] = normalize_agent_name(agent_id, name)
     return agent
 
 

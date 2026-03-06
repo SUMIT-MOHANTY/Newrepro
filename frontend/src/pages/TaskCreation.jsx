@@ -150,6 +150,8 @@ export default function TaskCreation({
     const [taskToken, setTaskToken] = useState(null);
     const [taskTokenProjectKey, setTaskTokenProjectKey] = useState(null);
     const hasValidTaskToken = Boolean(taskToken) && taskTokenProjectKey === selectedProjectKey;
+    const [isFetchingTaskToken, setIsFetchingTaskToken] = useState(false);
+    const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(false);
 
     const [projectDeadline, setProjectDeadline] = useState('');
     const [sprints, setSprints] = useState([]);
@@ -179,6 +181,20 @@ export default function TaskCreation({
     const processMode = useMemo(() => {
         const map = readProcessModeMap();
         return selectedProjectKey ? map[selectedProjectKey] || 'ai_first' : 'ai_first';
+    }, [selectedProjectKey]);
+
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setHasCompletedInitialBootstrap(true);
+            return;
+        }
+        setHasCompletedInitialBootstrap(false);
+        setProjectDeadline('');
+        setSprints([]);
+        setMilestones([]);
+        setTasks([]);
+        setError('');
+        setSuccess('');
     }, [selectedProjectKey]);
 
     useEffect(() => {
@@ -223,19 +239,31 @@ export default function TaskCreation({
             if (!shouldRefresh) return;
 
             try {
+                if (isMounted) setIsFetchingTaskToken(true);
                 const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
                 });
-                if (!res.ok) return;
+                if (!res.ok) {
+                    if (isMounted && !cached?.token) {
+                        setError('Failed to load project info token for the selected project.');
+                        setHasCompletedInitialBootstrap(true);
+                    }
+                    return;
+                }
                 const data = await res.json();
                 if (!isMounted) return;
                 setTaskToken(data.access);
                 setTaskTokenProjectKey(selectedProjectKey);
                 cacheTaskToken(selectedProjectKey, data.access);
             } catch {
-                // Ignore token refresh failures; user can retry.
+                if (isMounted && !cached?.token) {
+                    setError('Failed to load project info token for the selected project.');
+                    setHasCompletedInitialBootstrap(true);
+                }
+            } finally {
+                if (isMounted) setIsFetchingTaskToken(false);
             }
         };
 
@@ -244,6 +272,13 @@ export default function TaskCreation({
             isMounted = false;
         };
     }, [selectedProjectKey, selectedProject]);
+
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        if (!projectsLoading && !isRefreshingCredentials && !hasProjectCredentials) {
+            setHasCompletedInitialBootstrap(true);
+        }
+    }, [selectedProjectKey, projectsLoading, isRefreshingCredentials, hasProjectCredentials]);
 
     const buildHeaders = useCallback(() => {
         const headers = { Authorization: `Bearer ${token}` };
@@ -299,6 +334,7 @@ export default function TaskCreation({
             return null;
         } finally {
             setIsLoading(false);
+            setHasCompletedInitialBootstrap(true);
         }
     }, [selectedProjectKey, hasValidTaskToken, buildHeaders]);
 
@@ -509,6 +545,34 @@ export default function TaskCreation({
             navigate('/resource-onboarding', { state: { processMode } });
         }
     };
+
+    const showInitialProjectLoader = Boolean(selectedProjectKey) && !hasCompletedInitialBootstrap && (
+        projectsLoading ||
+        isRefreshingCredentials ||
+        isFetchingTaskToken ||
+        hasProjectCredentials
+    );
+
+    if (showInitialProjectLoader) {
+        return (
+            <div className="h-full min-h-[70vh] bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+                <div className="fixed inset-0 z-[220] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 text-center">
+                        <div className="flex justify-center">
+                            <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                        </div>
+                        <h3 className="mt-4 text-lg font-extrabold text-slate-900">Loading Task Creation</h3>
+                        <p className="mt-2 text-sm text-slate-600">
+                            Fetching project info for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                            The page will open as soon as project info is ready.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">

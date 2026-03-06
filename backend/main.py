@@ -3954,14 +3954,7 @@ class UpdateAgentRequest(BaseModel):
 
 def _build_external_agent_username(agent_id: Optional[str], fallback_name: Optional[str] = None) -> str:
     """Map local agent id to upstream username format, e.g. agent_04 -> agent4."""
-    source_id = str(agent_id or "").strip().lower()
-    match = re.fullmatch(r"agent_(\d+)", source_id)
-    if match:
-        return f"agent{int(match.group(1))}"
-
-    fallback = str(fallback_name or source_id or "agent").strip().lower()
-    normalized = re.sub(r"[^a-z0-9_]", "", fallback)
-    return normalized or "agent"
+    return agent_service.build_external_agent_username(agent_id, fallback_name)
 
 
 @app.post("/agents/add")
