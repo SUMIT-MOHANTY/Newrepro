@@ -1,6 +1,8 @@
-import React from 'react';
-import { X, Plus, History, Activity, Settings, User, LogOut, Trash2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
+import { API_ENDPOINTS } from '../config';
 
 export default function Sidebar({
     isSidebarOpen,
@@ -18,6 +20,51 @@ export default function Sidebar({
     handleDeleteProject,
     deletingProjectKey,
 }) {
+    const navigate = useNavigate();
+    // Agents state
+    const [agents, setAgents] = useState([]);
+    const [agentsLoading, setAgentsLoading] = useState(false);
+    const [agentsError, setAgentsError] = useState(null);
+    const [agentsExpanded, setAgentsExpanded] = useState(false);
+
+    useEffect(() => {
+        if (!agentsExpanded) return;
+        const fetchAgents = async () => {
+            setAgentsLoading(true);
+            const token = localStorage.getItem('token');
+            try {
+                const res = await fetch(API_ENDPOINTS.AGENTS, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!res.ok) throw new Error('Failed to fetch agents');
+                const data = await res.json();
+                setAgents(data?.agents || []);
+                setAgentsError(null);
+            } catch (e) {
+                setAgentsError(e.message);
+            } finally {
+                setAgentsLoading(false);
+            }
+        };
+        fetchAgents();
+    }, [agentsExpanded]);
+
+    const handleDeleteAgent = async (agentId) => {
+        const token = localStorage.getItem('token');
+        try {
+            const res = await fetch(API_ENDPOINTS.AGENT_REMOVE(agentId), {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!res.ok) throw new Error('Delete failed');
+            // Refresh list locally
+            setAgents((prev) => prev.filter((a) => a.id !== agentId));
+        } catch (e) {
+            console.error(e);
+            setAgentsError(e.message);
+        }
+    };
+
     return (
         <>
             {isSidebarOpen && (
@@ -32,8 +79,7 @@ export default function Sidebar({
             <div className={`hidden md:block transition-[width] duration-300 ease-in-out flex-shrink-0 ${isSidebarOpen ? 'w-72' : 'w-0'}`} />
 
             <div
-                className={`fixed inset-y-0 left-0 z-40 w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
-                    }`}
+                className={`fixed inset-y-0 left-0 z-40 w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
             >
                 <div className="h-16 flex items-center px-2 border-b border-gray-800 bg-app-text-main shrink-0">
                     <div className="flex items-center justify-between w-full">
@@ -71,64 +117,66 @@ export default function Sidebar({
                                 projects.map((project) => {
                                     const canDelete = Boolean(project.projectToken || project.governanceResultId);
                                     return (
-                                    <div key={project.key} className="flex items-center gap-1">
-                                        <button
-                                            onClick={() => handleSelectProject(project)}
-                                            className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
-                                                ? 'bg-blue-900/40 text-blue-100 border-blue-800'
-                                                : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'
-                                                }`}
-                                            title={project.name}
-                                        >
-                                            <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation') ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
-                                            <div className="min-w-0">
-                                                <p className="truncate">{project.name}</p>
-                                                <p className="text-[11px] text-app-text-muted truncate">
-                                                    {project.status === 'analysis_complete'
-                                                        ? `Locked - ${getProjectSidebarSubtitle(project)}`
-                                                        : getProjectSidebarSubtitle(project)}
-                                                </p>
-                                            </div>
-                                        </button>
-                                        {typeof handleDeleteProject === 'function' && canDelete && (
+                                        <div key={project.key} className="flex items-center gap-1">
                                             <button
-                                                type="button"
-                                                onClick={() => handleDeleteProject(project)}
-                                                disabled={deletingProjectKey === project.key}
-                                                className={`p-2 rounded-md border transition-colors ${
-                                                    deletingProjectKey === project.key
-                                                        ? 'text-app-text-muted border-gray-700 cursor-not-allowed'
-                                                        : 'text-red-400 border-transparent hover:text-red-300 hover:bg-red-500/10'
-                                                }`}
-                                                title={deletingProjectKey === project.key ? 'Deleting project...' : `Delete ${project.name || 'project'}`}
-                                                aria-label={`Delete ${project.name || 'project'}`}
+                                                onClick={() => handleSelectProject(project)}
+                                                className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
+                                                    ? 'bg-blue-900/40 text-blue-100 border-blue-800'
+                                                    : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'}
+                                                `}
+                                                title={project.name}
                                             >
-                                                <Trash2 className="w-4 h-4" />
+                                                <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation') ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
+                                                <div className="min-w-0">
+                                                    <p className="truncate">{project.name}</p>
+                                                    <p className="text-[11px] text-app-text-muted truncate">
+                                                        {project.status === 'analysis_complete'
+                                                            ? `Locked - ${getProjectSidebarSubtitle(project)}`
+                                                            : getProjectSidebarSubtitle(project)}
+                                                    </p>
+                                                </div>
                                             </button>
-                                        )}
-                                    </div>
+                                            {typeof handleDeleteProject === 'function' && canDelete && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDeleteProject(project)}
+                                                    disabled={deletingProjectKey === project.key}
+                                                    className={`p-2 rounded-md border transition-colors ${deletingProjectKey === project.key ? 'text-app-text-muted border-gray-700 cursor-not-allowed' : 'text-red-400 border-transparent hover:text-red-300 hover:bg-red-500/10'}`}
+                                                    title={deletingProjectKey === project.key ? 'Deleting project...' : `Delete ${project.name || 'project'}`}
+                                                    aria-label={`Delete ${project.name || 'project'}`}
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            )}
+                                        </div>
                                     );
                                 })
                             )}
                         </div>
                     </div>
+
+                    {/* Agents Section – navigates to full page */}
+                    <div className="mb-4">
+                        <button
+                            onClick={() => navigate('/agents')}
+                            className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 bg-blue-900/40 text-blue-100 border border-blue-800"
+                        >
+                            <Users className="w-4 h-4 mr-3" />
+                            Agents
+                        </button>
+                    </div>
                 </div>
 
                 <div className="p-4 border-t border-gray-800 bg-app-text-main shrink-0">
                     <button
-                        onClick={() => {
-                            setCurrentView('statusDashboard');
-                        }}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'
-                            }`}
+                        onClick={() => setCurrentView('statusDashboard')}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
                     >
                         <Activity className="w-4 h-4 mr-3" />
                         Status Dashboard
                     </button>
                     <button
-                        onClick={() => {
-                            setShowSettings(true);
-                        }}
+                        onClick={() => setShowSettings(true)}
                         className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2"
                     >
                         <Settings className="w-4 h-4 mr-3" />

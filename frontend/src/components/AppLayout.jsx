@@ -5,6 +5,7 @@ import { clearAuthData } from '../utils/auth';
 import { Menu, Settings } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
+import AgentsPage from './AgentsPage';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
 import ProjectDropdown from './ProjectDropdown';

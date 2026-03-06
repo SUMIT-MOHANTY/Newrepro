@@ -11,6 +11,7 @@ import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
 import AppPreview from './pages/AppPreview';
 import AppLayout from './components/AppLayout';
+import AgentsPage from './components/AgentsPage';
 
 function App() {
   return (
@@ -32,6 +33,11 @@ function App() {
         <Route path="/status-dashboard" element={
           <AppLayout>
             {(layoutProps) => <Dashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/agents" element={
+          <AppLayout>
+            {(layoutProps) => <AgentsPage {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/resource-onboarding" element={
