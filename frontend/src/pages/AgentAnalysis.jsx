@@ -46,9 +46,9 @@ export default function AgentAnalysis({
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
-    const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
+  const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
 
-    useEffect(() => {
+  useEffect(() => {
         if (!selectedProjectKey || !selectedProject || projectsLoading) {
             if (!projectsLoading) {
                 setLoading(false);

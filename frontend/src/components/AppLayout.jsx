@@ -301,9 +301,31 @@ export default function AppLayout({ children }) {
     }, [location.pathname, selectedProjectKey, refetchRoadmapData]);
     const lastNavigatedProjectRef = React.useRef(null);
     
-    // Navigate to the appropriate page based on roadmap step when project is selected
-    useEffect(() => {
-        if (!selectedProjectKey || !roadmapDataResult || isNewProjectMode) return;
+  // Navigate to the appropriate page based on roadmap step when project is selected
+  useEffect(() => {
+    if (!selectedProjectKey || isNewProjectMode) return;
+
+    // FIRST: Check if governance was all skipped (score 5) - if so, block ALL navigation
+    // This check now relies on roadmapDataResult.classification from the backend
+    const isAllSkippedCase = roadmapDataResult &&
+      roadmapDataResult.weighted_score === 5.0 &&
+      roadmapDataResult.classification === 'ENTERPRISE';
+
+    // If all skipped, block ALL routes except governance-related pages
+    if (isAllSkippedCase) {
+      const allowedRoutes = ['/new-project/governance', '/new-project', '/dashboard'];
+      const isAllowedRoute = allowedRoutes.some(route => location.pathname.startsWith(route));
+
+      if (!isAllowedRoute) {
+        // Redirect to governance page if trying to access any other route
+        navigate('/new-project/governance', { replace: true });
+        lastNavigatedProjectRef.current = selectedProjectKey; // Prevent re-navigation loop
+      }
+      return; // Stop here - don't process roadmap navigation
+    }
+
+    // Continue with normal roadmap navigation only if NOT all skipped
+    if (!roadmapDataResult) return;
         
         // Skip if we already navigated for this project
         if (lastNavigatedProjectRef.current === selectedProjectKey) return;
@@ -761,7 +783,7 @@ export default function AppLayout({ children }) {
                                 </h2>
                             </div>
 
-                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && (
+                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                     {currentView === 'statusDashboard' && (
                                         <>

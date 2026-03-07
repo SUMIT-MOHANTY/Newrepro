@@ -82,8 +82,41 @@ function extractEntityId(item, key) {
 
 function getErrorMessage(errorPayload, fallback) {
     if (!errorPayload) return fallback;
-    if (typeof errorPayload.detail === 'string') return errorPayload.detail;
-    if (typeof errorPayload.error === 'string') return errorPayload.error;
+    
+    // Extract error message from various possible formats
+    let errorMessage = '';
+    if (typeof errorPayload.detail === 'string') {
+        errorMessage = errorPayload.detail;
+    } else if (typeof errorPayload.error === 'string') {
+        errorMessage = errorPayload.error;
+    } else if (typeof errorPayload.message === 'string') {
+        errorMessage = errorPayload.message;
+    } else {
+        return fallback;
+    }
+    
+    // Convert technical error messages to user-friendly ones
+    if (errorMessage.toLowerCase().includes('already exists')) {
+        // Extract entity type and name if possible
+        const sprintMatch = errorMessage.match(/sprint.*?"([^"]+)"|sprint.*?name\s+["']([^"']+)["']/i);
+        const milestoneMatch = errorMessage.match(/milestone.*?"([^"]+)"|milestone.*?name\s+["']([^"']+)["']/i);
+        
+        if (sprintMatch) {
+            const sprintName = sprintMatch[1] || sprintMatch[2];
+            return sprintName 
+                ? `A sprint named "${sprintName}" already exists in this project. The system will use the existing sprint.`
+                : 'A sprint with this name already exists in this project. The system will use the existing sprint.';
+        } else if (milestoneMatch) {
+            const milestoneName = milestoneMatch[1] || milestoneMatch[2];
+            return milestoneName
+                ? `A milestone named "${milestoneName}" already exists in this project. The system will use the existing milestone.`
+                : 'A milestone with this name already exists in this project. The system will use the existing milestone.';
+        } else {
+            return 'This item already exists in the project. The system will continue with the existing item.';
+        }
+    }
+    
+    return errorMessage || fallback;
     return fallback;
 }
 
@@ -551,7 +584,14 @@ export default function TaskCreation({
             });
             const generateJson = await generateRes.json().catch(() => ({}));
             if (!generateRes.ok) {
-                throw new Error(getErrorMessage(generateJson, 'Failed to auto-generate tasks'));
+                const errorMsg = getErrorMessage(generateJson, 'Failed to auto-generate tasks');
+                // If it's an "already exists" error, treat it as a warning, not a failure
+                if (errorMsg.toLowerCase().includes('already exists') || errorMsg.toLowerCase().includes('will use the existing')) {
+                    // Continue processing - this is not a critical error
+                    console.warn('Sprint/milestone already exists, continuing with existing items:', errorMsg);
+                } else {
+                    throw new Error(errorMsg);
+                }
             }
 
             writeGeneratedTaskPlan(selectedProjectKey, generateJson);
@@ -806,7 +846,7 @@ export default function TaskCreation({
                 </div>
             </div>
             {isGenerating && (
-                <div className="fixed top-[120px] md:top-[180px] left-0 md:left-72 right-0 bottom-0 z-[200] flex items-start justify-center pt-8 px-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none' }}>
+                <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none', paddingTop: '15%' }}>
                     <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex items-center gap-3">
                             <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />

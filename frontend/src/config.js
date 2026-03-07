@@ -45,7 +45,15 @@ export const API_ENDPOINTS = {
     GITHUB_DISCONNECT: `${API_BASE_URL}/github/disconnect`,
     GITHUB_REPOS: `${API_BASE_URL}/github/repos`,
     GITHUB_REPO_CONTEXT: `${API_BASE_URL}/github/repo-context`,
+    AZURE_DEVOPS_AUTH_URL: `${API_BASE_URL}/azure-devops/auth-url`,
+    AZURE_DEVOPS_CALLBACK: `${API_BASE_URL}/azure-devops/callback`,
+    AZURE_DEVOPS_STATUS: `${API_BASE_URL}/azure-devops/status`,
+    AZURE_DEVOPS_DISCONNECT: `${API_BASE_URL}/azure-devops/disconnect`,
+    AZURE_DEVOPS_REPOS: `${API_BASE_URL}/azure-devops/repos`,
     AZURE_DEVOPS_REPO_CONTEXT: `${API_BASE_URL}/azure-devops/repo-context`,
+    AZURE_DEVOPS_SAVE_CREDENTIALS: `${API_BASE_URL}/azure-devops/save-credentials`,
+    AZURE_DEVOPS_GET_CREDENTIALS: `${API_BASE_URL}/azure-devops/credentials`,
+    AZURE_DEVOPS_LIST_PROJECT_REPOS: `${API_BASE_URL}/azure-devops/list-project-repos`,
 
     // AI Agents (Backend Docker Execution)
     AGENTS: `${API_BASE_URL}/agents`,

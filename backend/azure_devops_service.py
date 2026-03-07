@@ -63,27 +63,63 @@ def parse_azure_repo_url(repo_url: str) -> Dict[str, Optional[str]]:
     organization = ""
     project = ""
     repo = ""
+    is_project_url = False
 
     if host.endswith("dev.azure.com"):
-        if len(parts) < 4 or parts[2].lower() != "_git":
+        if len(parts) >= 2 and (len(parts) < 4 or parts[2].lower() != "_git"):
+            # This is a project URL (org/project) without /_git/{repo}
+            if len(parts) == 2:
+                organization = parts[0]
+                project = parts[1]
+                is_project_url = True
+            else:
+                raise ValueError(
+                    "Invalid Azure DevOps URL. Use format: https://dev.azure.com/{org}/{project}/_git/{repo} or https://dev.azure.com/{org}/{project}"
+                )
+        elif len(parts) >= 4 and parts[2].lower() == "_git":
+            # This is a repository URL
+            organization = parts[0]
+            project = parts[1]
+            repo = parts[3]
+        else:
             raise ValueError(
-                "Invalid Azure DevOps URL. Use format: https://dev.azure.com/{org}/{project}/_git/{repo}"
+                "Invalid Azure DevOps URL. Use format: https://dev.azure.com/{org}/{project}/_git/{repo} or https://dev.azure.com/{org}/{project}"
             )
-        organization = parts[0]
-        project = parts[1]
-        repo = parts[3]
     elif host.endswith(".visualstudio.com"):
         organization = host.split(".visualstudio.com", 1)[0]
-        if len(parts) < 3 or parts[1].lower() != "_git":
+        if len(parts) >= 1 and (len(parts) < 3 or parts[1].lower() != "_git"):
+            # This is a project URL
+            if len(parts) == 1:
+                project = parts[0]
+                is_project_url = True
+            else:
+                raise ValueError(
+                    "Invalid Azure DevOps URL. Use format: https://{org}.visualstudio.com/{project}/_git/{repo} or https://{org}.visualstudio.com/{project}"
+                )
+        elif len(parts) >= 3 and parts[1].lower() == "_git":
+            # This is a repository URL
+            project = parts[0]
+            repo = parts[2]
+        else:
             raise ValueError(
-                "Invalid Azure DevOps URL. Use format: https://{org}.visualstudio.com/{project}/_git/{repo}"
+                "Invalid Azure DevOps URL. Use format: https://{org}.visualstudio.com/{project}/_git/{repo} or https://{org}.visualstudio.com/{project}"
             )
-        project = parts[0]
-        repo = parts[2]
     else:
         raise ValueError(
             "Invalid Azure DevOps URL host. Use dev.azure.com or *.visualstudio.com."
         )
+
+    if is_project_url:
+        if not organization or not project:
+            raise ValueError("Unable to parse organization/project from Azure DevOps project URL.")
+        return {
+            "organization": organization,
+            "project": project,
+            "repo": None,
+            "branch": None,
+            "url": f"https://dev.azure.com/{organization}/{project}",
+            "is_project_url": True,
+        }
 
     repo = repo.replace(".git", "").strip()
     if not organization or not project or not repo:
@@ -97,7 +133,71 @@ def parse_azure_repo_url(repo_url: str) -> Dict[str, Optional[str]]:
         "repo": repo,
         "branch": inferred_branch,
         "url": f"https://dev.azure.com/{organization}/{project}/_git/{repo}",
+        "is_project_url": False,
     }
+
+
+async def list_project_repositories(
+    organization: str,
+    project: str,
+    pat: Optional[str] = None,
+    access_token: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    List all repositories in a specific Azure DevOps project.
+    
+    Args:
+        organization: Azure DevOps organization name
+        project: Project name
+        pat: Personal Access Token (optional, for PAT-based auth)
+        access_token: OAuth access token (optional, for OAuth-based auth)
+    
+    Returns:
+        List of repository dictionaries with name, id, url, default_branch, etc.
+    """
+    if not pat and not access_token:
+        raise ValueError("Either PAT or access_token is required.")
+    
+    headers = _auth_headers(pat) if pat else {}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        repos_url = f"https://dev.azure.com/{quote(organization, safe='')}/{quote(project, safe='')}/_apis/git/repositories"
+        resp = await client.get(
+            repos_url,
+            params={"api-version": "7.1"},
+            headers=headers,
+        )
+        resp.raise_for_status()
+        
+        payload = resp.json() if "application/json" in (resp.headers.get("content-type") or "") else {}
+        repo_values = payload.get("value") or []
+        
+        repos = []
+        for repo in repo_values:
+            repo_name = str(repo.get("name") or "").strip()
+            if not repo_name:
+                continue
+            default_branch = _normalize_branch(repo.get("defaultBranch"))
+            repo_url = f"https://dev.azure.com/{organization}/{project}/_git/{repo_name}"
+            repos.append({
+                "id": str(repo.get("id") or f"{organization}:{project}:{repo_name}"),
+                "name": repo_name,
+                "full_name": f"{organization}/{project}/{repo_name}",
+                "description": repo.get("project", {}).get("description"),
+                "language": None,
+                "private": True,
+                "html_url": repo.get("webUrl") or repo_url,
+                "default_branch": default_branch,
+                "updated_at": repo.get("project", {}).get("lastUpdateTime"),
+                "stargazers_count": 0,
+                "organization": organization,
+                "project": project,
+                "repo_url": repo_url,
+            })
+        
+        return repos
 
 
 def _auth_headers(pat: Optional[str]) -> Dict[str, str]:

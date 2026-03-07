@@ -50,6 +50,51 @@ def migrate():
         else:
             print("[OK] steps_data column already exists")
 
+        # Add azure_devops_client_id column if it doesn't exist
+        if 'azure_devops_client_id' not in columns:
+            print("Adding azure_devops_client_id column...")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN azure_devops_client_id VARCHAR"))
+            conn.commit()
+            print("[OK] azure_devops_client_id column added")
+        else:
+            print("[OK] azure_devops_client_id column already exists")
+
+        # Add azure_devops_client_secret column if it doesn't exist
+        if 'azure_devops_client_secret' not in columns:
+            print("Adding azure_devops_client_secret column...")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN azure_devops_client_secret VARCHAR"))
+            conn.commit()
+            print("[OK] azure_devops_client_secret column added")
+        else:
+            print("[OK] azure_devops_client_secret column already exists")
+
+        # Add azure_devops_organization column if it doesn't exist
+        if 'azure_devops_organization' not in columns:
+            print("Adding azure_devops_organization column...")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN azure_devops_organization VARCHAR"))
+            conn.commit()
+            print("[OK] azure_devops_organization column added")
+        else:
+            print("[OK] azure_devops_organization column already exists")
+
+        # Add azure_devops_project column if it doesn't exist
+        if 'azure_devops_project' not in columns:
+            print("Adding azure_devops_project column...")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN azure_devops_project VARCHAR"))
+            conn.commit()
+            print("[OK] azure_devops_project column added")
+        else:
+            print("[OK] azure_devops_project column already exists")
+
+        # Add azure_devops_tenant_id column if it doesn't exist
+        if 'azure_devops_tenant_id' not in columns:
+            print("Adding azure_devops_tenant_id column...")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN azure_devops_tenant_id VARCHAR"))
+            conn.commit()
+            print("[OK] azure_devops_tenant_id column added")
+        else:
+            print("[OK] azure_devops_tenant_id column already exists")
+
         print("\nMigration completed successfully!")
 
 if __name__ == "__main__":

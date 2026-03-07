@@ -7,6 +7,10 @@ import 'react-loading-skeleton/dist/skeleton.css';
 
 import { API_ENDPOINTS } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
+import kaktoxLogo from '../assets/Kaktox.png';
+import nModLogo from '../assets/N-Mod-icon.png';
+import cloudIcon from '../assets/cloud-icon.png';
+import masterLogo from '../assets/logo1.png';
 // import KnowledgeGraphCard from './KnowledgeGraphCard';
 // import PrStatusCard from './PrStatusCard';
 
@@ -204,8 +208,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [agentQuota, setAgentQuota] = useState(null);
     const [agentQuotaLoading, setAgentQuotaLoading] = useState(false);
     const [agentQuotaError, setAgentQuotaError] = useState('');
-    const [sharedAgentsToAdd, setSharedAgentsToAdd] = useState(0);
-    const [dedicatedAgentsToAdd, setDedicatedAgentsToAdd] = useState(0);
+    const [sharedAgentsToAdd, setSharedAgentsToAdd] = useState('');
+    const [dedicatedAgentsToAdd, setDedicatedAgentsToAdd] = useState('');
     const [isAddingAgents, setIsAddingAgents] = useState(false);
     const [addAgentModalError, setAddAgentModalError] = useState('');
 
@@ -294,7 +298,22 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             });
             if (!res.ok) throw new Error('Failed to fetch agents');
             const data = await res.json();
-            return data.agents || [];
+            const fetchedAgents = data.agents || [];
+            
+            // Ensure Test Agent (agent_05) exists by default in all projects
+            const hasTestAgent = fetchedAgents.some(agent => agent.id === 'agent_05');
+            if (!hasTestAgent) {
+                fetchedAgents.push({
+                    id: 'agent_05',
+                    name: 'Test Agent',
+                    status: 'idle',
+                    progress: 0,
+                    progress_message: '',
+                    stats: {},
+                });
+            }
+            
+            return fetchedAgents;
         },
         enabled: !!token,
     });
@@ -307,7 +326,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         };
 
         return [...agents]
-            .filter(agent => agent.id !== 'agent_03' && agent.id !== 'agent_04')
+            .filter(agent => agent.id !== 'agent_03' && agent.id !== 'agent_04' && agent.id !== 'agent_05')
             .sort((a, b) => {
                 const aNumber = parseAgentNumber(a.id);
                 const bNumber = parseAgentNumber(b.id);
@@ -319,10 +338,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const orderedAgents = useMemo(() => {
         const masterAgent = agents.find(agent => agent.id === 'agent_04');
         const gitManagerAgent = agents.find(agent => agent.id === 'agent_03');
+        const testAgent = agents.find(agent => agent.id === 'agent_05');
 
         return [
             ...(masterAgent ? [masterAgent] : []),
             ...(gitManagerAgent ? [gitManagerAgent] : []),
+            ...(testAgent ? [testAgent] : []),
             ...devAgents,
         ];
     }, [agents, devAgents]);
@@ -571,7 +592,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
-        if (agent.id === 'agent_03' || agent.id === 'agent_04') return;
+        if (agent.id === 'agent_03' || agent.id === 'agent_04' || agent.id === 'agent_05') return;
         const needsConfig = !agent.git_repo_url || !agent.has_git_token;
         if (needsConfig) {
             navigate('/prerequisites');
@@ -680,7 +701,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [runningAll, setRunningAll] = useState(false);
 
     const handleRunAll = useCallback(async () => {
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05');
         if (idleAgents.length === 0) return;
 
         const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
@@ -691,7 +712,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05')
             ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
             : a));
 
@@ -721,7 +742,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         if (!hasValidTaskToken) return;
         if (agents.some(a => a.status === 'running')) return;
 
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05');
         if (idleAgents.length === 0) return;
 
         const autoKey = `${selectedProjectKey}:${processMode}`;
@@ -734,7 +755,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const globalConfig = agentsGitConfig.__global__ || {};
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05')
             ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
             : a));
         try {
@@ -757,8 +778,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Add/Remove Agent ─────────────────────────────────────────────
     const handleAddAgent = () => {
-        setSharedAgentsToAdd(0);
-        setDedicatedAgentsToAdd(0);
+        setSharedAgentsToAdd('');
+        setDedicatedAgentsToAdd('');
         setAddAgentModalError('');
         setAgentQuotaError('');
         setShowAddAgentModal(true);
@@ -783,8 +804,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const submitAddAgent = async () => {
         const sharedAvailable = Number(agentQuota?.shared_available ?? 0);
         const dedicatedAvailable = Number(agentQuota?.dedicated_available ?? 0);
-        const sharedCount = clampAgentCount(sharedAgentsToAdd, sharedAvailable);
-        const dedicatedCount = clampAgentCount(dedicatedAgentsToAdd, dedicatedAvailable);
+        const sharedInput = String(sharedAgentsToAdd).trim() || '0';
+        const dedicatedInput = String(dedicatedAgentsToAdd).trim() || '0';
+        const sharedCount = clampAgentCount(Number(sharedInput), sharedAvailable);
+        const dedicatedCount = clampAgentCount(Number(dedicatedInput), dedicatedAvailable);
 
         if (!selectedProjectKey) {
             setAddAgentModalError('Select a project before adding agents.');
@@ -855,8 +878,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             }
 
             setShowAddAgentModal(false);
-            setSharedAgentsToAdd(0);
-            setDedicatedAgentsToAdd(0);
+            setSharedAgentsToAdd('');
+            setDedicatedAgentsToAdd('');
             fetchAgents();
             fetchTasks(false, 1, true);
             refreshRoadmap();
@@ -1016,10 +1039,21 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         },
         agent_04: {
             icon: <Bot className="w-5 h-5 text-white" />,
-            gradient: 'from-fuchsia-500 to-rose-500',
-            shadow: 'shadow-fuchsia-200',
+            logo: masterLogo,
+            gradient: 'from-gray-50 to-gray-100',
+            shadow: 'shadow-gray-200',
             accent: 'from-fuchsia-500 to-rose-500',
             color: 'fuchsia',
+            stats: ['avg_time'],
+            statLabels: { avg_time: 'Duration' },
+        },
+        agent_05: {
+            icon: <Activity className="w-5 h-5 text-white" />,
+            logo: kaktoxLogo,
+            gradient: 'from-gray-50 to-gray-100',
+            shadow: 'shadow-gray-200',
+            accent: 'from-amber-500 to-orange-500',
+            color: 'amber',
             stats: ['avg_time'],
             statLabels: { avg_time: 'Duration' },
         },
@@ -1030,13 +1064,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 const renderAgentCard = (agent) => {
   const isGitManager = agent.id === 'agent_03';
   const isMasterAgent = agent.id === 'agent_04';
-  const isSystemAgent = isGitManager || isMasterAgent;
+  const isTestAgent = agent.id === 'agent_05';
+  const isSystemAgent = isGitManager || isMasterAgent || isTestAgent;
   const isShared = agent.id?.startsWith('shared_');
   const isDedicated = agent.id?.startsWith('dedicated_');
   const agentType = isShared ? 'Shared' : isDedicated ? 'Dedicated' : null;
   const displayName = getAgentDisplayName(agent);
   const cfg = agentConfig[agent.id] || agentConfig.agent_01;
   const Icon = cfg.icon;
+  // Use logo for specific agents, or dev agents use N-Mod logo
+  const useLogo = cfg.logo || (isShared || isDedicated);
+  const logoSrc = cfg.logo || (useLogo ? nModLogo : null);
   const isRunning = agent.status === 'running';
   const isCompleted = agent.status === 'completed';
   const isError = agent.status === 'error';
@@ -1050,8 +1088,12 @@ const renderAgentCard = (agent) => {
 
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${cfg.gradient} flex items-center justify-center shadow-lg ${cfg.shadow}`}>
-            {Icon}
+          <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-gray-50 border border-gray-200' : `bg-gradient-to-br ${cfg.gradient}`} flex items-center justify-center shadow-lg ${cfg.shadow} ${useLogo ? 'p-1.5' : ''}`}>
+            {useLogo && logoSrc ? (
+              <img src={logoSrc} alt={displayName} className="w-full h-full object-contain" />
+            ) : (
+              Icon
+            )}
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -2141,8 +2183,8 @@ const renderAgentCard = (agent) => {
                                                 </span>
                                                 <button
                                                     onClick={() => handleRunAll()}
-                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0}
-                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0
+                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05').length === 0}
+                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05').length === 0
                                                         ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
                                                         : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md hover:shadow-lg hover:scale-105'
                                                         }`}
@@ -2178,8 +2220,8 @@ const renderAgentCard = (agent) => {
 
                                                 <div className="flex items-start justify-between mb-4">
                                                     <div className="flex items-center gap-3">
-                                                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/20">
-                                                            <Globe className="w-5 h-5 text-white" />
+                                                        <div className="w-10 h-10 rounded-xl bg-gray-50 border border-gray-200 flex items-center justify-center shadow-lg shadow-gray-200 p-1.5">
+                                                            <img src={cloudIcon} alt="Deploy Agent" className="w-full h-full object-contain" />
                                                         </div>
                                                         <div>
                                                             <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>
@@ -2743,8 +2785,14 @@ const renderAgentCard = (agent) => {
             {/* Add Agent Modal */}
             {
                 showAddAgentModal && (
-                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
+                    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+                        {/* Backdrop with blur */}
+                        <div 
+                            className="absolute inset-0 bg-black/70 backdrop-blur-md"
+                            onClick={() => setShowAddAgentModal(false)}
+                        />
+                        {/* Modal Content */}
+                        <div className="relative z-[301] bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
                                     <PlusCircle className="w-5 h-5 text-indigo-500" /> Add Dev Agents
@@ -2773,7 +2821,23 @@ const renderAgentCard = (agent) => {
                                             min="0"
                                             max={Number(agentQuota?.shared_available ?? 0)}
                                             value={sharedAgentsToAdd}
-                                            onChange={(e) => setSharedAgentsToAdd(clampAgentCount(e.target.value, Number(agentQuota?.shared_available ?? 0)))}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                // Allow empty string or valid numbers
+                                                if (val === '' || /^\d+$/.test(val)) {
+                                                    setSharedAgentsToAdd(val);
+                                                }
+                                            }}
+                                            onBlur={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '') {
+                                                    setSharedAgentsToAdd('');
+                                                } else {
+                                                    const num = clampAgentCount(Number(val), Number(agentQuota?.shared_available ?? 0));
+                                                    setSharedAgentsToAdd(num.toString());
+                                                }
+                                            }}
+                                            placeholder="0"
                                             className="w-full px-4 py-3 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400 text-sm bg-white text-app-text-main font-bold"
                                         />
                                     </div>
@@ -2792,7 +2856,23 @@ const renderAgentCard = (agent) => {
                                             min="0"
                                             max={Number(agentQuota?.dedicated_available ?? 0)}
                                             value={dedicatedAgentsToAdd}
-                                            onChange={(e) => setDedicatedAgentsToAdd(clampAgentCount(e.target.value, Number(agentQuota?.dedicated_available ?? 0)))}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                // Allow empty string or valid numbers
+                                                if (val === '' || /^\d+$/.test(val)) {
+                                                    setDedicatedAgentsToAdd(val);
+                                                }
+                                            }}
+                                            onBlur={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '') {
+                                                    setDedicatedAgentsToAdd('');
+                                                } else {
+                                                    const num = clampAgentCount(Number(val), Number(agentQuota?.dedicated_available ?? 0));
+                                                    setDedicatedAgentsToAdd(num.toString());
+                                                }
+                                            }}
+                                            placeholder="0"
                                             className="w-full px-4 py-3 border border-blue-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-app-text-main font-bold"
                                         />
                                     </div>

@@ -13,6 +13,7 @@ import AIConfig from '../components/AIConfig';
 import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
+import AzureDevOpsIntegration from '../components/AzureDevOpsIntegration';
 import { upsertDraftProject } from '../utils/draftProjects';
 
 const GitHubIcon = ({ className = 'w-4 h-4' }) => (
@@ -467,6 +468,10 @@ const Dashboard = ({
     const [azureLinkBranch, setAzureLinkBranch] = useState('');
     const [azureLinkParsing, setAzureLinkParsing] = useState(false);
     const [azureLinkError, setAzureLinkError] = useState('');
+    const [azureProjectRepos, setAzureProjectRepos] = useState([]);
+    const [azureProjectReposLoading, setAzureProjectReposLoading] = useState(false);
+    const [showAzureRepoSelector, setShowAzureRepoSelector] = useState(false);
+    const [azureProjectUrl, setAzureProjectUrl] = useState('');
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
@@ -2326,7 +2331,92 @@ const Dashboard = ({
             setAzureLinkError('Please enter a valid Azure DevOps URL (dev.azure.com or *.visualstudio.com).');
             return;
         }
+        
+        // Check if it's a project URL (without /_git/{repo})
+        const isProjectUrl = (() => {
+            if (rawUrl.includes('dev.azure.com')) {
+                const urlParts = rawUrl.split('/').filter(Boolean);
+                const gitIndex = urlParts.findIndex(part => part.toLowerCase() === '_git');
+                // Project URL: dev.azure.com/{org}/{project} (exactly 2 parts after domain)
+                // Repository URL: dev.azure.com/{org}/{project}/_git/{repo} (has _git)
+                return gitIndex === -1 && urlParts.length >= 2;
+            } else if (rawUrl.includes('.visualstudio.com')) {
+                const urlParts = rawUrl.split('/').filter(Boolean);
+                const gitIndex = urlParts.findIndex(part => part.toLowerCase() === '_git');
+                return gitIndex === -1 && urlParts.length >= 1;
+            }
+            return false;
+        })();
 
+        if (isProjectUrl) {
+            // It's a project URL - fetch repositories
+            try {
+                setAzureProjectReposLoading(true);
+                setAzureLinkError('');
+                const token = localStorage.getItem('token');
+                
+                // Parse organization and project from URL
+                const urlObj = new URL(rawUrl.includes('://') ? rawUrl : `https://${rawUrl}`);
+                const pathParts = urlObj.pathname.split('/').filter(Boolean);
+                let organization = '';
+                let project = '';
+                
+                if (urlObj.hostname.includes('dev.azure.com')) {
+                    organization = decodeURIComponent(pathParts[0] || '');
+                    project = decodeURIComponent(pathParts[1] || '');
+                } else if (urlObj.hostname.includes('.visualstudio.com')) {
+                    organization = urlObj.hostname.split('.visualstudio.com')[0];
+                    project = decodeURIComponent(pathParts[0] || '');
+                }
+                
+                if (!organization || !project) {
+                    throw new Error('Unable to parse organization and project from URL.');
+                }
+                
+                if (!selectedProjectKey) {
+                    throw new Error('Please select a project first.');
+                }
+                
+                const resp = await fetch(API_ENDPOINTS.AZURE_DEVOPS_LIST_PROJECT_REPOS, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        project_token: selectedProjectKey,
+                        organization,
+                        project,
+                    }),
+                });
+                
+                const data = await resp.json();
+                if (!resp.ok) {
+                    let errMessage = 'Failed to fetch repositories from Azure DevOps project';
+                    if (data.detail) {
+                        errMessage = Array.isArray(data.detail) ? data.detail.map((e) => e.msg).join(', ') : data.detail;
+                    }
+                    throw new Error(errMessage);
+                }
+                
+                const repos = Array.isArray(data.repos) ? data.repos : [];
+                if (repos.length === 0) {
+                    setAzureLinkError('No repositories found in this project.');
+                    return;
+                }
+                
+                setAzureProjectRepos(repos);
+                setAzureProjectUrl(rawUrl);
+                setShowAzureRepoSelector(true);
+            } catch (e) {
+                setAzureLinkError(e.message || 'Failed to fetch repositories from Azure DevOps project');
+            } finally {
+                setAzureProjectReposLoading(false);
+            }
+            return;
+        }
+
+        // It's a repository URL - proceed with normal flow
         try {
             setAzureLinkParsing(true);
             const token = localStorage.getItem('token');
@@ -2370,6 +2460,17 @@ const Dashboard = ({
         } finally {
             setAzureLinkParsing(false);
         }
+    };
+    
+    const handleSelectAzureRepo = async (repo) => {
+        const repoUrl = repo.repo_url || repo.html_url || `https://dev.azure.com/${repo.organization}/${repo.project}/_git/${repo.name}`;
+        setAzureLinkUrl(repoUrl);
+        setShowAzureRepoSelector(false);
+        setAzureProjectRepos([]);
+        // Automatically load the selected repository
+        setTimeout(() => {
+            handleLoadAzureDevOpsUrl();
+        }, 100);
     };
 
     const handleNewAnalysis = () => {
@@ -2747,34 +2848,65 @@ const Dashboard = ({
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative mx-auto">
                                             {/* OPTION 1: Account Connect */}
                                             <div className="relative border border-app-border rounded-xl p-5 bg-app-bg-card shadow-sm flex flex-col justify-start overflow-hidden">
-                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${((githubLinkUrl && githubLinkUrl.trim().length > 0) || (githubLinkToken && githubLinkToken.trim().length > 0) || (githubLinkUsername && githubLinkUsername.trim().length > 0) || (githubLinkPassword && githubLinkPassword.trim().length > 0) || (azureLinkUrl && azureLinkUrl.trim().length > 0) || (azureLinkToken && azureLinkToken.trim().length > 0) || (repoContext && repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(() => {
+                                                    // Don't blur if Azure DevOps is selected and we're on the dashboard
+                                                    if (repoLinkProvider === 'azure-devops') {
+                                                        return false;
+                                                    }
+                                                    // Check if any GitHub link fields are filled
+                                                    const hasGithubLinkFields = (githubLinkUrl && githubLinkUrl.trim().length > 0) || 
+                                                                                (githubLinkToken && githubLinkToken.trim().length > 0) || 
+                                                                                (githubLinkUsername && githubLinkUsername.trim().length > 0) || 
+                                                                                (githubLinkPassword && githubLinkPassword.trim().length > 0);
+                                                    // Check if repoContext is from link (but not Azure DevOps)
+                                                    const hasLinkRepoContext = repoContext && repoContext.fromLink && repoContext.provider !== 'azure-devops';
+                                                    return hasGithubLinkFields || hasLinkRepoContext;
+                                                })() ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Link Option</span>
                                                 </div>
                                                 <div className="mb-4">
                                                     <div className="flex items-center mb-2">
                                                         <div className="w-6 h-6 bg-app-primary-light text-app-primary rounded flex items-center justify-center mr-2 font-black text-xs">1</div>
-                                                        <h3 className="text-sm font-bold text-app-text-main">Connect Account</h3>
+                                                        <h3 className="text-sm font-bold text-app-text-main">
+                                                            {repoLinkProvider === 'azure-devops' ? 'Connect Azure DevOps' : 'Connect Account'}
+                                                        </h3>
                                                     </div>
                                                     <p className="text-xs text-app-text-muted mb-2">
                                                         {repoLinkProvider === 'azure-devops'
-                                                            ? 'Azure DevOps OAuth connect is not configured in this screen. Use Option 2 to fetch with Azure DevOps URL + PAT.'
+                                                            ? 'Authorize via OAuth to securely browse and select private or public repositories on your account.'
                                                             : 'Authorize via OAuth to securely browse and select private or public repositories on your account.'}
                                                     </p>
                                                 </div>
                                                 <div className="mt-auto">
                                                     {repoLinkProvider === 'azure-devops' ? (
-                                                        <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
-                                                            <div className="flex items-center gap-2 text-sm font-semibold text-sky-900">
-                                                                <AzureDevOpsIcon className="w-4 h-4" />
-                                                                Azure DevOps selected
-                                                            </div>
-                                                            <p className="text-xs text-sky-800 mt-2">
-                                                                Continue with Option 2 and click <span className="font-semibold">Fetch Repository</span> after entering your Azure DevOps repository URL.
-                                                            </p>
-                                                            <p className="text-xs text-sky-700 mt-1">
-                                                                PAT is required for private repositories.
-                                                            </p>
-                                                        </div>
+                                                        <AzureDevOpsIntegration
+                                                            repoContext={repoContext}
+                                                            selectedProjectKey={selectedProjectKey}
+                                                            onRepoSelected={() => setIsOAuthRepoSelected(true)}
+                                                            onRepoContextReady={(ctx) => {
+                                                                const nextCtx = {
+                                                                    ...ctx,
+                                                                    provider: 'azure-devops',
+                                                                    url: String(ctx?.url || '').trim(),
+                                                                };
+                                                                setRepoContext(nextCtx);
+                                                                persistRepoContextMetaForProject(nextCtx);
+                                                                setGithubLinkUrl('');
+                                                                setGithubLinkToken('');
+                                                                setGithubAuthMode('pat');
+                                                                setGithubLinkUsername('');
+                                                                setGithubLinkPassword('');
+                                                                setAzureLinkUrl('');
+                                                                setAzureLinkToken('');
+                                                                setAzureLinkBranch('');
+                                                                setAzureLinkError('');
+                                                                setGithubLinkError('');
+                                                            }}
+                                                            onClearRepo={() => {
+                                                                setRepoContext(null);
+                                                                setIsOAuthRepoSelected(false);
+                                                            }}
+                                                        />
                                                     ) : (
                                                         <GitHubIntegration
                                                             repoContext={repoContext}
@@ -2866,7 +2998,7 @@ const Dashboard = ({
                                                         type="text"
                                                         value={repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl}
                                                         onChange={e => handleRepoLinkUrlChange(e.target.value)}
-                                                        placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo' : 'https://github.com/owner/repo'}
+                                                        placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo or https://dev.azure.com/org/project' : 'https://github.com/owner/repo'}
                                                         className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                     />
                                                     {repoLinkProvider === 'azure-devops' && (
@@ -2931,12 +3063,12 @@ const Dashboard = ({
                                                         <button
                                                             type="button"
                                                             onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
-                                                            disabled={repoLinkProvider === 'azure-devops' ? (!azureLinkUrl || azureLinkParsing) : (!githubLinkUrl || githubLinkParsing)}
+                                                            disabled={repoLinkProvider === 'azure-devops' ? (!azureLinkUrl || azureLinkParsing || azureProjectReposLoading) : (!githubLinkUrl || githubLinkParsing)}
                                                             className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
                                                         >
-                                                            {(repoLinkProvider === 'azure-devops' ? azureLinkParsing : githubLinkParsing) ? (
+                                                            {(repoLinkProvider === 'azure-devops' ? (azureLinkParsing || azureProjectReposLoading) : githubLinkParsing) ? (
                                                                 <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
-                                                            ) : 'Fetch Repository'}
+                                                            ) : 'Load Repository'}
                                                         </button>
                                                         {repoContext && repoContext.fromLink && (
                                                             <button
@@ -2965,6 +3097,40 @@ const Dashboard = ({
                                                 {repoLinkProvider === 'azure-devops'
                                                     ? (azureLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{azureLinkError}</p>)
                                                     : (githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{githubLinkError}</p>)}
+                                                {showAzureRepoSelector && azureProjectRepos.length > 0 && (
+                                                    <div className="mt-3 border border-app-border rounded-lg bg-app-bg-page/50 p-3 max-h-64 overflow-y-auto">
+                                                        <p className="text-xs font-semibold text-app-text-main mb-2">Select a repository:</p>
+                                                        <div className="space-y-1.5">
+                                                            {azureProjectRepos.map((repo) => (
+                                                                <button
+                                                                    key={repo.id || repo.name}
+                                                                    type="button"
+                                                                    onClick={() => handleSelectAzureRepo(repo)}
+                                                                    className="w-full text-left px-3 py-2 rounded-md border border-app-border bg-app-bg-card hover:bg-app-bg-hover hover:border-app-primary transition-colors text-xs"
+                                                                >
+                                                                    <div className="font-semibold text-app-text-main">{repo.name}</div>
+                                                                    {repo.description && (
+                                                                        <div className="text-app-text-muted mt-0.5 truncate">{repo.description}</div>
+                                                                    )}
+                                                                    {repo.default_branch && (
+                                                                        <div className="text-app-text-muted mt-0.5 text-[10px]">Default branch: {repo.default_branch}</div>
+                                                                    )}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setShowAzureRepoSelector(false);
+                                                                setAzureProjectRepos([]);
+                                                                setAzureProjectUrl('');
+                                                            }}
+                                                            className="mt-2 text-xs text-app-text-muted hover:text-app-text-label"
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </div>
+                                                )}
                                                 {repoContext && repoContext.fromLink && (
                                                     <div className="mt-3 p-2.5 bg-app-status-successBg border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
                                                         <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-app-status-success" />
@@ -3269,14 +3435,25 @@ const Dashboard = ({
 
             {/* AI Config Modal */}
             {showSettings && (
-                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
-                    <div className="bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
+                <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+                    {/* Backdrop with blur */}
+                    <div 
+                        className="absolute inset-0 bg-black/70 backdrop-blur-md"
+                        onClick={() => setShowSettings(false)}
+                    />
+                    {/* Modal Content */}
+                    <div className="relative z-[301] bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
                         <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
                             <h2 className="font-bold text-lg text-app-text-main flex items-center">
                                 <Settings className="w-5 h-5 mr-2 text-app-primary" />
                                 AI Configuration
                             </h2>
-                            <button onClick={() => setShowSettings(false)} className="text-app-text-light hover:text-app-text-label transition-colors">✕</button>
+                            <button 
+                                onClick={() => setShowSettings(false)} 
+                                className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
+                            >
+                                ✕
+                            </button>
                         </div>
                         <div className="p-6">
                             <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
