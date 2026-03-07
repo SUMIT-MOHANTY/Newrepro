@@ -4984,7 +4984,29 @@ async def create_agent_milestone(
 ):
     """Create milestone in the external task management API."""
     try:
-        return await task_service.create_milestone(payload.dict(), task_token=x_task_token)
+        milestone_payload = payload.dict()
+        resolved_sprint_payload = await _resolve_sprint_schedule_payload(
+            payload.sprint_id,
+            fallback={
+                "start_date": payload.start_date,
+                "deadline": payload.deadline,
+            },
+            task_token=x_task_token,
+        )
+        sprint_start_obj = _parse_yyyy_mm_dd_date(
+            _extract_schedule_start(resolved_sprint_payload) or payload.start_date
+        )
+        sprint_deadline_obj = _parse_yyyy_mm_dd_date(
+            _extract_schedule_deadline(resolved_sprint_payload) or payload.deadline
+        )
+        if sprint_start_obj is not None and sprint_deadline_obj is not None:
+            milestone_payload["start_date"], milestone_payload["deadline"] = _normalize_schedule_dates(
+                payload.start_date,
+                payload.deadline,
+                min_date=sprint_start_obj,
+                max_date=max(sprint_start_obj, sprint_deadline_obj),
+            )
+        return await task_service.create_milestone(milestone_payload, task_token=x_task_token)
     except TaskServiceError as e:
         _raise_task_service_http_exception(e, "Failed to create milestone")
     except Exception as e:
@@ -5229,6 +5251,174 @@ def _parse_yyyy_mm_dd_date(value: Any) -> Optional[datetime.date]:
         return datetime.strptime(extracted, "%Y-%m-%d").date()
     except Exception:
         return None
+
+
+def _normalize_schedule_dates(
+    start_value: Any,
+    end_value: Any,
+    *,
+    min_date: datetime.date,
+    max_date: datetime.date,
+    require_strict_order: bool = False,
+) -> tuple[str, str]:
+    start_date = _parse_yyyy_mm_dd_date(start_value) or min_date
+    end_date = _parse_yyyy_mm_dd_date(end_value) or max_date
+
+    if start_date < min_date:
+        start_date = min_date
+    if start_date > max_date:
+        start_date = max_date
+
+    if require_strict_order:
+        if end_date <= start_date:
+            if min_date < max_date:
+                start_date = min_date
+                end_date = max_date
+            else:
+                end_date = start_date
+    elif end_date < start_date:
+        end_date = start_date
+
+    if end_date > max_date:
+        end_date = max_date
+
+    if require_strict_order:
+        if end_date <= start_date and min_date < max_date:
+            start_date = min_date
+            end_date = max_date
+        elif end_date < start_date:
+            end_date = start_date
+    elif end_date < start_date:
+        end_date = start_date
+
+    return start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+
+
+def _extract_schedule_start(payload: Any) -> Optional[str]:
+    return _extract_first_date_from_mapping(
+        payload,
+        (
+            "start_date",
+            "startdate",
+            "startDate",
+            "planned_start",
+            "plannedStart",
+        ),
+    )
+
+
+def _extract_schedule_deadline(payload: Any) -> Optional[str]:
+    return _extract_first_date_from_mapping(
+        payload,
+        (
+            "deadline",
+            "end_date",
+            "endDate",
+            "planned_end",
+            "plannedEnd",
+        ),
+    )
+
+
+def _find_entity_by_id(payload: Any, entity_id: Any) -> Optional[Dict[str, Any]]:
+    target_id = _to_optional_int(entity_id)
+    if target_id is None:
+        return None
+
+    queue: List[Any] = [payload]
+    seen: set[int] = set()
+    while queue:
+        current = queue.pop(0)
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+
+        if isinstance(current, dict):
+            current_id = _to_optional_int(
+                current.get("id")
+                or current.get("sprint_id")
+                or current.get("milestone_id")
+            )
+            if current_id == target_id:
+                return current
+            for value in current.values():
+                if isinstance(value, (dict, list)):
+                    queue.append(value)
+        elif isinstance(current, list):
+            for item in current:
+                if isinstance(item, (dict, list)):
+                    queue.append(item)
+    return None
+
+
+async def _resolve_sprint_schedule_payload(
+    sprint_id: Optional[int],
+    *,
+    fallback: Optional[Dict[str, Any]] = None,
+    created_result: Optional[Dict[str, Any]] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    resolved: Dict[str, Any] = dict(fallback or {})
+    target_id = _to_optional_int(sprint_id)
+    if target_id is None:
+        return resolved
+
+    created_match = _find_entity_by_id(created_result, target_id)
+    if created_match:
+        resolved.update(created_match)
+
+    try:
+        upstream_sprints = await task_service.get_sprints(task_token=task_token)
+        upstream_match = _find_entity_by_id(upstream_sprints, target_id)
+        if upstream_match:
+            resolved.update(upstream_match)
+    except Exception as exc:
+        logger.warning(
+            "Failed to resolve sprint %s schedule window from upstream API: %s",
+            target_id,
+            exc,
+        )
+
+    return resolved
+
+
+def _clamp_preview_payload_task_dates(
+    preview_payload: Dict[str, Any],
+    *,
+    min_date: Optional[datetime.date],
+    max_date: Optional[datetime.date],
+) -> None:
+    if not isinstance(preview_payload, dict) or min_date is None or max_date is None:
+        return
+
+    if max_date < min_date:
+        max_date = min_date
+
+    for task in preview_payload.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        start_iso, end_iso = _normalize_schedule_dates(
+            task.get("planned_start") or task.get("startdate"),
+            task.get("planned_end") or task.get("deadline"),
+            min_date=min_date,
+            max_date=max_date,
+        )
+        task["planned_start"] = start_iso
+        task["planned_end"] = end_iso
+
+    for task in preview_payload.get("preview_json") or []:
+        if not isinstance(task, dict):
+            continue
+        start_iso, end_iso = _normalize_schedule_dates(
+            task.get("planned_start") or task.get("startdate"),
+            task.get("deadline") or task.get("planned_end"),
+            min_date=min_date,
+            max_date=max_date,
+        )
+        task["startdate"] = start_iso
+        task["planned_start"] = start_iso
+        task["deadline"] = end_iso
 
 
 def _extract_created_entity_id(payload: Any, entity_key: str) -> Optional[int]:
@@ -5499,21 +5689,98 @@ async def auto_generate_project_tasks(
             if resolved_sprint_id is None:
                 raise HTTPException(status_code=502, detail="Sprint was created but no sprint id was returned by the task API.")
 
+        resolved_sprint_payload = await _resolve_sprint_schedule_payload(
+            resolved_sprint_id,
+            fallback=created_sprint_payload,
+            created_result=sprint_create_result,
+            task_token=x_task_token,
+        )
+        resolved_sprint_start_value = str(
+            _extract_schedule_start(resolved_sprint_payload)
+            or created_sprint_payload.get("start_date")
+            or preview_payload.get("project_start_date")
+            or ""
+        ).strip()
+        resolved_sprint_deadline_value = str(
+            _extract_schedule_deadline(resolved_sprint_payload)
+            or created_sprint_payload.get("deadline")
+            or preview_payload.get("project_deadline")
+            or ""
+        ).strip()
+        resolved_sprint_start_obj = _parse_yyyy_mm_dd_date(resolved_sprint_start_value)
+        resolved_sprint_deadline_obj = _parse_yyyy_mm_dd_date(resolved_sprint_deadline_value)
+        if (
+            resolved_sprint_start_obj is not None
+            and resolved_sprint_deadline_obj is not None
+            and resolved_sprint_deadline_obj < resolved_sprint_start_obj
+        ):
+            resolved_sprint_deadline_obj = resolved_sprint_start_obj
+            resolved_sprint_deadline_value = resolved_sprint_deadline_obj.strftime("%Y-%m-%d")
+        if resolved_sprint_start_value:
+            created_sprint_payload["start_date"] = resolved_sprint_start_value
+        if resolved_sprint_deadline_value:
+            created_sprint_payload["deadline"] = resolved_sprint_deadline_value
+
         resolved_milestone_id = request.milestone_id
         milestone_create_result = None
         if resolved_milestone_id is None:
+            raw_milestone_start_value = str(
+                created_milestone_payload.get("start_date")
+                or resolved_sprint_start_value
+                or preview_payload.get("project_start_date")
+                or ""
+            ).strip()
+            raw_milestone_deadline_value = str(
+                created_milestone_payload.get("deadline")
+                or resolved_sprint_deadline_value
+                or preview_payload.get("project_deadline")
+                or ""
+            ).strip()
+
+            milestone_start_value = raw_milestone_start_value
+            milestone_deadline_value = raw_milestone_deadline_value
+            if resolved_sprint_start_obj is not None and resolved_sprint_deadline_obj is not None:
+                milestone_start_value, milestone_deadline_value = _normalize_schedule_dates(
+                    raw_milestone_start_value,
+                    raw_milestone_deadline_value,
+                    min_date=resolved_sprint_start_obj,
+                    max_date=resolved_sprint_deadline_obj,
+                )
+
+            created_milestone_payload["sprint_id"] = resolved_sprint_id
+            created_milestone_payload["start_date"] = milestone_start_value
+            created_milestone_payload["deadline"] = milestone_deadline_value
+            if (
+                milestone_start_value != raw_milestone_start_value
+                or milestone_deadline_value != raw_milestone_deadline_value
+            ):
+                logger.info(
+                    "Adjusted milestone window for sprint %s from %s..%s to %s..%s",
+                    resolved_sprint_id,
+                    raw_milestone_start_value or "-",
+                    raw_milestone_deadline_value or "-",
+                    milestone_start_value,
+                    milestone_deadline_value,
+                )
+
             milestone_create_result = await task_service.create_milestone(
                 {
                     "name": str(created_milestone_payload.get("name") or "Phase 1 Complete").strip() or "Phase 1 Complete",
                     "sprint_id": resolved_sprint_id,
-                    "start_date": str(created_milestone_payload.get("start_date") or created_sprint_payload.get("start_date") or preview_payload.get("project_start_date") or "").strip(),
-                    "deadline": str(created_milestone_payload.get("deadline") or created_sprint_payload.get("deadline") or preview_payload.get("project_deadline") or "").strip(),
+                    "start_date": milestone_start_value,
+                    "deadline": milestone_deadline_value,
                 },
                 task_token=x_task_token,
             )
             resolved_milestone_id = _extract_created_entity_id(milestone_create_result, "milestone")
             if resolved_milestone_id is None:
                 raise HTTPException(status_code=502, detail="Milestone was created but no milestone id was returned by the task API.")
+
+        _clamp_preview_payload_task_dates(
+            preview_payload,
+            min_date=resolved_sprint_start_obj,
+            max_date=resolved_sprint_deadline_obj,
+        )
 
         _apply_schedule_ids_to_preview_payload(
             preview_payload,
