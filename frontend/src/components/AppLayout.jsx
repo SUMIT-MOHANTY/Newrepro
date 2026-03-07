@@ -308,6 +308,20 @@ export default function AppLayout({ children }) {
         // Skip if we already navigated for this project
         if (lastNavigatedProjectRef.current === selectedProjectKey) return;
         
+        // Check if governance was all skipped (score 5) - if so, block navigation to prerequisites
+        let governanceResult = null;
+        try {
+            const raw = sessionStorage.getItem('governanceResult') || localStorage.getItem('governanceResult');
+            if (raw) governanceResult = JSON.parse(raw);
+        } catch {
+            governanceResult = null;
+        }
+        
+        const isAllSkippedCase = governanceResult && 
+            governanceResult.weighted_score === 5.0 &&
+            governanceResult.classification === 'ENTERPRISE' &&
+            String(governanceResult.classification_description || '').toLowerCase().includes('our it team will reach out to you');
+        
         const stepLabel = roadmapDataResult.current_step_label;
         if (!stepLabel) return;
         
@@ -326,6 +340,15 @@ export default function AppLayout({ children }) {
         
         const targetRoute = stepLabelToRoute[stepLabel];
         if (!targetRoute) return;
+        
+        // Block navigation to prerequisites if governance was all skipped
+        if (isAllSkippedCase && targetRoute === '/prerequisites') {
+            // Keep user on governance page to see the sandbox score
+            if (!location.pathname.startsWith('/new-project/governance')) {
+                navigate('/new-project/governance');
+            }
+            return;
+        }
         
         // Navigate if:
         // 1. We're on a project URL (/a/{token}) - redirect to step page

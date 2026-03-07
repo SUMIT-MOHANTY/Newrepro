@@ -346,10 +346,8 @@ const GovernanceForm = ({
                         if (tokenToUse) fetchRoadmapData(tokenToUse);
                     }
 
-                    // If all questions were skipped, jump straight to Agent Analysis on the dashboard.
-                    if (allSkipped && resultData.project_token && !hasExistingAnalysis) {
-                        window.location.href = `/a/${resultData.project_token}`;
-                    }
+                    // If all questions were skipped (score 5), do NOT navigate - user should see the sandbox score
+                    // Navigation is blocked in AppLayout.jsx for this case
                 } catch (err) {
                     setError('Submission data processing error: ' + err.message);
                 }
@@ -1111,7 +1109,7 @@ const GovernanceResult = ({ result, onBack }) => {
                     >
                         <ChevronLeft className="w-4 h-4" /> Back to Form
                     </button>
-                    {(classification !== 'ENTERPRISE' || isSkipFollowUpCase) && (
+                    {(classification !== 'ENTERPRISE' || !isSkipFollowUpCase) && (
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
@@ -1121,6 +1119,11 @@ const GovernanceResult = ({ result, onBack }) => {
                         >
                             <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
                         </button>
+                    )}
+                    {isSkipFollowUpCase && (
+                        <div className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-semibold rounded-xl text-amber-800 bg-amber-50 border border-amber-200">
+                            <AlertCircle className="w-4 h-4" /> Sandbox score: {weighted_score}/10 - IT team will reach out
+                        </div>
                     )}
                     <button
                         onClick={() => {
