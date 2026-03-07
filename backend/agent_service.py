@@ -5,6 +5,7 @@ self-heal until everything works, capture the workspace, then clean up.
 """
 import asyncio
 import ast
+import hashlib
 import json
 import os
 import shlex
@@ -28,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 def _clean_ai_code_response(content: str) -> tuple[str, str]:
     """
-    Robustly extract pure Python code from an AI model response.
-    Returns (code_string, thought_string).
+    Robustly extract a shell build/fix script from an AI model response.
+    Returns (script_string, thought_string).
     Handles: <comment> blocks, markdown fences, narrative preamble,
-    and Unicode curly quotes that cause SyntaxErrors.
+    and Unicode punctuation that can break shell parsing.
     """
     content = content.strip()
     
@@ -48,28 +49,37 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
     content = _re.sub(r'<comment>.*?</comment>', '', content, flags=_re.DOTALL).strip()
     content = _re.sub(r'<comment>.*', '', content, flags=_re.DOTALL).strip()
 
-    # 2. Extract code from markdown fences
-    fence_match = _re.search(r'```python\s*\n(.*?)```', content, flags=_re.DOTALL)
+    # 2. Extract script from markdown fences
+    fence_match = _re.search(r'```(?:bash|sh|shell|python)?\s*\n(.*?)```', content, flags=_re.DOTALL)
     if not fence_match:
         fence_match = _re.search(r'```\s*\n(.*?)```', content, flags=_re.DOTALL)
     if fence_match:
         content = fence_match.group(1).strip()
     else:
-        if content.startswith('```python'):
-            content = content[len('```python'):].strip()
-        elif content.startswith('```'):
+        for prefix in ('```bash', '```sh', '```shell', '```python'):
+            if content.startswith(prefix):
+                content = content[len(prefix):].strip()
+                break
+        if content.startswith('```'):
             content = content[3:].strip()
         if content.endswith('```'):
             content = content[:-3].strip()
 
-    # 3. Strip narrative preamble before first code line
+    # 3. Strip narrative preamble before the first command line
     lines = content.split('\n')
     first_code_line = 0
     for i, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith(('#', 'import ', 'from ', 'def ', 'class ', 'print(', 'if ', 'for ', 'while ', 'try:', 'with ', 'os.', 'subprocess')) or '=' in stripped:
+        if (
+            stripped.startswith((
+                '#!', 'set -', 'cd ', 'ls', 'find ', 'mkdir ', 'cat ', 'grep ', 'sed ', 'awk ',
+                'cp ', 'mv ', 'rm ', 'touch ', 'echo ', 'printf ', 'git ', 'npm ', 'npx ',
+                'pip ', 'pip3 ', 'python ', 'python3 ', 'if ', 'for ', 'while ', 'case ', ': '
+            ))
+            or _re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', stripped)
+        ):
             first_code_line = i
             break
             
@@ -80,7 +90,7 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
             narrative = preamble
             content = '\n'.join(lines[first_code_line:])
 
-    # 4. Replace Unicode with ASCII
+    # 4. Replace Unicode with ASCII-friendly equivalents
     content = content.replace('\u2018', "'").replace('\u2019', "'")
     content = content.replace('\u201c', '"').replace('\u201d', '"')
     content = content.replace('\u2013', '-').replace('\u2014', '--')
@@ -114,6 +124,8 @@ RUN_ALL_WAITING_MESSAGE = "Waiting for master plan..."
 MASTER_BUILDING_MESSAGE = "Creating canonical project tree note..."
 MASTER_READY_MESSAGE = "Master plan ready"
 MASTER_FAILED_MESSAGE = "Master plan failed"
+NOTE_PAYLOAD_CACHE_TTL_SECONDS = 15.0
+WORKSPACE_CONTRACT_PROBE_TTL_SECONDS = 300.0
 
 
 def _is_system_agent_id(agent_id: Optional[str]) -> bool:
@@ -240,6 +252,9 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "project_status_synced": None,
             "status_sync_lock": asyncio.Lock(),
             "note_title_cache": {},
+            "note_payload_cache": {},
+            "persisted_assignment_restore": {},
+            "workspace_contract_probe": {},
         }
         _project_states[key] = state
     else:
@@ -248,6 +263,9 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state.setdefault("project_status_synced", None)
         state.setdefault("status_sync_lock", asyncio.Lock())
         state.setdefault("note_title_cache", {})
+        state.setdefault("note_payload_cache", {})
+        state.setdefault("persisted_assignment_restore", {})
+        state.setdefault("workspace_contract_probe", {})
         state.setdefault("tasks", [])
         state.setdefault("brd_analysis", {})
         state.setdefault("master_note_cache", {})
@@ -350,6 +368,7 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
         "type": atype,
         "status": "idle",
         "current_task": None,
+        "resume_pending_task": False,
         "progress": 0,
         "progress_message": "",
         "last_run": None,
@@ -398,6 +417,9 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
     state["project_status_synced"] = None
     state["repo_bootstrap"] = _new_repo_bootstrap_state()
     state["repo_bootstrap_event"] = asyncio.Event()
+    state["note_payload_cache"].clear()
+    state["persisted_assignment_restore"] = {}
+    state["workspace_contract_probe"] = {}
     agent_states = state["agent_states"]
     agent_states.clear()
     for idx, rec in enumerate(records):
@@ -448,7 +470,10 @@ def _active_owned_task_ids(project_token: Optional[str]) -> set[str]:
     state = _ensure_project_state(project_token)
     owned = set()
     for agent in state["agent_states"].values():
-        if (agent.get("status") or "").lower() != "running":
+        if (
+            (agent.get("status") or "").lower() != "running"
+            and not bool(agent.get("resume_pending_task"))
+        ):
             continue
         current_task = agent.get("current_task")
         if not isinstance(current_task, dict):
@@ -462,6 +487,31 @@ def _active_owned_task_ids(project_token: Optional[str]) -> set[str]:
                 owned.add(linked_id)
     return owned
 
+
+def _find_active_task_owner(task_id: str, project_token: Optional[str]) -> str:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return ""
+    state = _ensure_project_state(project_token)
+    for agent_id, agent in state["agent_states"].items():
+        if _is_system_agent_id(agent_id):
+            continue
+        if (
+            (agent.get("status") or "").lower() != "running"
+            and not bool(agent.get("resume_pending_task"))
+        ):
+            continue
+        current_task = agent.get("current_task")
+        if not isinstance(current_task, dict):
+            continue
+        current_task_id = _task_identity(current_task)
+        if current_task_id and current_task_id == normalized_task_id:
+            return agent_id
+        for linked in (current_task.get("linked_tasks") or []):
+            if str(linked or "").strip() == normalized_task_id:
+                return agent_id
+    return ""
+
 # Backward compatibility default scope.
 agent_states = _get_agent_states(None)
 
@@ -473,38 +523,37 @@ agent_states = _get_agent_states(None)
 _COMPACT_CODE_RULES = """
 
 CRITICAL SCRIPT SIZE RULES:
-- Keep your script UNDER 300 lines total. This is very important.
-- Define a helper function at the top: def wf(path, content): and use it for every file.
-- Write each file's content using regular strings with explicit \\n, NOT triple-quoted multi-line strings.
+- Return a Bash shell script UNDER 300 lines total. This is very important.
+- Use shell commands to inspect and create files: ls, find, mkdir -p, cat <<'EOF' > file, grep -q, sed -i, cp, mv, rm -f, touch.
+- Write each file's content with heredocs via cat <<'EOF' > path or cat <<'EOF' >> path. Do NOT use Python code to write files.
 - Focus on the 10-15 most essential files. Do NOT try to create 30+ files in one script.
-- Each file write should be 1-3 lines of code, not 50-line inline strings.
+- Keep all work rooted in /workspace and prefer editing existing files instead of recreating whole trees.
 
 If you have want to add a comment to the task if you fell necessary or want to , wrap it in <comment>...</comment> tags anytime in your response. For example:
 <comment>
 I will implement a Flask backend with a PostgreSQL database as requested.
 </comment>
-```python
-# your code here
+```bash
+# your shell script here
 ```
 <comment>
 I finished the initial implementation, but note that the database still needs schema setup.
 </comment>
 
 Example of the CORRECT compact pattern:
-import os
+#!/usr/bin/env bash
+set -euo pipefail
+cd /workspace
+mkdir -p backend frontend/src/components
+cat <<'EOF' > backend/main.py
+from flask import Flask
 
-def wf(path, content):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(content)
-    print(f"[CREATED] {path}")
+app = Flask(__name__)
+EOF
+printf '[CREATED] backend/main.py\n'
+grep -q 'Flask' backend/main.py && printf '[CHECK] PASS backend/main.py\n'
 
-wf("/workspace/app/__init__.py", "from flask import Flask\\n\\ndef create_app():\\n    return Flask(__name__)\\n")
-wf("/workspace/requirements.txt", "flask>=2.3.0\\nsqlalchemy>=2.0\\ngunicorn>=21.0\\n")
-wf("/workspace/Dockerfile", "FROM python:3.11-slim\\nWORKDIR /app\\nCOPY . .\\nRUN pip install -r requirements.txt\\nCMD [\\"gunicorn\\", \\"app:app\\"]\\n")
-print("[CHECK] All files created... PASS")
-
-Do NOT use triple-quoted strings (''' or \"\"\") for file content. Use single-line strings with \\n.
+Do NOT use Python helpers like open(), pathlib, or os.makedirs() for file creation.
 """
 
 AGENT_SYSTEM_PROMPTS = {
@@ -529,8 +578,8 @@ CRITICAL: NEVER create or commit these files:
 Given a task description and Technical Specification, you must:
 1. READ the tech spec's FILE STRUCTURE section carefully
 2. Create files in the directories specified in the tech spec
-3. Generate a Python script that CREATES all necessary files and directories
-4. Use os.makedirs() and open() to create real files
+3. Generate a shell script that CREATES all necessary files and directories
+4. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
 5. Write real, production-quality code into each file
 6. NEVER create __pycache__ directories or .pyc files
 7. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
@@ -558,7 +607,7 @@ CRITICAL: NEVER create or commit these files:
 Given a task description and Technical Specification, you must:
 1. READ the tech spec's FILE STRUCTURE section carefully
 2. Identify technical, business, security, and operational risks
-3. Generate a Python script that CREATES mitigation files in the correct directories
+3. Generate a shell script that CREATES mitigation files in the correct directories
 4. NEVER create __pycache__ directories or .pyc files
 5. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
 6. Print === RISK SUMMARY === at the end
@@ -585,7 +634,7 @@ CRITICAL: NEVER create or commit these files:
 Given a task description and Technical Specification, you must:
 1. READ the tech spec's FILE STRUCTURE section carefully
 2. Break down the project into sprints and tasks
-3. Generate a Python script that CREATES the project scaffold following the tech spec structure
+3. Generate a shell script that CREATES the project scaffold following the tech spec structure
 4. Create source files, configs, deployment/orchestration, CI/CD, tests in correct directories
 5. NEVER create __pycache__ directories or .pyc files
 6. Print [SPRINT N] for each sprint, [CREATED] for each file, [CHECK] for validations
@@ -637,13 +686,11 @@ async def _generate_technical_spec(
     if not key or key == "your-api-key-here":
         return {"status": "skipped", "reason": "no_api_key", "spec": ""}
 
-    # Build task summary for the architect
-    task_summaries = []
-    for i, t in enumerate(tasks[:30], 1):
-        title = t.get("title", "Untitled")
-        desc = (t.get("description", "") or "")[:200]
-        task_summaries.append(f"  {i}. {title}: {desc}")
-    task_list_text = "\n".join(task_summaries) if task_summaries else "No tasks provided."
+    task_list_text = _build_task_context_block(
+        tasks,
+        max_total_chars=14000,
+        max_description_chars=220,
+    )
 
     architect_prompt = f"""You are a Senior Software Architect Agent. Your job is to produce a
 CANONICAL TECHNICAL SPECIFICATION that all coding agents will reference as the single source of truth.
@@ -755,6 +802,7 @@ Do NOT use vague descriptions like "appropriate fields" — name every field exp
             "status": "generated",
             "spec": spec_text,
             "generated_at": datetime.utcnow().isoformat(),
+            "task_signature": _master_task_signature(tasks),
             "task_count": len(tasks),
             "char_length": len(spec_text),
         }
@@ -856,7 +904,7 @@ Write a system prompt for the Coding Agent that:
 3. Tells it what files/symbols already exist (from KG) that it should import/reference
 4. Warns about any files being edited by other agents (avoid conflicts)
 5. Specifies the exact naming conventions to follow
-6. Ends with the code generation rules (create files under /workspace/, use wf() helper, etc.)
+6. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
 
 The prompt MUST include these code generation rules at the end:
 {_COMPACT_CODE_RULES}
@@ -1189,7 +1237,9 @@ async def _create_github_pr(
     """
     # Extract owner/repo from URL
     # Supports: https://github.com/owner/repo.git, https://github.com/owner/repo
-    clean_url = repo_url.rstrip("/").rstrip(".git")
+    clean_url = repo_url.rstrip("/")
+    if clean_url.lower().endswith(".git"):
+        clean_url = clean_url[:-4]
     parts = clean_url.split("/")
     if len(parts) < 2:
         return {"success": False, "error": f"Cannot parse owner/repo from URL: {repo_url}"}
@@ -1271,9 +1321,10 @@ async def _create_github_pr(
                 }
 
             else:
+                repo_ref = f"{owner}/{repo}"
                 return {
                     "success": False,
-                    "error": f"GitHub API {response.status_code}: {response.text[:300]}",
+                    "error": f"GitHub API {response.status_code} for {repo_ref}: {response.text[:300]}",
                 }
 
     except Exception as e:
@@ -1422,11 +1473,14 @@ def _detect_issues_from_output(stdout: str, stderr: str, exit_code: int = 0) -> 
 
 
 def _is_builder_script_crash(stderr: str) -> bool:
-    """Detect if the builder SCRIPT itself crashed (vs workspace file issues)."""
+    """Detect if the build script itself crashed before meaningful workspace output."""
     if not stderr:
         return False
-    crash_indicators = ["SyntaxError", "IndentationError", "NameError", "ImportError",
-                        "unterminated", "invalid syntax", "unexpected EOF"]
+    crash_indicators = [
+        "SyntaxError", "IndentationError", "NameError", "ImportError",
+        "unterminated", "invalid syntax", "unexpected EOF",
+        "syntax error near unexpected token", "unexpected end of file", "bad substitution",
+    ]
     return any(indicator in stderr for indicator in crash_indicators)
 
 
@@ -1452,7 +1506,7 @@ async def _call_ai_for_code(
     system_prompt_override: str = "",
     tech_spec: str = "",
 ) -> tuple[str, str]:
-    """Call AI model to generate project-building Python code.
+    """Call AI model to generate a project-building shell script.
     
     Args:
         task_description: The task to implement
@@ -1560,7 +1614,7 @@ async def _call_ai_for_fix(
     Call AI to generate a fix script. Enhanced with:
     - KG error context: relevant code from the Knowledge Graph to fix errors
     - Tech spec: canonical architecture reference to stay consistent
-    If builder_crashed=True, the builder script itself had a SyntaxError
+    If builder_crashed=True, the previous build script failed before producing files
     and /workspace/ is empty, so we regenerate from scratch.
     """
     url = settings.ai_api_url
@@ -1589,17 +1643,18 @@ The error was:
 ORIGINAL TASK:
 {task_description}
 {supplementary_context}
-You MUST generate a NEW, SHORTER builder script (UNDER 300 lines) that creates the project.
+You MUST generate a NEW, SHORTER shell script (UNDER 300 lines) that creates the project.
 The /workspace/ directory is currently EMPTY - you need to create everything from scratch.
 
 CRITICAL RULES TO AVOID CRASHING AGAIN:
-1. Define a helper: def wf(path, content): os.makedirs(os.path.dirname(path), exist_ok=True); open(path,'w').write(content); print(f"[CREATED] {{path}}")
-2. Use SINGLE-LINE strings with \\n for file content. NEVER use triple-quoted strings (\"\"\" or ''').
-3. Keep the script under 300 lines total.
-4. Focus on the 10-15 most important files only.
-5. Print [CREATED] for each file and [CHECK] PASS for each validation.
-6. Print === SUMMARY === at the end.
-7. Use ONLY ASCII characters.
+1. Start with a valid shell script for bash.
+2. Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
+3. Do NOT use Python to write files.
+4. Keep the script under 300 lines total.
+5. Focus on the 10-15 most important files only.
+6. Print [CREATED] for each file and [CHECK] PASS for each validation.
+7. Print === SUMMARY === at the end.
+8. Use ONLY ASCII characters.
 """
     else:
         fix_prompt = f"""SELF-HEALING ITERATION {iteration}: FIX ALL ISSUES IN /workspace/
@@ -1614,7 +1669,7 @@ PREVIOUS OUTPUT (for context):
 ORIGINAL TASK:
 {task_description}
 {supplementary_context}
-Generate a NEW Python script (UNDER 300 lines) that:
+Generate a NEW shell script (UNDER 300 lines) that:
 1. FIXES each issue by modifying or creating files under /workspace/
 2. Actually writes/overwrites the files that need fixing
 3. Creates any missing files, directories, or configurations
@@ -1623,8 +1678,8 @@ Generate a NEW Python script (UNDER 300 lines) that:
 6. Print === FIX SUMMARY === at the end
 
 IMPORTANT RULES:
-- Use SINGLE-LINE strings with \\n. NEVER use triple-quoted strings.
-- Define a helper: def wf(path, content): for writing files.
+- Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
+- Do NOT use Python helpers or Python file-writing code.
 - Keep under 300 lines. Use ONLY ASCII characters.
 - Exit with code 0 if all fixes pass, 1 if any remain.
 """
@@ -1673,7 +1728,86 @@ IMPORTANT RULES:
 
 # ── Docker Configuration ────────────────────────────────────────────────────
 
-DOCKER_BASE_IMAGE = "python:3.10-slim"
+AGENT_RUNTIME_IMAGE = "brd-agent-runtime:v5"
+AGENT_RUNTIME_DOCKERFILE = os.path.join(
+    os.path.dirname(__file__),
+    "docker",
+    "agent-runtime.Dockerfile",
+)
+AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(__file__)
+DOCKER_BASE_IMAGE = AGENT_RUNTIME_IMAGE
+
+
+def _ensure_agent_runtime_image() -> Dict[str, Any]:
+    """Build the shared agent runtime image when it is not present locally."""
+    if not os.path.exists(AGENT_RUNTIME_DOCKERFILE):
+        return {
+            "success": False,
+            "error": f"Missing agent runtime blueprint: {AGENT_RUNTIME_DOCKERFILE}",
+        }
+
+    inspect = subprocess.run(
+        ["docker", "image", "inspect", AGENT_RUNTIME_IMAGE],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if inspect.returncode == 0:
+        return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": False}
+
+    build = subprocess.run(
+        [
+            "docker",
+            "build",
+            "-t",
+            AGENT_RUNTIME_IMAGE,
+            "-f",
+            AGENT_RUNTIME_DOCKERFILE,
+            AGENT_RUNTIME_BUILD_CONTEXT,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    if build.returncode != 0:
+        error_tail = (build.stderr or build.stdout or "").strip()
+        return {
+            "success": False,
+            "error": f"Agent runtime image build failed: {error_tail[-1200:]}",
+        }
+
+    return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": True}
+
+
+def _verify_container_toolchain(container_name: str) -> Dict[str, Any]:
+    """Verify the runtime container has the required toolchain preinstalled."""
+    checks = {
+        "git": "git --version",
+        "python3": "python3 --version",
+        "pip": "pip --version",
+        "npm": "npm --version",
+    }
+    versions: Dict[str, str] = {}
+
+    for tool_name, command in checks.items():
+        result = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-lc", command],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            return {
+                "success": False,
+                "error": (
+                    f"Missing required tool '{tool_name}' in runtime container: "
+                    f"{(result.stderr or result.stdout or '').strip()}"
+                ),
+            }
+        version_line = (result.stdout or result.stderr or "").splitlines()
+        versions[tool_name] = version_line[0].strip() if version_line else ""
+
+    return {"success": True, "versions": versions}
 
 
 def _check_docker_available() -> bool:
@@ -1991,6 +2125,70 @@ def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str], projec
     }
 
 
+def prime_project_git_credentials(
+    agents_config: Optional[Dict[str, Dict[str, str]]],
+    project_token: Optional[str] = None,
+) -> Dict[str, str]:
+    if not isinstance(agents_config, dict) or not agents_config:
+        return {"repo_url": "", "token": ""}
+
+    project_agents = _get_agent_states(project_token)
+    repo_url = ""
+    token = ""
+    for agent_id in sorted(agents_config):
+        cfg = agents_config.get(agent_id) or {}
+        if not isinstance(cfg, dict):
+            continue
+        repo_val = str(cfg.get("git_repo_url") or "").strip()
+        token_val = str(cfg.get("git_token") or "").strip()
+        if repo_val and not repo_url:
+            repo_url = repo_val
+        if token_val and not token:
+            token = token_val
+        agent = project_agents.get(agent_id)
+        if not agent:
+            continue
+        if repo_val:
+            agent["git_repo_url"] = repo_val
+        if token_val:
+            agent["git_token"] = token_val
+
+    if repo_url:
+        for special_agent_id in (GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID):
+            agent = project_agents.get(special_agent_id)
+            if not agent:
+                continue
+            agent["git_repo_url"] = repo_url
+            if token:
+                agent["git_token"] = token
+
+    return {"repo_url": repo_url, "token": token}
+
+
+def _resolve_project_git_credentials(
+    project_token: Optional[str] = None,
+    agents_config: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Dict[str, str]:
+    seeded = prime_project_git_credentials(agents_config, project_token=project_token)
+    if seeded.get("repo_url"):
+        return seeded
+
+    project_agents = _get_agent_states(project_token)
+    preferred_order = [GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID]
+    preferred_order.extend(
+        agent_id
+        for agent_id in sorted(project_agents)
+        if agent_id not in preferred_order
+    )
+    for agent_id in preferred_order:
+        agent = project_agents.get(agent_id) or {}
+        repo_url = str(agent.get("git_repo_url") or "").strip()
+        token = str(agent.get("git_token") or "").strip()
+        if repo_url:
+            return {"repo_url": repo_url, "token": token}
+    return {"repo_url": "", "token": ""}
+
+
 def _get_default_branch(container_name: str) -> str:
     # Try origin/HEAD symbolic ref
     head_ref = subprocess.run(
@@ -2063,6 +2261,130 @@ def _collect_repo_summary(container_name: str) -> Dict[str, Any]:
                 pkg_scripts = {}
     summary["package_scripts"] = pkg_scripts
     return summary
+
+
+def _collect_workspace_file_paths(container_name: str) -> List[str]:
+    result = subprocess.run(
+        [
+            "docker", "exec", "-w", "/workspace", container_name, "sh", "-lc",
+            (
+                "find /workspace -type f "
+                "-not -path '*/.git/*' "
+                "-not -path '*/node_modules/*' "
+                "-not -path '*/dist/*' "
+                "-not -path '*/build/*' "
+                "-not -path '*/.next/*' "
+                "-not -path '*/.turbo/*' "
+                "-not -path '*/__pycache__/*' "
+                "-not -path '*/venv/*' "
+                "-not -path '*/.venv/*' "
+                "-not -path '*/.pytest_cache/*' "
+                "| sed 's|^/workspace/||' | LC_ALL=C sort"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        path.strip()
+        for path in (result.stdout or "").splitlines()
+        if path.strip()
+    ]
+
+
+def _refresh_workspace_contract_from_container(
+    container_name: str,
+    project_token: Optional[str],
+    *,
+    source: str = "git_repo",
+) -> Dict[str, Any]:
+    effective_project = str(project_token or "").strip()
+    if not effective_project:
+        return {"success": False, "error": "missing project token"}
+    try:
+        import context_manager as ctx_mgr
+    except Exception as exc:
+        return {"success": False, "error": f"context manager unavailable: {exc}"}
+
+    file_paths = _collect_workspace_file_paths(container_name)
+    if not file_paths:
+        return {"success": False, "error": "no repository files detected"}
+
+    contract = ctx_mgr.update_workspace_contract_from_file_paths(
+        effective_project,
+        file_paths,
+        source=source,
+        merge_ready=True,
+        force_refresh=True,
+    )
+    return {
+        "success": True,
+        "file_count": len(file_paths),
+        "contract": contract,
+    }
+
+
+async def _refresh_workspace_contract_from_git_repo(
+    *,
+    project_token: Optional[str],
+    repo_url: str,
+    token: str = "",
+    force: bool = False,
+) -> Dict[str, Any]:
+    effective_project = str(project_token or "").strip()
+    repo_value = str(repo_url or "").strip()
+    if not effective_project or not repo_value:
+        return {"success": False, "skipped": True, "error": "missing project token or repo url"}
+
+    state = _ensure_project_state(project_token)
+    probe_state = state.get("workspace_contract_probe") if isinstance(state.get("workspace_contract_probe"), dict) else {}
+    loaded_at = float(probe_state.get("loaded_at") or 0.0)
+    if (
+        not force
+        and probe_state.get("repo_url") == repo_value
+        and (time.time() - loaded_at) < WORKSPACE_CONTRACT_PROBE_TTL_SECONDS
+    ):
+        return {"success": True, "cached": True, "contract": probe_state.get("contract") or {}}
+
+    container_name = f"workspace_contract_{uuid.uuid4().hex[:8]}"
+    try:
+        container_result = await asyncio.to_thread(_create_persistent_container, container_name)
+        if not container_result.get("success"):
+            return {"success": False, "error": container_result.get("error") or "container creation failed"}
+
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            return {"success": False, "error": toolchain_result.get("error") or "toolchain verification failed"}
+
+        auth_url = _build_git_auth_url(repo_value, token)
+        clone = subprocess.run(
+            ["docker", "exec", container_name, "git", "clone", "--depth", "1", auth_url, "/workspace"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if clone.returncode != 0:
+            return {"success": False, "error": clone.stderr or clone.stdout or "git clone failed"}
+
+        refresh_result = _refresh_workspace_contract_from_container(
+            container_name,
+            project_token,
+            source="git_repo",
+        )
+        if refresh_result.get("success"):
+            state["workspace_contract_probe"] = {
+                "repo_url": repo_value,
+                "loaded_at": time.time(),
+                "source": "git_repo",
+                "file_count": int(refresh_result.get("file_count") or 0),
+                "contract": refresh_result.get("contract") or {},
+            }
+        return refresh_result
+    finally:
+        await asyncio.to_thread(_destroy_container, container_name)
 
 
 async def _call_ai_for_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
@@ -3117,14 +3439,13 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             _log_git_agent(f"Git manager container error: {container_result['error']}", "error", project_token=project_token)
             return
 
-        # Install git
-        install = subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if install.returncode != 0:
-            _log_git_agent(f"Git manager failed to install git: {install.stderr}", "error", project_token=project_token)
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            _log_git_agent(
+                f"Git manager runtime verification failed: {toolchain_result.get('error')}",
+                "error",
+                project_token=project_token,
+            )
             return
 
         # Configure git user
@@ -3141,7 +3462,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
         auth_url = _build_git_auth_url(repo_url, token)
         clone = subprocess.run(
             ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
             _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error", project_token=project_token)
@@ -3182,6 +3503,30 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 capture_output=True, text=True, timeout=15,
             ).returncode == 0
             base_ref = f"origin/{GIT_INTEGRATION_BRANCH}" if integration_exists else f"origin/{default_branch}"
+            base_branch_name = base_ref.replace("origin/", "", 1) if base_ref.startswith("origin/") else default_branch
+
+            try:
+                contract_sync = _sync_local_branch_from_remote(
+                    container_name,
+                    "__workspace_contract_probe__",
+                    base_branch_name,
+                )
+                if contract_sync.get("success"):
+                    refreshed_contract = _refresh_workspace_contract_from_container(
+                        container_name,
+                        project_token,
+                        source="git_repo",
+                    )
+                    if refreshed_contract.get("success"):
+                        _ensure_project_state(project_token)["workspace_contract_probe"] = {
+                            "repo_url": repo_url,
+                            "loaded_at": time.time(),
+                            "source": "git_repo",
+                            "file_count": int(refreshed_contract.get("file_count") or 0),
+                            "contract": refreshed_contract.get("contract") or {},
+                        }
+            except Exception as exc:
+                logger.warning("[%s] Failed to refresh workspace contract from merge base: %s", project_token or "", exc)
 
             ownership_gate = _check_path_ownership_gate(
                 container_name=container_name,
@@ -3477,18 +3822,16 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
 
 def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str) -> Dict[str, Any]:
     """
-    Install git, clone repo into /workspace/, and create the working branch.
+    Verify toolchain, clone repo into /workspace/, and create the working branch.
     Also detects whether bootstrap coordination is required.
     """
     try:
-        # 1. Install git
-        install = subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if install.returncode != 0:
-            return {"success": False, "error": f"Failed to install git: {install.stderr}"}
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            return {
+                "success": False,
+                "error": toolchain_result.get("error", "runtime toolchain verification failed"),
+            }
 
         # 2. Configure git user
         subprocess.run(
@@ -3508,7 +3851,7 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         )
         clone = subprocess.run(
             ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
             return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
@@ -3630,8 +3973,14 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             "needs_bootstrap": needs_bootstrap,
         }
 
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Git setup timed out"}
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "success": False,
+            "error": (
+                f"Git setup timed out while running: "
+                f"{' '.join(str(part) for part in (exc.cmd or []))}"
+            ),
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -3880,6 +4229,13 @@ yarn-error.log
 def _create_persistent_container(container_name: str) -> Dict[str, Any]:
     """Create and start a persistent Docker container with /workspace/ directory."""
     try:
+        image_result = _ensure_agent_runtime_image()
+        if not image_result.get("success"):
+            return {
+                "success": False,
+                "error": image_result.get("error", "runtime image unavailable"),
+            }
+
         # Create container that stays alive (sleep infinity)
         create_result = subprocess.run(
             ["docker", "create", "--name", container_name, "-w", "/workspace",
@@ -3904,6 +4260,14 @@ def _create_persistent_container(container_name: str) -> Dict[str, Any]:
             capture_output=True, text=True, timeout=10,
         )
 
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
+            return {
+                "success": False,
+                "error": toolchain_result.get("error", "runtime toolchain verification failed"),
+            }
+
         return {"success": True, "container_name": container_name}
 
     except Exception as e:
@@ -3912,13 +4276,24 @@ def _create_persistent_container(container_name: str) -> Dict[str, Any]:
 
 
 def _exec_script_in_container(container_name: str, code: str, script_label: str = "script") -> Dict[str, Any]:
-    """Copy a Python script into a running container and execute it."""
+    """Copy a shell script into a running container and execute it with bash."""
+    script_body = str(code or "").strip()
+    if not script_body:
+        return {
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "Empty build script",
+            "error": "empty_script",
+        }
+    if not script_body.startswith("#!"):
+        script_body = "#!/usr/bin/env bash\nset -euo pipefail\n\n" + script_body
+
     # Write to local temp file
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix=f"agent_{script_label}_",
+        mode="w", suffix=".sh", delete=False, prefix=f"agent_{script_label}_",
         encoding="utf-8",
     ) as f:
-        f.write(code)
+        f.write(script_body)
         script_path = f.name
 
     script_name = os.path.basename(script_path)
@@ -3936,9 +4311,14 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
                 "error": f"docker cp failed: {cp_result.stderr}",
             }
 
+        subprocess.run(
+            ["docker", "exec", container_name, "chmod", "+x", container_script],
+            capture_output=True, text=True, timeout=10,
+        )
+
         # Execute inside container
         result = subprocess.run(
-            ["docker", "exec", container_name, "python3", container_script],
+            ["docker", "exec", container_name, "bash", container_script],
             capture_output=True, text=True, timeout=180,
         )
 
@@ -4097,6 +4477,7 @@ def _parse_stats_from_output(stdout: str, agent_type: str) -> Dict[str, Any]:
 async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fetch ALL pages of tasks from the external task management API."""
     from task_service import task_service
+
     def _extract_entity_info(raw_value: Any, key: str):
         entity_id = None
         entity_name = None
@@ -4127,6 +4508,91 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
             except Exception:
                 pass
         return "9999-12-31"
+
+    def _normalize_relation_ids(raw_value: Any) -> List[str]:
+        values: List[str] = []
+
+        def _append(value: Any) -> None:
+            if isinstance(value, dict):
+                nested = (
+                    value.get("id")
+                    or value.get("task_id")
+                    or value.get("external_id")
+                    or value.get("value")
+                    or value.get("pk")
+                )
+                if nested not in (None, ""):
+                    _append(nested)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _append(item)
+                return
+            if value in (None, ""):
+                return
+            text = str(value).strip()
+            if text:
+                values.append(text)
+
+        if isinstance(raw_value, str):
+            raw_text = raw_value.strip()
+            if raw_text.startswith("[") and raw_text.endswith("]"):
+                try:
+                    _append(json.loads(raw_text))
+                except Exception:
+                    _append(raw_text)
+            elif "," in raw_text:
+                for part in raw_text.split(","):
+                    _append(part)
+            else:
+                _append(raw_text)
+        else:
+            _append(raw_value)
+
+        deduped: List[str] = []
+        seen = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
+
+    def _extract_primary_assignee(task_payload: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        direct_id = (
+            task_payload.get("assigned_agent")
+            or task_payload.get("assignee")
+            or task_payload.get("assigned_to")
+        )
+        direct_name = (
+            task_payload.get("assigned_agent_name")
+            or task_payload.get("assignee_name")
+            or task_payload.get("assigned_to_name")
+        )
+        if direct_id or direct_name:
+            return (
+                str(direct_id).strip() if direct_id not in (None, "") else None,
+                str(direct_name).strip() if direct_name not in (None, "") else None,
+            )
+
+        raw_assignees = task_payload.get("assignees")
+        assignees = raw_assignees if isinstance(raw_assignees, list) else [raw_assignees]
+        for assignee in assignees:
+            if isinstance(assignee, dict):
+                assignee_id = assignee.get("user_id") or assignee.get("id") or assignee.get("agent_id")
+                assignee_name = (
+                    assignee.get("name")
+                    or assignee.get("username")
+                    or assignee.get("full_name")
+                    or assignee.get("email")
+                )
+                return (
+                    str(assignee_id).strip() if assignee_id not in (None, "") else None,
+                    str(assignee_name).strip() if assignee_name not in (None, "") else None,
+                )
+            if assignee not in (None, ""):
+                return str(assignee).strip(), None
+        return None, None
 
     try:
         task_token = get_project_task_token(project_token)
@@ -4170,25 +4636,52 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
             external_id = t.get("external_id")
             sprint_id, sprint_name = _extract_entity_info(t.get("sprint"), "sprint")
             milestone_id, milestone_name = _extract_entity_info(t.get("milestone"), "milestone")
+            assigned_agent, assigned_agent_name = _extract_primary_assignee(t)
+            linked_task_ids = _normalize_relation_ids(t.get("linked_tasks"))
+            dependency_ids = _normalize_relation_ids(
+                t.get("dependencies") if t.get("dependencies") not in (None, "") else t.get("dependency_ids")
+            )
             if sprint_id in (None, ""):
                 sprint_id = t.get("sprint_id")
             if milestone_id in (None, ""):
                 milestone_id = t.get("milestone_id")
             task_start_date = t.get("startdate") or t.get("start_date")
             task_deadline = t.get("deadline") or t.get("end_date")
+            task_title = t.get("taskName") or t.get("title") or "Untitled Task"
+            task_description = t.get("description") or t.get("details") or task_title or ""
+            task_phase = str(
+                t.get("phase")
+                or t.get("task_phase")
+                or t.get("taskPhase")
+                or ""
+            ).strip()
+            task_domain = str(
+                t.get("domain")
+                or t.get("task_domain")
+                or t.get("taskDomain")
+                or ""
+            ).strip()
+            wallet_value = _to_int(t.get("task_wallet", t.get("wallet")))
             normalized.append({
                 "id": str(task_id),
                 "external_id": external_id if external_id is not None else task_id,
-                "title": t.get("taskName") or t.get("title") or "Untitled Task",
-                "description": t.get("description") or t.get("taskName") or "",
+                "title": task_title,
+                "taskName": task_title,
+                "description": task_description,
                 "priority": (t.get("priority") or "medium").lower(),
                 "status": t.get("taskStatus") or t.get("status") or "pending",
                 "task_type": t.get("task_type", "TASK"),
                 "created_at": t.get("created_at") or datetime.utcnow().isoformat(),
-                "assigned_agent": None,
-                "assigned_agent_name": None,
+                "assigned_agent": assigned_agent,
+                "assigned_agent_name": assigned_agent_name,
                 "started_at": None,
-                "linked_tasks": t.get("linked_tasks") or [],
+                "linked_tasks": linked_task_ids,
+                "dependencies": dependency_ids,
+                "phase": task_phase,
+                "task_phase": task_phase,
+                "domain": task_domain,
+                "task_domain": task_domain,
+                "wallet": wallet_value if wallet_value is not None else 0,
                 "checklist": checklist_items,
                 "sprint_id": sprint_id,
                 "sprint_name": sprint_name,
@@ -4295,6 +4788,268 @@ def _parse_agent_note_content(raw_content: Any) -> Dict[str, Any]:
             except Exception:
                 pass
     return {"entries": [{"summary": text}]}
+
+
+def _task_identity(task: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(task, dict):
+        return ""
+    return str(
+        _normalize_task_id(task)
+        or task.get("external_id")
+        or task.get("id")
+        or ""
+    ).strip()
+
+
+def _latest_active_status_note_entry(payload: Dict[str, Any]) -> Dict[str, Any]:
+    active_statuses = {"in_progress", "running", "started"}
+    best_entry: Dict[str, Any] = {}
+    best_key = ""
+    for entry in _coerce_note_entries(payload):
+        task_id = str(entry.get("task_id") or "").strip()
+        status_value = str(entry.get("status") or "").strip().lower()
+        if not task_id or status_value not in active_statuses:
+            continue
+        sort_key = (
+            str(entry.get("updated_at") or "").strip()
+            or str(entry.get("started_at") or "").strip()
+            or task_id
+        )
+        if sort_key >= best_key:
+            best_key = sort_key
+            best_entry = entry
+    return best_entry
+
+
+def _agent_identity_keys(agent_id: str, agent_name: Optional[str]) -> set[str]:
+    values = {
+        str(agent_id or "").strip().lower(),
+        normalize_agent_name(agent_id, agent_name).strip().lower(),
+        build_external_agent_username(agent_id, agent_name).strip().lower(),
+    }
+    compacted = {
+        _re.sub(r"[^a-z0-9]", "", value)
+        for value in values
+        if value
+    }
+    return {value for value in values | compacted if value}
+
+
+def _resolve_assigned_runtime_agent_id(
+    task: Dict[str, Any],
+    agent_states: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    raw_values = [
+        str(task.get("assigned_agent") or "").strip(),
+        str(task.get("assigned_agent_name") or "").strip(),
+    ]
+    candidate_values = {
+        value.lower()
+        for value in raw_values
+        if value
+    }
+    candidate_values.update(
+        _re.sub(r"[^a-z0-9]", "", value)
+        for value in list(candidate_values)
+        if value
+    )
+    if not candidate_values:
+        return None
+
+    for agent_id, agent in agent_states.items():
+        if _is_system_agent_id(agent_id):
+            continue
+        if _agent_identity_keys(agent_id, agent.get("name")) & candidate_values:
+            return agent_id
+    return None
+
+
+async def _restore_persisted_agent_assignments(
+    *,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    agent_ids: Optional[List[str]] = None,
+    external_tasks: Optional[List[Dict[str, Any]]] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    if task_token:
+        set_project_task_token(project_token, task_token)
+
+    effective_token = task_token or get_project_task_token(project_token)
+    state = _ensure_project_state(project_token)
+    restore_meta = state.setdefault("persisted_assignment_restore", {})
+    agent_states = state["agent_states"]
+    claimed_task_ids = state["claimed_task_ids"]
+    task_claim_lock = state["task_claim_lock"]
+
+    target_agent_ids = [
+        agent_id
+        for agent_id in (agent_ids or list(agent_states.keys()))
+        if agent_id in agent_states and not _is_system_agent_id(agent_id)
+    ]
+    if not target_agent_ids:
+        return {"count": 0, "recovered": []}
+
+    if (
+        not force
+        and str(restore_meta.get("task_token") or "").strip() == str(effective_token or "").strip()
+        and restore_meta.get("completed") is True
+    ):
+        return {
+            "count": 0,
+            "recovered": [],
+            "cached": True,
+        }
+
+    tasks = external_tasks
+    if tasks is None:
+        try:
+            tasks = await _fetch_external_tasks(project_token)
+        except Exception:
+            tasks = []
+    if isinstance(tasks, list):
+        state["tasks"] = tasks
+    else:
+        tasks = []
+
+    task_by_id = {}
+    for task in tasks:
+        tid = _task_identity(task)
+        if tid:
+            task_by_id[tid] = task
+
+    note_payloads: Dict[str, Dict[str, Any]] = {}
+    if effective_token:
+        async def _load_status_payload(agent_id: str) -> tuple[str, Dict[str, Any]]:
+            payload = await _get_existing_note_payload(
+                title=_note_title("STATUS", project_token, agent_id),
+                project_token=project_token,
+                task_token=effective_token,
+            )
+            return agent_id, payload if isinstance(payload, dict) else {}
+
+        loaded = await asyncio.gather(
+            *(_load_status_payload(agent_id) for agent_id in target_agent_ids),
+            return_exceptions=True,
+        )
+        for item in loaded:
+            if isinstance(item, tuple) and len(item) == 2:
+                note_payloads[item[0]] = item[1]
+
+    assigned_task_by_agent: Dict[str, Dict[str, Any]] = {}
+    for task in tasks:
+        if _task_status_is_done(task.get("status")):
+            continue
+        owner_agent_id = _resolve_assigned_runtime_agent_id(task, agent_states)
+        if owner_agent_id and owner_agent_id in target_agent_ids:
+            assigned_task_by_agent.setdefault(owner_agent_id, task)
+
+    recovered_entries: List[Dict[str, Any]] = []
+    async with task_claim_lock:
+        for agent_id in target_agent_ids:
+            agent = agent_states.get(agent_id)
+            if not agent:
+                continue
+
+            recovery_source = ""
+            recovered_task: Optional[Dict[str, Any]] = None
+
+            current_task = agent.get("current_task")
+            current_task_id = _task_identity(current_task)
+            if current_task_id:
+                external_current = task_by_id.get(current_task_id)
+                if external_current and not _task_status_is_done(external_current.get("status")):
+                    recovered_task = dict(external_current)
+                    recovery_source = "runtime"
+
+            if recovered_task is None:
+                payload = note_payloads.get(agent_id) or {}
+                active_entry = _latest_active_status_note_entry(payload)
+                note_task_id = str(active_entry.get("task_id") or "").strip()
+                external_note_task = task_by_id.get(note_task_id)
+                if external_note_task and not _task_status_is_done(external_note_task.get("status")):
+                    recovered_task = dict(external_note_task)
+                    recovery_source = "status_note"
+
+            if recovered_task is None:
+                external_assigned = assigned_task_by_agent.get(agent_id)
+                if external_assigned and not _task_status_is_done(external_assigned.get("status")):
+                    recovered_task = dict(external_assigned)
+                    recovery_source = "external_assignee"
+
+            if recovered_task is None:
+                if agent.get("resume_pending_task"):
+                    agent["resume_pending_task"] = False
+                if (
+                    (agent.get("status") or "").lower() == "idle"
+                    and isinstance(agent.get("current_task"), dict)
+                ):
+                    agent["current_task"] = None
+                    if str(agent.get("progress_message") or "").startswith("Ready to resume:"):
+                        agent["progress"] = 0
+                        agent["progress_message"] = ""
+                continue
+
+            recovered_task = _apply_master_task_metadata(recovered_task, project_token=project_token)
+            if project_token:
+                recovered_task.setdefault("_project_token", project_token)
+            task_id = _task_identity(recovered_task)
+            other_owner = _find_active_task_owner(task_id, project_token) if task_id else ""
+            if other_owner and other_owner != agent_id:
+                if agent.get("resume_pending_task"):
+                    agent["resume_pending_task"] = False
+                agent["current_task"] = None
+                if str(agent.get("progress_message") or "").startswith("Ready to resume:"):
+                    agent["progress"] = 0
+                    agent["progress_message"] = ""
+                continue
+
+            current_task_id = _task_identity(agent.get("current_task"))
+            if task_id and task_id in claimed_task_ids and current_task_id != task_id:
+                if agent.get("resume_pending_task"):
+                    agent["resume_pending_task"] = False
+                agent["current_task"] = None
+                if str(agent.get("progress_message") or "").startswith("Ready to resume:"):
+                    agent["progress"] = 0
+                    agent["progress_message"] = ""
+                continue
+
+            recovered_task["assigned_agent"] = agent_id
+            recovered_task["assigned_agent_name"] = normalize_agent_name(agent_id, agent.get("name"))
+
+            agent["current_task"] = recovered_task
+            agent["resume_pending_task"] = True
+            if (agent.get("status") or "").lower() == "idle":
+                agent["progress"] = 0
+                agent["progress_message"] = f"Ready to resume: {str(recovered_task.get('title') or 'Untitled task')[:80]}"
+
+            if task_id:
+                claimed_task_ids.add(task_id)
+            for linked_id in (recovered_task.get("linked_tasks") or []):
+                linked_key = str(linked_id or "").strip()
+                if linked_key:
+                    claimed_task_ids.add(linked_key)
+
+            recovered_entries.append({
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "title": str(recovered_task.get("title") or recovered_task.get("taskName") or "Untitled task"),
+                "source": recovery_source or "unknown",
+            })
+
+    result = {
+        "count": len(recovered_entries),
+        "recovered": recovered_entries,
+    }
+    restore_meta.update(
+        {
+            "completed": True,
+            "completed_at": time.time(),
+            "task_token": effective_token,
+            "count": len(recovered_entries),
+        }
+    )
+    return result
 
 
 def _embed_note_payload(content_text: str, content_payload: Dict[str, Any]) -> str:
@@ -4483,6 +5238,10 @@ def _allowed_master_tree_root_segments(
         text = _normalize_master_tree_path_candidate(path)
         if text:
             allowed.add(text.split("/", 1)[0].lower())
+    for path in (contract.get("allowed_top_level_dirs") or []):
+        text = _normalize_master_tree_path_candidate(path)
+        if text and "/" not in text:
+            allowed.add(text.lower())
     for path in (contract.get("root_files") or []):
         text = _normalize_master_tree_path_candidate(path)
         if text and "/" not in text:
@@ -4554,7 +5313,31 @@ def _is_valid_master_tree_path_candidate(
     return True
 
 
-def _infer_repo_path_from_filename(name: str, stack_profile: Optional[Dict[str, Any]] = None) -> str:
+def _preferred_contract_source_root(
+    workspace_contract: Optional[Dict[str, Any]],
+    kind: str,
+    fallback: str,
+) -> str:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    if kind == "backend":
+        preferred_roots = contract.get("canonical_backend_roots") or []
+    else:
+        preferred_roots = contract.get("canonical_frontend_roots") or []
+    normalized_roots = [
+        _normalize_master_tree_path_candidate(path)
+        for path in preferred_roots
+        if _normalize_master_tree_path_candidate(path)
+    ]
+    if normalized_roots:
+        return sorted(normalized_roots, key=lambda item: (item.count("/"), len(item)))[0]
+    return fallback
+
+
+def _infer_repo_path_from_filename(
+    name: str,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> str:
     filename = str(name or "").strip().strip("`\"'")
     if not filename or not _looks_like_repo_file_name(filename):
         return ""
@@ -4565,8 +5348,10 @@ def _infer_repo_path_from_filename(name: str, stack_profile: Optional[Dict[str, 
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     backend_key = str(stack.get("backend_key") or "").strip()
     frontend_key = str(stack.get("frontend_key") or "").strip()
-    backend_src = "backend/src" if backend_key == "express" else "backend/app"
-    frontend_src = "frontend/src/app" if frontend_key == "nextjs" else "frontend/src"
+    backend_default = "backend/src" if backend_key == "express" else "backend/app"
+    frontend_default = "frontend/src/app" if frontend_key == "nextjs" else "frontend/src"
+    backend_src = _preferred_contract_source_root(workspace_contract, "backend", backend_default)
+    frontend_src = _preferred_contract_source_root(workspace_contract, "frontend", frontend_default)
 
     if lower in {
         "readme.md",
@@ -4589,6 +5374,8 @@ def _infer_repo_path_from_filename(name: str, stack_profile: Optional[Dict[str, 
     if lower in {"pyproject.toml", "requirements.txt", "requirements-dev.txt", "alembic.ini"}:
         return f"backend/{filename}"
 
+    if lower in {"main.py", "config.py", "auth.py", "models.py", "database.py", "schemas.py"} and backend_src == "backend":
+        return f"backend/{filename}"
     if lower in {"index.ts", "app.ts", "server.ts"}:
         return f"{backend_src}/{filename}"
     if lower in {"main.py", "config.py"}:
@@ -4633,8 +5420,12 @@ def _infer_repo_path_from_filename(name: str, stack_profile: Optional[Dict[str, 
     return filename
 
 
-def _default_master_tree_paths(stack_profile: Optional[Dict[str, Any]] = None) -> List[str]:
+def _default_master_tree_paths(
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> List[str]:
     stack = stack_profile if isinstance(stack_profile, dict) else {}
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
     frontend_key = str(stack.get("frontend_key") or "").strip()
     backend_key = str(stack.get("backend_key") or "").strip()
 
@@ -4643,6 +5434,16 @@ def _default_master_tree_paths(stack_profile: Optional[Dict[str, Any]] = None) -
         ".env.example",
         "docker-compose.yml",
     }
+
+    if contract.get("status") == "ready":
+        for module in (contract.get("modules") or []):
+            if not isinstance(module, dict):
+                continue
+            for manifest in (module.get("manifests") or [])[:10]:
+                normalized_manifest = _normalize_master_tree_path_candidate(manifest)
+                if normalized_manifest:
+                    paths.add(normalized_manifest)
+        return sorted(paths)
 
     if frontend_key == "nextjs":
         paths.update({
@@ -4708,8 +5509,13 @@ def _collect_master_tree_required_paths(
         for item in (payload.get(key) or []):
             candidates.extend(_extract_task_paths_from_text(item))
 
-    candidates.extend(_default_master_tree_paths(stack_profile))
+    candidates.extend(_default_master_tree_paths(stack_profile, contract))
     candidates.extend(str(path or "") for path in (contract.get("root_files") or []))
+    for module in (contract.get("modules") or []):
+        if not isinstance(module, dict):
+            continue
+        for manifest in (module.get("manifests") or []):
+            candidates.append(str(manifest or ""))
 
     directories = {
         str(path or "").strip().strip("/")
@@ -4726,7 +5532,11 @@ def _collect_master_tree_required_paths(
             continue
         inferred = normalized
         if "/" not in inferred:
-            inferred = _infer_repo_path_from_filename(inferred, stack_profile) or inferred
+            inferred = _infer_repo_path_from_filename(
+                inferred,
+                stack_profile,
+                workspace_contract=contract,
+            ) or inferred
         if not _is_valid_master_tree_path_candidate(
             inferred,
             stack_profile=stack_profile,
@@ -4859,19 +5669,33 @@ def _sanitize_master_planned_files(
 
 def _build_master_task_plan(
     tasks: List[Dict[str, Any]],
-    limit: int = 40,
+    limit: Optional[int] = None,
     *,
     stack_profile: Optional[Dict[str, Any]] = None,
     workspace_contract: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     plan = []
-    for task in _sort_tasks_for_execution(tasks or [])[:limit]:
+    ordered_tasks = _sort_tasks_for_execution(tasks or [])
+    if isinstance(limit, int) and limit > 0:
+        ordered_tasks = ordered_tasks[:limit]
+    for task in ordered_tasks:
         task_id = _normalize_task_id(task)
+        task_dependencies = [
+            str(dep).strip()
+            for dep in (task.get("dependencies") or [])
+            if str(dep).strip()
+        ]
         plan.append({
             "task_id": str(task_id) if task_id is not None else "",
             "title": task.get("title") or task.get("taskName") or "Untitled task",
+            "description": str(task.get("description") or "").strip(),
             "phase": task.get("phase") or task.get("task_phase") or "",
+            "domain": _normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "",
             "priority": task.get("priority") or "medium",
+            "task_type": task.get("task_type") or "TASK",
+            "status": task.get("status") or "",
+            "wallet": task.get("wallet") or task.get("task_wallet") or 0,
+            "dependencies": task_dependencies,
             "assignee": task.get("assigned_agent") or "",
             "planned_files": _sanitize_master_planned_files(
                 _predict_task_file_intents(task),
@@ -4900,6 +5724,46 @@ def _master_worker_signature(project_token: Optional[str] = None) -> str:
             )
         )
     return "||".join(entries)
+
+
+def _workspace_contract_signature(workspace_contract: Optional[Dict[str, Any]] = None) -> str:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    if not contract:
+        return ""
+    modules = []
+    for module in (contract.get("modules") or []):
+        if not isinstance(module, dict):
+            continue
+        modules.append({
+            "root": str(module.get("root") or "").strip(),
+            "kind": str(module.get("kind") or "").strip(),
+            "source_roots": [
+                str(path or "").strip()
+                for path in (module.get("source_roots") or [])
+                if str(path or "").strip()
+            ],
+        })
+    payload = {
+        "allowed_top_level_dirs": [
+            str(path or "").strip()
+            for path in (contract.get("allowed_top_level_dirs") or [])
+            if str(path or "").strip()
+        ],
+        "allowed_source_roots": [
+            str(path or "").strip()
+            for path in (contract.get("allowed_source_roots") or [])
+            if str(path or "").strip()
+        ],
+        "root_files": [
+            str(path or "").strip()
+            for path in (contract.get("root_files") or [])
+            if str(path or "").strip()
+        ],
+        "modules": modules,
+    }
+    return hashlib.sha1(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
@@ -5201,14 +6065,100 @@ def _log_master_assignment_plan(
 
 
 def _master_task_signature(tasks: List[Dict[str, Any]]) -> str:
-    parts = []
+    digest = hashlib.sha256()
     for task in _sort_tasks_for_execution(tasks or []):
-        task_id = str(_normalize_task_id(task) or task.get("id") or "").strip()
-        title = str(task.get("title") or task.get("taskName") or "").strip()
-        priority = str(task.get("priority") or "").strip().lower()
-        phase = str(task.get("phase") or task.get("task_phase") or "").strip().lower()
-        parts.append(f"{task_id}|{title}|{priority}|{phase}")
-    return "||".join(parts)
+        payload = {
+            "task_id": str(_normalize_task_id(task) or task.get("id") or "").strip(),
+            "title": str(task.get("title") or task.get("taskName") or "").strip(),
+            "description": str(task.get("description") or "").strip(),
+            "priority": str(task.get("priority") or "").strip().lower(),
+            "phase": str(task.get("phase") or task.get("task_phase") or "").strip().lower(),
+            "domain": str(_normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "").strip().lower(),
+            "task_type": str(task.get("task_type") or "").strip().lower(),
+            "dependencies": [
+                str(dep).strip()
+                for dep in (task.get("dependencies") or [])
+                if str(dep).strip()
+            ],
+            "wallet": task.get("wallet") or task.get("task_wallet") or 0,
+        }
+        digest.update(json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _truncate_task_text(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _build_task_context_block(
+    tasks: List[Dict[str, Any]],
+    *,
+    max_total_chars: Optional[int] = None,
+    max_description_chars: int = 220,
+    include_file_hints: bool = False,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> str:
+    ordered_tasks = _sort_tasks_for_execution(tasks or [])
+    if not ordered_tasks:
+        return "No tasks provided."
+
+    remaining_budget = max_total_chars if isinstance(max_total_chars, int) and max_total_chars > 0 else None
+    lines = [f"Total tasks: {len(ordered_tasks)}"]
+
+    for index, task in enumerate(ordered_tasks, 1):
+        remaining_tasks = len(ordered_tasks) - index
+        min_reserved = remaining_tasks * 52 if remaining_budget is not None else 0
+        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+        phase = str(task.get("phase") or task.get("task_phase") or "").strip() or "unphased"
+        priority = str(task.get("priority") or "medium").strip() or "medium"
+        domain = str(_normalize_task_domain(task) or "").strip()
+        metadata = " | ".join(part for part in [phase, priority, domain] if part)
+
+        title_budget = 180
+        if remaining_budget is not None:
+            title_budget = max(32, min(180, remaining_budget - min_reserved - 24))
+        title = _truncate_task_text(task.get("title") or task.get("taskName") or "Untitled task", title_budget)
+
+        line = f"{index}. "
+        if task_id:
+            line += f"[{task_id}] "
+        line += f"[{metadata}] {title}"
+
+        desc_limit = max_description_chars
+        if remaining_budget is not None:
+            desc_limit = max(0, min(max_description_chars, remaining_budget - min_reserved - len(line) - 2))
+        task_description = _truncate_task_text(task.get("description") or "", desc_limit)
+        if task_description and desc_limit >= 24:
+            line += f": {task_description}"
+
+        file_hints: List[str] = []
+        if include_file_hints:
+            file_hints = _sanitize_master_planned_files(
+                _predict_task_file_intents(task),
+                stack_profile=stack_profile,
+                workspace_contract=workspace_contract,
+                limit=5,
+            )
+
+        if file_hints:
+            hint_text = f" | File hints: {', '.join(file_hints)}"
+            if remaining_budget is None:
+                line += hint_text
+            else:
+                available = remaining_budget - min_reserved - len(line)
+                if available >= 24:
+                    line += _truncate_task_text(hint_text, available)
+
+        lines.append(line)
+        if remaining_budget is not None:
+            remaining_budget -= len(line) + 1
+
+    return "\n".join(lines)
 
 
 def _infer_project_stack(
@@ -5293,7 +6243,6 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
     instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
     tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
-    recommended_assignments = payload.get("recommended_assignments") if isinstance(payload.get("recommended_assignments"), list) else []
     workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
     stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
 
@@ -5334,28 +6283,38 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     if tasks_considered:
         lines.append("")
         lines.append("## Tasks Considered")
-        for task in tasks_considered[:25]:
+        for task in tasks_considered:
             if not isinstance(task, dict):
                 continue
             task_title = str(task.get("title") or task.get("task_title") or "Untitled task").strip()
             task_phase = str(task.get("phase") or "").strip()
+            task_domain = str(task.get("domain") or "").strip()
             task_priority = str(task.get("priority") or "").strip()
+            task_type = str(task.get("task_type") or "").strip()
             task_id = str(task.get("task_id") or "").strip()
             header = f"- `{task_id}` {task_title}" if task_id else f"- {task_title}"
-            task_assignee = str(task.get("assignee") or "").strip()
-            opt_in_username = str(task.get("opt_in_username") or "").strip()
-            if task_phase or task_priority or task_assignee or opt_in_username:
+            if task_phase or task_domain or task_priority or task_type:
                 header += " | " + " | ".join(
                     item
                     for item in [
                         f"phase={task_phase}" if task_phase else "",
+                        f"domain={task_domain}" if task_domain else "",
                         f"priority={task_priority}" if task_priority else "",
-                        f"recommended={task_assignee}" if task_assignee else "",
-                        f"opt_in={opt_in_username}" if opt_in_username else "",
+                        f"type={task_type}" if task_type else "",
                     ]
                     if item
                 )
             lines.append(header)
+            task_description = _truncate_task_text(task.get("description") or "", 360)
+            if task_description:
+                lines.append(f"  Description: {task_description}")
+            dependencies = [
+                str(dep).strip()
+                for dep in (task.get("dependencies") or [])
+                if str(dep).strip()
+            ]
+            if dependencies:
+                lines.append(f"  Depends on: {', '.join(dependencies[:10])}")
             planned_files = [
                 str(path or "").strip()
                 for path in (task.get("planned_files") or [])
@@ -5363,34 +6322,6 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             ]
             if planned_files:
                 lines.append(f"  Planned files: {', '.join(planned_files[:6])}")
-            assignment_reason = str(task.get("assignment_reason") or "").strip()
-            if assignment_reason:
-                lines.append(f"  Master reason: {assignment_reason}")
-
-    if recommended_assignments:
-        lines.append("")
-        lines.append("## Recommended Task Ownership and Opt-In")
-        for entry in recommended_assignments[:30]:
-            if not isinstance(entry, dict):
-                continue
-            task_id = str(entry.get("task_id") or "").strip()
-            title_text = str(entry.get("title") or "Untitled task").strip()
-            recommended_agent_id = str(entry.get("recommended_agent_id") or "").strip()
-            opt_in_username = str(entry.get("opt_in_username") or "").strip()
-            reason = str(entry.get("reason") or "").strip()
-            header = f"- `{task_id}` {title_text}" if task_id else f"- {title_text}"
-            if recommended_agent_id or opt_in_username:
-                header += " -> " + " / ".join(
-                    item
-                    for item in [
-                        f"`{recommended_agent_id}`" if recommended_agent_id else "",
-                        f"opt-in `{opt_in_username}`" if opt_in_username else "",
-                    ]
-                    if item
-                )
-            lines.append(header)
-            if reason:
-                lines.append(f"  Reason: {reason}")
 
     if workspace_tree:
         lines.append("")
@@ -5430,6 +6361,23 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _build_public_master_task_plan(task_plan: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    public_plan: List[Dict[str, Any]] = []
+    for entry in task_plan or []:
+        if not isinstance(entry, dict):
+            continue
+        sanitized = dict(entry)
+        for key in (
+            "assignee",
+            "recommended_agent_name",
+            "opt_in_username",
+            "assignment_reason",
+        ):
+            sanitized.pop(key, None)
+        public_plan.append(sanitized)
+    return public_plan
+
+
 async def _generate_detailed_project_tree_plan(
     *,
     tasks: List[Dict[str, Any]],
@@ -5445,22 +6393,13 @@ async def _generate_detailed_project_tree_plan(
     if not key or key == "your-api-key-here":
         return ""
 
-    task_lines = []
-    for index, task in enumerate(_sort_tasks_for_execution(tasks or [])[:40], 1):
-        title = str(task.get("title") or task.get("taskName") or "Untitled task").strip()
-        desc = str(task.get("description") or "").strip()[:220]
-        phase = str(task.get("phase") or task.get("task_phase") or "").strip()
-        priority = str(task.get("priority") or "medium").strip()
-        predicted_files = _sanitize_master_planned_files(
-            _predict_task_file_intents(task),
-            stack_profile=stack_profile,
-            limit=5,
-        )
-        file_hint = f" | File hints: {', '.join(predicted_files)}" if predicted_files else ""
-        task_lines.append(
-            f"{index}. [{phase or 'unphased'} | {priority}] {title}: {desc}{file_hint}"
-        )
-    task_list_text = "\n".join(task_lines) if task_lines else "No tasks provided."
+    task_list_text = _build_task_context_block(
+        tasks,
+        max_total_chars=16000,
+        max_description_chars=220,
+        include_file_hints=True,
+        stack_profile=stack_profile,
+    )
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     stack_text = (
         f"Frontend: {stack.get('frontend') or 'unspecified'}\n"
@@ -5666,13 +6605,11 @@ async def _validate_master_project_tree_plan(
     if not key or key == "your-api-key-here":
         return heuristic
 
-    task_lines = []
-    for index, task in enumerate(_sort_tasks_for_execution(tasks or [])[:40], 1):
-        title = str(task.get("title") or task.get("taskName") or "Untitled task").strip()
-        desc = str(task.get("description") or "").strip()[:200]
-        phase = str(task.get("phase") or task.get("task_phase") or "").strip()
-        priority = str(task.get("priority") or "medium").strip()
-        task_lines.append(f"{index}. [{phase or 'unphased'} | {priority}] {title}: {desc}")
+    task_lines = _build_task_context_block(
+        tasks,
+        max_total_chars=14000,
+        max_description_chars=200,
+    )
     spec_file_structure = _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
     spec_reference = spec_file_structure[:3200] if spec_file_structure else tech_spec[:3200]
 
@@ -5693,7 +6630,7 @@ TECHNICAL SPEC FILE STRUCTURE / MANDATORY FILES:
 {spec_reference if spec_reference else "Not provided."}
 
 TASKS:
-{chr(10).join(task_lines) if task_lines else "No tasks provided."}
+{task_lines}
 
 WORKSPACE CONTRACT:
 {contract_summary}
@@ -5853,6 +6790,18 @@ async def _get_existing_note_payload(
     if not effective_token:
         return {}
 
+    state = _ensure_project_state(project_token)
+    payload_cache = state.setdefault("note_payload_cache", {})
+    cached_entry = payload_cache.get(title)
+    now = time.time()
+    if isinstance(cached_entry, dict):
+        cached_token = str(cached_entry.get("task_token") or "").strip()
+        cached_age = now - float(cached_entry.get("loaded_at") or 0.0)
+        if cached_token == str(effective_token).strip() and cached_age <= NOTE_PAYLOAD_CACHE_TTL_SECONDS:
+            cached_payload = cached_entry.get("payload")
+            if isinstance(cached_payload, dict):
+                return dict(cached_payload)
+
     note_id = await _find_note_id_by_title(
         title,
         project_token=project_token,
@@ -5865,7 +6814,13 @@ async def _get_existing_note_payload(
         from task_service import task_service
 
         detail = await task_service.get_note_detail(note_id, task_token=effective_token)
-        return _parse_agent_note_content((detail or {}).get("content"))
+        payload = _parse_agent_note_content((detail or {}).get("content"))
+        payload_cache[title] = {
+            "payload": dict(payload) if isinstance(payload, dict) else {},
+            "loaded_at": now,
+            "task_token": effective_token,
+        }
+        return payload
     except Exception:
         return {}
 
@@ -5878,6 +6833,7 @@ async def _load_persisted_master_note(
     tasks: List[Dict[str, Any]],
     task_signature: str,
     worker_signature: str,
+    workspace_contract_signature: str = "",
 ) -> Dict[str, Any]:
     payload = await _get_existing_note_payload(
         title=title,
@@ -5894,6 +6850,9 @@ async def _load_persisted_master_note(
     persisted_task_signature = str(payload.get("task_signature") or "").strip()
     if persisted_task_signature and persisted_task_signature != task_signature:
         return {}
+    persisted_contract_signature = str(payload.get("workspace_contract_signature") or "").strip()
+    if workspace_contract_signature and persisted_contract_signature != workspace_contract_signature:
+        return {}
 
     workspace_tree = str(payload.get("workspace_tree") or "").strip()
     if not workspace_tree:
@@ -5907,15 +6866,6 @@ async def _load_persisted_master_note(
             tasks=tasks,
             stack_profile=stack_profile,
             workspace_contract=workspace_contract,
-        )
-
-    persisted_worker_signature = str(payload.get("worker_signature") or "").strip()
-    recommended_assignments = payload.get("recommended_assignments") if isinstance(payload.get("recommended_assignments"), list) else []
-    if persisted_worker_signature != worker_signature or not recommended_assignments:
-        recommended_assignments = _build_master_recommended_assignments(
-            tasks=tasks,
-            task_plan=task_plan,
-            project_token=project_token,
         )
 
     note_id = await _find_note_id_by_title(
@@ -5933,7 +6883,8 @@ async def _load_persisted_master_note(
         "approved": True,
         "task_signature": task_signature,
         "worker_signature": worker_signature,
-        "recommended_assignments": recommended_assignments,
+        "workspace_contract_signature": workspace_contract_signature,
+        "recommended_assignments": [],
         "tasks_considered": task_plan,
         "workspace_tree": workspace_tree,
     }
@@ -6089,7 +7040,13 @@ async def _upsert_agent_note(
                 task_token=effective_token,
             )
         if resolved_note_id is not None:
-            _ensure_project_state(project_token).setdefault("note_title_cache", {})[title] = resolved_note_id
+            state = _ensure_project_state(project_token)
+            state.setdefault("note_title_cache", {})[title] = resolved_note_id
+            state.setdefault("note_payload_cache", {})[title] = {
+                "payload": dict(content_payload or {}),
+                "loaded_at": time.time(),
+                "task_token": effective_token,
+            }
         return {
             "success": True,
             "note_id": resolved_note_id,
@@ -6120,6 +7077,31 @@ async def ensure_master_workspace_note(
             except Exception as exc:
                 logger.warning("[%s] Failed to fetch tasks for master note: %s", effective_project, exc)
                 tasks = []
+        ctx_mgr = None
+        workspace_contract: Dict[str, Any] = {}
+        workspace_contract_signature = ""
+        try:
+            import context_manager as ctx_mgr  # type: ignore
+
+            repo_creds = _resolve_project_git_credentials(project_token)
+            if effective_project and repo_creds.get("repo_url"):
+                refresh_result = await _refresh_workspace_contract_from_git_repo(
+                    project_token=project_token,
+                    repo_url=repo_creds.get("repo_url") or "",
+                    token=repo_creds.get("token") or "",
+                )
+                if not refresh_result.get("success") and not refresh_result.get("skipped"):
+                    logger.warning(
+                        "[%s] Failed to hydrate workspace contract from git repo: %s",
+                        effective_project,
+                        refresh_result.get("error") or "unknown error",
+                    )
+            workspace_contract = ctx_mgr.get_workspace_contract(effective_project) if effective_project else {}
+            workspace_contract_signature = _workspace_contract_signature(workspace_contract)
+        except Exception as exc:
+            logger.warning("[%s] Failed to prepare workspace contract for master note: %s", effective_project, exc)
+            workspace_contract = {}
+            workspace_contract_signature = ""
         task_signature = _master_task_signature(tasks)
         worker_signature = _master_worker_signature(project_token)
         cached_master_note = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
@@ -6129,20 +7111,20 @@ async def ensure_master_workspace_note(
             and cached_master_note.get("title") == title
             and cached_master_note.get("task_signature") == task_signature
             and cached_master_note.get("worker_signature") == worker_signature
-            and isinstance(cached_master_note.get("recommended_assignments"), list)
+            and cached_master_note.get("workspace_contract_signature") == workspace_contract_signature
         ):
             try:
-                import context_manager as ctx_mgr
-                cached_contract = ctx_mgr.get_workspace_contract(effective_project)
+                cached_contract = ctx_mgr.get_workspace_contract(effective_project) if ctx_mgr and effective_project else {}
                 cached_tree = str(cached_master_note.get("workspace_tree") or "").strip()
                 if cached_contract.get("status") != "ready" and cached_tree:
                     refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
                         effective_project,
                         cached_tree,
-                    )
+                    ) if ctx_mgr else {}
+                    refreshed_contract = refreshed_contract if isinstance(refreshed_contract, dict) else {}
                     if refreshed_contract.get("status") == "ready":
                         _log_master_agent(
-                            "Reused cached master tree to restore the workspace contract for parallel planning.",
+                            "Reused cached master tree to restore the workspace contract.",
                             project_token=project_token,
                     )
             except Exception as exc:
@@ -6156,17 +7138,18 @@ async def ensure_master_workspace_note(
             tasks=tasks,
             task_signature=task_signature,
             worker_signature=worker_signature,
+            workspace_contract_signature=workspace_contract_signature,
         )
         if persisted_master_note:
             try:
-                import context_manager as ctx_mgr
-
                 persisted_tree = str(persisted_master_note.get("workspace_tree") or "").strip()
-                if persisted_tree:
-                    ctx_mgr.update_workspace_contract_from_canonical_tree(
+                if persisted_tree and ctx_mgr:
+                    refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
                         effective_project,
                         persisted_tree,
                     )
+                    if not isinstance(refreshed_contract, dict):
+                        refreshed_contract = {}
             except Exception as exc:
                 logger.warning("[%s] Failed to restore workspace contract from persisted master note: %s", effective_project, exc)
             _log_master_agent(
@@ -6181,7 +7164,9 @@ async def ensure_master_workspace_note(
             project_token=project_token,
         )
 
-        tech_spec = get_technical_spec(effective_project) if effective_project else ""
+        tech_spec_record = _project_tech_specs.get(effective_project, {}) if effective_project else {}
+        tech_spec = str((tech_spec_record or {}).get("spec") or "").strip()
+        tech_spec_signature = str((tech_spec_record or {}).get("task_signature") or "").strip()
         brd_analysis = state.get("brd_analysis") if isinstance(state.get("brd_analysis"), dict) else {}
         brd_summary = str(
             brd_analysis.get("summary")
@@ -6191,27 +7176,31 @@ async def ensure_master_workspace_note(
 
         kg_context = ""
         try:
-            import context_manager as ctx_mgr
-            if effective_project and ctx_mgr.is_project_indexed(effective_project):
+            if ctx_mgr and effective_project and ctx_mgr.is_project_indexed(effective_project):
                 kg_context = await ctx_mgr.get_full_agent_context(
                     project_token=effective_project,
                     task_description="Canonical project structure and architecture overview",
                     agent_id=MASTER_AGENT_ID,
                     task_token=task_token,
                 )
-            workspace_contract = ctx_mgr.get_workspace_contract(effective_project)
+            if ctx_mgr and effective_project:
+                workspace_contract = ctx_mgr.get_workspace_contract(effective_project)
+                workspace_contract_signature = _workspace_contract_signature(workspace_contract)
         except Exception as exc:
             logger.warning("[%s] Failed to build context for master note: %s", effective_project, exc)
-            workspace_contract = {}
+            if not workspace_contract:
+                workspace_contract = {}
 
-        if not tech_spec and effective_project:
+        if effective_project and (not tech_spec or tech_spec_signature != task_signature):
             spec_result = await _generate_technical_spec(
                 project_token=effective_project,
-                tasks=tasks[:40],
+                tasks=tasks,
                 brd_summary=brd_summary,
                 kg_context=kg_context,
             )
-            tech_spec = str(spec_result.get("spec") or "").strip()
+            refreshed_spec = str(spec_result.get("spec") or "").strip()
+            if refreshed_spec:
+                tech_spec = refreshed_spec
 
         stack_profile = _infer_project_stack(
             tasks=tasks,
@@ -6259,15 +7248,7 @@ async def ensure_master_workspace_note(
             stack_profile=stack_profile,
             workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
         )
-        recommended_assignments = _build_master_recommended_assignments(
-            tasks=tasks,
-            task_plan=task_plan,
-            project_token=project_token,
-        )
-        _log_master_assignment_plan(
-            recommended_assignments,
-            project_token=project_token,
-        )
+        recommended_assignments: List[Dict[str, Any]] = []
         deterministic_tree = _build_deterministic_master_tree(
             workspace_tree=workspace_tree,
             tech_spec=tech_spec,
@@ -6351,28 +7332,30 @@ async def ensure_master_workspace_note(
             }
 
         try:
-            import context_manager as ctx_mgr
-
             refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
                 effective_project,
                 workspace_tree,
-            )
-            if isinstance(refreshed_contract, dict) and refreshed_contract.get("status") == "ready":
+            ) if ctx_mgr else {}
+            refreshed_contract = refreshed_contract if isinstance(refreshed_contract, dict) else {}
+            if refreshed_contract.get("status") == "ready":
                 workspace_contract = refreshed_contract
+                workspace_contract_signature = _workspace_contract_signature(workspace_contract)
                 _log_master_agent(
-                    "Master tree established the workspace contract; parallel planning is now enabled.",
+                    "Master tree established the workspace contract for agent coordination.",
                     project_token=project_token,
                 )
         except Exception as exc:
             logger.warning("[%s] Failed to bootstrap workspace contract from master tree: %s", effective_project, exc)
 
-        payload = {
+        public_task_plan = _build_public_master_task_plan(task_plan)
+        public_payload = {
             "note_type": "master_project_plan",
             "project_token": _note_scope_key(project_token),
             "author_agent_id": MASTER_AGENT_ID,
             "updated_at": _note_timestamp(),
             "task_signature": task_signature,
             "worker_signature": worker_signature,
+            "workspace_contract_signature": workspace_contract_signature,
             "summary": (
                 "Canonical project tree and implementation plan created by the master agent. "
                 "All worker agents must follow this tree, implement inside these boundaries, "
@@ -6382,12 +7365,12 @@ async def ensure_master_workspace_note(
             "workspace_tree_source": workspace_tree_source,
             "architecture_overview": architecture_overview[:3000],
             "dependencies": dependencies[:1800],
-            "tasks_considered": task_plan,
-            "recommended_assignments": recommended_assignments,
+            "tasks_considered": public_task_plan,
             "stack_profile": stack_profile,
             "workspace_contract": {
                 "status": workspace_contract.get("status") if isinstance(workspace_contract, dict) else None,
                 "source": workspace_contract.get("source") if isinstance(workspace_contract, dict) else None,
+                "allowed_top_level_dirs": list((workspace_contract or {}).get("allowed_top_level_dirs") or [])[:25],
                 "allowed_source_roots": list((workspace_contract or {}).get("allowed_source_roots") or [])[:25],
             },
             "validation": {
@@ -6402,17 +7385,17 @@ async def ensure_master_workspace_note(
             "instructions": [
                 "Use this canonical tree as the single source of truth for where files should live.",
                 "Every task below must be implemented inside this structure; do not create alternate app roots or duplicate folders.",
-                "Follow the master ownership plan: each task should be picked up and opted into by the recommended agent unless the plan is regenerated.",
+                "Coordinate task pickup through the normal task workflow rather than relying on names written in this note.",
                 "If another agent already has the relevant file in its status note, extend that file instead of recreating the same feature elsewhere.",
                 "Keep per-agent status notes updated so other agents can see live work, completed files, and coordination guidance.",
                 "If a task requires a structural change, update this master note first before coding.",
             ],
         }
-        rendered_markdown = _render_master_note_markdown(payload)
+        rendered_markdown = _render_master_note_markdown(public_payload)
 
         result = await _upsert_agent_note(
             title=title,
-            content_payload=payload,
+            content_payload=public_payload,
             content_text=rendered_markdown,
             user=_note_user_for_agent(MASTER_AGENT_ID),
             project_token=project_token,
@@ -6433,10 +7416,11 @@ async def ensure_master_workspace_note(
             **result,
             "title": title,
             "task_count": len(task_plan),
-            "validation": payload["validation"],
+            "validation": public_payload["validation"],
             "approved": True,
             "task_signature": task_signature,
             "worker_signature": worker_signature,
+            "workspace_contract_signature": workspace_contract_signature,
             "recommended_assignments": recommended_assignments,
             "tasks_considered": task_plan,
             "workspace_tree": workspace_tree,
@@ -6833,8 +7817,8 @@ async def _claim_initial_task_assignments(
     task_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Prepare the initial batch of tasks for the supervisor workflow.
-    Uses the same task-picking rules as the continuous agent loop.
+    Prepare the ordered agent queue for supervisor execution.
+    Tasks are picked by agents themselves later at run time.
     """
     state = _ensure_project_state(project_token)
     if task_token:
@@ -6852,24 +7836,20 @@ async def _claim_initial_task_assignments(
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
 
-    for agent in idle_agents:
-        agent["status"] = "running"
-        agent["progress"] = 0
-        agent["output_log"] = []
-        agent["progress_message"] = "Supervisor is planning work..."
-
     try:
         external_tasks = await _fetch_external_tasks(project_token)
         if not external_tasks:
             raise ValueError("No tasks available from the external task API. Generate tasks first.")
         state["tasks"] = external_tasks
     except Exception as exc:
-        for agent in idle_agents:
-            agent["status"] = "idle"
-            agent["progress"] = 0
-            agent["progress_message"] = ""
-            agent["error"] = str(exc)
         raise
+
+    await _restore_persisted_agent_assignments(
+        project_token=project_token,
+        task_token=task_token,
+        agent_ids=[agent["id"] for agent in idle_agents],
+        external_tasks=external_tasks,
+    )
 
     if agents_config:
         for agent in idle_agents:
@@ -6881,43 +7861,11 @@ async def _claim_initial_task_assignments(
             if token_val:
                 agent["git_token"] = token_val.strip()
 
-    try:
-        import context_manager as ctx_mgr
-        live_mem = ctx_mgr.get_live_memory(project_token or "")
-        workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
-    except Exception:
-        live_mem = None
-        workspace_contract = {"status": "insufficient"}
-
-    bootstrap_mode = workspace_contract.get("status") != "ready"
-    planning_agents = idle_agents
-    if bootstrap_mode:
-        planning_agents = sorted(idle_agents, key=lambda item: item["id"])[:1]
-        for agent in idle_agents:
-            if agent not in planning_agents:
-                agent["status"] = "idle"
-                agent["progress"] = 0
-                agent["progress_message"] = "Waiting for workspace contract bootstrap"
-
-    assignments = []
-    for agent in planning_agents:
-        task = await _pick_next_task(
-            agent["id"],
-            project_token=project_token,
-            task_token=task_token,
-        )
-        if task:
-            predicted_files = _predict_task_file_intents(task)
-            if live_mem and predicted_files:
-                live_mem.register_file_intent(agent["id"], predicted_files)
-            assignments.append((agent["id"], task))
-        else:
-            agent["status"] = "idle"
-            agent["progress"] = 0
-            agent["progress_message"] = "No tasks available"
+    serial_agents = sorted(idle_agents, key=lambda item: item["id"])
+    assignments = [(agent["id"], None) for agent in serial_agents]
 
     if not assignments:
-        raise ValueError("No unclaimed tasks available.")
+        raise ValueError("No idle agents available for serial execution.")
 
     return {
         "idle_agents": [agent["id"] for agent in idle_agents],
@@ -7419,9 +8367,9 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     if task_token:
         set_project_task_token(project_token, task_token)
     state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
     claimed_task_ids = state["claimed_task_ids"]
     task_claim_lock = state["task_claim_lock"]
-    recommendation_map = _get_master_recommended_assignment_map(project_token)
     
     # Check integration gate - if blocked, only allow fix tasks
     try:
@@ -7454,6 +8402,11 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
 
     async with task_claim_lock:
         active_owned_ids = _active_owned_task_ids(project_token)
+        completed_task_ids = {
+            _task_identity(task)
+            for task in (state.get("completed_tasks") or [])
+            if isinstance(task, dict)
+        }
         external_status_by_id = {
             str(_normalize_task_id(task) or task.get("external_id") or task.get("id")): str(task.get("status") or "").strip().lower()
             for task in external_tasks
@@ -7461,6 +8414,8 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         stale_claims = []
         for claimed_id in list(claimed_task_ids):
             if claimed_id in active_owned_ids:
+                continue
+            if claimed_id in completed_task_ids:
                 continue
             ext_status = external_status_by_id.get(str(claimed_id))
             if ext_status is None or not _task_status_is_done(ext_status):
@@ -7499,8 +8454,6 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 _apply_master_task_metadata(t, project_token=project_token)
                 tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
                 status_lower = (t.get("status") or "").lower()
-                recommendation = recommendation_map.get(tid) or {}
-                recommended_agent_id = str(recommendation.get("recommended_agent_id") or "").strip()
 
                 # Skip if completed or already claimed
                 if _task_status_is_done(status_lower) or tid in claimed_task_ids:
@@ -7547,10 +8500,13 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 claimed_task_ids.add(tid)
                 for lt in (t.get("linked_tasks") or []):
                     claimed_task_ids.add(str(lt))
-
-                if recommendation:
-                    t["_recommended_agent_id"] = recommended_agent_id
-                    t["_recommended_opt_in_username"] = str(recommendation.get("opt_in_username") or "").strip()
+                agent = project_agents.get(agent_id)
+                if agent:
+                    reserved_task = _apply_master_task_metadata(dict(t), project_token=project_token)
+                    if project_token:
+                        reserved_task.setdefault("_project_token", project_token)
+                    agent["current_task"] = reserved_task
+                    agent["resume_pending_task"] = True
                 return t, skip_reasons
 
             return None, skip_reasons
@@ -7601,6 +8557,16 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
     last_result = None
 
+    if not assigned_task and not _is_system_agent_id(agent_id):
+        try:
+            await _restore_persisted_agent_assignments(
+                project_token=project_token,
+                task_token=task_token,
+                agent_ids=[agent_id],
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to restore persisted assignment for %s: %s", project_token or "", agent_id, exc)
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = await _run_agent_once(
@@ -7626,6 +8592,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             if attempt < MAX_RETRIES:
                 delay = RETRY_DELAYS[attempt - 1]
                 agent["status"] = "running"
+                agent["resume_pending_task"] = False
                 agent["progress"] = 0
                 retry_msg = (
                     f"⚠️ Attempt {attempt}/{MAX_RETRIES} failed: {error_msg}. "
@@ -7666,6 +8633,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     f"Auto-retrying in {delay}s..."
                 )
                 agent["status"] = "running"
+                agent["resume_pending_task"] = False
                 agent["progress"] = 0
                 agent["progress_message"] = retry_msg
                 agent["output_log"].append({
@@ -7678,6 +8646,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 continue
             else:
                 agent["status"] = "error"
+                agent["resume_pending_task"] = False
                 agent["progress"] = 0
                 agent["progress_message"] = f"Error after {MAX_RETRIES} retries: {str(e)}"
                 agent["output_log"].append({
@@ -7743,36 +8712,62 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             )
 
     # 1. Get the first task
+    resumed_existing_task = False
     if assigned_task:
         task = assigned_task
+    elif isinstance(agent.get("current_task"), dict):
+        resumed_task = _apply_master_task_metadata(dict(agent["current_task"]), project_token=project_token)
+        resumed_task_id = _task_identity(resumed_task)
+        external_tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+        if resumed_task_id:
+            external_match = next(
+                (
+                    ext_task for ext_task in external_tasks
+                    if _task_identity(ext_task) == resumed_task_id
+                ),
+                None,
+            )
+            if external_match and not _task_status_is_done(external_match.get("status")):
+                resumed_task = _apply_master_task_metadata(dict(external_match), project_token=project_token)
+        if project_token:
+            resumed_task.setdefault("_project_token", project_token)
+        if resumed_task_id and not _task_status_is_done(resumed_task.get("status")):
+            task = resumed_task
+            resumed_existing_task = True
+        else:
+            agent["current_task"] = None
+            agent["resume_pending_task"] = False
+            task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
     else:
         task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
-        if not task:
-            now = datetime.utcnow().isoformat()
-            agent["status"] = "idle"
-            agent["progress"] = 0
-            agent["progress_message"] = "No tasks available"
-            agent["current_task"] = None
-            agent["last_run"] = now
-            agent["output_log"].append({
-                "time": now,
-                "type": "info",
-                "message": "No tasks available or all are completed/claimed."
-            })
-            return {
-                "success": False,
-                "agent_id": agent_id,
-                "error": "No tasks available or all are completed/claimed.",
-                "reason": "no_tasks",
-                "tasks_completed": 0,
-                "duration": 0,
-            }
+    if not task:
+        now = datetime.utcnow().isoformat()
+        agent["status"] = "idle"
+        agent["resume_pending_task"] = False
+        agent["progress"] = 0
+        agent["progress_message"] = "No tasks available"
+        agent["current_task"] = None
+        agent["last_run"] = now
+        agent["output_log"].append({
+            "time": now,
+            "type": "info",
+            "message": "No tasks available or all are completed/claimed."
+        })
+        return {
+            "success": False,
+            "agent_id": agent_id,
+            "error": "No tasks available or all are completed/claimed.",
+            "reason": "no_tasks",
+            "tasks_completed": 0,
+            "duration": 0,
+        }
     task = _apply_master_task_metadata(task, project_token=project_token)
     if isinstance(task, dict) and project_token:
         task.setdefault("_project_token", project_token)
 
     # Set agent to running
     agent["status"] = "running"
+    agent["resume_pending_task"] = False
     agent["output_log"] = []
     if master_note_result:
         if master_note_result.get("success"):
@@ -7787,6 +8782,16 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"Master note unavailable: {master_note_result.get('error') or master_note_result.get('reason') or 'unknown'}"
             })
+    if resumed_existing_task:
+        task_id = _task_identity(task)
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": (
+                f"Recovered assigned task [{task_id or '?'}] {str(task.get('title') or task.get('taskName') or 'Untitled task')[:120]} "
+                "from persisted coordination state."
+            ),
+        })
     project_status_ok = await _update_project_status(
         "On Going",
         project_token=project_token,
@@ -7816,6 +8821,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             task["assigned_agent"] = agent_id
             task["assigned_agent_name"] = started_by_name
             task["started_at"] = datetime.utcnow().isoformat()
+            agent["resume_pending_task"] = False
             coordination_branch = (force_branch if force_branch else _branch_name_for_task(task)) if use_git else None
 
             # ── Register in Cross-Agent Shared Memory ────────────────
@@ -7892,9 +8898,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "message": f"Coordination note skipped: {str(note_err)[:80]}"
                 })
             
-            username = str(task.get("_recommended_opt_in_username") or "").strip()
-            if not username:
-                username = build_external_agent_username(agent_id, agent.get("name"))
+            username = build_external_agent_username(agent_id, agent.get("name"))
             opt_in_ok = await _opt_in_task(task, username, task_token=task_token)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
@@ -8176,11 +9180,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
 
             agent["progress"] = 25
-            agent["progress_message"] = "AI is generating project code..."
+            agent["progress_message"] = "AI is generating build script..."
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": "Calling AI model to generate project code..."
+                "message": "Calling AI model to generate build script..."
             })
 
             generated_code, thought = await _call_ai_for_code(
@@ -8197,10 +9201,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"AI generated {len(generated_code.splitlines())} lines of builder code"
+                "message": f"AI generated {len(generated_code.splitlines())} lines of build script"
             })
 
-            # ── Execute builder code ─────────────────────────────────
+            # ── Execute build script ─────────────────────────────────
             result = await asyncio.to_thread(
                 _exec_script_in_container, container_name, generated_code, f"build_{agent_id}"
             )
@@ -8338,11 +9342,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 except Exception:
                     pass  # Non-critical
 
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": "Calling AI model to generate fix code..."
-                })
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "Calling AI model to generate fix script..."
+                    })
 
                 try:
                     fix_code, thought = await _call_ai_for_fix(
@@ -8365,7 +9369,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"AI generated {len(fix_code.splitlines())} lines of fix code"
+                        "message": f"AI generated {len(fix_code.splitlines())} lines of fix script"
                     })
 
                     result = await asyncio.to_thread(
@@ -9152,6 +10156,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
         total_elapsed = round(time.time() - total_start, 1)
         agent["status"] = "completed"
+        agent["resume_pending_task"] = False
         agent["progress"] = 100
         agent["progress_message"] = f"All done! {tasks_completed} task(s) in {total_elapsed}s"
         agent["current_task"] = None
@@ -9176,6 +10181,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             bootstrap_signal_sent = True
         elapsed = round(time.time() - total_start, 1)
         agent["status"] = "error"
+        agent["resume_pending_task"] = False
         agent["progress"] = 0
         agent["progress_message"] = f"Error: {str(e)}"
         agent["output_log"].append({
@@ -9608,33 +10614,29 @@ async def deploy_preview(
         logger.info(f"[Preview] {msg}")
 
     try:
-        # 1. Create container (using python:3.10-slim initially for cloning)
+        # 1. Create container from the shared runtime blueprint for cloning
         _log("Creating temporary clone container...")
         create_res = _create_persistent_container(container_name)
         if not create_res.get("success"):
             raise RuntimeError(f"Failed to create container: {create_res.get('error')}")
 
-        # 2. Install git
-        _log("Installing git...")
-        subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
-            capture_output=True, text=True, timeout=120,
-        )
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            raise RuntimeError(toolchain_result.get("error", "Preview runtime toolchain verification failed"))
 
-        # 3. Clone the repo (agent/integration branch)
+        # 2. Clone the repo (agent/integration branch)
         auth_url = git_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
         _log(f"Cloning {GIT_INTEGRATION_BRANCH} branch...")
         clone = subprocess.run(
             ["docker", "exec", "-w", "/", container_name,
              "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
              auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
             raise RuntimeError(f"Git clone failed: {clone.stderr}")
 
-        # 4. Detect the project stack
+        # 3. Detect the project stack
         _log("Detecting project tech stack...")
         stack = _detect_project_stack(container_name)
         pstate["stack"] = stack
@@ -10027,10 +11029,21 @@ def get_all_agents(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def reset_agent(agent_id: str, project_token: Optional[str] = None) -> Dict[str, Any]:
     project_agents = _get_agent_states(project_token)
+    state = _ensure_project_state(project_token)
+    claimed_task_ids = state["claimed_task_ids"]
     agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
+    current_task = agent.get("current_task") if isinstance(agent.get("current_task"), dict) else None
+    task_id = _task_identity(current_task)
+    if task_id:
+        claimed_task_ids.discard(task_id)
+    for linked_id in (current_task.get("linked_tasks") or []) if current_task else []:
+        linked_key = str(linked_id or "").strip()
+        if linked_key:
+            claimed_task_ids.discard(linked_key)
     agent["status"] = "idle"
+    agent["resume_pending_task"] = False
     agent["progress"] = 0
     agent["progress_message"] = ""
     agent["current_task"] = None
@@ -10111,10 +11124,11 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
                          project_token: Optional[str] = None,
                          task_token: Optional[str] = None) -> Dict[str, Any]:
     """
-    Assign initial tasks to all idle agents and run them in CONTINUOUS mode.
-    Each agent keeps picking the next uncompleted task after finishing its current one,
-    only stopping when ALL tasks are done. Agents run concurrently.
+    Run idle agents simultaneously.
+    Each agent picks tasks for itself from the shared ordered queue and continues
+    until no eligible tasks remain.
     """
+    prime_project_git_credentials(agents_config, project_token=project_token)
     try:
         import langgraph_workflow
 
@@ -10130,9 +11144,7 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
     if task_token:
         state["task_token"] = task_token
     project_agents = state["agent_states"]
-    claimed_task_ids = state["claimed_task_ids"]
 
-    # 1. Synchronously claim all idle agents immediately so UI updates instantly
     idle_agents = [
         a for a in project_agents.values()
         if a["status"] == "idle" and not _is_system_agent_id(a["id"])
@@ -10140,67 +11152,17 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
 
-    for agent in idle_agents:
-        agent["status"] = "running"
-        agent["progress"] = 0
-        agent["output_log"] = []
-        agent["progress_message"] = "Initializing (fetching tasks)..."
-
-    # Fetch all tasks (this is async)
     try:
         external_tasks = await _fetch_external_tasks(project_token)
         if not external_tasks:
             raise ValueError("No tasks available from the external task API. Generate tasks first.")
-
-        # Filter to uncompleted, unclaimed tasks
-        available_tasks = [
-            t for t in external_tasks
-            if (t.get("status") or "").lower() not in ("completed", "done")
-            and str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in claimed_task_ids
-        ]
-
-        if not available_tasks:
-            raise ValueError("No unclaimed tasks available.")
-            
+        state["tasks"] = external_tasks
     except Exception as e:
-        # Roll back state if task fetching failed
-        for agent in idle_agents:
-            agent["status"] = "idle"
-            agent["progress"] = 0
-            agent["progress_message"] = ""
-            agent["error"] = str(e)
         raise
 
-    if not available_tasks:
-        raise ValueError("No unclaimed tasks available.")
-
-    # Assign one initial task per agent
-    assignments = []
-    used_task_ids = set()
-    for agent in idle_agents:
-        if not available_tasks:
-            break
-        task = available_tasks.pop(0)
-        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
-        used_task_ids.add(task_id)
-
-        # Also claim linked tasks
-        linked_ids = [str(lt) for lt in (task.get("linked_tasks") or [])]
-        for lid in linked_ids:
-            used_task_ids.add(lid)
-
-        claimed_task_ids.update(used_task_ids)
-        assignments.append((agent["id"], task))
-
-        # Remove linked tasks from the available pool
-        available_tasks = [
-            t for t in available_tasks
-            if str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in used_task_ids
-        ]
-
-    # Set individual git config on agents if provided via agents_config
+    ordered_agent_ids = [agent["id"] for agent in sorted(idle_agents, key=lambda item: item["id"])]
     if agents_config:
-        for aid, task in assignments:
+        for aid in ordered_agent_ids:
             if aid in agents_config:
                 repo_val = agents_config[aid].get("git_repo_url")
                 if repo_val:
@@ -10209,28 +11171,28 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
                 if token_val:
                     project_agents[aid]["git_token"] = token_val.strip()
 
-    # Launch all agents concurrently in CONTINUOUS mode
-    async def _run_one(agent_id, assigned_task):
+    launched_agents = list(ordered_agent_ids)
+
+    async def _run_one(agent_id: str) -> Dict[str, Any]:
         try:
             return await run_agent(
                 agent_id,
-                assigned_task=assigned_task,
+                assigned_task=None,
                 continuous=True,
                 ignore_running_check=True,
                 project_token=project_token,
                 task_token=task_token,
             )
         except Exception as e:
-            return {"success": False, "agent_id": agent_id, "error": str(e)}
+            return {"success": False, "agent_id": agent_id, "error": str(e), "tasks_completed": 0}
 
-    coroutines = [_run_one(aid, task) for aid, task in assignments]
-    results = await asyncio.gather(*coroutines, return_exceptions=True)
+    results = await asyncio.gather(*(_run_one(agent_id) for agent_id in ordered_agent_ids), return_exceptions=True)
 
     return {
-        "launched": len(assignments),
-        "agents": [aid for aid, _ in assignments],
+        "launched": len(launched_agents),
+        "agents": launched_agents,
         "results": [
-            r if isinstance(r, dict) else {"error": str(r)}
-            for r in results
+            result if isinstance(result, dict) else {"success": False, "error": str(result), "tasks_completed": 0}
+            for result in results
         ],
     }

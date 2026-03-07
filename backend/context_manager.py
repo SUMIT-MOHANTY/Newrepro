@@ -14,6 +14,7 @@ import logging
 import os
 import threading
 import json
+import time
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 # project_token -> { graph, repo_path, global_context, project_rules }
 _project_contexts: Dict[str, Dict[str, Any]] = {}
+_agent_notes_context_cache: Dict[str, Dict[str, Any]] = {}
+_AGENT_NOTES_CONTEXT_CACHE_TTL_SECONDS = 10.0
 
 _SOURCE_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".go", ".rs", ".rb",
@@ -40,10 +43,13 @@ _FRONTEND_EXTENSIONS = {
 _COMMON_SAFE_TOP_LEVEL_DIRS = {
     ".github", ".vscode", ".idea", "docs", "doc", "scripts", "tests", "test",
     "migrations", "alembic", "infra", "ops", "deploy", "k8s", "config", "configs",
-    "public", "static", "assets", "examples", "fixtures",
+    "public", "static", "assets", "examples", "fixtures", "docker", "nginx",
+    "cypress", "playwright", "e2e", "monitoring", "grafana", "prometheus",
+    "load-tests", "perf", "performance", "helm", "charts", "terraform",
 }
 _COMMON_MODULE_SAFE_DIRS = {
     "tests", "test", "docs", "scripts", "migrations", "alembic", "public", "static", "assets",
+    "cypress", "playwright", "e2e", "monitoring", "grafana", "prometheus",
 }
 _MANIFEST_BASENAMES = {
     "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "yarn.lock", "package-lock.json",
@@ -54,6 +60,22 @@ _MANIFEST_BASENAMES = {
     "manage.py", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts",
     "settings.gradle", "settings.gradle.kts", "composer.json",
 }
+_WORKSPACE_CONTRACT_SOURCE_PRIORITY = {
+    "insufficient": 0,
+    "workspace_tree": 10,
+    "master_tree": 15,
+    "repo_index": 30,
+    "git_repo": 40,
+}
+
+
+def _ensure_project_context(project_token: str) -> Dict[str, Any]:
+    token = (project_token or "").strip()
+    project_ctx = _project_contexts.get(token)
+    if not isinstance(project_ctx, dict):
+        project_ctx = {}
+        _project_contexts[token] = project_ctx
+    return project_ctx
 
 
 def _normalize_contract_path(path: str) -> str:
@@ -341,11 +363,198 @@ def _build_workspace_contract_from_file_paths(
     }
 
 
+def _workspace_contract_source_priority(source: Optional[str]) -> int:
+    text = str(source or "").strip().lower()
+    best = 0
+    for label, score in _WORKSPACE_CONTRACT_SOURCE_PRIORITY.items():
+        if label in text:
+            best = max(best, score)
+    return best
+
+
+def _sorted_unique_contract_paths(values: List[str]) -> List[str]:
+    return sorted({
+        _normalize_contract_path(value)
+        for value in (values or [])
+        if _normalize_contract_path(value) not in {"", "."}
+    })
+
+
+def _merge_workspace_contracts(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    existing = existing if isinstance(existing, dict) else {}
+    incoming = incoming if isinstance(incoming, dict) else {}
+    existing_priority = _workspace_contract_source_priority(existing.get("source"))
+    incoming_priority = _workspace_contract_source_priority(incoming.get("source"))
+
+    merged_modules: Dict[str, Dict[str, Any]] = {}
+    module_roots = {
+        _normalize_contract_path(str(module.get("root") or ""))
+        for contract in (existing, incoming)
+        for module in (contract.get("modules") or [])
+        if isinstance(module, dict) and _normalize_contract_path(str(module.get("root") or "")) != "."
+    }
+    for root in sorted(module_roots):
+        current = next(
+            (
+                module for module in (existing.get("modules") or [])
+                if isinstance(module, dict) and _normalize_contract_path(str(module.get("root") or "")) == root
+            ),
+            None,
+        )
+        candidate = next(
+            (
+                module for module in (incoming.get("modules") or [])
+                if isinstance(module, dict) and _normalize_contract_path(str(module.get("root") or "")) == root
+            ),
+            None,
+        )
+        preferred = candidate if incoming_priority >= existing_priority else current
+        fallback = current if preferred is candidate else candidate
+        preferred = preferred or fallback or {}
+        fallback = fallback or {}
+
+        preferred_kind = str(preferred.get("kind") or "").strip() or "generic"
+        fallback_kind = str(fallback.get("kind") or "").strip() or "generic"
+        kind = preferred_kind
+        if kind == "generic" and fallback_kind != "generic":
+            kind = fallback_kind
+
+        source_roots = _sorted_unique_contract_paths(preferred.get("source_roots") or [])
+        if not source_roots:
+            source_roots = _sorted_unique_contract_paths(fallback.get("source_roots") or [])
+        if not source_roots:
+            source_roots = [root]
+
+        manifests = sorted({
+            _normalize_contract_path(str(path or ""))
+            for path in list(current.get("manifests") or []) + list(candidate.get("manifests") or [])
+            if _normalize_contract_path(str(path or "")) not in {"", "."}
+        })
+        merged_modules[root] = {
+            "root": root,
+            "kind": kind,
+            "source_roots": source_roots,
+            "manifests": manifests[:15],
+        }
+
+    allowed_source_roots = {
+        source_root
+        for module in merged_modules.values()
+        for source_root in (module.get("source_roots") or [])
+        if _normalize_contract_path(source_root) not in {"", "."}
+    }
+    merged_module_roots = set(merged_modules.keys())
+    for raw_root in list(existing.get("allowed_source_roots") or []) + list(incoming.get("allowed_source_roots") or []):
+        normalized_root = _normalize_contract_path(str(raw_root or ""))
+        if normalized_root in {"", "."}:
+            continue
+        if normalized_root in allowed_source_roots:
+            continue
+        if any(_path_is_under(normalized_root, module_root) for module_root in merged_module_roots):
+            continue
+        allowed_source_roots.add(normalized_root)
+
+    allowed_top_level_dirs = {
+        str(path or "").strip()
+        for path in list(existing.get("allowed_top_level_dirs") or []) + list(incoming.get("allowed_top_level_dirs") or [])
+        if str(path or "").strip()
+    }
+    allowed_top_level_dirs.update(
+        root.split("/", 1)[0]
+        for root in list(allowed_source_roots) + list(merged_module_roots)
+        if root and root != "."
+    )
+    root_files = {
+        str(path or "").strip()
+        for path in list(existing.get("root_files") or []) + list(incoming.get("root_files") or [])
+        if str(path or "").strip() and "/" not in str(path or "").strip()
+    }
+
+    merged_source_parts = []
+    for value in (existing.get("source"), incoming.get("source")):
+        text = str(value or "").strip()
+        if text and text not in merged_source_parts:
+            merged_source_parts.append(text)
+    merged_source = merged_source_parts[0] if len(merged_source_parts) == 1 else f"merged:{'+'.join(merged_source_parts)}"
+
+    status = "ready" if (
+        existing.get("status") == "ready"
+        or incoming.get("status") == "ready"
+        or merged_modules
+        or allowed_source_roots
+    ) else "insufficient"
+
+    return {
+        "project_token": str(existing.get("project_token") or incoming.get("project_token") or "").strip(),
+        "status": status,
+        "source": merged_source,
+        "detected_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "modules": sorted(merged_modules.values(), key=lambda item: item.get("root") or "."),
+        "allowed_top_level_dirs": sorted(allowed_top_level_dirs),
+        "root_files": sorted(root_files),
+        "allowed_source_roots": sorted(allowed_source_roots),
+        "canonical_frontend_roots": sorted({
+            source_root
+            for module in merged_modules.values()
+            if module.get("kind") == "frontend"
+            for source_root in (module.get("source_roots") or [])
+        }),
+        "canonical_backend_roots": sorted({
+            source_root
+            for module in merged_modules.values()
+            if module.get("kind") == "backend"
+            for source_root in (module.get("source_roots") or [])
+        }),
+    }
+
+
+def update_workspace_contract_from_file_paths(
+    project_token: str,
+    file_paths: List[str],
+    *,
+    source: str = "detected",
+    merge_ready: bool = True,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    token = (project_token or "").strip()
+    project_ctx = _ensure_project_context(token)
+    incoming = _build_workspace_contract_from_file_paths(token, file_paths, source=source)
+    existing = project_ctx.get("workspace_contract") or {}
+
+    if not existing:
+        project_ctx["workspace_contract"] = incoming
+        return incoming
+
+    if force_refresh and merge_ready and (
+        existing.get("status") == "ready" or incoming.get("status") == "ready"
+    ):
+        merged = _merge_workspace_contracts(existing, incoming)
+        project_ctx["workspace_contract"] = merged
+        return merged
+
+    if existing.get("status") == "ready" and incoming.get("status") != "ready":
+        return existing
+
+    if incoming.get("status") == "ready" and existing.get("status") != "ready":
+        project_ctx["workspace_contract"] = incoming
+        return incoming
+
+    if merge_ready and (existing.get("status") == "ready" or incoming.get("status") == "ready"):
+        merged = _merge_workspace_contracts(existing, incoming)
+        project_ctx["workspace_contract"] = merged
+        return merged
+
+    if _workspace_contract_source_priority(incoming.get("source")) >= _workspace_contract_source_priority(existing.get("source")):
+        project_ctx["workspace_contract"] = incoming
+        return incoming
+    return existing
+
+
 def get_workspace_contract(project_token: str, refresh: bool = False) -> Dict[str, Any]:
     token = (project_token or "").strip()
-    project_ctx = _project_contexts.setdefault(token, {})
+    project_ctx = _ensure_project_context(token)
     cached = project_ctx.get("workspace_contract")
-    if cached and not refresh:
+    if cached and not refresh and _workspace_contract_source_priority(cached.get("source")) >= _WORKSPACE_CONTRACT_SOURCE_PRIORITY["repo_index"]:
         return cached
 
     file_paths: List[str] = []
@@ -355,30 +564,28 @@ def get_workspace_contract(project_token: str, refresh: bool = False) -> Dict[st
     if not file_paths:
         file_paths = _collect_graph_file_paths(project_ctx.get("graph"))
 
-    contract = _build_workspace_contract_from_file_paths(
+    contract = update_workspace_contract_from_file_paths(
         token,
         file_paths,
         source="repo_index" if file_paths else "insufficient",
+        merge_ready=True,
+        force_refresh=refresh,
     )
-    project_ctx["workspace_contract"] = contract
     return contract
 
 
 def update_workspace_contract_from_workspace_tree(project_token: str, workspace_tree: str) -> Dict[str, Any]:
     token = (project_token or "").strip()
-    project_ctx = _project_contexts.setdefault(token, {})
-    existing = project_ctx.get("workspace_contract") or {}
-    if existing.get("status") == "ready":
-        return existing
-
     file_paths = sorted(_parse_workspace_to_file_dict(workspace_tree).keys())
-    contract = _build_workspace_contract_from_file_paths(
+    if not file_paths:
+        return _ensure_project_context(token).get("workspace_contract") or {"status": "insufficient"}
+    return update_workspace_contract_from_file_paths(
         token,
         file_paths,
         source="workspace_tree",
+        merge_ready=True,
+        force_refresh=True,
     )
-    project_ctx["workspace_contract"] = contract
-    return contract
 
 
 def _extract_file_paths_from_canonical_tree(tree_text: str) -> List[str]:
@@ -444,19 +651,16 @@ def _extract_file_paths_from_canonical_tree(tree_text: str) -> List[str]:
 
 def update_workspace_contract_from_canonical_tree(project_token: str, workspace_tree: str) -> Dict[str, Any]:
     token = (project_token or "").strip()
-    project_ctx = _project_contexts.setdefault(token, {})
-    existing = project_ctx.get("workspace_contract") or {}
-    if existing.get("status") == "ready":
-        return existing
-
     file_paths = _extract_file_paths_from_canonical_tree(workspace_tree)
-    contract = _build_workspace_contract_from_file_paths(
+    if not file_paths:
+        return _ensure_project_context(token).get("workspace_contract") or {"status": "insufficient"}
+    return update_workspace_contract_from_file_paths(
         token,
         file_paths,
         source="master_tree",
+        merge_ready=True,
+        force_refresh=True,
     )
-    project_ctx["workspace_contract"] = contract
-    return contract
 
 
 def build_workspace_contract_context(project_token: str) -> str:
@@ -1503,6 +1707,21 @@ async def get_agent_notes_context(
     if not effective_token:
         return ""
 
+    cache_key = "||".join(
+        [
+            str(project_token or "").strip(),
+            str(agent_id or "").strip(),
+            effective_token,
+            str(max_notes),
+        ]
+    )
+    cached_entry = _agent_notes_context_cache.get(cache_key)
+    now = time.time()
+    if isinstance(cached_entry, dict):
+        cached_age = now - float(cached_entry.get("loaded_at") or 0.0)
+        if cached_age <= _AGENT_NOTES_CONTEXT_CACHE_TTL_SECONDS:
+            return str(cached_entry.get("value") or "")
+
     try:
         from task_service import task_service
     except Exception:
@@ -1575,7 +1794,6 @@ async def get_agent_notes_context(
                 dependencies = str(payload.get("dependencies") or "").strip()
                 instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
                 tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
-                recommended_assignments = payload.get("recommended_assignments") if isinstance(payload.get("recommended_assignments"), list) else []
                 workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
                 validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
                 stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
@@ -1602,17 +1820,31 @@ async def get_agent_notes_context(
                     if tasks_considered:
                         has_content = True
                         lines.append("\nTASKS CONSIDERED BY MASTER AGENT:")
-                        for task in tasks_considered[:20]:
+                        for task in tasks_considered:
                             if not isinstance(task, dict):
                                 continue
                             task_title = str(task.get("title") or task.get("task_title") or "Untitled task")
                             task_phase = str(task.get("phase") or "").strip()
+                            task_domain = str(task.get("domain") or "").strip()
                             task_priority = str(task.get("priority") or "").strip()
+                            task_type = str(task.get("task_type") or "").strip()
                             lines.append(
                                 f"  - {task_title}"
                                 + (f" | phase={task_phase}" if task_phase else "")
+                                + (f" | domain={task_domain}" if task_domain else "")
                                 + (f" | priority={task_priority}" if task_priority else "")
+                                + (f" | type={task_type}" if task_type else "")
                             )
+                            task_description = " ".join(str(task.get("description") or "").split())
+                            if task_description:
+                                lines.append(f"    Description: {task_description[:220]}")
+                            dependencies = [
+                                str(dep).strip()
+                                for dep in (task.get("dependencies") or [])
+                                if str(dep).strip()
+                            ]
+                            if dependencies:
+                                lines.append(f"    Depends on: {', '.join(dependencies[:10])}")
                             planned_files = [
                                 str(path or "").strip()
                                 for path in (task.get("planned_files") or [])
@@ -1620,51 +1852,6 @@ async def get_agent_notes_context(
                             ]
                             if planned_files:
                                 lines.append(f"    Planned files: {', '.join(planned_files[:6])}")
-                            assignee = str(task.get("assignee") or "").strip()
-                            opt_in_username = str(task.get("opt_in_username") or "").strip()
-                            assignment_reason = str(task.get("assignment_reason") or "").strip()
-                            if assignee or opt_in_username:
-                                lines.append(
-                                    "    Recommended owner: "
-                                    + " | ".join(
-                                        item
-                                        for item in [
-                                            assignee,
-                                            f"opt-in={opt_in_username}" if opt_in_username else "",
-                                        ]
-                                        if item
-                                    )
-                                )
-                            if assignment_reason:
-                                lines.append(f"    Master reason: {assignment_reason[:220]}")
-                    if recommended_assignments:
-                        has_content = True
-                        lines.append("\nMASTER RECOMMENDED TASK OWNERSHIP:")
-                        for entry in recommended_assignments[:20]:
-                            if not isinstance(entry, dict):
-                                continue
-                            title_text = str(entry.get("title") or "Untitled task").strip()
-                            recommended_agent_id = str(entry.get("recommended_agent_id") or "").strip()
-                            opt_in_username = str(entry.get("opt_in_username") or "").strip()
-                            lines.append(
-                                f"  - {title_text}"
-                                + (
-                                    " -> "
-                                    + " | ".join(
-                                        item
-                                        for item in [
-                                            recommended_agent_id,
-                                            f"opt-in={opt_in_username}" if opt_in_username else "",
-                                        ]
-                                        if item
-                                    )
-                                    if recommended_agent_id or opt_in_username
-                                    else ""
-                                )
-                            )
-                            reason = str(entry.get("reason") or "").strip()
-                            if reason:
-                                lines.append(f"    Reason: {reason[:220]}")
                     if workspace_tree:
                         has_content = True
                         lines.append("\nCANONICAL PROJECT TREE:")
@@ -1787,11 +1974,20 @@ async def get_agent_notes_context(
                 lines.append(f"    Next step: {str(next_step)[:260]}")
 
     if not has_content:
+        _agent_notes_context_cache[cache_key] = {
+            "value": "",
+            "loaded_at": now,
+        }
         return ""
 
     if live_entries or history_entries:
         lines.append("\n=== END SHARED AGENT STATUS NOTES ===")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _agent_notes_context_cache[cache_key] = {
+        "value": result,
+        "loaded_at": now,
+    }
+    return result
 
 
 # ---------------------------------------------------------------------------

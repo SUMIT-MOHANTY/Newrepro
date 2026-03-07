@@ -28,6 +28,10 @@ _CHECKPOINTER = InMemorySaver()
 async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str, Any]:
     import agent_service
 
+    agent_service.prime_project_git_credentials(
+        state.get("agents_config"),
+        project_token=state.get("project_token"),
+    )
     result = await agent_service.ensure_master_workspace_note(
         project_token=state.get("project_token"),
         task_token=state.get("task_token"),
@@ -77,8 +81,8 @@ async def _plan_assignments(state: AgentWorkflowState) -> Dict[str, Any]:
             "errors": errors,
         }
     assignments = [
-        {"agent_id": agent_id, "task": task}
-        for agent_id, task in claimed.get("assignments", [])
+        {"agent_id": agent_id}
+        for agent_id, _task in claimed.get("assignments", [])
     ]
     return {"assignments": assignments}
 
@@ -96,13 +100,17 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
     if not assignments:
         return {"results": [], "launched_agents": [], "errors": []}
 
-    async def _run_one(entry: Dict[str, Any]) -> Dict[str, Any]:
-        agent_id = entry["agent_id"]
-        task = entry["task"]
+    launched_agents: List[str] = []
+    for entry in assignments:
+        agent_id = str(entry.get("agent_id") or "").strip()
+        if agent_id and agent_id not in launched_agents:
+            launched_agents.append(agent_id)
+
+    async def _run_one(agent_id: str) -> Dict[str, Any]:
         try:
             result = await agent_service.run_agent(
                 agent_id,
-                assigned_task=task,
+                assigned_task=None,
                 continuous=True,
                 ignore_running_check=True,
                 project_token=state.get("project_token"),
@@ -117,17 +125,19 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
                 "success": False,
                 "agent_id": agent_id,
                 "error": str(exc),
+                "tasks_completed": 0,
             }
 
-    results = await asyncio.gather(*(_run_one(entry) for entry in assignments))
+    results = await asyncio.gather(*(_run_one(agent_id) for agent_id in launched_agents))
     errors = [
         f"{item.get('agent_id')}: {item.get('error')}"
         for item in results
         if isinstance(item, dict) and item.get("error")
     ]
+
     return {
         "results": results,
-        "launched_agents": [entry["agent_id"] for entry in assignments],
+        "launched_agents": launched_agents,
         "errors": errors,
     }
 
@@ -150,7 +160,6 @@ async def _await_merge_completion(state: AgentWorkflowState) -> Dict[str, Any]:
 
 
 async def _finalize(state: AgentWorkflowState) -> Dict[str, Any]:
-    assignments = state.get("assignments") or []
     results = state.get("results") or []
     launched_agents = state.get("launched_agents") or []
     master_note = state.get("master_note") or {}
@@ -163,7 +172,7 @@ async def _finalize(state: AgentWorkflowState) -> Dict[str, Any]:
             "task_count": master_note.get("task_count"),
             "validation": master_note.get("validation"),
         },
-        "launched": len(assignments),
+        "launched": len(launched_agents),
         "agents": launched_agents,
         "results": results,
         "merge_queue_drained": state.get("merge_queue_drained", True),
