@@ -73,14 +73,14 @@ export default function Sidebar({
                     type="button"
                     aria-label="Close sidebar"
                     onClick={() => setIsSidebarOpen(false)}
-                    className="fixed inset-0 z-30 bg-black/40 transition-opacity duration-300 ease-in-out md:hidden"
+                    className="fixed inset-0 z-[240] bg-black/40 transition-opacity duration-300 ease-in-out md:hidden"
                 />
             )}
 
             <div className={`hidden md:block transition-[width] duration-300 ease-in-out flex-shrink-0 ${isSidebarOpen ? 'w-72' : 'w-0'}`} />
 
             <div
-                className={`fixed inset-y-0 left-0 z-40 w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+                className={`fixed inset-y-0 left-0 z-[250] w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
             >
                 <div className="h-16 flex items-center px-2 border-b border-gray-800 bg-app-text-main shrink-0">
                     <div className="flex items-center justify-between w-full">

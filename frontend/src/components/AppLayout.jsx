@@ -725,7 +725,7 @@ export default function AppLayout({ children }) {
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
                 {/* Global Top Navbar */}
-                <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-20 shrink-0">
+                <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-[250] shrink-0">
                     <div className="flex items-center gap-3 md:gap-4 w-full">
                         {!isSidebarOpen && (
                             <button
@@ -816,7 +816,7 @@ export default function AppLayout({ children }) {
 
                 {/* ── Project-level Roadmap Stepper — shown on all pages except /agents ── */}
                 {roadmapDataForView && location.pathname !== '/agents' && (
-                    <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto">
+                    <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                         <RoadmapHeader
                             steps={roadmapDataForView.steps || []}
                             currentStep={roadmapDataForView.current_step || 0}
