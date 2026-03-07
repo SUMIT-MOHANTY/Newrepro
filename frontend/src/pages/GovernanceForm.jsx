@@ -374,7 +374,12 @@ const GovernanceForm = ({
     }
 
     if (result) {
-        return <GovernanceResult result={result} onBack={() => setResult(null)} />;
+        return <GovernanceResult result={result} onBack={() => {
+            setResult(null);
+            // Clear stored result so it doesn't get restored by useEffect
+            sessionStorage.removeItem('governanceResult');
+            localStorage.removeItem('governanceResult');
+        }} />;
     }
 
     /* ── build dimension list ── */
@@ -1125,21 +1130,23 @@ const GovernanceResult = ({ result, onBack }) => {
                             <AlertCircle className="w-4 h-4" /> Sandbox score: {weighted_score}/10 - IT team will reach out
                         </div>
                     )}
-                    <button
-                        onClick={() => {
-                            if (window.confirm('Are you sure you want to reset your screening assessment? All answers will be cleared.')) {
-                                localStorage.removeItem('governanceResult');
-                                localStorage.removeItem('governanceContext');
-                                localStorage.removeItem('governancePassed');
-                                sessionStorage.removeItem('governanceResult');
-                                sessionStorage.removeItem('governanceContext');
-                                window.location.reload();
-                            }
-                        }}
-                        className="inline-flex items-center justify-center gap-2 py-3 px-6 text-sm font-semibold rounded-xl text-orange-700 bg-orange-50 border border-orange-200 hover:bg-orange-100 transition-all active:scale-[0.97]"
-                    >
-                        Reset Assessment
-                    </button>
+                    {!isSkipFollowUpCase && (
+                        <button
+                            onClick={() => {
+                                if (window.confirm('Are you sure you want to reset your screening assessment? All answers will be cleared.')) {
+                                    localStorage.removeItem('governanceResult');
+                                    localStorage.removeItem('governanceContext');
+                                    localStorage.removeItem('governancePassed');
+                                    sessionStorage.removeItem('governanceResult');
+                                    sessionStorage.removeItem('governanceContext');
+                                    window.location.reload();
+                                }
+                            }}
+                            className="inline-flex items-center justify-center gap-2 py-3 px-6 text-sm font-semibold rounded-xl text-orange-700 bg-orange-50 border border-orange-200 hover:bg-orange-100 transition-all active:scale-[0.97]"
+                        >
+                            Reset Assessment
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

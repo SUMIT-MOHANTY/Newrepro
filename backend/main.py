@@ -2354,6 +2354,10 @@ async def get_project_roadmap_step(
             except (ValueError, TypeError):
                 stored_last_reached_step = None
 
+    # Check if this is a skip-all governance case (all questions skipped)
+    # For skip-all cases, governance should remain active and block progression
+    is_skip_all = (governance.classification == "ENTERPRISE" and governance.weighted_score == 5.0)
+
     # Step 0 (Project Initiation) is always complete once governance exists.
     # Governance sits between Requirement Screening and Agent Analysis.
     current_step = 3  # default active step after governance is Agent Analysis
@@ -2482,13 +2486,21 @@ async def get_project_roadmap_step(
     step_statuses[PROJECT_INIT_IDX] = "completed"
 
     step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
-    step_statuses[GOVERNANCE_IDX] = "completed"
-
-    if not has_analysis:
-        step_statuses[AGENT_ANALYSIS_IDX] = "active"
+    
+    # For skip-all governance cases, keep Governance as active (not completed)
+    # This blocks progression to subsequent steps
+    if is_skip_all:
+        step_statuses[GOVERNANCE_IDX] = "active"
+        # For skip-all cases, all subsequent steps remain pending
+        # No further progression allowed
     else:
-        step_statuses[AGENT_ANALYSIS_IDX] = "completed"
-        step_statuses[PREREQ_IDX] = "completed" if prerequisites_done else "active"
+        step_statuses[GOVERNANCE_IDX] = "completed"
+
+        if not has_analysis:
+            step_statuses[AGENT_ANALYSIS_IDX] = "active"
+        else:
+            step_statuses[AGENT_ANALYSIS_IDX] = "completed"
+            step_statuses[PREREQ_IDX] = "completed" if prerequisites_done else "active"
 
         if prerequisites_done:
             step_statuses[TASK_CREATION_IDX] = "completed" if has_tasks else "active"

@@ -704,7 +704,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         setGlobalGitRepoUrl((prev) => prev.trim() || storedSuggestion.url);
     }, [selectedProjectKey, loadStoredProjectRepoSuggestion]);
 
-    // Load analysis data for the selected project
+  // Load analysis data for the selected project
     useEffect(() => {
         const loadAnalysis = async () => {
             setLoading(true);
