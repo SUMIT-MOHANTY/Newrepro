@@ -9,7 +9,7 @@ import { API_ENDPOINTS } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
-import spxLogo from '../assets/spx-logo 3.png';
+import cloudIcon from '../assets/cloud-icon.png';
 import masterLogo from '../assets/logo1.png';
 // import KnowledgeGraphCard from './KnowledgeGraphCard';
 // import PrStatusCard from './PrStatusCard';
@@ -2221,7 +2221,7 @@ const renderAgentCard = (agent) => {
                                                 <div className="flex items-start justify-between mb-4">
                                                     <div className="flex items-center gap-3">
                                                         <div className="w-10 h-10 rounded-xl bg-gray-50 border border-gray-200 flex items-center justify-center shadow-lg shadow-gray-200 p-1.5">
-                                                            <img src={spxLogo} alt="Deploy Agent" className="w-full h-full object-contain" />
+                                                            <img src={cloudIcon} alt="Deploy Agent" className="w-full h-full object-contain" />
                                                         </div>
                                                         <div>
                                                             <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>

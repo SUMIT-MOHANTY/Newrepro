@@ -5,7 +5,7 @@ import ProjectDropdown from './ProjectDropdown';
 import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
-import spxLogo from '../assets/spx-logo 3.png';
+import cloudIcon from '../assets/cloud-icon.png';
 import masterLogo from '../assets/logo1.png';
 
 /**
@@ -251,7 +251,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
         status: 'idle',
         agentType: 'system',
         type: 'system',
-        logo: spxLogo,
+        logo: cloudIcon,
         icon: Globe,
       },
     ];
@@ -565,6 +565,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   const isGitManager = agent.id === 'agent_03';
                   const isMasterAgent = agent.id === 'agent_04';
                   const isTestAgent = agent.id === 'agent_05';
+                  const isDeployAgent = agent.id === 'deploy_agent';
                   const isRunning = agent.status === 'running';
                   const isCompleted = agent.status === 'completed';
                   const isError = agent.status === 'error';
@@ -576,7 +577,11 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   let useLogo = false;
                   let logoSrc = null;
                   
-                  if (isGitManager) {
+                  // Check if agent has a logo property first (from defaultAgents)
+                  if (agent.logo) {
+                    useLogo = true;
+                    logoSrc = agent.logo;
+                  } else if (isGitManager) {
                     accentColor = 'from-indigo-500 to-blue-500';
                     statusColor = 'indigo';
                   } else if (isMasterAgent) {
@@ -589,6 +594,11 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                     statusColor = 'amber';
                     useLogo = true;
                     logoSrc = kaktoxLogo;
+                  } else if (isDeployAgent) {
+                    accentColor = 'from-violet-500 to-purple-600';
+                    statusColor = 'violet';
+                    useLogo = true;
+                    logoSrc = cloudIcon;
                   } else if (isShared || isDedicated) {
                     accentColor = isShared ? 'from-emerald-400 to-green-500' : 'from-blue-500 to-indigo-500';
                     statusColor = isShared ? 'emerald' : 'blue';
@@ -613,12 +623,14 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                           isGitManager ? 'from-indigo-500 to-blue-600' :
                           isMasterAgent ? 'from-fuchsia-500 to-rose-500' :
                           isTestAgent ? 'from-amber-500 to-orange-600' :
+                          isDeployAgent ? 'from-violet-500 to-purple-600' :
                           isShared ? 'from-emerald-400 to-green-600' :
                           'from-blue-500 to-indigo-600'
                         }`} flex items-center justify-center shadow-lg ${
                           isGitManager ? 'shadow-indigo-200' :
                           isMasterAgent ? 'shadow-gray-200' :
                           isTestAgent ? 'shadow-gray-200' :
+                          isDeployAgent ? 'shadow-gray-200' :
                           isShared ? 'shadow-emerald-200' :
                           'shadow-blue-200'
                         } ${useLogo ? 'p-1.5' : ''}`}>
