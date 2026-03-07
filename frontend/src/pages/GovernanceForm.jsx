@@ -468,6 +468,15 @@ const GovernanceForm = ({
         setCurrentStep((s) => Math.max(s - 1, 1));
     };
 
+    // Skip all unanswered questions in the current dimension step
+    const handleSkipAll = () => {
+        if (!isDimensionStep) return;
+        const newAnswers = { ...answers };
+        activeQuestions.forEach((q) => {
+            newAnswers[q.id] = skipOption;
+        });
+        setAnswers(newAnswers);
+    };
 
     /* ── render ── */
     const mainContentClass = isGovernanceQuestionsPage
@@ -741,35 +750,44 @@ const GovernanceForm = ({
                             {/* end of step card */}
 
                             {/* ── NAV BUTTONS ── */}
-                            <div className="flex items-center justify-end gap-3 mt-auto pt-5 px-1">
+                            <div className="flex items-center justify-between gap-3 mt-auto pt-5 px-1">
                                 {!isGovernanceQuestionsPage ? (
                                     <button type="button" onClick={() => navigate('/dashboard')}
                                         className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
                                     >
                                         <ChevronLeft className="w-4 h-4" /> Dashboard
                                     </button>
-                                ) : (
-                                    <button type="button" onClick={goPrev}
-                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
-                                    >
-                                        <ChevronLeft className="w-4 h-4" /> Back
-                                    </button>
-                                )}
+) : (
+        <button type="button" onClick={goPrev}
+            className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
+        >
+            <ChevronLeft className="w-4 h-4" /> Back
+        </button>
+    )}
 
-                                {!isReviewStep && (
-                                    <button
-                                        type="button"
-                                        onClick={goNext}
-                                        disabled={!canProceed()}
-                                        className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${canProceed()
-                                            ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-[0.97] shadow-blue-200/50'
-                                            : 'bg-gray-300 cursor-not-allowed shadow-none'
-                                            }`}
-                                    >
-                                        {!isGovernanceQuestionsPage ? 'Continue to Screening' : currentStep === dimensions.length ? 'Review' : 'Next'}
-                                        <ChevronRight className="w-4 h-4" />
-                                    </button>
-                                )}
+    <div className="flex items-center gap-3">
+        {!isReviewStep && (
+            <button
+                type="button"
+                onClick={goNext}
+                disabled={!canProceed()}
+                className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${canProceed()
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-[0.97] shadow-blue-200/50'
+                    : 'bg-gray-300 cursor-not-allowed shadow-none'
+                    }`}
+            >
+                {!isGovernanceQuestionsPage ? 'Continue to Screening' : currentStep === dimensions.length ? 'Review' : 'Next'}
+                <ChevronRight className="w-4 h-4" />
+            </button>
+        )}
+        {isDimensionStep && (
+            <button type="button" onClick={handleSkipAll}
+                className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-primary bg-app-primary-light border border-app-primary-light hover:bg-app-primary-light/80 transition-all shadow-sm"
+            >
+                Skip All
+            </button>
+        )}
+    </div>
                             </div>
                         </div>
                         {/* end of min-height wrapper */}
