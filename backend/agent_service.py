@@ -5185,6 +5185,45 @@ def _prefer_stack_consistent_extension(path: str, stack_profile: Optional[Dict[s
     return normalized
 
 
+def _is_stack_consistent_master_tree_path(
+    path: str,
+    stack_profile: Optional[Dict[str, Any]] = None,
+) -> bool:
+    normalized = _normalize_master_tree_path_candidate(path)
+    if not normalized:
+        return False
+
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    backend_key = str(stack.get("backend_key") or "").strip()
+    lower = normalized.lower()
+    basename = os.path.basename(lower)
+
+    if frontend_key == "react-vite":
+        if basename in {"next.config.js", "next.config.ts", "next.config.mjs"}:
+            return False
+        if lower.startswith("frontend/src/app/") and basename in {"page.tsx", "page.jsx", "layout.tsx", "layout.jsx"}:
+            return False
+    elif frontend_key == "nextjs":
+        if basename in {"vite.config.js", "vite.config.ts"}:
+            return False
+        if lower in {"frontend/src/main.tsx", "frontend/src/main.jsx"}:
+            return False
+
+    if backend_key == "fastapi":
+        if lower in {"backend/package.json", "backend/tsconfig.json"}:
+            return False
+        if lower.startswith("backend/src/") and lower.endswith((".ts", ".js")):
+            return False
+    elif backend_key == "express":
+        if lower.startswith("backend/") and basename in {"requirements.txt", "pyproject.toml", "alembic.ini"}:
+            return False
+        if lower.endswith(".py") and (lower == "backend/main.py" or lower.startswith("backend/app/")):
+            return False
+
+    return True
+
+
 def _canonicalize_master_tree_path(
     candidate: Any,
     *,
@@ -5356,7 +5395,7 @@ def _infer_repo_path_from_filename(
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     backend_key = str(stack.get("backend_key") or "").strip()
     frontend_key = str(stack.get("frontend_key") or "").strip()
-    backend_default = "backend/src" if backend_key == "express" else "backend/app"
+    backend_default = "backend/src" if backend_key == "express" else "backend"
     frontend_default = "frontend/src/app" if frontend_key == "nextjs" else "frontend/src"
     backend_src = _preferred_contract_source_root(workspace_contract, "backend", backend_default)
     frontend_src = _preferred_contract_source_root(workspace_contract, "frontend", frontend_default)
@@ -5480,8 +5519,8 @@ def _default_master_tree_paths(
     else:
         paths.update({
             "backend/requirements.txt",
-            "backend/app/main.py",
-            "backend/app/core/config.py",
+            "backend/main.py",
+            "backend/config.py",
         })
 
     return sorted(paths)
@@ -5513,7 +5552,7 @@ def _collect_master_tree_required_paths(
         for planned in task.get("planned_files") or []:
             candidates.append(str(planned or ""))
 
-    for key in ("issues_missing_files", "issues_conflicts", "recommendations"):
+    for key in ("issues_missing_files", "recommendations"):
         for item in (payload.get(key) or []):
             candidates.extend(_extract_task_paths_from_text(item))
 
@@ -5550,6 +5589,8 @@ def _collect_master_tree_required_paths(
             stack_profile=stack_profile,
             workspace_contract=contract,
         ):
+            continue
+        if not _is_stack_consistent_master_tree_path(inferred, stack_profile):
             continue
         if "/" in inferred or _looks_like_repo_file_name(os.path.basename(inferred)):
             files.add(inferred)
@@ -5665,6 +5706,8 @@ def _sanitize_master_planned_files(
             stack_profile=stack_profile,
             workspace_contract=contract,
         ):
+            continue
+        if not _is_stack_consistent_master_tree_path(candidate, stack_profile):
             continue
         if candidate in seen:
             continue
@@ -6193,30 +6236,72 @@ def _infer_project_stack(
     confidence = "explicit"
     reason = ""
 
-    if any(token in combined_text for token in ("next.js", "nextjs", "app router", "next.config")):
-        frontend = "nextjs"
-    elif any(token in combined_text for token in ("react", "vite", "tsx", "jsx")):
-        frontend = "react-vite"
-
-    if any(token in combined_text for token in ("fastapi", "pydantic", "sqlalchemy", "uvicorn", "python api")):
-        backend = "fastapi"
-    elif any(token in combined_text for token in ("express", "node api", "node.js", "node/express")):
-        backend = "express"
-
     contract = workspace_contract if isinstance(workspace_contract, dict) else {}
-    allowed_roots = [str(root or "").strip().lower() for root in (contract.get("allowed_source_roots") or [])]
-    if not frontend and any("frontend" in root for root in allowed_roots):
+    contract_manifests = [
+        str(path or "").strip().lower()
+        for module in (contract.get("modules") or [])
+        if isinstance(module, dict)
+        for path in (module.get("manifests") or [])
+        if str(path or "").strip()
+    ]
+    contract_roots = [
+        str(root or "").strip().lower()
+        for root in (contract.get("allowed_source_roots") or [])
+        if str(root or "").strip()
+    ]
+
+    frontend_scores: Counter[str] = Counter()
+    backend_scores: Counter[str] = Counter()
+
+    if any("next.config" in path for path in contract_manifests):
+        frontend_scores["nextjs"] += 4
+    if any("vite.config" in path for path in contract_manifests):
+        frontend_scores["react-vite"] += 4
+
+    for token in ("next.js", "nextjs", "app router", "next.config"):
+        if token in combined_text:
+            frontend_scores["nextjs"] += 3
+    for token in (
+        "react", "vite", "tsx", "jsx", "react testing library", "cypress",
+        "toast", "theme toggle", "component", "history panel", "scientific keypad",
+        "nginx static", "static container",
+    ):
+        if token in combined_text:
+            frontend_scores["react-vite"] += 1
+
+    for token in ("fastapi", "pydantic", "sqlalchemy", "uvicorn", "python api"):
+        if token in combined_text:
+            backend_scores["fastapi"] += 2
+    for token in ("express", "node api", "node.js", "node/express"):
+        if token in combined_text:
+            backend_scores["express"] += 2
+
+    if frontend_scores:
+        frontend = sorted(
+            frontend_scores.items(),
+            key=lambda item: (item[1], item[0] == "react-vite"),
+            reverse=True,
+        )[0][0]
+
+    if backend_scores:
+        backend = sorted(
+            backend_scores.items(),
+            key=lambda item: (item[1], item[0] == "fastapi"),
+            reverse=True,
+        )[0][0]
+
+    if not frontend and any("frontend" in root for root in contract_roots):
         frontend = "react-vite"
-    if not backend and any("backend" in root for root in allowed_roots):
+    if not backend and any("backend" in root for root in contract_roots):
         backend = "fastapi"
 
     if not frontend and not backend:
-        frontend = "nextjs"
+        frontend = "react-vite"
         backend = "fastapi"
         confidence = "default"
         reason = "No explicit framework evidence was found. Using the platform default web stack."
     elif not frontend:
-        frontend = "nextjs"
+        frontend = "react-vite"
         confidence = "mixed"
         reason = "Frontend stack was not explicit, so a default frontend stack was selected."
     elif not backend:
