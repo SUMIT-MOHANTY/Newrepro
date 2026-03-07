@@ -13,10 +13,10 @@ import {
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
-const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
-const TOKEN_REFRESH_THRESHOLD_SECONDS = 300;
 const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
+const GENERATED_TASK_PLAN_STORAGE_KEY_PREFIX = 'task_creation_generated_plan_';
+const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 
 function decodeJwtExpiry(token) {
     try {
@@ -42,14 +42,6 @@ function readTaskTokenCache() {
     }
 }
 
-function writeTaskTokenCache(cache) {
-    try {
-        localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
-    } catch {
-        // Ignore storage errors.
-    }
-}
-
 function getCachedTaskToken(projectKey) {
     if (!projectKey) return null;
     const cache = readTaskTokenCache();
@@ -59,11 +51,11 @@ function getCachedTaskToken(projectKey) {
         const now = Math.floor(Date.now() / 1000);
         if (entry.expiresAt <= now) {
             delete cache[projectKey];
-            writeTaskTokenCache(cache);
+            localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
             return null;
         }
     }
-    return entry;
+    return entry.token;
 }
 
 function cacheTaskToken(projectKey, token) {
@@ -73,13 +65,7 @@ function cacheTaskToken(projectKey, token) {
         token,
         expiresAt: decodeJwtExpiry(token),
     };
-    writeTaskTokenCache(cache);
-}
-
-function formatDate(dateValue) {
-    const d = new Date(dateValue);
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toISOString().slice(0, 10);
+    localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
 }
 
 function extractEntityId(item, key) {
@@ -168,28 +154,170 @@ function readProcessModeMap() {
     }
 }
 
+function readGeneratedTaskPlan(projectKey) {
+    if (!projectKey) return null;
+    try {
+        const raw = localStorage.getItem(`${GENERATED_TASK_PLAN_STORAGE_KEY_PREFIX}${projectKey}`);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function writeGeneratedTaskPlan(projectKey, payload) {
+    if (!projectKey || !payload) return;
+    try {
+        localStorage.setItem(
+            `${GENERATED_TASK_PLAN_STORAGE_KEY_PREFIX}${projectKey}`,
+            JSON.stringify(payload)
+        );
+    } catch {
+        // Ignore storage errors.
+    }
+}
+
+function formatCsvCell(value) {
+    const text = String(value ?? '');
+    return `"${text.replace(/"/g, '""')}"`;
+}
+
+function buildTaskPreviewCsv(tasks) {
+    if (!Array.isArray(tasks) || tasks.length === 0) return '';
+
+    const columns = [
+        'project_id',
+        'project_name',
+        'task_id',
+        'parent_id',
+        'type',
+        'title',
+        'description',
+        'status',
+        'priority',
+        'story_points',
+        'sprint_id',
+        'sprint_name',
+        'milestone_id',
+        'reporter',
+        'assignee',
+        'resource_names',
+        'planned_start',
+        'planned_end',
+        'estimated_hours',
+        'wbs',
+        'level',
+        'dependencies',
+        'checklists',
+    ];
+
+    const lines = [columns.map(formatCsvCell).join(',')];
+
+    tasks.forEach((task) => {
+        const row = columns.map((column) => {
+            const value = task?.[column];
+
+            if (column === 'resource_names' && Array.isArray(value)) {
+                return formatCsvCell(value.join(' | '));
+            }
+            if (column === 'dependencies' && Array.isArray(value)) {
+                return formatCsvCell(value.join(' | '));
+            }
+            if (column === 'checklists' && Array.isArray(value)) {
+                const flattened = value.map((checklist) => {
+                    const title = String(checklist?.title || '').trim();
+                    const items = Array.isArray(checklist?.items)
+                        ? checklist.items.map((item) => {
+                            if (item && typeof item === 'object') {
+                                const text = String(item.text || item.title || '').trim();
+                                return text ? `${text}${item.completed ? ' [done]' : ''}` : '';
+                            }
+                            return String(item || '').trim();
+                        }).filter(Boolean).join(' | ')
+                        : '';
+                    return title ? `${title}: ${items}` : items;
+                }).join(' || ');
+                return formatCsvCell(flattened);
+            }
+            return formatCsvCell(value ?? '');
+        });
+        lines.push(row.join(','));
+    });
+
+    return lines.join('\n');
+}
+
+function getPreviewJsonForDisplay(previewJson) {
+    if (Array.isArray(previewJson)) {
+        return previewJson.map((task) => {
+            if (!task || typeof task !== 'object') {
+                return task;
+            }
+
+            const rawChecklist = task.checklist;
+            if (typeof rawChecklist !== 'string' || !rawChecklist.trim()) {
+                return task;
+            }
+
+            try {
+                const parsedChecklist = JSON.parse(rawChecklist);
+                return {
+                    ...task,
+                    checklist: parsedChecklist,
+                };
+            } catch {
+                return task;
+            }
+        });
+    }
+
+    if (!previewJson || typeof previewJson !== 'object') {
+        return previewJson;
+    }
+
+    const tasks = Array.isArray(previewJson.tasks) ? previewJson.tasks : [];
+    return {
+        ...previewJson,
+        tasks: tasks.map((task) => {
+            if (!task || typeof task !== 'object') {
+                return task;
+            }
+
+            const rawChecklist = task.checklist;
+            if (typeof rawChecklist !== 'string' || !rawChecklist.trim()) {
+                return task;
+            }
+
+            try {
+                const parsedChecklist = JSON.parse(rawChecklist);
+                return {
+                    ...task,
+                    checklist: parsedChecklist,
+                };
+            } catch {
+                return task;
+            }
+        }),
+    };
+}
+
 
 export default function TaskCreation({
     projects = [],
-    projectsLoading = false,
     selectedProjectKey,
-    fetchRoadmapData,
-    fetchHistory,
 }) {
     const navigate = useNavigate();
     const location = useLocation();
     const token = localStorage.getItem('token');
 
-    const [taskToken, setTaskToken] = useState(null);
-    const [taskTokenProjectKey, setTaskTokenProjectKey] = useState(null);
-    const hasValidTaskToken = Boolean(taskToken) && taskTokenProjectKey === selectedProjectKey;
-    const [isFetchingTaskToken, setIsFetchingTaskToken] = useState(false);
     const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(false);
 
     const [projectDeadline, setProjectDeadline] = useState('');
     const [sprints, setSprints] = useState([]);
     const [milestones, setMilestones] = useState([]);
     const [tasks, setTasks] = useState([]);
+    const [generatedTaskPlan, setGeneratedTaskPlan] = useState(null);
     const [taskTotalCount, setTaskTotalCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -198,10 +326,6 @@ export default function TaskCreation({
     const [creationStageIndex, setCreationStageIndex] = useState(0);
     const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
     const autoStartRunKeysRef = useRef(new Set());
-    const credentialRefreshAttemptedRef = useRef(new Set());
-    const generationSnapshotRef = useRef({ tasks: 0, sprints: 0, milestones: 0, taskTotalCount: 0 });
-    const generationPollTimerRef = useRef(null);
-    const [isRefreshingCredentials, setIsRefreshingCredentials] = useState(false);
     const [customRules, setCustomRules] = useState(() => {
         if (selectedProjectKey) {
             return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
@@ -213,16 +337,64 @@ export default function TaskCreation({
         () => projects.find((p) => p.key === selectedProjectKey) || null,
         [projects, selectedProjectKey]
     );
-    const hasProjectCredentials = Boolean(selectedProject?.client_id && selectedProject?.client_secret);
 
     const processMode = useMemo(() => {
         const map = readProcessModeMap();
         return selectedProjectKey ? map[selectedProjectKey] || 'ai_first' : 'ai_first';
     }, [selectedProjectKey]);
 
+    const previewJson = useMemo(() => {
+        if (Array.isArray(generatedTaskPlan?.preview_json)) {
+            return generatedTaskPlan.preview_json;
+        }
+        if (generatedTaskPlan?.preview_json && typeof generatedTaskPlan.preview_json === 'object') {
+            return generatedTaskPlan.preview_json;
+        }
+        return Array.isArray(generatedTaskPlan?.tasks) ? generatedTaskPlan.tasks : [];
+    }, [generatedTaskPlan]);
+
+    const previewJsonForDisplay = useMemo(
+        () => getPreviewJsonForDisplay(previewJson),
+        [previewJson]
+    );
+
+    const previewCsv = useMemo(
+        () => buildTaskPreviewCsv(Array.isArray(previewJson) ? previewJson : (Array.isArray(previewJson?.tasks) ? previewJson.tasks : [])),
+        [previewJson]
+    );
+
+    const hydrateGeneratedPlan = useCallback((payload) => {
+        const nextPayload = payload && typeof payload === 'object' ? payload : null;
+        const nextTasks = Array.isArray(nextPayload?.tasks) ? nextPayload.tasks : [];
+        const nextSprints = Array.isArray(nextPayload?.sprints) ? nextPayload.sprints : [];
+        const nextMilestones = Array.isArray(nextPayload?.milestones) ? nextPayload.milestones : [];
+
+        setGeneratedTaskPlan(nextPayload);
+        setTasks(nextTasks);
+        setTaskTotalCount(nextTasks.length);
+        setSprints(
+            nextSprints.map((sprint) => ({
+                ...sprint,
+                id: sprint.id || sprint.sprint_id,
+                name: sprint.name || sprint.sprint_name || 'Sprint',
+            }))
+        );
+        setMilestones(
+            nextMilestones.map((milestone) => ({
+                ...milestone,
+                id: milestone.id || milestone.milestone_id,
+                name: milestone.name || milestone.milestone_name || 'Milestone',
+            }))
+        );
+
+        const fallbackDeadline = nextTasks[0]?.planned_end || nextTasks[0]?.deadline || '';
+        setProjectDeadline(nextPayload?.project_deadline || fallbackDeadline || '');
+    }, []);
+
     useEffect(() => {
         if (!selectedProjectKey) {
             setHasCompletedInitialBootstrap(true);
+            setGeneratedTaskPlan(null);
             return;
         }
         setHasCompletedInitialBootstrap(false);
@@ -230,21 +402,10 @@ export default function TaskCreation({
         setSprints([]);
         setMilestones([]);
         setTasks([]);
+        setGeneratedTaskPlan(null);
         setTaskTotalCount(0);
         setError('');
         setSuccess('');
-    }, [selectedProjectKey]);
-
-    useEffect(() => {
-        if (!selectedProjectKey) return;
-        const cached = getCachedTaskToken(selectedProjectKey);
-        if (cached?.token) {
-            setTaskToken(cached.token);
-            setTaskTokenProjectKey(selectedProjectKey);
-        } else {
-            setTaskToken(null);
-            setTaskTokenProjectKey(null);
-        }
     }, [selectedProjectKey]);
 
     useEffect(() => {
@@ -260,169 +421,70 @@ export default function TaskCreation({
         }
     }, [selectedProjectKey, customRules]);
 
-    useEffect(() => {
-        let isMounted = true;
-        const fetchTaskToken = async () => {
-            if (!selectedProjectKey || !selectedProject) return;
+    const buildHeaders = useCallback(() => {
+        return { Authorization: `Bearer ${token}` };
+    }, [token]);
 
-            const clientId = selectedProject.client_id;
-            const clientSecret = selectedProject.client_secret;
-            if (!clientId || !clientSecret) return;
+    const resolveTaskToken = useCallback(async () => {
+        if (!selectedProjectKey) return null;
 
-            const cached = getCachedTaskToken(selectedProjectKey);
-            const shouldRefresh =
-                !cached?.token ||
-                !cached?.expiresAt ||
-                (cached.expiresAt - Math.floor(Date.now() / 1000)) <= TOKEN_REFRESH_THRESHOLD_SECONDS;
-            if (!shouldRefresh) return;
+        const cachedToken = getCachedTaskToken(selectedProjectKey);
+        if (cachedToken) return cachedToken;
 
-            try {
-                if (isMounted) setIsFetchingTaskToken(true);
-                const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
-                });
-                if (!res.ok) {
-                    if (isMounted && !cached?.token) {
-                        setError('Failed to load project info token for the selected project.');
-                        setHasCompletedInitialBootstrap(true);
-                    }
-                    return;
-                }
-                const data = await res.json();
-                if (!isMounted) return;
-                setTaskToken(data.access);
-                setTaskTokenProjectKey(selectedProjectKey);
-                cacheTaskToken(selectedProjectKey, data.access);
-            } catch {
-                if (isMounted && !cached?.token) {
-                    setError('Failed to load project info token for the selected project.');
-                    setHasCompletedInitialBootstrap(true);
-                }
-            } finally {
-                if (isMounted) setIsFetchingTaskToken(false);
-            }
-        };
+        const clientId = selectedProject?.client_id;
+        const clientSecret = selectedProject?.client_secret;
+        if (!clientId || !clientSecret) {
+            return null;
+        }
 
-        fetchTaskToken();
-        return () => {
-            isMounted = false;
-        };
+        const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+        });
+        if (!res.ok) {
+            throw new Error('Failed to fetch task token');
+        }
+
+        const data = await res.json().catch(() => ({}));
+        const fetchedToken = typeof data?.access === 'string' ? data.access : '';
+        if (!fetchedToken) {
+            throw new Error('Task token is missing from token response');
+        }
+
+        cacheTaskToken(selectedProjectKey, fetchedToken);
+        return fetchedToken;
     }, [selectedProjectKey, selectedProject]);
 
-    useEffect(() => {
-        if (!selectedProjectKey) return;
-        if (!projectsLoading && !isRefreshingCredentials && !hasProjectCredentials) {
-            setHasCompletedInitialBootstrap(true);
-        }
-    }, [selectedProjectKey, projectsLoading, isRefreshingCredentials, hasProjectCredentials]);
-
-    const buildHeaders = useCallback(() => {
-        const headers = { Authorization: `Bearer ${token}` };
-        if (hasValidTaskToken) headers['x-task-token'] = taskToken;
-        return headers;
-    }, [token, hasValidTaskToken, taskToken]);
-
-    const extractTaskResults = useCallback((taskPayload) => {
-        if (Array.isArray(taskPayload)) return taskPayload;
-        if (Array.isArray(taskPayload?.results)) return taskPayload.results;
-        return [];
-    }, []);
-
-    const getTaskTotalCount = useCallback(
-        (taskPayload) => {
-            const raw = taskPayload?.count;
-            if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-            return extractTaskResults(taskPayload).length;
-        },
-        [extractTaskResults]
-    );
-
     const loadData = useCallback(async () => {
-        if (!selectedProjectKey || !hasValidTaskToken) return;
+        if (!selectedProjectKey) {
+            setHasCompletedInitialBootstrap(true);
+            return null;
+        }
         setIsLoading(true);
         setError('');
         try {
-            const headers = buildHeaders();
-            const [sprintRes, milestoneRes, taskRes, projectInfoRes] = await Promise.all([
-                fetch(API_ENDPOINTS.AGENT_SPRINTS, { headers }),
-                fetch(API_ENDPOINTS.AGENT_MILESTONES, { headers }),
-                fetch(API_ENDPOINTS.AGENT_TASKS, { headers }),
-                fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers }),
-            ]);
-
-            const sprintData = sprintRes.ok ? await sprintRes.json() : { sprints: [] };
-            const milestoneData = milestoneRes.ok ? await milestoneRes.json() : { milestones: [] };
-            const taskData = taskRes.ok ? await taskRes.json() : { results: [] };
-            const projectInfoData = projectInfoRes.ok ? await projectInfoRes.json() : {};
-
-            const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
-            const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
-            const nextTasks = extractTaskResults(taskData);
-            const nextTaskTotalCount = getTaskTotalCount(taskData);
-
-            setSprints(nextSprints);
-            setMilestones(nextMilestones);
-            setTasks(nextTasks);
-            setTaskTotalCount(nextTaskTotalCount);
-
-            let normalizedDeadline = '';
-            const deadline = projectInfoData?.project?.deadline;
-            if (deadline) {
-                normalizedDeadline = formatDate(deadline);
-                setProjectDeadline(normalizedDeadline);
-            }
+            const storedPlan = readGeneratedTaskPlan(selectedProjectKey);
+            hydrateGeneratedPlan(storedPlan);
             return {
-                sprints: nextSprints,
-                milestones: nextMilestones,
-                tasks: nextTasks,
-                taskTotalCount: nextTaskTotalCount,
-                projectDeadline: normalizedDeadline,
+                sprints: Array.isArray(storedPlan?.sprints) ? storedPlan.sprints : [],
+                milestones: Array.isArray(storedPlan?.milestones) ? storedPlan.milestones : [],
+                tasks: Array.isArray(storedPlan?.tasks) ? storedPlan.tasks : [],
+                taskTotalCount: Array.isArray(storedPlan?.tasks) ? storedPlan.tasks.length : 0,
+                projectDeadline: storedPlan?.project_deadline || '',
             };
         } catch (e) {
-            setError(e?.message || 'Failed to load sprint/milestone/task data');
+            setError(e?.message || 'Failed to load generated task plan');
             return null;
         } finally {
             setIsLoading(false);
             setHasCompletedInitialBootstrap(true);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults, getTaskTotalCount]);
+    }, [selectedProjectKey, hydrateGeneratedPlan]);
 
     useEffect(() => {
         loadData();
     }, [loadData]);
-
-    useEffect(() => {
-        if (!selectedProjectKey) {
-            setIsRefreshingCredentials(false);
-            return;
-        }
-        if (hasProjectCredentials) {
-            setIsRefreshingCredentials(false);
-            return;
-        }
-        if (projectsLoading) {
-            setIsRefreshingCredentials(true);
-            return;
-        }
-        if (typeof fetchHistory !== 'function') {
-            setIsRefreshingCredentials(false);
-            return;
-        }
-        if (credentialRefreshAttemptedRef.current.has(selectedProjectKey)) {
-            setIsRefreshingCredentials(false);
-            return;
-        }
-
-        credentialRefreshAttemptedRef.current.add(selectedProjectKey);
-        setIsRefreshingCredentials(true);
-        fetchHistory();
-        const timer = window.setTimeout(() => {
-            setIsRefreshingCredentials(false);
-        }, 4000);
-        return () => window.clearTimeout(timer);
-    }, [selectedProjectKey, hasProjectCredentials, projectsLoading, fetchHistory]);
 
     useEffect(() => {
         if (!isGenerating) {
@@ -430,66 +492,6 @@ export default function TaskCreation({
             setLiveCreatedTaskCount(0);
         }
     }, [isGenerating]);
-
-    const stopGenerationPolling = useCallback(() => {
-        if (generationPollTimerRef.current) {
-            window.clearInterval(generationPollTimerRef.current);
-            generationPollTimerRef.current = null;
-        }
-    }, []);
-
-    const pollGenerationProgress = useCallback(async () => {
-        if (!selectedProjectKey || !hasValidTaskToken) return;
-
-        try {
-            const headers = buildHeaders();
-            const [sprintRes, milestoneRes, taskRes] = await Promise.all([
-                fetch(API_ENDPOINTS.AGENT_SPRINTS, { headers }),
-                fetch(API_ENDPOINTS.AGENT_MILESTONES, { headers }),
-                fetch(API_ENDPOINTS.AGENT_TASKS, { headers }),
-            ]);
-
-            const sprintData = sprintRes.ok ? await sprintRes.json() : { sprints: [] };
-            const milestoneData = milestoneRes.ok ? await milestoneRes.json() : { milestones: [] };
-            const taskData = taskRes.ok ? await taskRes.json() : { results: [] };
-
-            const nextSprints = Array.isArray(sprintData?.sprints) ? sprintData.sprints : [];
-            const nextMilestones = Array.isArray(milestoneData?.milestones) ? milestoneData.milestones : [];
-            const nextTasks = extractTaskResults(taskData);
-            const nextTaskTotalCount = getTaskTotalCount(taskData);
-
-            setSprints(nextSprints);
-            setMilestones(nextMilestones);
-            setTasks(nextTasks);
-            setTaskTotalCount(nextTaskTotalCount);
-
-            const createdSprintCount = Math.max(0, nextSprints.length - generationSnapshotRef.current.sprints);
-            const createdMilestoneCount = Math.max(0, nextMilestones.length - generationSnapshotRef.current.milestones);
-            const baselineTotalCount =
-                typeof generationSnapshotRef.current.taskTotalCount === 'number'
-                    ? generationSnapshotRef.current.taskTotalCount
-                    : generationSnapshotRef.current.tasks;
-            const createdTaskCount = Math.max(0, nextTaskTotalCount - baselineTotalCount);
-
-            setLiveCreatedTaskCount(createdTaskCount);
-
-            if (createdSprintCount > 0 && createdMilestoneCount > 0) {
-                setCreationStageIndex(2);
-            } else if (createdSprintCount > 0) {
-                setCreationStageIndex(1);
-            } else {
-                setCreationStageIndex(0);
-            }
-        } catch {
-            // Ignore polling errors while the main generation request is still running.
-        }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, extractTaskResults, getTaskTotalCount]);
-
-    useEffect(() => {
-        return () => {
-            stopGenerationPolling();
-        };
-    }, [stopGenerationPolling]);
 
     const groupedTasks = useMemo(() => {
         const sprintById = new Map(sprints.map((s) => [String(s.id), s]));
@@ -532,46 +534,26 @@ export default function TaskCreation({
             setError('Select a project before creating tasks.');
             return;
         }
-        if (!hasValidTaskToken) {
-            setError('Task token is not ready. Please wait and try again.');
-            return;
-        }
 
         setIsGenerating(true);
         setError('');
         setSuccess('');
         setCreationStageIndex(0);
         setLiveCreatedTaskCount(0);
-        stopGenerationPolling();
-        generationPollTimerRef.current = window.setInterval(() => {
-            pollGenerationProgress();
-        }, 30000);
 
         try {
-            const baseHeaders = buildHeaders();
-            let baselineTaskTotalCount = taskTotalCount;
-            try {
-                const baselineRes = await fetch(API_ENDPOINTS.AGENT_TASKS, { headers: baseHeaders });
-                if (baselineRes.ok) {
-                    const baselineJson = await baselineRes.json().catch(() => ({}));
-                    baselineTaskTotalCount = getTaskTotalCount(baselineJson);
-                }
-            } catch {
-                // Ignore baseline fetch errors; fall back to local state.
+            const taskToken = await resolveTaskToken();
+            if (!taskToken) {
+                throw new Error('Task token is required before uploading generated tasks.');
             }
 
-            generationSnapshotRef.current = {
-                tasks: tasks.length,
-                sprints: sprints.length,
-                milestones: milestones.length,
-                taskTotalCount: baselineTaskTotalCount,
-            };
-
             const headers = {
-                ...baseHeaders,
+                ...buildHeaders(),
                 'Content-Type': 'application/json',
+                'X-Task-Token': taskToken,
             };
 
+            setCreationStageIndex(1);
             let prerequisites = null;
             try {
                 const saved = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
@@ -612,40 +594,33 @@ export default function TaskCreation({
                 }
             }
 
-            const createdCount = generateJson?.tasks_created ?? 0;
-            const createdSprintName =
-                generateJson?.created_sprint?.name || generateJson?.created_sprint?.sprint?.name || null;
-            const createdMilestoneName =
-                generateJson?.created_milestone?.name || generateJson?.created_milestone?.milestone?.name || null;
+            writeGeneratedTaskPlan(selectedProjectKey, generateJson);
+            hydrateGeneratedPlan(generateJson);
+
+            const createdCount = Array.isArray(generateJson?.tasks)
+                ? generateJson.tasks.length
+                : (generateJson?.tasks_created ?? 0);
             const backendMessage =
                 typeof generateJson?.message === 'string' ? generateJson.message : '';
 
-            if (createdSprintName && createdMilestoneName) {
-                setSuccess(
-                    `AI created sprint "${createdSprintName}", milestone "${createdMilestoneName}", and ${createdCount} task(s).`
-                );
-            } else if (backendMessage) {
+            if (backendMessage) {
                 setSuccess(backendMessage);
             } else {
-                setSuccess(`Created ${createdCount} task(s).`);
+                setSuccess(`Generated ${createdCount} task preview item(s).`);
             }
             setLiveCreatedTaskCount(createdCount);
             setCreationStageIndex(2);
-            await pollGenerationProgress();
-            await loadData();
-            if (fetchRoadmapData) await fetchRoadmapData(selectedProjectKey);
         } catch (e) {
             setError(e?.message || 'Task creation failed');
         } finally {
-            stopGenerationPolling();
             setIsGenerating(false);
         }
-    }, [selectedProjectKey, hasValidTaskToken, buildHeaders, loadData, fetchRoadmapData, customRules, tasks.length, sprints.length, milestones.length, pollGenerationProgress, stopGenerationPolling]);
+    }, [selectedProjectKey, buildHeaders, customRules, hydrateGeneratedPlan, resolveTaskToken]);
 
     useEffect(() => {
         const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
         if (!shouldAutoStart) return;
-        if (!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken) return;
+        if (!selectedProjectKey) return;
         if (isGenerating) return;
 
         const runKey = `${selectedProjectKey}:${location.key}`;
@@ -671,8 +646,6 @@ export default function TaskCreation({
         location.state,
         location.key,
         selectedProjectKey,
-        hasProjectCredentials,
-        hasValidTaskToken,
         isGenerating,
         loadData,
         handleMasterCreate,
@@ -686,12 +659,7 @@ export default function TaskCreation({
         }
     };
 
-    const showInitialProjectLoader = Boolean(selectedProjectKey) && !hasCompletedInitialBootstrap && (
-        projectsLoading ||
-        isRefreshingCredentials ||
-        isFetchingTaskToken ||
-        hasProjectCredentials
-    );
+    const showInitialProjectLoader = Boolean(selectedProjectKey) && !hasCompletedInitialBootstrap && isLoading;
 
     if (showInitialProjectLoader) {
         return (
@@ -703,10 +671,10 @@ export default function TaskCreation({
                         </div>
                         <h3 className="mt-4 text-lg font-extrabold text-slate-900">Loading Task Creation</h3>
                         <p className="mt-2 text-sm text-slate-600">
-                            Fetching project info for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.
+                            Loading the local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.
                         </p>
                         <p className="mt-1 text-xs text-slate-500">
-                            The page will open as soon as project info is ready.
+                            The page will open as soon as the saved preview is ready.
                         </p>
                     </div>
                 </div>
@@ -749,15 +717,15 @@ export default function TaskCreation({
                             AI Planning
                         </h3>
                         <p className="text-sm text-app-text-muted">
-                            Master Agent will automatically create a sprint, create a milestone inside it, then generate tasks under that milestone.
+                            Master Agent will generate the task JSON, upload it to the external batch task API, and show the same payload on this page.
                         </p>
                         <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light">
-                            Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || (selectedProjectKey && hasValidTaskToken ? 'Loading...' : 'Not available')}</span>
+                            Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span>
                         </div>
                         <button
                             onClick={handleMasterCreate}
-                            disabled={!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating}
-                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating)
+                            disabled={!selectedProjectKey || isGenerating}
+                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating)
                                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                                 : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
                                 }`}
@@ -770,21 +738,11 @@ export default function TaskCreation({
                                 No project selected. Select a project from the sidebar or top project dropdown.
                             </p>
                         )}
-                        {selectedProjectKey && !hasProjectCredentials && (projectsLoading || isRefreshingCredentials) && (
+                        {/* {selectedProjectKey && (
                             <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                                Loading project credentials for this project...
+                                The generated task JSON is uploaded to the batch task API, stored locally for this project, and shown below.
                             </p>
-                        )}
-                        {selectedProjectKey && !hasProjectCredentials && !projectsLoading && !isRefreshingCredentials && (
-                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                                Task API credentials are missing for this project. Open the project in Dashboard and ensure external project credentials are configured.
-                            </p>
-                        )}
-                        {selectedProjectKey && hasProjectCredentials && !hasValidTaskToken && (
-                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                                Loading task token for the selected project...
-                            </p>
-                        )}
+                        )} */}
                         {error && (
                             <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
                         )}
@@ -796,6 +754,33 @@ export default function TaskCreation({
                         )}
                     </div>
 
+                    {/* <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-sm font-bold text-app-text-main">Generated JSON Preview</h3>
+                            {generatedTaskPlan && (
+                                <span className="text-xs font-semibold text-app-text-muted">
+                                    {Array.isArray(generatedTaskPlan?.tasks) ? generatedTaskPlan.tasks.length : 0} item(s)
+                                </span>
+                            )}
+                        </div>
+                        {generatedTaskPlan ? (
+                            <div className="space-y-4">
+                                <pre className="max-h-[420px] overflow-auto rounded-xl bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-100">
+                                    {JSON.stringify(previewJsonForDisplay, null, 2)}
+                                </pre>
+                                <div>
+                                    <h4 className="mb-3 text-sm font-bold text-app-text-main">Generated CSV Preview</h4>
+                                    <pre className="max-h-[320px] overflow-auto rounded-xl bg-slate-950 px-4 py-4 text-xs leading-6 text-emerald-100">
+                                        {previewCsv}
+                                    </pre>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="py-10 text-center text-sm text-app-text-muted">
+                                No generated JSON yet. Run Create Tasks to preview the payload.
+                            </div>
+                        )}
+                    </div> */}
 
 
                     <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
@@ -812,9 +797,9 @@ export default function TaskCreation({
                         </div>
 
                         {isLoading ? (
-                            <div className="py-10 text-center text-sm text-app-text-muted">Loading sprint and task data...</div>
+                            <div className="py-10 text-center text-sm text-app-text-muted">Loading generated task plan...</div>
                         ) : groupedTasks.length === 0 ? (
-                            <div className="py-10 text-center text-sm text-app-text-muted">No tasks found yet.</div>
+                            <div className="py-10 text-center text-sm text-app-text-muted">No generated tasks found yet.</div>
                         ) : (
                             <div className="space-y-4">
                                 {groupedTasks.map((sprintGroup) => (
@@ -832,8 +817,8 @@ export default function TaskCreation({
                                                     </div>
                                                     <div className="p-3 space-y-2">
                                                         {milestoneGroup.tasks.map((task) => (
-                                                            <div key={task.id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-white">
-                                                                <p className="text-sm font-semibold text-app-text-main">{task.taskName || task.title || 'Untitled Task'}</p>
+                                                            <div key={task.id || task.task_id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-white">
+                                                                <p className="text-sm font-semibold text-app-text-main">{task.title || task.taskName || 'Untitled Task'}</p>
                                                                 <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-app-text-muted">
                                                                     <span className="inline-flex items-center gap-1">
                                                                         <Flag className="w-3 h-3" />
@@ -841,7 +826,10 @@ export default function TaskCreation({
                                                                     </span>
                                                                     <span className="inline-flex items-center gap-1">
                                                                         <CalendarDays className="w-3 h-3" />
-                                                                        {task.deadline || 'No deadline'}
+                                                                        {task.planned_end || task.deadline || 'No deadline'}
+                                                                    </span>
+                                                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold uppercase tracking-wide text-[10px] text-slate-700">
+                                                                        {task.type || task.task_type || 'task'}
                                                                     </span>
                                                                 </div>
                                                             </div>
@@ -865,10 +853,10 @@ export default function TaskCreation({
                             <h3 className="text-lg font-extrabold text-slate-900">AI Plan Generation In Progress</h3>
                         </div>
                         <p className="mt-2 text-sm text-slate-600">
-                            Creating plan for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>. Please wait.
+                            Generating a local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>. Please wait.
                         </p>
                         <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 flex items-center justify-between">
-                            <span className="text-sm font-semibold text-indigo-900">Tasks created so far</span>
+                            <span className="text-sm font-semibold text-indigo-900">Preview tasks generated</span>
                             <span className="text-2xl font-extrabold text-indigo-700 tabular-nums">{liveCreatedTaskCount}</span>
                         </div>
                         <div className="mt-5 space-y-3">

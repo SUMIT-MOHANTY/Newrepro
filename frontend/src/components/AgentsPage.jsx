@@ -5,7 +5,6 @@ import ProjectDropdown from './ProjectDropdown';
 import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
-import cloudIcon from '../assets/cloud-icon.png';
 import masterLogo from '../assets/logo1.png';
 
 /**
@@ -251,7 +250,6 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
         status: 'idle',
         agentType: 'system',
         type: 'system',
-        logo: cloudIcon,
         icon: Globe,
       },
     ];
@@ -593,8 +591,6 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   } else if (isDeployAgent) {
                     accentColor = 'from-violet-500 to-purple-600';
                     statusColor = 'violet';
-                    useLogo = true;
-                    logoSrc = agent.logo || cloudIcon;
                   } else if (isShared || isDedicated) {
                     accentColor = isShared ? 'from-emerald-400 to-green-500' : 'from-blue-500 to-indigo-500';
                     statusColor = isShared ? 'emerald' : 'blue';
@@ -638,6 +634,8 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                             <Bot className="w-5 h-5 text-white" />
                           ) : isTestAgent ? (
                             <Activity className="w-5 h-5 text-white" />
+                          ) : isDeployAgent ? (
+                            <Globe className="w-5 h-5 text-white" />
                           ) : (
                             getStatusIcon(agent.status)
                           )}

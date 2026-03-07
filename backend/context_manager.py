@@ -194,6 +194,149 @@ def _collect_graph_file_paths(graph: Optional[kg_service.CodeKnowledgeGraph]) ->
     return sorted(set(paths))
 
 
+def _render_project_tree_from_paths(
+    file_paths: List[str],
+    *,
+    directory_paths: Optional[List[str]] = None,
+    root_label: str = "project",
+) -> str:
+    tree: Dict[str, Any] = {}
+
+    def ensure_dir(parts: List[str]) -> Dict[str, Any]:
+        cursor = tree
+        for part in parts:
+            cursor = cursor.setdefault(part, {})
+        return cursor
+
+    for dir_path in directory_paths or []:
+        normalized = _normalize_contract_path(dir_path)
+        if normalized in {"", "."}:
+            continue
+        ensure_dir([part for part in normalized.split("/") if part])
+
+    for file_path in file_paths or []:
+        normalized = _normalize_contract_path(file_path)
+        if normalized in {"", "."}:
+            continue
+        parts = [part for part in normalized.split("/") if part]
+        if not parts:
+            continue
+        parent = ensure_dir(parts[:-1])
+        parent.setdefault(parts[-1], None)
+
+    safe_root_label = str(root_label or "project").strip().strip("/") or "project"
+    lines = [f"{safe_root_label}/"]
+
+    def walk(node: Dict[str, Any], prefix: str = "") -> None:
+        dir_names = sorted(name for name, value in node.items() if isinstance(value, dict))
+        file_names = sorted(name for name, value in node.items() if value is None)
+        ordered = dir_names + file_names
+        for index, name in enumerate(ordered):
+            is_last = index == len(ordered) - 1
+            branch = "└── " if is_last else "├── "
+            value = node[name]
+            if isinstance(value, dict):
+                lines.append(f"{prefix}{branch}{name}/")
+                walk(value, prefix + ("    " if is_last else "│   "))
+            else:
+                lines.append(f"{prefix}{branch}{name}")
+
+    walk(tree)
+    return "\n".join(lines)
+
+
+def get_current_project_tree_snapshot(
+    project_token: str,
+    *,
+    max_files: int = 160,
+    max_chars: int = 4500,
+) -> Dict[str, Any]:
+    token = (project_token or "").strip()
+    project_ctx = _ensure_project_context(token)
+    repo_path = project_ctx.get("repo_path")
+    graph = project_ctx.get("graph")
+
+    source = "unavailable"
+    root_label = "project"
+    all_file_paths: List[str] = []
+    directory_paths: List[str] = []
+
+    if repo_path and os.path.isdir(repo_path):
+        all_file_paths = _collect_repo_file_paths(repo_path)
+        if all_file_paths:
+            source = "git_repo"
+            root_label = os.path.basename(os.path.abspath(repo_path)) or token or "project"
+
+    if not all_file_paths and graph:
+        all_file_paths = _collect_graph_file_paths(graph)
+        if all_file_paths:
+            repo_summary = getattr(graph, "repo_summary", {}) or {}
+            source = "knowledge_graph"
+            root_label = (
+                os.path.basename(os.path.abspath(repo_path))
+                if repo_path and os.path.isdir(repo_path)
+                else str(repo_summary.get("project_name") or token or "project").strip()
+            ) or "project"
+
+    if not all_file_paths:
+        contract = get_workspace_contract(token)
+        all_file_paths = sorted({
+            _normalize_contract_path(path)
+            for path in list(contract.get("root_files") or [])
+            + [
+                manifest
+                for module in (contract.get("modules") or [])
+                if isinstance(module, dict)
+                for manifest in (module.get("manifests") or [])
+            ]
+            if _normalize_contract_path(path) not in {"", "."}
+        })
+        directory_paths = sorted({
+            _normalize_contract_path(path)
+            for path in list(contract.get("allowed_top_level_dirs") or [])
+            + list(contract.get("allowed_source_roots") or [])
+            if _normalize_contract_path(path) not in {"", "."}
+        })
+        if all_file_paths or directory_paths:
+            source = "workspace_contract"
+            root_label = token or "project"
+
+    prioritized_files = sorted(
+        {path for path in all_file_paths if _normalize_contract_path(path) not in {"", "."}},
+        key=lambda item: (item.count("/"), len(item), item),
+    )
+    selected_files = prioritized_files[: max(1, max_files)]
+    tree_text = _render_project_tree_from_paths(
+        selected_files,
+        directory_paths=directory_paths,
+        root_label=root_label,
+    ) if selected_files or directory_paths else ""
+
+    while len(tree_text) > max_chars and len(selected_files) > 20:
+        selected_files = selected_files[: max(20, int(len(selected_files) * 0.75))]
+        tree_text = _render_project_tree_from_paths(
+            selected_files,
+            directory_paths=directory_paths,
+            root_label=root_label,
+        )
+
+    char_truncated = False
+    if len(tree_text) > max_chars:
+        tree_text = tree_text[: max(0, max_chars - 3)].rstrip() + "..."
+        char_truncated = True
+
+    return {
+        "tree": tree_text,
+        "source": source,
+        "root_label": root_label,
+        "all_file_paths": prioritized_files,
+        "displayed_file_paths": selected_files,
+        "total_files": len(prioritized_files),
+        "displayed_files": len(selected_files),
+        "truncated": len(selected_files) < len(prioritized_files) or char_truncated,
+    }
+
+
 def _discover_module_roots(file_paths: List[str]) -> List[str]:
     roots = set()
     for file_path in file_paths:
