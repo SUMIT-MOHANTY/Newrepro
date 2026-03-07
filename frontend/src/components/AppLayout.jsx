@@ -8,6 +8,7 @@ import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
+import { fetchRoadmapStep } from '../api/projects';
 import ProjectDropdown from './ProjectDropdown';
 import RoleDropdown from './RoleDropdown';
 import { getDraftProject } from '../utils/draftProjects';
@@ -287,6 +288,52 @@ export default function AppLayout({ children }) {
 
     const [storageNonce, forceUpdate] = React.useReducer(x => x + 1, 0);
     const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
+    const lastNavigatedProjectRef = React.useRef(null);
+    
+    // Navigate to the appropriate page based on roadmap step when project is selected
+    useEffect(() => {
+        if (!selectedProjectKey || !roadmapDataResult || isNewProjectMode) return;
+        
+        // Skip if we already navigated for this project
+        if (lastNavigatedProjectRef.current === selectedProjectKey) return;
+        
+        const stepLabel = roadmapDataResult.current_step_label;
+        if (!stepLabel) return;
+        
+        // Map step label to route
+        const stepLabelToRoute = {
+            'Project Initiation': '/new-project',
+            'Requirement Screening': '/dashboard',
+            'Governance': '/new-project/governance',
+            'Agent Analysis': '/dashboard',
+            'Prerequisite Classification': '/prerequisites',
+            'Task Creation': '/task-creation',
+            'Resource Onboarding': '/resource-onboarding',
+            'On Flight': '/status-dashboard',
+            'Complete': '/status-dashboard',
+        };
+        
+        const targetRoute = stepLabelToRoute[stepLabel];
+        if (!targetRoute) return;
+        
+        // Navigate if:
+        // 1. We're on a project URL (/a/{token}) - redirect to step page
+        // 2. We're not on the correct step page already
+        // 3. We're not on special pages like /agents
+        const isOnProjectUrl = location.pathname.startsWith('/a/');
+        const isOnTargetRoute = location.pathname.startsWith(targetRoute);
+        const isOnSpecialPage = ['/agents', '/organization-admin'].includes(location.pathname);
+        
+        if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage) {
+            lastNavigatedProjectRef.current = selectedProjectKey;
+            navigate(targetRoute);
+        }
+    }, [selectedProjectKey, roadmapDataResult, isNewProjectMode, location.pathname, navigate]);
+    
+    // Reset navigation tracking when project changes
+    useEffect(() => {
+        lastNavigatedProjectRef.current = null;
+    }, [selectedProjectKey]);
     const hasServerRoadmap = !!roadmapDataResult;
     let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
 
@@ -544,10 +591,41 @@ export default function AppLayout({ children }) {
         navigate('/new-project?new=' + Date.now());
     }, [navigate]);
 
-    const handleSelectProject = (project) => {
+    const handleSelectProject = async (project) => {
         if (!project) return;
         setIsNewProjectMode(false);
         setSelectedProjectKey(project.key);
+        
+        // Fetch roadmap data to determine which page to navigate to
+        try {
+            const roadmapResponse = await fetchRoadmapStep(project.key);
+            if (roadmapResponse && roadmapResponse.current_step_label) {
+                const stepLabel = roadmapResponse.current_step_label;
+                
+                // Map step label to route
+                const stepLabelToRoute = {
+                    'Project Initiation': '/new-project',
+                    'Requirement Screening': '/dashboard',
+                    'Governance': '/new-project/governance',
+                    'Agent Analysis': '/dashboard',
+                    'Prerequisite Classification': '/prerequisites',
+                    'Task Creation': '/task-creation',
+                    'Resource Onboarding': '/resource-onboarding',
+                    'On Flight': '/status-dashboard',
+                    'Complete': '/status-dashboard',
+                };
+                
+                const targetRoute = stepLabelToRoute[stepLabel];
+                if (targetRoute && location.pathname !== targetRoute) {
+                    navigate(targetRoute);
+                    return;
+                }
+            }
+        } catch (error) {
+            console.error('Failed to fetch roadmap for navigation:', error);
+        }
+        
+        // Fallback to default project path if roadmap fetch fails
         const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
         if (location.pathname !== targetPath) navigate(targetPath);
     };

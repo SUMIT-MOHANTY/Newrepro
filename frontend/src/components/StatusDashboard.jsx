@@ -1027,43 +1027,55 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
 
     // ── Render Agent Card ────────────────────────────────────────────
-    const renderAgentCard = (agent) => {
-        const isGitManager = agent.id === 'agent_03';
-        const isMasterAgent = agent.id === 'agent_04';
-        const isSystemAgent = isGitManager || isMasterAgent;
-        const displayName = getAgentDisplayName(agent);
-        const cfg = agentConfig[agent.id] || agentConfig.agent_01;
-        const Icon = cfg.icon;
-        const isRunning = agent.status === 'running';
-        const isCompleted = agent.status === 'completed';
-        const isError = agent.status === 'error';
-        const isIdle = agent.status === 'idle';
-        const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
-        const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
+const renderAgentCard = (agent) => {
+  const isGitManager = agent.id === 'agent_03';
+  const isMasterAgent = agent.id === 'agent_04';
+  const isSystemAgent = isGitManager || isMasterAgent;
+  const isShared = agent.id?.startsWith('shared_');
+  const isDedicated = agent.id?.startsWith('dedicated_');
+  const agentType = isShared ? 'Shared' : isDedicated ? 'Dedicated' : null;
+  const displayName = getAgentDisplayName(agent);
+  const cfg = agentConfig[agent.id] || agentConfig.agent_01;
+  const Icon = cfg.icon;
+  const isRunning = agent.status === 'running';
+  const isCompleted = agent.status === 'completed';
+  const isError = agent.status === 'error';
+  const isIdle = agent.status === 'idle';
+  const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
+  const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
 
-        return (
-            <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
-                <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${cfg.accent}`}></div>
+  return (
+    <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${cfg.accent}`}></div>
 
-                <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                        <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${cfg.gradient} flex items-center justify-center shadow-lg ${cfg.shadow}`}>
-                            {Icon}
-                        </div>
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <h4 className="text-sm font-bold text-app-text-main">
-                                    {displayName}
-                                </h4>
-                            </div>
-                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
-                            {!isSystemAgent && (
-                                <p className="text-[10px] text-app-text-light">
-                                    Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
-                                </p>
-                            )}
-                        </div>
-                    </div>
+      <div className="flex items-start justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${cfg.gradient} flex items-center justify-center shadow-lg ${cfg.shadow}`}>
+            {Icon}
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h4 className="text-sm font-bold text-app-text-main">
+                {displayName}
+              </h4>
+              {agentType && (
+                <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${
+                  isShared
+                    ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                    : 'bg-blue-100 text-blue-700 border border-blue-200'
+                }`}>
+                  {agentType}
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
+            {!isSystemAgent && (
+              <p className="text-[10px] text-app-text-light">
+                Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
+              </p>
+            )}
+          </div>
+        </div>
                     <div className="flex items-center gap-2">
                         <div className="flex items-center gap-1.5">
                             {isRunning && (

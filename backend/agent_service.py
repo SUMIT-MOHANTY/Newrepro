@@ -182,12 +182,20 @@ def build_external_agent_username(agent_id: Optional[str], fallback_name: Option
     source_id = str(agent_id or "").strip().lower()
     match = _re.search(r"(\d+)$", source_id)
     if match:
-        return f"agent{int(match.group(1))}"
+        sequence = int(match.group(1))
+        # Shared agents use agent3, agent4, etc. to avoid conflicts with dedicated agents
+        if source_id.startswith("shared_"):
+            sequence = sequence + 2  # Start from agent3
+        return f"agent{sequence}"
 
     fallback = normalize_agent_name(agent_id, fallback_name)
     fallback_match = _re.search(r"(\d+)$", fallback.lower())
     if fallback_match:
-        return f"agent{int(fallback_match.group(1))}"
+        sequence = int(fallback_match.group(1))
+        # Shared agents use agent3, agent4, etc. to avoid conflicts
+        if "shared" in fallback.lower():
+            sequence = sequence + 2
+        return f"agent{sequence}"
 
     normalized = _re.sub(r"[^a-z0-9]", "", fallback.strip().lower())
     return normalized or "agent"
