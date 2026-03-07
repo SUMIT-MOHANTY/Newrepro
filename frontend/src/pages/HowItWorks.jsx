@@ -1,4 +1,4 @@
-﻿import { ArrowRight, FileText, BrainCircuit, Workflow, Zap, Activity, CheckCircle, Database, Code, Shield, Volume2, VolumeX } from 'lucide-react';
+import { ArrowRight, FileText, BrainCircuit, Workflow, Zap, Activity, CheckCircle, Database, Code, Shield, Volume2, VolumeX } from 'lucide-react';
 import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import gsap from 'gsap';
@@ -243,7 +243,7 @@ const AnimatedWorkflowDiagram = () => {
             <button
               onClick={() => setExecutionMode('agentic')}
               className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'agentic' ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
-              Fully Agentic
+              AI First
             </button>
             <button
               onClick={() => setExecutionMode('coexistence')}
@@ -317,22 +317,22 @@ const AnimatedWorkflowDiagram = () => {
           <path className="path-nxdune-deploy" d="M 650 350 C 750 350, 800 550, 950 550" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
 
           {/* Human Paths */}
-          <path className="path-nxdune-human" d="M 650 350 C 680 350, 700 250, 750 250" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
-          <path className="path-human-nxdune" d="M 750 250 C 700 250, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
-          <path className="path-dev-human" d="M 950 150 C 900 150, 880 250, 850 250" stroke="#f59e0b" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-nxdune-human" d="M 650 350 C 680 350, 700 60, 720 60" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-human-nxdune" d="M 720 60 C 700 60, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-dev-human" d="M 950 150 C 900 150, 850 80, 720 60" stroke="#f59e0b" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
 
-          <path className="path-nxdune-human-test" d="M 650 350 C 680 350, 700 450, 750 450" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
-          <path className="path-human-test-nxdune" d="M 750 450 C 700 450, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
-          <path className="path-test-human" d="M 950 350 C 900 350, 880 450, 850 450" stroke="#ec4899" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-nxdune-human-test" d="M 650 350 L 800 350" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-human-test-nxdune" d="M 800 350 L 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-test-human" d="M 950 350 L 800 350" stroke="#ec4899" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
 
           <path className="path-nxdune-human-deploy" d="M 650 350 C 680 350, 700 650, 750 650" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
           <path className="path-human-deploy-nxdune" d="M 750 650 C 700 650, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
           <path className="path-deploy-human" d="M 950 550 C 900 550, 880 650, 850 650" stroke="#10b981" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
 
-          {/* Return Paths (Task updates) */}
-          <path className="path-dev-nxdune" d="M 950 170 C 800 170, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
-          <path className="path-test-nxdune" d="M 950 370 C 800 370, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
-          <path className="path-deploy-nxdune" d="M 950 530 C 800 530, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" />
+          {/* Return Paths (Task updates) - Hidden to reduce visual clutter */}
+          <path className="path-dev-nxdune" d="M 950 170 C 800 170, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-test-nxdune" d="M 950 370 C 800 370, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-deploy-nxdune" d="M 950 530 C 800 530, 750 370, 650 370" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
 
           {/* Packets */}
           <rect className="packet-doc" width="16" height="20" rx="3" fill="#ffffff" stroke="#3b82f6" strokeWidth="2" x="-8" y="-10" />
@@ -354,10 +354,10 @@ const AnimatedWorkflowDiagram = () => {
           <circle className="packet-deploy-to-human" r="5" fill="#10b981" filter="url(#glowFlow)" opacity="0" />
           <circle className="packet-human-deploy-to-nxdune" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
 
-          {/* Return Packets */}
-          <circle className="packet-return-dev" r="4" fill="#34d399" filter="url(#glowFlow)" />
-          <circle className="packet-return-test" r="4" fill="#34d399" filter="url(#glowFlow)" />
-          <circle className="packet-return-deploy" r="4" fill="#34d399" filter="url(#glowFlow)" />
+          {/* Return Packets - Hidden to reduce visual clutter */}
+          <circle className="packet-return-dev" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-return-test" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
+          <circle className="packet-return-deploy" r="4" fill="#34d399" filter="url(#glowFlow)" opacity="0" />
         </svg>
 
         <div className="absolute inset-0 z-10 w-full h-full max-w-[1200px] mx-auto pointer-events-none">
@@ -392,7 +392,7 @@ const AnimatedWorkflowDiagram = () => {
           </div>
 
           {/* Human Dev Node */}
-          <div className={`absolute top-[250px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
+          <div className={`absolute top-[60px] left-[720px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
             <div className="human-pulse absolute inset-0 bg-amber-500 rounded-2xl blur-xl opacity-0"></div>
             <div className="human-ring absolute inset-0 rounded-2xl border-2 border-amber-500/50"></div>
             <div className="relative w-28 h-20 bg-white border border-amber-500/30 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.15)] flex flex-col items-center justify-center p-2">
@@ -408,7 +408,7 @@ const AnimatedWorkflowDiagram = () => {
           </div>
 
           {/* Human QA Node */}
-          <div className={`absolute top-[450px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
+          <div className={`absolute top-[350px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
             <div className="human-qa-pulse absolute inset-0 bg-pink-500 rounded-2xl blur-xl opacity-0"></div>
             <div className="human-qa-ring absolute inset-0 rounded-2xl border-2 border-pink-500/50"></div>
             <div className="relative w-28 h-20 bg-white border border-pink-500/30 rounded-2xl shadow-[0_0_20px_rgba(236,72,153,0.15)] flex flex-col items-center justify-center p-2">
