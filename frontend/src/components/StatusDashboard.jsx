@@ -342,8 +342,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         return [
             ...(masterAgent ? [masterAgent] : []),
             ...(gitManagerAgent ? [gitManagerAgent] : []),
-            ...(testAgent ? [testAgent] : []),
             ...devAgents,
+            ...(testAgent ? [testAgent] : []),
         ];
     }, [agents, devAgents]);
 

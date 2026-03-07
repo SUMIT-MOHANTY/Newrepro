@@ -809,7 +809,7 @@ export default function AppLayout({ children }) {
                                 </h2>
                             </div>
 
-                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && (
+                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                     {currentView === 'statusDashboard' && (
                                         <>
