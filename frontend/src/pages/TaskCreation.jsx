@@ -656,8 +656,8 @@ export default function TaskCreation({
     if (showInitialProjectLoader) {
         return (
             <div className="h-full min-h-[70vh] bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
-                <div className="fixed inset-0 z-[220] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 text-center">
+                <div className="fixed inset-0 z-[300] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 text-center" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex justify-center">
                             <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
                         </div>
@@ -675,149 +675,151 @@ export default function TaskCreation({
     }
 
     return (
-        <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
-            <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-                <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                        <div>
-                            <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">Master Agent Planner</p>
-                            <h2 className="text-2xl font-extrabold text-app-text-main mt-1">Create Sprint, Milestone, and Tasks</h2>
-                            <p className="text-sm text-app-text-muted mt-2">
-                                Project: <span className="font-semibold text-app-text-main">{selectedProject?.name || 'Not selected'}</span>
+        <>
+            <div className={`h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30 ${isGenerating ? 'blur-sm' : ''}`}>
+                <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                            <div>
+                                <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">Master Agent Planner</p>
+                                <h2 className="text-2xl font-extrabold text-app-text-main mt-1">Create Sprint, Milestone, and Tasks</h2>
+                                <p className="text-sm text-app-text-muted mt-2">
+                                    Project: <span className="font-semibold text-app-text-main">{selectedProject?.name || 'Not selected'}</span>
+                                </p>
+                                {processMode === 'ai_assist' && (
+                                    <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-xs font-semibold text-indigo-700">
+                                        <Sparkles className="w-3.5 h-3.5" />
+                                        <span>AI Assist Active: You will be redirected to VS Code's N-Mod Ext.</span>
+                                    </div>
+                                )}
+                            </div>
+                            <button
+                                onClick={handleStartProcess}
+                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow hover:shadow-lg transition-all"
+                            >
+                                Start the Process
+                                <ArrowRight className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5 space-y-4">
+                        <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
+                            <FolderKanban className="w-4 h-4 text-blue-600" />
+                            AI Planning
+                        </h3>
+                        <p className="text-sm text-app-text-muted">
+                            Master Agent will automatically create a sprint, create a milestone inside it, then generate tasks under that milestone.
+                        </p>
+                        <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light">
+                            Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || (selectedProjectKey && hasValidTaskToken ? 'Loading...' : 'Not available')}</span>
+                        </div>
+                        <button
+                            onClick={handleMasterCreate}
+                            disabled={!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating}
+                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating)
+                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
+                                }`}
+                        >
+                            {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                            {isGenerating ? 'Creating Plan...' : 'Create Tasks (AI Auto Plan)'}
+                        </button>
+                        {!selectedProjectKey && (
+                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                No project selected. Select a project from the sidebar or top project dropdown.
                             </p>
-                            {processMode === 'ai_assist' && (
-                                <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-xs font-semibold text-indigo-700">
-                                    <Sparkles className="w-3.5 h-3.5" />
-                                    <span>AI Assist Active: You will be redirected to VS Code's N-Mod Ext.</span>
-                                </div>
-                            )}
+                        )}
+                        {selectedProjectKey && !hasProjectCredentials && (projectsLoading || isRefreshingCredentials) && (
+                            <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                                Loading project credentials for this project...
+                            </p>
+                        )}
+                        {selectedProjectKey && !hasProjectCredentials && !projectsLoading && !isRefreshingCredentials && (
+                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                Task API credentials are missing for this project. Open the project in Dashboard and ensure external project credentials are configured.
+                            </p>
+                        )}
+                        {selectedProjectKey && hasProjectCredentials && !hasValidTaskToken && (
+                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                Loading task token for the selected project...
+                            </p>
+                        )}
+                        {error && (
+                            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
+                        )}
+                        {success && (
+                            <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                                <span>{success}</span>
+                            </p>
+                        )}
+                    </div>
+
+
+
+                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-sm font-bold text-app-text-main">Tasks Grouped by Sprint / Milestone</h3>
+                            <button
+                                onClick={loadData}
+                                disabled={isLoading}
+                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold bg-app-bg-muted text-app-text-main hover:bg-app-bg-hover"
+                            >
+                                {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                Refresh
+                            </button>
                         </div>
-                        <button
-                            onClick={handleStartProcess}
-                            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow hover:shadow-lg transition-all"
-                        >
-                            Start the Process
-                            <ArrowRight className="w-4 h-4" />
-                        </button>
-                    </div>
-                </div>
 
-                <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5 space-y-4">
-                    <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
-                        <FolderKanban className="w-4 h-4 text-blue-600" />
-                        AI Planning
-                    </h3>
-                    <p className="text-sm text-app-text-muted">
-                        Master Agent will automatically create a sprint, create a milestone inside it, then generate tasks under that milestone.
-                    </p>
-                    <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light">
-                        Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || (selectedProjectKey && hasValidTaskToken ? 'Loading...' : 'Not available')}</span>
-                    </div>
-                    <button
-                        onClick={handleMasterCreate}
-                        disabled={!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating}
-                        className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || !hasProjectCredentials || !hasValidTaskToken || isGenerating)
-                            ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                            : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
-                            }`}
-                    >
-                        {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                        {isGenerating ? 'Creating Plan...' : 'Create Tasks (AI Auto Plan)'}
-                    </button>
-                    {!selectedProjectKey && (
-                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                            No project selected. Select a project from the sidebar or top project dropdown.
-                        </p>
-                    )}
-                    {selectedProjectKey && !hasProjectCredentials && (projectsLoading || isRefreshingCredentials) && (
-                        <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                            Loading project credentials for this project...
-                        </p>
-                    )}
-                    {selectedProjectKey && !hasProjectCredentials && !projectsLoading && !isRefreshingCredentials && (
-                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                            Task API credentials are missing for this project. Open the project in Dashboard and ensure external project credentials are configured.
-                        </p>
-                    )}
-                    {selectedProjectKey && hasProjectCredentials && !hasValidTaskToken && (
-                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                            Loading task token for the selected project...
-                        </p>
-                    )}
-                    {error && (
-                        <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
-                    )}
-                    {success && (
-                        <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                            <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-                            <span>{success}</span>
-                        </p>
-                    )}
-                </div>
-
-
-
-                <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
-                    <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-sm font-bold text-app-text-main">Tasks Grouped by Sprint / Milestone</h3>
-                        <button
-                            onClick={loadData}
-                            disabled={isLoading}
-                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold bg-app-bg-muted text-app-text-main hover:bg-app-bg-hover"
-                        >
-                            {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                            Refresh
-                        </button>
-                    </div>
-
-                    {isLoading ? (
-                        <div className="py-10 text-center text-sm text-app-text-muted">Loading sprint and task data...</div>
-                    ) : groupedTasks.length === 0 ? (
-                        <div className="py-10 text-center text-sm text-app-text-muted">No tasks found yet.</div>
-                    ) : (
-                        <div className="space-y-4">
-                            {groupedTasks.map((sprintGroup) => (
-                                <div key={`s-${sprintGroup.sprint.id}`} className="border border-app-border rounded-xl overflow-hidden">
-                                    <div className="px-4 py-3 bg-blue-50 border-b border-app-border-light flex items-center gap-3">
-                                        <FolderKanban className="w-4 h-4 text-blue-700" />
-                                        <p className="text-sm font-bold text-blue-900">{sprintGroup.sprint.name}</p>
-                                    </div>
-                                    <div className="p-4 space-y-3">
-                                        {Array.from(sprintGroup.milestones.values()).map((milestoneGroup) => (
-                                            <div key={`m-${milestoneGroup.milestone.id}`} className="border border-app-border rounded-lg">
-                                                <div className="px-3 py-2 bg-violet-50 border-b border-app-border-light flex items-center gap-2">
-                                                    <Milestone className="w-4 h-4 text-violet-700" />
-                                                    <p className="text-xs font-bold text-violet-900">{milestoneGroup.milestone.name}</p>
-                                                </div>
-                                                <div className="p-3 space-y-2">
-                                                    {milestoneGroup.tasks.map((task) => (
-                                                        <div key={task.id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-white">
-                                                            <p className="text-sm font-semibold text-app-text-main">{task.taskName || task.title || 'Untitled Task'}</p>
-                                                            <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-app-text-muted">
-                                                                <span className="inline-flex items-center gap-1">
-                                                                    <Flag className="w-3 h-3" />
-                                                                    {task.priority || 'medium'}
-                                                                </span>
-                                                                <span className="inline-flex items-center gap-1">
-                                                                    <CalendarDays className="w-3 h-3" />
-                                                                    {task.deadline || 'No deadline'}
-                                                                </span>
+                        {isLoading ? (
+                            <div className="py-10 text-center text-sm text-app-text-muted">Loading sprint and task data...</div>
+                        ) : groupedTasks.length === 0 ? (
+                            <div className="py-10 text-center text-sm text-app-text-muted">No tasks found yet.</div>
+                        ) : (
+                            <div className="space-y-4">
+                                {groupedTasks.map((sprintGroup) => (
+                                    <div key={`s-${sprintGroup.sprint.id}`} className="border border-app-border rounded-xl overflow-hidden">
+                                        <div className="px-4 py-3 bg-blue-50 border-b border-app-border-light flex items-center gap-3">
+                                            <FolderKanban className="w-4 h-4 text-blue-700" />
+                                            <p className="text-sm font-bold text-blue-900">{sprintGroup.sprint.name}</p>
+                                        </div>
+                                        <div className="p-4 space-y-3">
+                                            {Array.from(sprintGroup.milestones.values()).map((milestoneGroup) => (
+                                                <div key={`m-${milestoneGroup.milestone.id}`} className="border border-app-border rounded-lg">
+                                                    <div className="px-3 py-2 bg-violet-50 border-b border-app-border-light flex items-center gap-2">
+                                                        <Milestone className="w-4 h-4 text-violet-700" />
+                                                        <p className="text-xs font-bold text-violet-900">{milestoneGroup.milestone.name}</p>
+                                                    </div>
+                                                    <div className="p-3 space-y-2">
+                                                        {milestoneGroup.tasks.map((task) => (
+                                                            <div key={task.id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-white">
+                                                                <p className="text-sm font-semibold text-app-text-main">{task.taskName || task.title || 'Untitled Task'}</p>
+                                                                <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-app-text-muted">
+                                                                    <span className="inline-flex items-center gap-1">
+                                                                        <Flag className="w-3 h-3" />
+                                                                        {task.priority || 'medium'}
+                                                                    </span>
+                                                                    <span className="inline-flex items-center gap-1">
+                                                                        <CalendarDays className="w-3 h-3" />
+                                                                        {task.deadline || 'No deadline'}
+                                                                    </span>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    ))}
+                                                        ))}
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        ))}
+                                            ))}
+                                        </div>
                                     </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
+                                ))}
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
             {isGenerating && (
-                <div className="fixed inset-0 z-[200] bg-slate-950/65 backdrop-blur-sm flex items-center justify-center px-4">
-                    <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 sm:p-7">
+                <div className="fixed top-[120px] md:top-[180px] left-0 md:left-72 right-0 bottom-0 z-[200] flex items-start justify-center pt-8 px-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none' }}>
+                    <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex items-center gap-3">
                             <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
                             <h3 className="text-lg font-extrabold text-slate-900">AI Plan Generation In Progress</h3>
@@ -863,6 +865,6 @@ export default function TaskCreation({
                     </div>
                 </div>
             )}
-        </div>
+        </>
     );
 }

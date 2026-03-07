@@ -8,6 +8,7 @@ import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
+import { fetchRoadmapStep } from '../api/projects';
 import ProjectDropdown from './ProjectDropdown';
 import RoleDropdown from './RoleDropdown';
 import { getDraftProject } from '../utils/draftProjects';
@@ -103,7 +104,8 @@ export default function AppLayout({ children }) {
                 : location.pathname === '/prerequisites' ? 'prerequisites'
                     : location.pathname === '/task-creation' ? 'taskCreation'
                         : location.pathname === '/resource-onboarding' ? 'resourceOnboarding'
-                            : 'main';
+                            : location.pathname === '/agent-analysis' ? 'agentAnalysis'
+                                : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
@@ -287,6 +289,62 @@ export default function AppLayout({ children }) {
 
     const [storageNonce, forceUpdate] = React.useReducer(x => x + 1, 0);
     const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
+    // Refetch roadmap whenever we land on pages where the step may have changed (Resource Onboarding or Status Dashboard)
+    useEffect(() => {
+        if (selectedProjectKey && ['/resource-onboarding', '/status-dashboard', '/a/'].some(p => location.pathname.startsWith(p))) {
+            // Add a small delay to ensure backend has processed any state changes
+            const timer = setTimeout(() => {
+                refetchRoadmapData();
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [location.pathname, selectedProjectKey, refetchRoadmapData]);
+    const lastNavigatedProjectRef = React.useRef(null);
+    
+    // Navigate to the appropriate page based on roadmap step when project is selected
+    useEffect(() => {
+        if (!selectedProjectKey || !roadmapDataResult || isNewProjectMode) return;
+        
+        // Skip if we already navigated for this project
+        if (lastNavigatedProjectRef.current === selectedProjectKey) return;
+        
+        const stepLabel = roadmapDataResult.current_step_label;
+        if (!stepLabel) return;
+        
+        // Map step label to route
+        const stepLabelToRoute = {
+            'Project Initiation': '/new-project',
+            'Requirement Screening': '/dashboard',
+            'Governance': '/new-project/governance',
+            'Agent Analysis': '/agent-analysis',
+            'Prerequisite Classification': '/prerequisites',
+            'Task Creation': '/task-creation',
+            'Resource Onboarding': '/resource-onboarding',
+            'On Flight': '/status-dashboard',
+            'Complete': '/status-dashboard',
+        };
+        
+        const targetRoute = stepLabelToRoute[stepLabel];
+        if (!targetRoute) return;
+        
+        // Navigate if:
+        // 1. We're on a project URL (/a/{token}) - redirect to step page
+        // 2. We're not on the correct step page already
+        // 3. We're not on special pages like /agents
+        const isOnProjectUrl = location.pathname.startsWith('/a/');
+        const isOnTargetRoute = location.pathname.startsWith(targetRoute);
+        const isOnSpecialPage = ['/agents', '/organization-admin'].includes(location.pathname);
+        
+        if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage) {
+            lastNavigatedProjectRef.current = selectedProjectKey;
+            navigate(targetRoute);
+        }
+    }, [selectedProjectKey, roadmapDataResult, isNewProjectMode, location.pathname, navigate]);
+    
+    // Reset navigation tracking when project changes
+    useEffect(() => {
+        lastNavigatedProjectRef.current = null;
+    }, [selectedProjectKey]);
     const hasServerRoadmap = !!roadmapDataResult;
     let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
 
@@ -453,7 +511,13 @@ export default function AppLayout({ children }) {
     }, []);
 
     // Drive the active roadmap step from the frontend route (UI-only logic)
+    // BUT: If we have server roadmap data, use the server's current_step instead
     const forcedRoadmapStepIndex = useMemo(() => {
+        // If we have server roadmap data, use it instead of computing from route
+        if (hasServerRoadmap && roadmapData?.current_step !== undefined && roadmapData?.current_step !== null) {
+            return roadmapData.current_step;
+        }
+
         const path = location.pathname;
 
         // Dummy reference to satisfy linter and ensure memo updates on storage event
@@ -501,9 +565,14 @@ export default function AppLayout({ children }) {
             }
             return hasSelectedProjectGovernance ? agentIdx : reqIdx;
         }
+        
+        if (path === '/agent-analysis') {
+            const agentIdx = idx('Agent Analysis') ?? 3;
+            return agentIdx;
+        }
 
         return null;
-    }, [location.pathname, roadmapData?.current_step, roadmapData?.steps, storageNonce, hasSelectedProjectGovernance]);
+    }, [location.pathname, roadmapData?.current_step, roadmapData?.steps, storageNonce, hasSelectedProjectGovernance, hasServerRoadmap]);
 
     // When the focused step is already done, render it green+highlighted instead of yellow
     const forcedStepCompleted = useMemo(() => {
@@ -538,12 +607,50 @@ export default function AppLayout({ children }) {
         navigate('/new-project?new=' + Date.now());
     }, [navigate]);
 
-    const handleSelectProject = (project) => {
+    const handleSelectProject = async (project) => {
         if (!project) return;
         setIsNewProjectMode(false);
         setSelectedProjectKey(project.key);
+        
+        // Fetch roadmap data to determine which page to navigate to
+        try {
+            // Prefer the project token if it exists – the backend uses this to locate the project
+            const identifier = project.projectToken || project.key;
+            const roadmapResponse = await fetchRoadmapStep(identifier);
+            if (roadmapResponse && roadmapResponse.current_step_label) {
+                const stepLabel = roadmapResponse.current_step_label;
+                
+                // Map step label to route (same mapping as before)
+                const stepLabelToRoute = {
+                    'Project Initiation': '/new-project',
+                    'Requirement Screening': '/dashboard',
+                    'Governance': '/new-project/governance',
+                    'Agent Analysis': '/agent-analysis',
+                    'Prerequisite Classification': '/prerequisites',
+                    'Task Creation': '/task-creation',
+                    'Resource Onboarding': '/resource-onboarding',
+                    'On Flight': '/status-dashboard',
+                    'Complete': '/status-dashboard',
+                };
+                const targetRoute = stepLabelToRoute[stepLabel];
+                if (targetRoute) {
+                    // Always navigate to the target route (even if we are already there) to force a refresh
+                    navigate(targetRoute);
+                    // Ensure we have the freshest roadmap data for the newly selected project
+                    refetchRoadmapData();
+                    return;
+                }
+            }
+        } catch (error) {
+            console.error('Failed to fetch roadmap for navigation:', error);
+        }
+        
+        // Fallback – navigate to the generic project URL (uses token if available)
         const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
-        if (location.pathname !== targetPath) navigate(targetPath);
+        if (location.pathname !== targetPath) {
+            navigate(targetPath);
+            refetchRoadmapData();
+        }
     };
 
     const getProjectSidebarSubtitle = (project) => {
@@ -618,7 +725,7 @@ export default function AppLayout({ children }) {
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
                 {/* Global Top Navbar */}
-                <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-20 shrink-0">
+                <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-[250] shrink-0">
                     <div className="flex items-center gap-3 md:gap-4 w-full">
                         {!isSidebarOpen && (
                             <button
@@ -639,7 +746,8 @@ export default function AppLayout({ children }) {
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
                                                 currentView === 'taskCreation' ? 'Task Creation Planner' :
                                                     currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
-                                                        'Requirements Analyzer'}
+                                                        currentView === 'agentAnalysis' ? 'Agent Analysis' :
+                                                            'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
@@ -648,11 +756,12 @@ export default function AppLayout({ children }) {
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
                                                 currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
                                                     currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
-                                                        'Project Insight & AI Assessment'}
+                                                        currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
+                                                            'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 
-                            {(currentView === 'statusDashboard' || currentView === 'taskCreation' || currentView === 'resourceOnboarding') && (
+                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                     {currentView === 'statusDashboard' && (
                                         <>
@@ -673,7 +782,7 @@ export default function AppLayout({ children }) {
                                             selectedKey={selectedProjectKey}
                                             onSelect={(proj) => {
                                                 if (!proj?.key || proj.key === selectedProjectKey) return;
-                                                setSelectedProjectKey(proj.key);
+                                                handleSelectProject(proj);
                                             }}
                                             theme="dark"
                                         />
@@ -705,9 +814,9 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* ── Project-level Roadmap Stepper — shown on all pages ── */}
-                {roadmapDataForView && (
-                    <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto">
+                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents ── */}
+                {roadmapDataForView && location.pathname !== '/agents' && (
+                    <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                         <RoadmapHeader
                             steps={roadmapDataForView.steps || []}
                             currentStep={roadmapDataForView.current_step || 0}
@@ -715,6 +824,7 @@ export default function AppLayout({ children }) {
                             failedStep={roadmapDataForView.failed_step ?? null}
                             activeStepIndex={forcedRoadmapStepIndex}
                             activeStepCompleted={forcedStepCompleted}
+                            selectedProjectKey={selectedProjectKey}
                         />
                     </div>
                 )}

@@ -2446,7 +2446,8 @@ const Dashboard = ({
 
     const handleViewLatestProjectAnalysis = () => {
         if (!selectedProject?.latestDocument) return;
-        loadHistoryItem(selectedProject.latestDocument);
+        // Navigate to the Agent Analysis page for this project
+        navigate('/agent-analysis');
     };
 
     const goToGovernanceAssessment = () => {

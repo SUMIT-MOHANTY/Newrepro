@@ -4,14 +4,18 @@ Agents create ephemeral Docker containers, build real project code inside them,
 self-heal until everything works, capture the workspace, then clean up.
 """
 import asyncio
+import ast
+import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
 import re as _re
+from collections import Counter
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from config import settings
@@ -25,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 def _clean_ai_code_response(content: str) -> tuple[str, str]:
     """
-    Robustly extract pure Python code from an AI model response.
-    Returns (code_string, thought_string).
+    Robustly extract a shell build/fix script from an AI model response.
+    Returns (script_string, thought_string).
     Handles: <comment> blocks, markdown fences, narrative preamble,
-    and Unicode curly quotes that cause SyntaxErrors.
+    and Unicode punctuation that can break shell parsing.
     """
     content = content.strip()
     
@@ -45,28 +49,37 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
     content = _re.sub(r'<comment>.*?</comment>', '', content, flags=_re.DOTALL).strip()
     content = _re.sub(r'<comment>.*', '', content, flags=_re.DOTALL).strip()
 
-    # 2. Extract code from markdown fences
-    fence_match = _re.search(r'```python\s*\n(.*?)```', content, flags=_re.DOTALL)
+    # 2. Extract script from markdown fences
+    fence_match = _re.search(r'```(?:bash|sh|shell|python)?\s*\n(.*?)```', content, flags=_re.DOTALL)
     if not fence_match:
         fence_match = _re.search(r'```\s*\n(.*?)```', content, flags=_re.DOTALL)
     if fence_match:
         content = fence_match.group(1).strip()
     else:
-        if content.startswith('```python'):
-            content = content[len('```python'):].strip()
-        elif content.startswith('```'):
+        for prefix in ('```bash', '```sh', '```shell', '```python'):
+            if content.startswith(prefix):
+                content = content[len(prefix):].strip()
+                break
+        if content.startswith('```'):
             content = content[3:].strip()
         if content.endswith('```'):
             content = content[:-3].strip()
 
-    # 3. Strip narrative preamble before first code line
+    # 3. Strip narrative preamble before the first command line
     lines = content.split('\n')
     first_code_line = 0
     for i, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith(('#', 'import ', 'from ', 'def ', 'class ', 'print(', 'if ', 'for ', 'while ', 'try:', 'with ', 'os.', 'subprocess')) or '=' in stripped:
+        if (
+            stripped.startswith((
+                '#!', 'set -', 'cd ', 'ls', 'find ', 'mkdir ', 'cat ', 'grep ', 'sed ', 'awk ',
+                'cp ', 'mv ', 'rm ', 'touch ', 'echo ', 'printf ', 'git ', 'npm ', 'npx ',
+                'pip ', 'pip3 ', 'python ', 'python3 ', 'if ', 'for ', 'while ', 'case ', ': '
+            ))
+            or _re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', stripped)
+        ):
             first_code_line = i
             break
             
@@ -77,7 +90,7 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
             narrative = preamble
             content = '\n'.join(lines[first_code_line:])
 
-    # 4. Replace Unicode with ASCII
+    # 4. Replace Unicode with ASCII-friendly equivalents
     content = content.replace('\u2018', "'").replace('\u2019', "'")
     content = content.replace('\u201c', '"').replace('\u201d', '"')
     content = content.replace('\u2013', '-').replace('\u2014', '--')
@@ -101,10 +114,18 @@ _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimatio
 GIT_MANAGER_AGENT_ID = "agent_03"
 MASTER_AGENT_ID = "agent_04"
 GIT_INTEGRATION_BRANCH = "agent/integration"
+MASTER_NOTE_PREFIX = "MASTER_PLAN"
+MASTER_NOTE_SCOPE = "Canonical Project Tree and Task Plan"
 DEFAULT_PROJECT_TOKEN = "__default__"
-AGENT_SESSION_NOTES_DIR = "agent_handoff"
+NOTE_PAYLOAD_MARKER = "AGENT_NOTE_PAYLOAD"
 BOOTSTRAP_WAIT_TIMEOUT_SECONDS = 1800
 BOOTSTRAP_WAIT_LOG_INTERVAL_SECONDS = 20
+RUN_ALL_WAITING_MESSAGE = "Waiting for master plan..."
+MASTER_BUILDING_MESSAGE = "Creating canonical project tree note..."
+MASTER_READY_MESSAGE = "Master plan ready"
+MASTER_FAILED_MESSAGE = "Master plan failed"
+NOTE_PAYLOAD_CACHE_TTL_SECONDS = 15.0
+WORKSPACE_CONTRACT_PROBE_TTL_SECONDS = 300.0
 
 
 def _is_system_agent_id(agent_id: Optional[str]) -> bool:
@@ -173,12 +194,20 @@ def build_external_agent_username(agent_id: Optional[str], fallback_name: Option
     source_id = str(agent_id or "").strip().lower()
     match = _re.search(r"(\d+)$", source_id)
     if match:
-        return f"agent{int(match.group(1))}"
+        sequence = int(match.group(1))
+        # Shared agents use agent3, agent4, etc. to avoid conflicts with dedicated agents
+        if source_id.startswith("shared_"):
+            sequence = sequence + 2  # Start from agent3
+        return f"agent{sequence}"
 
     fallback = normalize_agent_name(agent_id, fallback_name)
     fallback_match = _re.search(r"(\d+)$", fallback.lower())
     if fallback_match:
-        return f"agent{int(fallback_match.group(1))}"
+        sequence = int(fallback_match.group(1))
+        # Shared agents use agent3, agent4, etc. to avoid conflicts
+        if "shared" in fallback.lower():
+            sequence = sequence + 2
+        return f"agent{sequence}"
 
     normalized = _re.sub(r"[^a-z0-9]", "", fallback.strip().lower())
     return normalized or "agent"
@@ -209,9 +238,14 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state = {
             "agent_states": {},
             "claimed_task_ids": set(),
+            "task_claim_lock": asyncio.Lock(),
             "task_progress_state": {},
             "timer_log_state": {},
             "completed_tasks": [],
+            "tasks": [],
+            "brd_analysis": {},
+            "master_note_cache": {},
+            "master_note_lock": asyncio.Lock(),
             "task_token": None,
             "git_merge_queue": [],
             "git_merge_running": False,
@@ -225,6 +259,10 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "completed_sprints_synced": set(),
             "project_status_synced": None,
             "status_sync_lock": asyncio.Lock(),
+            "note_title_cache": {},
+            "note_payload_cache": {},
+            "persisted_assignment_restore": {},
+            "workspace_contract_probe": {},
         }
         _project_states[key] = state
     else:
@@ -232,10 +270,73 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state.setdefault("completed_sprints_synced", set())
         state.setdefault("project_status_synced", None)
         state.setdefault("status_sync_lock", asyncio.Lock())
+        state.setdefault("note_title_cache", {})
+        state.setdefault("note_payload_cache", {})
+        state.setdefault("persisted_assignment_restore", {})
+        state.setdefault("workspace_contract_probe", {})
+        state.setdefault("tasks", [])
+        state.setdefault("brd_analysis", {})
+        state.setdefault("master_note_cache", {})
+        state.setdefault("master_note_lock", asyncio.Lock())
+        state.setdefault("task_claim_lock", asyncio.Lock())
     return state
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
     return _ensure_project_state(project_token)["agent_states"]
+
+
+def _is_waiting_for_master_plan(agent: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(agent, dict):
+        return False
+    return str(agent.get("progress_message") or "").strip() == RUN_ALL_WAITING_MESSAGE
+
+
+def mark_run_all_waiting_state(
+    project_token: Optional[str],
+    agent_ids: List[str],
+) -> None:
+    project_agents = _get_agent_states(project_token)
+    for agent_id in agent_ids:
+        if _is_system_agent_id(agent_id):
+            continue
+        agent = project_agents.get(agent_id)
+        if not agent:
+            continue
+        agent["status"] = "running"
+        agent["progress"] = 0
+        agent["progress_message"] = RUN_ALL_WAITING_MESSAGE
+
+    master_agent = project_agents.get(MASTER_AGENT_ID)
+    if master_agent:
+        master_agent["status"] = "running"
+        master_agent["progress"] = 0
+        master_agent["progress_message"] = MASTER_BUILDING_MESSAGE
+
+
+def complete_run_all_waiting_state(
+    project_token: Optional[str],
+    *,
+    success: bool,
+    error_message: Optional[str] = None,
+) -> None:
+    project_agents = _get_agent_states(project_token)
+    for agent_id, agent in project_agents.items():
+        if _is_system_agent_id(agent_id):
+            continue
+        if not _is_waiting_for_master_plan(agent):
+            continue
+        if not success:
+            agent["status"] = "idle"
+            agent["progress"] = 0
+            agent["progress_message"] = ""
+            if error_message:
+                agent["error"] = error_message
+
+    master_agent = project_agents.get(MASTER_AGENT_ID)
+    if master_agent:
+        master_agent["status"] = "idle"
+        master_agent["progress"] = 100 if success else 0
+        master_agent["progress_message"] = MASTER_READY_MESSAGE if success else MASTER_FAILED_MESSAGE
 
 def set_project_task_token(project_token: Optional[str], task_token: Optional[str]) -> None:
     if not task_token:
@@ -275,6 +376,7 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
         "type": atype,
         "status": "idle",
         "current_task": None,
+        "resume_pending_task": False,
         "progress": 0,
         "progress_message": "",
         "last_run": None,
@@ -323,6 +425,9 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
     state["project_status_synced"] = None
     state["repo_bootstrap"] = _new_repo_bootstrap_state()
     state["repo_bootstrap_event"] = asyncio.Event()
+    state["note_payload_cache"].clear()
+    state["persisted_assignment_restore"] = {}
+    state["workspace_contract_probe"] = {}
     agent_states = state["agent_states"]
     agent_states.clear()
     for idx, rec in enumerate(records):
@@ -358,6 +463,63 @@ def ensure_project_initialized(project_token: Optional[str], records: List[Any])
 def get_completed_tasks(project_token: Optional[str]) -> List[Dict[str, Any]]:
     return list(_ensure_project_state(project_token)["completed_tasks"])
 
+
+def _task_status_is_done(status: Any) -> bool:
+    return str(status or "").strip().lower() in {
+        "completed",
+        "done",
+        "complete",
+        "closed",
+        "resolved",
+    }
+
+
+def _active_owned_task_ids(project_token: Optional[str]) -> set[str]:
+    state = _ensure_project_state(project_token)
+    owned = set()
+    for agent in state["agent_states"].values():
+        if (
+            (agent.get("status") or "").lower() != "running"
+            and not bool(agent.get("resume_pending_task"))
+        ):
+            continue
+        current_task = agent.get("current_task")
+        if not isinstance(current_task, dict):
+            continue
+        tid = str(_normalize_task_id(current_task) or current_task.get("external_id") or current_task.get("id") or "").strip()
+        if tid:
+            owned.add(tid)
+        for linked in (current_task.get("linked_tasks") or []):
+            linked_id = str(linked or "").strip()
+            if linked_id:
+                owned.add(linked_id)
+    return owned
+
+
+def _find_active_task_owner(task_id: str, project_token: Optional[str]) -> str:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return ""
+    state = _ensure_project_state(project_token)
+    for agent_id, agent in state["agent_states"].items():
+        if _is_system_agent_id(agent_id):
+            continue
+        if (
+            (agent.get("status") or "").lower() != "running"
+            and not bool(agent.get("resume_pending_task"))
+        ):
+            continue
+        current_task = agent.get("current_task")
+        if not isinstance(current_task, dict):
+            continue
+        current_task_id = _task_identity(current_task)
+        if current_task_id and current_task_id == normalized_task_id:
+            return agent_id
+        for linked in (current_task.get("linked_tasks") or []):
+            if str(linked or "").strip() == normalized_task_id:
+                return agent_id
+    return ""
+
 # Backward compatibility default scope.
 agent_states = _get_agent_states(None)
 
@@ -369,38 +531,37 @@ agent_states = _get_agent_states(None)
 _COMPACT_CODE_RULES = """
 
 CRITICAL SCRIPT SIZE RULES:
-- Keep your script UNDER 300 lines total. This is very important.
-- Define a helper function at the top: def wf(path, content): and use it for every file.
-- Write each file's content using regular strings with explicit \\n, NOT triple-quoted multi-line strings.
+- Return a Bash shell script UNDER 300 lines total. This is very important.
+- Use shell commands to inspect and create files: ls, find, mkdir -p, cat <<'EOF' > file, grep -q, sed -i, cp, mv, rm -f, touch.
+- Write each file's content with heredocs via cat <<'EOF' > path or cat <<'EOF' >> path. Do NOT use Python code to write files.
 - Focus on the 10-15 most essential files. Do NOT try to create 30+ files in one script.
-- Each file write should be 1-3 lines of code, not 50-line inline strings.
+- Keep all work rooted in /workspace and prefer editing existing files instead of recreating whole trees.
 
 If you have want to add a comment to the task if you fell necessary or want to , wrap it in <comment>...</comment> tags anytime in your response. For example:
 <comment>
 I will implement a Flask backend with a PostgreSQL database as requested.
 </comment>
-```python
-# your code here
+```bash
+# your shell script here
 ```
 <comment>
 I finished the initial implementation, but note that the database still needs schema setup.
 </comment>
 
 Example of the CORRECT compact pattern:
-import os
+#!/usr/bin/env bash
+set -euo pipefail
+cd /workspace
+mkdir -p backend frontend/src/components
+cat <<'EOF' > backend/main.py
+from flask import Flask
 
-def wf(path, content):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(content)
-    print(f"[CREATED] {path}")
+app = Flask(__name__)
+EOF
+printf '[CREATED] backend/main.py\n'
+grep -q 'Flask' backend/main.py && printf '[CHECK] PASS backend/main.py\n'
 
-wf("/workspace/app/__init__.py", "from flask import Flask\\n\\ndef create_app():\\n    return Flask(__name__)\\n")
-wf("/workspace/requirements.txt", "flask>=2.3.0\\nsqlalchemy>=2.0\\ngunicorn>=21.0\\n")
-wf("/workspace/Dockerfile", "FROM python:3.11-slim\\nWORKDIR /app\\nCOPY . .\\nRUN pip install -r requirements.txt\\nCMD [\\"gunicorn\\", \\"app:app\\"]\\n")
-print("[CHECK] All files created... PASS")
-
-Do NOT use triple-quoted strings (''' or \"\"\") for file content. Use single-line strings with \\n.
+Do NOT use Python helpers like open(), pathlib, or os.makedirs() for file creation.
 """
 
 AGENT_SYSTEM_PROMPTS = {
@@ -425,8 +586,8 @@ CRITICAL: NEVER create or commit these files:
 Given a task description and Technical Specification, you must:
 1. READ the tech spec's FILE STRUCTURE section carefully
 2. Create files in the directories specified in the tech spec
-3. Generate a Python script that CREATES all necessary files and directories
-4. Use os.makedirs() and open() to create real files
+3. Generate a shell script that CREATES all necessary files and directories
+4. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
 5. Write real, production-quality code into each file
 6. NEVER create __pycache__ directories or .pyc files
 7. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
@@ -454,7 +615,7 @@ CRITICAL: NEVER create or commit these files:
 Given a task description and Technical Specification, you must:
 1. READ the tech spec's FILE STRUCTURE section carefully
 2. Identify technical, business, security, and operational risks
-3. Generate a Python script that CREATES mitigation files in the correct directories
+3. Generate a shell script that CREATES mitigation files in the correct directories
 4. NEVER create __pycache__ directories or .pyc files
 5. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
 6. Print === RISK SUMMARY === at the end
@@ -481,7 +642,7 @@ CRITICAL: NEVER create or commit these files:
 Given a task description and Technical Specification, you must:
 1. READ the tech spec's FILE STRUCTURE section carefully
 2. Break down the project into sprints and tasks
-3. Generate a Python script that CREATES the project scaffold following the tech spec structure
+3. Generate a shell script that CREATES the project scaffold following the tech spec structure
 4. Create source files, configs, deployment/orchestration, CI/CD, tests in correct directories
 5. NEVER create __pycache__ directories or .pyc files
 6. Print [SPRINT N] for each sprint, [CREATED] for each file, [CHECK] for validations
@@ -533,13 +694,11 @@ async def _generate_technical_spec(
     if not key or key == "your-api-key-here":
         return {"status": "skipped", "reason": "no_api_key", "spec": ""}
 
-    # Build task summary for the architect
-    task_summaries = []
-    for i, t in enumerate(tasks[:30], 1):
-        title = t.get("title", "Untitled")
-        desc = (t.get("description", "") or "")[:200]
-        task_summaries.append(f"  {i}. {title}: {desc}")
-    task_list_text = "\n".join(task_summaries) if task_summaries else "No tasks provided."
+    task_list_text = _build_task_context_block(
+        tasks,
+        max_total_chars=14000,
+        max_description_chars=220,
+    )
 
     architect_prompt = f"""You are a Senior Software Architect Agent. Your job is to produce a
 CANONICAL TECHNICAL SPECIFICATION that all coding agents will reference as the single source of truth.
@@ -651,6 +810,7 @@ Do NOT use vague descriptions like "appropriate fields" — name every field exp
             "status": "generated",
             "spec": spec_text,
             "generated_at": datetime.utcnow().isoformat(),
+            "task_signature": _master_task_signature(tasks),
             "task_count": len(tasks),
             "char_length": len(spec_text),
         }
@@ -752,7 +912,7 @@ Write a system prompt for the Coding Agent that:
 3. Tells it what files/symbols already exist (from KG) that it should import/reference
 4. Warns about any files being edited by other agents (avoid conflicts)
 5. Specifies the exact naming conventions to follow
-6. Ends with the code generation rules (create files under /workspace/, use wf() helper, etc.)
+6. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
 
 The prompt MUST include these code generation rules at the end:
 {_COMPACT_CODE_RULES}
@@ -1085,7 +1245,9 @@ async def _create_github_pr(
     """
     # Extract owner/repo from URL
     # Supports: https://github.com/owner/repo.git, https://github.com/owner/repo
-    clean_url = repo_url.rstrip("/").rstrip(".git")
+    clean_url = repo_url.rstrip("/")
+    if clean_url.lower().endswith(".git"):
+        clean_url = clean_url[:-4]
     parts = clean_url.split("/")
     if len(parts) < 2:
         return {"success": False, "error": f"Cannot parse owner/repo from URL: {repo_url}"}
@@ -1167,9 +1329,10 @@ async def _create_github_pr(
                 }
 
             else:
+                repo_ref = f"{owner}/{repo}"
                 return {
                     "success": False,
-                    "error": f"GitHub API {response.status_code}: {response.text[:300]}",
+                    "error": f"GitHub API {response.status_code} for {repo_ref}: {response.text[:300]}",
                 }
 
     except Exception as e:
@@ -1318,11 +1481,14 @@ def _detect_issues_from_output(stdout: str, stderr: str, exit_code: int = 0) -> 
 
 
 def _is_builder_script_crash(stderr: str) -> bool:
-    """Detect if the builder SCRIPT itself crashed (vs workspace file issues)."""
+    """Detect if the build script itself crashed before meaningful workspace output."""
     if not stderr:
         return False
-    crash_indicators = ["SyntaxError", "IndentationError", "NameError", "ImportError",
-                        "unterminated", "invalid syntax", "unexpected EOF"]
+    crash_indicators = [
+        "SyntaxError", "IndentationError", "NameError", "ImportError",
+        "unterminated", "invalid syntax", "unexpected EOF",
+        "syntax error near unexpected token", "unexpected end of file", "bad substitution",
+    ]
     return any(indicator in stderr for indicator in crash_indicators)
 
 
@@ -1348,7 +1514,7 @@ async def _call_ai_for_code(
     system_prompt_override: str = "",
     tech_spec: str = "",
 ) -> tuple[str, str]:
-    """Call AI model to generate project-building Python code.
+    """Call AI model to generate a project-building shell script.
     
     Args:
         task_description: The task to implement
@@ -1456,7 +1622,7 @@ async def _call_ai_for_fix(
     Call AI to generate a fix script. Enhanced with:
     - KG error context: relevant code from the Knowledge Graph to fix errors
     - Tech spec: canonical architecture reference to stay consistent
-    If builder_crashed=True, the builder script itself had a SyntaxError
+    If builder_crashed=True, the previous build script failed before producing files
     and /workspace/ is empty, so we regenerate from scratch.
     """
     url = settings.ai_api_url
@@ -1485,17 +1651,18 @@ The error was:
 ORIGINAL TASK:
 {task_description}
 {supplementary_context}
-You MUST generate a NEW, SHORTER builder script (UNDER 300 lines) that creates the project.
+You MUST generate a NEW, SHORTER shell script (UNDER 300 lines) that creates the project.
 The /workspace/ directory is currently EMPTY - you need to create everything from scratch.
 
 CRITICAL RULES TO AVOID CRASHING AGAIN:
-1. Define a helper: def wf(path, content): os.makedirs(os.path.dirname(path), exist_ok=True); open(path,'w').write(content); print(f"[CREATED] {{path}}")
-2. Use SINGLE-LINE strings with \\n for file content. NEVER use triple-quoted strings (\"\"\" or ''').
-3. Keep the script under 300 lines total.
-4. Focus on the 10-15 most important files only.
-5. Print [CREATED] for each file and [CHECK] PASS for each validation.
-6. Print === SUMMARY === at the end.
-7. Use ONLY ASCII characters.
+1. Start with a valid shell script for bash.
+2. Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
+3. Do NOT use Python to write files.
+4. Keep the script under 300 lines total.
+5. Focus on the 10-15 most important files only.
+6. Print [CREATED] for each file and [CHECK] PASS for each validation.
+7. Print === SUMMARY === at the end.
+8. Use ONLY ASCII characters.
 """
     else:
         fix_prompt = f"""SELF-HEALING ITERATION {iteration}: FIX ALL ISSUES IN /workspace/
@@ -1510,7 +1677,7 @@ PREVIOUS OUTPUT (for context):
 ORIGINAL TASK:
 {task_description}
 {supplementary_context}
-Generate a NEW Python script (UNDER 300 lines) that:
+Generate a NEW shell script (UNDER 300 lines) that:
 1. FIXES each issue by modifying or creating files under /workspace/
 2. Actually writes/overwrites the files that need fixing
 3. Creates any missing files, directories, or configurations
@@ -1519,8 +1686,8 @@ Generate a NEW Python script (UNDER 300 lines) that:
 6. Print === FIX SUMMARY === at the end
 
 IMPORTANT RULES:
-- Use SINGLE-LINE strings with \\n. NEVER use triple-quoted strings.
-- Define a helper: def wf(path, content): for writing files.
+- Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
+- Do NOT use Python helpers or Python file-writing code.
 - Keep under 300 lines. Use ONLY ASCII characters.
 - Exit with code 0 if all fixes pass, 1 if any remain.
 """
@@ -1569,7 +1736,86 @@ IMPORTANT RULES:
 
 # ── Docker Configuration ────────────────────────────────────────────────────
 
-DOCKER_BASE_IMAGE = "python:3.10-slim"
+AGENT_RUNTIME_IMAGE = "brd-agent-runtime:v5"
+AGENT_RUNTIME_DOCKERFILE = os.path.join(
+    os.path.dirname(__file__),
+    "docker",
+    "agent-runtime.Dockerfile",
+)
+AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(__file__)
+DOCKER_BASE_IMAGE = AGENT_RUNTIME_IMAGE
+
+
+def _ensure_agent_runtime_image() -> Dict[str, Any]:
+    """Build the shared agent runtime image when it is not present locally."""
+    if not os.path.exists(AGENT_RUNTIME_DOCKERFILE):
+        return {
+            "success": False,
+            "error": f"Missing agent runtime blueprint: {AGENT_RUNTIME_DOCKERFILE}",
+        }
+
+    inspect = subprocess.run(
+        ["docker", "image", "inspect", AGENT_RUNTIME_IMAGE],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if inspect.returncode == 0:
+        return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": False}
+
+    build = subprocess.run(
+        [
+            "docker",
+            "build",
+            "-t",
+            AGENT_RUNTIME_IMAGE,
+            "-f",
+            AGENT_RUNTIME_DOCKERFILE,
+            AGENT_RUNTIME_BUILD_CONTEXT,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    if build.returncode != 0:
+        error_tail = (build.stderr or build.stdout or "").strip()
+        return {
+            "success": False,
+            "error": f"Agent runtime image build failed: {error_tail[-1200:]}",
+        }
+
+    return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": True}
+
+
+def _verify_container_toolchain(container_name: str) -> Dict[str, Any]:
+    """Verify the runtime container has the required toolchain preinstalled."""
+    checks = {
+        "git": "git --version",
+        "python3": "python3 --version",
+        "pip": "pip --version",
+        "npm": "npm --version",
+    }
+    versions: Dict[str, str] = {}
+
+    for tool_name, command in checks.items():
+        result = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-lc", command],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            return {
+                "success": False,
+                "error": (
+                    f"Missing required tool '{tool_name}' in runtime container: "
+                    f"{(result.stderr or result.stdout or '').strip()}"
+                ),
+            }
+        version_line = (result.stdout or result.stderr or "").splitlines()
+        versions[tool_name] = version_line[0].strip() if version_line else ""
+
+    return {"success": True, "versions": versions}
 
 
 def _check_docker_available() -> bool:
@@ -1854,59 +2100,6 @@ async def _coordinate_repo_bootstrap(
     return {"role": "follower", "base_branch": source_branch, "waited_seconds": waited}
 
 
-def _append_agent_session_note(
-    container_name: str,
-    agent_id: str,
-    task: Dict[str, Any],
-    branch_name: str,
-    build_exit_code: int,
-    fix_iterations: int = 0,
-    linked_task: bool = False,
-) -> Dict[str, Any]:
-    task_title = (task.get("title") or task.get("taskName") or "Untitled task").strip()
-    task_id = _normalize_task_id(task) or task.get("external_id") or task.get("id") or "unknown"
-    task_description = _to_single_line(task.get("description") or "No description provided.")
-    safe_agent_id = _re.sub(r"[^a-zA-Z0-9_-]+", "", agent_id) or "agent"
-    rel_path = f"{AGENT_SESSION_NOTES_DIR}/{safe_agent_id}.md"
-    abs_path = f"/workspace/{rel_path}"
-
-    section = "Linked Task" if linked_task else "Main Task"
-    build_status = "success" if build_exit_code == 0 else f"failed (exit={build_exit_code})"
-    timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-    entry = (
-        f"## {timestamp} - {section}\n"
-        f"- Agent: `{agent_id}`\n"
-        f"- Task: `{task_title}`\n"
-        f"- Task ID: `{task_id}`\n"
-        f"- Branch: `{branch_name}`\n"
-        f"- Build Status: `{build_status}`\n"
-        f"- Fix Iterations: `{fix_iterations}`\n"
-        f"- Summary: {task_description}\n\n"
-    )
-    header = f"# Session Notes for {agent_id}\n\n"
-
-    script = (
-        "from pathlib import Path\n"
-        f"path = Path({json.dumps(abs_path)})\n"
-        "path.parent.mkdir(parents=True, exist_ok=True)\n"
-        f"header = {json.dumps(header)}\n"
-        f"entry = {json.dumps(entry)}\n"
-        "if not path.exists():\n"
-        "    path.write_text(header, encoding='utf-8')\n"
-        "with path.open('a', encoding='utf-8') as f:\n"
-        "    f.write(entry)\n"
-    )
-
-    write = subprocess.run(
-        ["docker", "exec", "-w", "/workspace", container_name, "python3", "-c", script],
-        capture_output=True, text=True, timeout=20,
-    )
-    if write.returncode != 0:
-        err = write.stderr or write.stdout or "unknown error"
-        return {"success": False, "error": f"Failed writing session note: {err.strip()}"}
-    return {"success": True, "path": rel_path}
-
-
 def _log_git_agent(message: str, level: str = "info", project_token: Optional[str] = None) -> None:
     project_agents = _get_agent_states(project_token)
     git_agent = project_agents.get(GIT_MANAGER_AGENT_ID)
@@ -1938,6 +2131,70 @@ def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str], projec
         "repo_url": git_agent.get("git_repo_url") or repo_url or "",
         "token": git_agent.get("git_token") or token or ""
     }
+
+
+def prime_project_git_credentials(
+    agents_config: Optional[Dict[str, Dict[str, str]]],
+    project_token: Optional[str] = None,
+) -> Dict[str, str]:
+    if not isinstance(agents_config, dict) or not agents_config:
+        return {"repo_url": "", "token": ""}
+
+    project_agents = _get_agent_states(project_token)
+    repo_url = ""
+    token = ""
+    for agent_id in sorted(agents_config):
+        cfg = agents_config.get(agent_id) or {}
+        if not isinstance(cfg, dict):
+            continue
+        repo_val = str(cfg.get("git_repo_url") or "").strip()
+        token_val = str(cfg.get("git_token") or "").strip()
+        if repo_val and not repo_url:
+            repo_url = repo_val
+        if token_val and not token:
+            token = token_val
+        agent = project_agents.get(agent_id)
+        if not agent:
+            continue
+        if repo_val:
+            agent["git_repo_url"] = repo_val
+        if token_val:
+            agent["git_token"] = token_val
+
+    if repo_url:
+        for special_agent_id in (GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID):
+            agent = project_agents.get(special_agent_id)
+            if not agent:
+                continue
+            agent["git_repo_url"] = repo_url
+            if token:
+                agent["git_token"] = token
+
+    return {"repo_url": repo_url, "token": token}
+
+
+def _resolve_project_git_credentials(
+    project_token: Optional[str] = None,
+    agents_config: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Dict[str, str]:
+    seeded = prime_project_git_credentials(agents_config, project_token=project_token)
+    if seeded.get("repo_url"):
+        return seeded
+
+    project_agents = _get_agent_states(project_token)
+    preferred_order = [GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID]
+    preferred_order.extend(
+        agent_id
+        for agent_id in sorted(project_agents)
+        if agent_id not in preferred_order
+    )
+    for agent_id in preferred_order:
+        agent = project_agents.get(agent_id) or {}
+        repo_url = str(agent.get("git_repo_url") or "").strip()
+        token = str(agent.get("git_token") or "").strip()
+        if repo_url:
+            return {"repo_url": repo_url, "token": token}
+    return {"repo_url": "", "token": ""}
 
 
 def _get_default_branch(container_name: str) -> str:
@@ -2012,6 +2269,130 @@ def _collect_repo_summary(container_name: str) -> Dict[str, Any]:
                 pkg_scripts = {}
     summary["package_scripts"] = pkg_scripts
     return summary
+
+
+def _collect_workspace_file_paths(container_name: str) -> List[str]:
+    result = subprocess.run(
+        [
+            "docker", "exec", "-w", "/workspace", container_name, "sh", "-lc",
+            (
+                "find /workspace -type f "
+                "-not -path '*/.git/*' "
+                "-not -path '*/node_modules/*' "
+                "-not -path '*/dist/*' "
+                "-not -path '*/build/*' "
+                "-not -path '*/.next/*' "
+                "-not -path '*/.turbo/*' "
+                "-not -path '*/__pycache__/*' "
+                "-not -path '*/venv/*' "
+                "-not -path '*/.venv/*' "
+                "-not -path '*/.pytest_cache/*' "
+                "| sed 's|^/workspace/||' | LC_ALL=C sort"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        path.strip()
+        for path in (result.stdout or "").splitlines()
+        if path.strip()
+    ]
+
+
+def _refresh_workspace_contract_from_container(
+    container_name: str,
+    project_token: Optional[str],
+    *,
+    source: str = "git_repo",
+) -> Dict[str, Any]:
+    effective_project = str(project_token or "").strip()
+    if not effective_project:
+        return {"success": False, "error": "missing project token"}
+    try:
+        import context_manager as ctx_mgr
+    except Exception as exc:
+        return {"success": False, "error": f"context manager unavailable: {exc}"}
+
+    file_paths = _collect_workspace_file_paths(container_name)
+    if not file_paths:
+        return {"success": False, "error": "no repository files detected"}
+
+    contract = ctx_mgr.update_workspace_contract_from_file_paths(
+        effective_project,
+        file_paths,
+        source=source,
+        merge_ready=True,
+        force_refresh=True,
+    )
+    return {
+        "success": True,
+        "file_count": len(file_paths),
+        "contract": contract,
+    }
+
+
+async def _refresh_workspace_contract_from_git_repo(
+    *,
+    project_token: Optional[str],
+    repo_url: str,
+    token: str = "",
+    force: bool = False,
+) -> Dict[str, Any]:
+    effective_project = str(project_token or "").strip()
+    repo_value = str(repo_url or "").strip()
+    if not effective_project or not repo_value:
+        return {"success": False, "skipped": True, "error": "missing project token or repo url"}
+
+    state = _ensure_project_state(project_token)
+    probe_state = state.get("workspace_contract_probe") if isinstance(state.get("workspace_contract_probe"), dict) else {}
+    loaded_at = float(probe_state.get("loaded_at") or 0.0)
+    if (
+        not force
+        and probe_state.get("repo_url") == repo_value
+        and (time.time() - loaded_at) < WORKSPACE_CONTRACT_PROBE_TTL_SECONDS
+    ):
+        return {"success": True, "cached": True, "contract": probe_state.get("contract") or {}}
+
+    container_name = f"workspace_contract_{uuid.uuid4().hex[:8]}"
+    try:
+        container_result = await asyncio.to_thread(_create_persistent_container, container_name)
+        if not container_result.get("success"):
+            return {"success": False, "error": container_result.get("error") or "container creation failed"}
+
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            return {"success": False, "error": toolchain_result.get("error") or "toolchain verification failed"}
+
+        auth_url = _build_git_auth_url(repo_value, token)
+        clone = subprocess.run(
+            ["docker", "exec", container_name, "git", "clone", "--depth", "1", auth_url, "/workspace"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if clone.returncode != 0:
+            return {"success": False, "error": clone.stderr or clone.stdout or "git clone failed"}
+
+        refresh_result = _refresh_workspace_contract_from_container(
+            container_name,
+            project_token,
+            source="git_repo",
+        )
+        if refresh_result.get("success"):
+            state["workspace_contract_probe"] = {
+                "repo_url": repo_value,
+                "loaded_at": time.time(),
+                "source": "git_repo",
+                "file_count": int(refresh_result.get("file_count") or 0),
+                "contract": refresh_result.get("contract") or {},
+            }
+        return refresh_result
+    finally:
+        await asyncio.to_thread(_destroy_container, container_name)
 
 
 async def _call_ai_for_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
@@ -2151,6 +2532,27 @@ def _check_path_ownership_gate(
     if not changed_files:
         return {"allowed": True, "changed_files": [], "conflicts": []}
 
+    try:
+        source_domain = live_mem.get_agent_domain(source_agent) if source_agent else None
+        contract_validation = ctx_mgr.validate_paths_against_workspace_contract(
+            project_token or "",
+            changed_files,
+            task_domain=source_domain,
+        )
+        if not contract_validation.get("allowed", True):
+            return {
+                "allowed": False,
+                "changed_files": changed_files,
+                "conflicts": [{
+                    "agent_id": "workspace-contract",
+                    "branch": "(contract)",
+                    "overlap": contract_validation.get("violations") or [],
+                }],
+                "reason_type": "workspace_contract",
+            }
+    except Exception:
+        pass
+
     changed_set = set(changed_files)
     conflicts: List[Dict[str, Any]] = []
 
@@ -2194,6 +2596,7 @@ def _check_path_ownership_gate(
         "allowed": len(conflicts) == 0,
         "changed_files": changed_files,
         "conflicts": conflicts,
+        "reason_type": "overlap" if conflicts else None,
     }
 
 
@@ -2442,6 +2845,25 @@ async def _git_merge_worker(project_token: Optional[str] = None) -> None:
             git_agent["progress_message"] = "Git manager idle"
 
 
+async def wait_for_git_merge_drain(
+    project_token: Optional[str] = None,
+    timeout_seconds: float = 300.0,
+    poll_interval: float = 1.0,
+) -> bool:
+    """Wait until the git merge queue and in-flight work are drained."""
+    deadline = time.time() + max(1.0, timeout_seconds)
+    while time.time() < deadline:
+        state = _ensure_project_state(project_token)
+        if (
+            not state.get("git_merge_running")
+            and not state.get("git_merge_queue")
+            and not state.get("git_merge_inflight")
+        ):
+            return True
+        await asyncio.sleep(max(0.2, poll_interval))
+    return False
+
+
 async def _try_create_pr(
     repo_url: str,
     token: str,
@@ -2498,6 +2920,318 @@ async def _try_create_pr(
         )
 
 
+def _read_merge_stage_file(container_name: str, file_path: str, stage: int) -> str:
+    result = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name, "git", "show", f":{stage}:{file_path}"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout or ""
+
+
+def _write_workspace_file_to_container(container_name: str, file_path: str, content: str) -> bool:
+    local_tmp = None
+    remote_tmp = f"/tmp/ai_merge_{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            delete=False,
+            encoding="utf-8",
+            prefix="ai_merge_",
+            suffix=".tmp",
+        ) as handle:
+            handle.write(content)
+            local_tmp = handle.name
+
+        copy_res = subprocess.run(
+            ["docker", "cp", local_tmp, f"{container_name}:{remote_tmp}"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if copy_res.returncode != 0:
+            return False
+
+        target_dir = os.path.dirname(file_path) or "."
+        write_script = (
+            f"mkdir -p {shlex.quote(target_dir)} && "
+            f"cat {shlex.quote(remote_tmp)} > {shlex.quote(file_path)} && "
+            f"rm -f {shlex.quote(remote_tmp)}"
+        )
+        write_res = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", write_script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        return write_res.returncode == 0
+    finally:
+        if local_tmp and os.path.exists(local_tmp):
+            try:
+                os.unlink(local_tmp)
+            except OSError:
+                pass
+        subprocess.run(
+            ["docker", "exec", container_name, "rm", "-f", remote_tmp],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+
+def _validate_ai_merged_file(container_name: str, file_path: str) -> tuple[bool, str]:
+    rel_path = str(file_path or "").strip()
+    if not rel_path:
+        return False, "missing file path"
+
+    marker_check = subprocess.run(
+        [
+            "docker", "exec", "-w", "/workspace", container_name, "sh", "-c",
+            f"grep -n '<<<<<<<\\|=======\\|>>>>>>>' {shlex.quote(rel_path)} >/dev/null 2>&1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if marker_check.returncode == 0:
+        return False, "conflict markers remain"
+
+    lower = rel_path.lower()
+    if lower.endswith(".py"):
+        check = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "python3", "-m", "py_compile", rel_path],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if check.returncode != 0:
+            return False, check.stderr or check.stdout or "python syntax check failed"
+    elif lower.endswith(".json"):
+        check = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "python3", "-m", "json.tool", rel_path],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if check.returncode != 0:
+            return False, check.stderr or check.stdout or "json validation failed"
+
+    return True, ""
+
+
+def _normalize_ai_merged_content(content: str) -> str:
+    merged = str(content or "").strip()
+    if not merged:
+        return ""
+
+    if merged.startswith("```"):
+        lines = merged.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        merged = "\n".join(lines).strip()
+
+    # Sometimes the model returns the entire file as a quoted string literal.
+    if len(merged) >= 2 and merged[0] == merged[-1] and merged[0] in {"'", '"'}:
+        try:
+            decoded = ast.literal_eval(merged)
+            if isinstance(decoded, str) and decoded:
+                merged = decoded
+        except Exception:
+            pass
+
+    # Handle escaped whole-file output such as "import x;\\nconst y = 1;..."
+    if "\\n" in merged and "\n" not in merged:
+        merged = (
+            merged
+            .replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+        )
+        if '\\"' in merged and merged.count('"') == 0:
+            merged = merged.replace('\\"', '"')
+        if "\\'" in merged and merged.count("'") == 0:
+            merged = merged.replace("\\'", "'")
+
+    return merged.strip()
+
+
+async def _call_ai_for_merge_resolution(
+    *,
+    file_path: str,
+    base_content: str,
+    ours_content: str,
+    theirs_content: str,
+    source_branch: str,
+    source_agent: Optional[str],
+    task_title: str,
+) -> str:
+    if not settings.ai_api_key or settings.ai_api_key == "your-api-key-here":
+        return ""
+
+    prompt = f"""You are resolving a git merge conflict for a software repository.
+Return ONLY the final merged file content for `{file_path}`.
+Do not wrap the answer in markdown fences. Do not explain your reasoning.
+
+Merge context:
+- Source branch being merged: {source_branch}
+- Source agent: {source_agent or "unknown"}
+- Task title: {task_title or "unknown"}
+
+Rules:
+1. Preserve behavior from both versions whenever they are compatible.
+2. Prefer the target/integration branch structure if the source branch is incomplete.
+3. Remove all conflict markers.
+4. Keep imports, typing, and formatting valid.
+5. If this is a code file, ensure the file is syntactically valid.
+
+BASE VERSION:
+<<<BASE
+{base_content[:12000]}
+BASE>>>
+
+SOURCE BRANCH VERSION:
+<<<OURS
+{ours_content[:12000]}
+OURS>>>
+
+INTEGRATION BRANCH VERSION:
+<<<THEIRS
+{theirs_content[:12000]}
+THEIRS>>>"""
+
+    payload = {
+        "model": settings.ai_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are an expert git merge assistant. Output only merged file contents.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings.ai_api_key}",
+    }
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        response = await client.post(settings.ai_api_url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    if "choices" not in data or not data["choices"]:
+        return ""
+
+    content = data["choices"][0].get("message", {}).get("content", "") or ""
+    return _normalize_ai_merged_content(content)
+
+
+async def _resolve_conflicts_with_ai(
+    *,
+    container_name: str,
+    conflict_files: List[str],
+    source_branch: str,
+    source_agent: Optional[str],
+    task_title: str,
+    project_token: Optional[str],
+) -> bool:
+    unresolved = [f for f in conflict_files if f]
+    if not unresolved:
+        return True
+
+    _log_git_agent(
+        f"Attempting AI merge resolution for {len(unresolved)} file(s): {', '.join(unresolved[:5])}",
+        project_token=project_token,
+    )
+
+    for file_path in unresolved:
+        base_content = _read_merge_stage_file(container_name, file_path, 1)
+        ours_content = _read_merge_stage_file(container_name, file_path, 2)
+        theirs_content = _read_merge_stage_file(container_name, file_path, 3)
+
+        merged = await _call_ai_for_merge_resolution(
+            file_path=file_path,
+            base_content=base_content,
+            ours_content=ours_content,
+            theirs_content=theirs_content,
+            source_branch=source_branch,
+            source_agent=source_agent,
+            task_title=task_title,
+        )
+        if not merged:
+            _log_git_agent(
+                f"AI merge returned empty content for {file_path}",
+                "error",
+                project_token=project_token,
+            )
+            return False
+
+        if not _write_workspace_file_to_container(container_name, file_path, merged + "\n"):
+            _log_git_agent(
+                f"Failed to write AI-merged file {file_path} into the merge container",
+                "error",
+                project_token=project_token,
+            )
+            return False
+
+        valid, validation_error = _validate_ai_merged_file(container_name, file_path)
+        if not valid:
+            _log_git_agent(
+                f"AI merge validation failed for {file_path}: {validation_error}",
+                "error",
+                project_token=project_token,
+            )
+            return False
+
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name, "git", "add", file_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    remaining = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    unresolved_after = [f.strip() for f in (remaining.stdout or "").splitlines() if f.strip()]
+    if unresolved_after:
+        _log_git_agent(
+            f"AI merge left unresolved conflicts: {', '.join(unresolved_after[:5])}",
+            "error",
+            project_token=project_token,
+        )
+        return False
+
+    _log_git_agent(
+        f"AI merge resolution succeeded for {len(unresolved)} file(s).",
+        project_token=project_token,
+    )
+    return True
+
+
+def _filter_merge_conflict_files(conflict_files: List[str]) -> List[str]:
+    return [
+        f for f in (conflict_files or [])
+        if f
+        and "__pycache__" not in f
+        and not f.endswith(".pyc")
+        and not f.endswith(".pyo")
+        and not f.endswith(".pyd")
+        and ".DS_Store" not in f
+        and "Thumbs.db" not in f
+    ]
+
+
 def _resolve_conflicts_smart(
     container_name: str,
     conflict_files: List[str],
@@ -2537,15 +3271,7 @@ def _resolve_conflicts_smart(
                     source_domain = source_record.task_domain
         
         # Filter out __pycache__ and other unnecessary files
-        filtered_conflicts = [
-            f for f in conflict_files 
-            if '__pycache__' not in f 
-            and not f.endswith('.pyc') 
-            and not f.endswith('.pyo')
-            and not f.endswith('.pyd')
-            and '.DS_Store' not in f
-            and 'Thumbs.db' not in f
-        ]
+        filtered_conflicts = _filter_merge_conflict_files(conflict_files)
         
         # If all conflicts are in __pycache__, just remove them and continue
         if not filtered_conflicts:
@@ -2721,14 +3447,13 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             _log_git_agent(f"Git manager container error: {container_result['error']}", "error", project_token=project_token)
             return
 
-        # Install git
-        install = subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if install.returncode != 0:
-            _log_git_agent(f"Git manager failed to install git: {install.stderr}", "error", project_token=project_token)
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            _log_git_agent(
+                f"Git manager runtime verification failed: {toolchain_result.get('error')}",
+                "error",
+                project_token=project_token,
+            )
             return
 
         # Configure git user
@@ -2745,7 +3470,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
         auth_url = _build_git_auth_url(repo_url, token)
         clone = subprocess.run(
             ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
             _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error", project_token=project_token)
@@ -2786,6 +3511,30 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 capture_output=True, text=True, timeout=15,
             ).returncode == 0
             base_ref = f"origin/{GIT_INTEGRATION_BRANCH}" if integration_exists else f"origin/{default_branch}"
+            base_branch_name = base_ref.replace("origin/", "", 1) if base_ref.startswith("origin/") else default_branch
+
+            try:
+                contract_sync = _sync_local_branch_from_remote(
+                    container_name,
+                    "__workspace_contract_probe__",
+                    base_branch_name,
+                )
+                if contract_sync.get("success"):
+                    refreshed_contract = _refresh_workspace_contract_from_container(
+                        container_name,
+                        project_token,
+                        source="git_repo",
+                    )
+                    if refreshed_contract.get("success"):
+                        _ensure_project_state(project_token)["workspace_contract_probe"] = {
+                            "repo_url": repo_url,
+                            "loaded_at": time.time(),
+                            "source": "git_repo",
+                            "file_count": int(refreshed_contract.get("file_count") or 0),
+                            "contract": refreshed_contract.get("contract") or {},
+                        }
+            except Exception as exc:
+                logger.warning("[%s] Failed to refresh workspace contract from merge base: %s", project_token or "", exc)
 
             ownership_gate = _check_path_ownership_gate(
                 container_name=container_name,
@@ -2803,6 +3552,16 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     overlap = entry.get("overlap") or []
                     compact.append(f"{who}/{peer_branch}: {', '.join(overlap[:3])}")
                 conflict_msg = " | ".join(compact) if compact else "overlapping ownership"
+
+                if ownership_gate.get("reason_type") == "workspace_contract":
+                    _log_git_agent(
+                        f"Workspace contract blocked merge for {branch}"
+                        f"{f' ({task_title})' if task_title else ''}: {conflict_msg}. "
+                        "Branch introduces files outside the canonical repository structure.",
+                        "error",
+                        project_token=project_token,
+                    )
+                    return
 
                 if ownership_retries < max_ownership_retries:
                     ownership_retries += 1
@@ -2866,18 +3625,87 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     )
                     return
 
-                # Smart conflict resolution based on file ownership
-                resolved = _resolve_conflicts_smart(
-                    container_name=container_name,
-                    conflict_files=files,
-                    source_branch=branch,
-                    source_agent=source_agent,
-                    project_token=project_token,
-                )
+                initial_conflicts = _filter_merge_conflict_files(files)
 
-                if not resolved:
+                if initial_conflicts:
+                    await _resolve_conflicts_with_ai(
+                        container_name=container_name,
+                        conflict_files=initial_conflicts,
+                        source_branch=branch,
+                        source_agent=source_agent,
+                        task_title=task_title,
+                        project_token=project_token,
+                    )
+
+                remaining_conflicts = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                raw_unresolved_files = [
+                    f.strip()
+                    for f in (remaining_conflicts.stdout or "").splitlines()
+                    if f.strip()
+                ]
+                unresolved_files = _filter_merge_conflict_files(raw_unresolved_files)
+
+                if raw_unresolved_files:
                     _log_git_agent(
-                        f"Failed to resolve conflicts for {branch}. Aborting merge.",
+                        f"AI merge left {len(raw_unresolved_files)} unresolved file(s); applying ownership fallback.",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    _resolve_conflicts_smart(
+                        container_name=container_name,
+                        conflict_files=raw_unresolved_files,
+                        source_branch=branch,
+                        source_agent=source_agent,
+                        project_token=project_token,
+                    )
+
+                remaining_conflicts = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                raw_unresolved_files = [
+                    f.strip()
+                    for f in (remaining_conflicts.stdout or "").splitlines()
+                    if f.strip()
+                ]
+                unresolved_files = _filter_merge_conflict_files(raw_unresolved_files)
+
+                if unresolved_files:
+                    _log_git_agent(
+                        f"Ownership fallback left {len(unresolved_files)} unresolved file(s); retrying with AI.",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    await _resolve_conflicts_with_ai(
+                        container_name=container_name,
+                        conflict_files=unresolved_files,
+                        source_branch=branch,
+                        source_agent=source_agent,
+                        task_title=task_title,
+                        project_token=project_token,
+                    )
+
+                remaining_conflicts = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                unresolved_files = [
+                    f.strip()
+                    for f in (remaining_conflicts.stdout or "").splitlines()
+                    if f.strip()
+                ]
+                if unresolved_files:
+                    _log_git_agent(
+                        f"Failed to resolve conflicts for {branch}: {', '.join(unresolved_files[:5])}. Aborting merge.",
                         "error",
                         project_token=project_token,
                     )
@@ -2889,7 +3717,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
 
                 commit_resolved = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name,
-                     "git", "commit", "-m", f"Resolved conflicts for {branch} using ownership rules"],
+                     "git", "commit", "-m", f"Resolved conflicts for {branch} using AI-assisted merge logic"],
                     capture_output=True, text=True, timeout=30,
                 )
                 commit_out = (commit_resolved.stdout or "") + (commit_resolved.stderr or "")
@@ -3002,18 +3830,16 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
 
 def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str) -> Dict[str, Any]:
     """
-    Install git, clone repo into /workspace/, and create the working branch.
+    Verify toolchain, clone repo into /workspace/, and create the working branch.
     Also detects whether bootstrap coordination is required.
     """
     try:
-        # 1. Install git
-        install = subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if install.returncode != 0:
-            return {"success": False, "error": f"Failed to install git: {install.stderr}"}
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            return {
+                "success": False,
+                "error": toolchain_result.get("error", "runtime toolchain verification failed"),
+            }
 
         # 2. Configure git user
         subprocess.run(
@@ -3033,7 +3859,7 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         )
         clone = subprocess.run(
             ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
             return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
@@ -3155,8 +3981,14 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             "needs_bootstrap": needs_bootstrap,
         }
 
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Git setup timed out"}
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "success": False,
+            "error": (
+                f"Git setup timed out while running: "
+                f"{' '.join(str(part) for part in (exc.cmd or []))}"
+            ),
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -3405,6 +4237,13 @@ yarn-error.log
 def _create_persistent_container(container_name: str) -> Dict[str, Any]:
     """Create and start a persistent Docker container with /workspace/ directory."""
     try:
+        image_result = _ensure_agent_runtime_image()
+        if not image_result.get("success"):
+            return {
+                "success": False,
+                "error": image_result.get("error", "runtime image unavailable"),
+            }
+
         # Create container that stays alive (sleep infinity)
         create_result = subprocess.run(
             ["docker", "create", "--name", container_name, "-w", "/workspace",
@@ -3429,6 +4268,14 @@ def _create_persistent_container(container_name: str) -> Dict[str, Any]:
             capture_output=True, text=True, timeout=10,
         )
 
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
+            return {
+                "success": False,
+                "error": toolchain_result.get("error", "runtime toolchain verification failed"),
+            }
+
         return {"success": True, "container_name": container_name}
 
     except Exception as e:
@@ -3437,13 +4284,24 @@ def _create_persistent_container(container_name: str) -> Dict[str, Any]:
 
 
 def _exec_script_in_container(container_name: str, code: str, script_label: str = "script") -> Dict[str, Any]:
-    """Copy a Python script into a running container and execute it."""
+    """Copy a shell script into a running container and execute it with bash."""
+    script_body = str(code or "").strip()
+    if not script_body:
+        return {
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "Empty build script",
+            "error": "empty_script",
+        }
+    if not script_body.startswith("#!"):
+        script_body = "#!/usr/bin/env bash\nset -euo pipefail\n\n" + script_body
+
     # Write to local temp file
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix=f"agent_{script_label}_",
+        mode="w", suffix=".sh", delete=False, prefix=f"agent_{script_label}_",
         encoding="utf-8",
     ) as f:
-        f.write(code)
+        f.write(script_body)
         script_path = f.name
 
     script_name = os.path.basename(script_path)
@@ -3461,9 +4319,14 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
                 "error": f"docker cp failed: {cp_result.stderr}",
             }
 
+        subprocess.run(
+            ["docker", "exec", container_name, "chmod", "+x", container_script],
+            capture_output=True, text=True, timeout=10,
+        )
+
         # Execute inside container
         result = subprocess.run(
-            ["docker", "exec", container_name, "python3", container_script],
+            ["docker", "exec", container_name, "bash", container_script],
             capture_output=True, text=True, timeout=180,
         )
 
@@ -3622,6 +4485,7 @@ def _parse_stats_from_output(stdout: str, agent_type: str) -> Dict[str, Any]:
 async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fetch ALL pages of tasks from the external task management API."""
     from task_service import task_service
+
     def _extract_entity_info(raw_value: Any, key: str):
         entity_id = None
         entity_name = None
@@ -3652,6 +4516,91 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
             except Exception:
                 pass
         return "9999-12-31"
+
+    def _normalize_relation_ids(raw_value: Any) -> List[str]:
+        values: List[str] = []
+
+        def _append(value: Any) -> None:
+            if isinstance(value, dict):
+                nested = (
+                    value.get("id")
+                    or value.get("task_id")
+                    or value.get("external_id")
+                    or value.get("value")
+                    or value.get("pk")
+                )
+                if nested not in (None, ""):
+                    _append(nested)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _append(item)
+                return
+            if value in (None, ""):
+                return
+            text = str(value).strip()
+            if text:
+                values.append(text)
+
+        if isinstance(raw_value, str):
+            raw_text = raw_value.strip()
+            if raw_text.startswith("[") and raw_text.endswith("]"):
+                try:
+                    _append(json.loads(raw_text))
+                except Exception:
+                    _append(raw_text)
+            elif "," in raw_text:
+                for part in raw_text.split(","):
+                    _append(part)
+            else:
+                _append(raw_text)
+        else:
+            _append(raw_value)
+
+        deduped: List[str] = []
+        seen = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
+
+    def _extract_primary_assignee(task_payload: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        direct_id = (
+            task_payload.get("assigned_agent")
+            or task_payload.get("assignee")
+            or task_payload.get("assigned_to")
+        )
+        direct_name = (
+            task_payload.get("assigned_agent_name")
+            or task_payload.get("assignee_name")
+            or task_payload.get("assigned_to_name")
+        )
+        if direct_id or direct_name:
+            return (
+                str(direct_id).strip() if direct_id not in (None, "") else None,
+                str(direct_name).strip() if direct_name not in (None, "") else None,
+            )
+
+        raw_assignees = task_payload.get("assignees")
+        assignees = raw_assignees if isinstance(raw_assignees, list) else [raw_assignees]
+        for assignee in assignees:
+            if isinstance(assignee, dict):
+                assignee_id = assignee.get("user_id") or assignee.get("id") or assignee.get("agent_id")
+                assignee_name = (
+                    assignee.get("name")
+                    or assignee.get("username")
+                    or assignee.get("full_name")
+                    or assignee.get("email")
+                )
+                return (
+                    str(assignee_id).strip() if assignee_id not in (None, "") else None,
+                    str(assignee_name).strip() if assignee_name not in (None, "") else None,
+                )
+            if assignee not in (None, ""):
+                return str(assignee).strip(), None
+        return None, None
 
     try:
         task_token = get_project_task_token(project_token)
@@ -3695,25 +4644,52 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
             external_id = t.get("external_id")
             sprint_id, sprint_name = _extract_entity_info(t.get("sprint"), "sprint")
             milestone_id, milestone_name = _extract_entity_info(t.get("milestone"), "milestone")
+            assigned_agent, assigned_agent_name = _extract_primary_assignee(t)
+            linked_task_ids = _normalize_relation_ids(t.get("linked_tasks"))
+            dependency_ids = _normalize_relation_ids(
+                t.get("dependencies") if t.get("dependencies") not in (None, "") else t.get("dependency_ids")
+            )
             if sprint_id in (None, ""):
                 sprint_id = t.get("sprint_id")
             if milestone_id in (None, ""):
                 milestone_id = t.get("milestone_id")
             task_start_date = t.get("startdate") or t.get("start_date")
             task_deadline = t.get("deadline") or t.get("end_date")
+            task_title = t.get("taskName") or t.get("title") or "Untitled Task"
+            task_description = t.get("description") or t.get("details") or task_title or ""
+            task_phase = str(
+                t.get("phase")
+                or t.get("task_phase")
+                or t.get("taskPhase")
+                or ""
+            ).strip()
+            task_domain = str(
+                t.get("domain")
+                or t.get("task_domain")
+                or t.get("taskDomain")
+                or ""
+            ).strip()
+            wallet_value = _to_int(t.get("task_wallet", t.get("wallet")))
             normalized.append({
                 "id": str(task_id),
                 "external_id": external_id if external_id is not None else task_id,
-                "title": t.get("taskName") or t.get("title") or "Untitled Task",
-                "description": t.get("description") or t.get("taskName") or "",
+                "title": task_title,
+                "taskName": task_title,
+                "description": task_description,
                 "priority": (t.get("priority") or "medium").lower(),
                 "status": t.get("taskStatus") or t.get("status") or "pending",
                 "task_type": t.get("task_type", "TASK"),
                 "created_at": t.get("created_at") or datetime.utcnow().isoformat(),
-                "assigned_agent": None,
-                "assigned_agent_name": None,
+                "assigned_agent": assigned_agent,
+                "assigned_agent_name": assigned_agent_name,
                 "started_at": None,
-                "linked_tasks": t.get("linked_tasks") or [],
+                "linked_tasks": linked_task_ids,
+                "dependencies": dependency_ids,
+                "phase": task_phase,
+                "task_phase": task_phase,
+                "domain": task_domain,
+                "task_domain": task_domain,
+                "wallet": wallet_value if wallet_value is not None else 0,
                 "checklist": checklist_items,
                 "sprint_id": sprint_id,
                 "sprint_name": sprint_name,
@@ -3769,6 +4745,3141 @@ def _normalize_task_id(task: Dict[str, Any]):
         return int(tid)
     except (TypeError, ValueError):
         return tid
+
+
+def _note_scope_key(project_token: Optional[str]) -> str:
+    return _project_key(project_token)
+
+
+def _note_title(prefix: str, project_token: Optional[str], scope: str) -> str:
+    return f"{prefix}::{_note_scope_key(project_token)}::{scope}"
+
+
+def _master_note_title(project_token: Optional[str]) -> str:
+    return _note_title(MASTER_NOTE_PREFIX, project_token, MASTER_NOTE_SCOPE)
+
+
+def _note_user_for_agent(agent_id: str) -> str:
+    match = _re.match(r"agent_0*([0-9]+)$", str(agent_id or "").strip())
+    if match:
+        return f"agent{int(match.group(1))}"
+    sanitized = _re.sub(r"[^a-zA-Z0-9_-]+", "", str(agent_id or "").strip())
+    return sanitized or "agent"
+
+
+def _note_timestamp() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _parse_agent_note_content(raw_content: Any) -> Dict[str, Any]:
+    text = str(raw_content or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    payload_match = _re.search(
+        rf"<!--\s*{NOTE_PAYLOAD_MARKER}\s*(?P<payload>[\s\S]*?)-->",
+        text,
+        flags=_re.DOTALL,
+    )
+    if payload_match:
+        candidate = str(payload_match.group("payload") or "").strip()
+        if candidate:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+    return {"entries": [{"summary": text}]}
+
+
+def _task_identity(task: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(task, dict):
+        return ""
+    return str(
+        _normalize_task_id(task)
+        or task.get("external_id")
+        or task.get("id")
+        or ""
+    ).strip()
+
+
+def _latest_active_status_note_entry(payload: Dict[str, Any]) -> Dict[str, Any]:
+    active_statuses = {"in_progress", "running", "started"}
+    best_entry: Dict[str, Any] = {}
+    best_key = ""
+    for entry in _coerce_note_entries(payload):
+        task_id = str(entry.get("task_id") or "").strip()
+        status_value = str(entry.get("status") or "").strip().lower()
+        if not task_id or status_value not in active_statuses:
+            continue
+        sort_key = (
+            str(entry.get("updated_at") or "").strip()
+            or str(entry.get("started_at") or "").strip()
+            or task_id
+        )
+        if sort_key >= best_key:
+            best_key = sort_key
+            best_entry = entry
+    return best_entry
+
+
+def _agent_identity_keys(agent_id: str, agent_name: Optional[str]) -> set[str]:
+    values = {
+        str(agent_id or "").strip().lower(),
+        normalize_agent_name(agent_id, agent_name).strip().lower(),
+        build_external_agent_username(agent_id, agent_name).strip().lower(),
+    }
+    compacted = {
+        _re.sub(r"[^a-z0-9]", "", value)
+        for value in values
+        if value
+    }
+    return {value for value in values | compacted if value}
+
+
+def _resolve_assigned_runtime_agent_id(
+    task: Dict[str, Any],
+    agent_states: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    raw_values = [
+        str(task.get("assigned_agent") or "").strip(),
+        str(task.get("assigned_agent_name") or "").strip(),
+    ]
+    candidate_values = {
+        value.lower()
+        for value in raw_values
+        if value
+    }
+    candidate_values.update(
+        _re.sub(r"[^a-z0-9]", "", value)
+        for value in list(candidate_values)
+        if value
+    )
+    if not candidate_values:
+        return None
+
+    for agent_id, agent in agent_states.items():
+        if _is_system_agent_id(agent_id):
+            continue
+        if _agent_identity_keys(agent_id, agent.get("name")) & candidate_values:
+            return agent_id
+    return None
+
+
+async def _restore_persisted_agent_assignments(
+    *,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    agent_ids: Optional[List[str]] = None,
+    external_tasks: Optional[List[Dict[str, Any]]] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    if task_token:
+        set_project_task_token(project_token, task_token)
+
+    effective_token = task_token or get_project_task_token(project_token)
+    state = _ensure_project_state(project_token)
+    restore_meta = state.setdefault("persisted_assignment_restore", {})
+    agent_states = state["agent_states"]
+    claimed_task_ids = state["claimed_task_ids"]
+    task_claim_lock = state["task_claim_lock"]
+
+    target_agent_ids = [
+        agent_id
+        for agent_id in (agent_ids or list(agent_states.keys()))
+        if agent_id in agent_states and not _is_system_agent_id(agent_id)
+    ]
+    if not target_agent_ids:
+        return {"count": 0, "recovered": []}
+
+    if (
+        not force
+        and str(restore_meta.get("task_token") or "").strip() == str(effective_token or "").strip()
+        and restore_meta.get("completed") is True
+    ):
+        return {
+            "count": 0,
+            "recovered": [],
+            "cached": True,
+        }
+
+    tasks = external_tasks
+    if tasks is None:
+        try:
+            tasks = await _fetch_external_tasks(project_token)
+        except Exception:
+            tasks = []
+    if isinstance(tasks, list):
+        state["tasks"] = tasks
+    else:
+        tasks = []
+
+    task_by_id = {}
+    for task in tasks:
+        tid = _task_identity(task)
+        if tid:
+            task_by_id[tid] = task
+
+    note_payloads: Dict[str, Dict[str, Any]] = {}
+    if effective_token:
+        async def _load_status_payload(agent_id: str) -> tuple[str, Dict[str, Any]]:
+            payload = await _get_existing_note_payload(
+                title=_note_title("STATUS", project_token, agent_id),
+                project_token=project_token,
+                task_token=effective_token,
+            )
+            return agent_id, payload if isinstance(payload, dict) else {}
+
+        loaded = await asyncio.gather(
+            *(_load_status_payload(agent_id) for agent_id in target_agent_ids),
+            return_exceptions=True,
+        )
+        for item in loaded:
+            if isinstance(item, tuple) and len(item) == 2:
+                note_payloads[item[0]] = item[1]
+
+    assigned_task_by_agent: Dict[str, Dict[str, Any]] = {}
+    for task in tasks:
+        if _task_status_is_done(task.get("status")):
+            continue
+        owner_agent_id = _resolve_assigned_runtime_agent_id(task, agent_states)
+        if owner_agent_id and owner_agent_id in target_agent_ids:
+            assigned_task_by_agent.setdefault(owner_agent_id, task)
+
+    recovered_entries: List[Dict[str, Any]] = []
+    async with task_claim_lock:
+        for agent_id in target_agent_ids:
+            agent = agent_states.get(agent_id)
+            if not agent:
+                continue
+
+            recovery_source = ""
+            recovered_task: Optional[Dict[str, Any]] = None
+
+            current_task = agent.get("current_task")
+            current_task_id = _task_identity(current_task)
+            if current_task_id:
+                external_current = task_by_id.get(current_task_id)
+                if external_current and not _task_status_is_done(external_current.get("status")):
+                    recovered_task = dict(external_current)
+                    recovery_source = "runtime"
+
+            if recovered_task is None:
+                payload = note_payloads.get(agent_id) or {}
+                active_entry = _latest_active_status_note_entry(payload)
+                note_task_id = str(active_entry.get("task_id") or "").strip()
+                external_note_task = task_by_id.get(note_task_id)
+                if external_note_task and not _task_status_is_done(external_note_task.get("status")):
+                    recovered_task = dict(external_note_task)
+                    recovery_source = "status_note"
+
+            if recovered_task is None:
+                external_assigned = assigned_task_by_agent.get(agent_id)
+                if external_assigned and not _task_status_is_done(external_assigned.get("status")):
+                    recovered_task = dict(external_assigned)
+                    recovery_source = "external_assignee"
+
+            if recovered_task is None:
+                if agent.get("resume_pending_task"):
+                    agent["resume_pending_task"] = False
+                if (
+                    (agent.get("status") or "").lower() == "idle"
+                    and isinstance(agent.get("current_task"), dict)
+                ):
+                    agent["current_task"] = None
+                    if str(agent.get("progress_message") or "").startswith("Ready to resume:"):
+                        agent["progress"] = 0
+                        agent["progress_message"] = ""
+                continue
+
+            recovered_task = _apply_master_task_metadata(recovered_task, project_token=project_token)
+            if project_token:
+                recovered_task.setdefault("_project_token", project_token)
+            task_id = _task_identity(recovered_task)
+            other_owner = _find_active_task_owner(task_id, project_token) if task_id else ""
+            if other_owner and other_owner != agent_id:
+                if agent.get("resume_pending_task"):
+                    agent["resume_pending_task"] = False
+                agent["current_task"] = None
+                if str(agent.get("progress_message") or "").startswith("Ready to resume:"):
+                    agent["progress"] = 0
+                    agent["progress_message"] = ""
+                continue
+
+            current_task_id = _task_identity(agent.get("current_task"))
+            if task_id and task_id in claimed_task_ids and current_task_id != task_id:
+                if agent.get("resume_pending_task"):
+                    agent["resume_pending_task"] = False
+                agent["current_task"] = None
+                if str(agent.get("progress_message") or "").startswith("Ready to resume:"):
+                    agent["progress"] = 0
+                    agent["progress_message"] = ""
+                continue
+
+            recovered_task["assigned_agent"] = agent_id
+            recovered_task["assigned_agent_name"] = normalize_agent_name(agent_id, agent.get("name"))
+
+            agent["current_task"] = recovered_task
+            agent["resume_pending_task"] = True
+            if (agent.get("status") or "").lower() == "idle":
+                agent["progress"] = 0
+                agent["progress_message"] = f"Ready to resume: {str(recovered_task.get('title') or 'Untitled task')[:80]}"
+
+            if task_id:
+                claimed_task_ids.add(task_id)
+            for linked_id in (recovered_task.get("linked_tasks") or []):
+                linked_key = str(linked_id or "").strip()
+                if linked_key:
+                    claimed_task_ids.add(linked_key)
+
+            recovered_entries.append({
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "title": str(recovered_task.get("title") or recovered_task.get("taskName") or "Untitled task"),
+                "source": recovery_source or "unknown",
+            })
+
+    result = {
+        "count": len(recovered_entries),
+        "recovered": recovered_entries,
+    }
+    restore_meta.update(
+        {
+            "completed": True,
+            "completed_at": time.time(),
+            "task_token": effective_token,
+            "count": len(recovered_entries),
+        }
+    )
+    return result
+
+
+def _embed_note_payload(content_text: str, content_payload: Dict[str, Any]) -> str:
+    body = str(content_text or "").rstrip()
+    payload_text = json.dumps(content_payload or {}, ensure_ascii=True, sort_keys=True, indent=2)
+    metadata_block = f"<!-- {NOTE_PAYLOAD_MARKER}\n{payload_text}\n-->"
+    if not body:
+        return metadata_block
+    return f"{body}\n\n{metadata_block}"
+
+
+def _extract_markdown_section(spec_text: str, section_pattern: str) -> str:
+    text = str(spec_text or "").strip()
+    if not text:
+        return ""
+
+    patterns = [
+        rf"(?ms)^##\s*{section_pattern}\s*\n(.*?)(?=^##\s|\Z)",
+        rf"(?ms)^##\s*{section_pattern}.*?\n(.*?)(?=^##\s|\Z)",
+    ]
+    for pattern in patterns:
+        match = _re.search(pattern, text, flags=_re.IGNORECASE)
+        if match:
+            return str(match.group(1) or "").strip()
+    return ""
+
+
+def _strip_markdown_fences(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    if value.startswith("```"):
+        lines = value.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        value = "\n".join(lines).strip()
+    return value
+
+
+def _count_tree_file_lines(tree_text: str) -> int:
+    count = 0
+    for raw_line in str(tree_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        candidate = line.split("#", 1)[0].rstrip()
+        if candidate.endswith("/"):
+            continue
+        if any(token in candidate for token in (".", "Dockerfile", "Makefile", ".env")):
+            count += 1
+    return count
+
+
+def _looks_like_repo_file_name(name: str) -> bool:
+    value = str(name or "").strip()
+    if not value:
+        return False
+    if value in {"Dockerfile", "Makefile", "Procfile", "LICENSE"}:
+        return True
+    if value.startswith(".env"):
+        return True
+    if value in {".gitignore", ".dockerignore", ".prettierrc", ".prettierrc.json", ".eslintrc", ".eslintrc.json"}:
+        return True
+    if value in {"README", "README.md", "package.json", "tsconfig.json", "pyproject.toml", "requirements.txt", "alembic.ini"}:
+        return True
+    return bool(_re.search(r"\.[A-Za-z0-9]+$", value))
+
+
+def _extract_tree_root_label(tree_text: str, fallback: str = "project") -> str:
+    for raw_line in str(tree_text or "").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or line.startswith("```"):
+            continue
+        line = _re.sub(r"^[\s│├└─]+", "", line).strip()
+        if not line:
+            continue
+        if line.endswith("/"):
+            line = line[:-1].strip()
+        if line:
+            return line
+    return fallback
+
+
+def _normalize_master_tree_path_candidate(candidate: Any) -> str:
+    value = str(candidate or "").strip().strip("`\"'")
+    if not value:
+        return ""
+    value = value.replace("\\", "/")
+    value = value.split("#", 1)[0].strip()
+    if "://" in value:
+        return ""
+    if value.startswith("/workspace/"):
+        value = value[len("/workspace/"):]
+    if value.startswith("./"):
+        value = value[2:]
+    while "//" in value:
+        value = value.replace("//", "/")
+    return value.strip().strip("/")
+
+
+def _prefer_stack_consistent_extension(path: str, stack_profile: Optional[Dict[str, Any]] = None) -> str:
+    normalized = _normalize_master_tree_path_candidate(path)
+    if not normalized:
+        return ""
+
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    backend_key = str(stack.get("backend_key") or "").strip()
+    lower = normalized.lower()
+    basename = os.path.basename(lower)
+
+    if frontend_key in {"react-vite", "nextjs"} and lower.endswith(".jsx"):
+        return normalized[:-4] + ".tsx"
+
+    if lower.endswith(".js"):
+        if basename in {"sw.js", "vite.config.js", "next.config.js", "jest.config.js"}:
+            return normalized
+        if frontend_key in {"react-vite", "nextjs"} and normalized.startswith("frontend/src/"):
+            return normalized[:-3] + ".ts"
+        if backend_key == "express" and normalized.startswith("backend/src/"):
+            return normalized[:-3] + ".ts"
+
+    return normalized
+
+
+def _canonicalize_master_tree_path(
+    candidate: Any,
+    *,
+    stack_profile: Optional[Dict[str, Any]] = None,
+) -> str:
+    normalized = _normalize_master_tree_path_candidate(candidate)
+    if not normalized:
+        return ""
+
+    lower = normalized.lower()
+    if lower == "env.example":
+        normalized = ".env.example"
+    elif lower.startswith("github/workflows/"):
+        normalized = ".github/" + normalized[len("github/"):]
+    elif lower.startswith("src/"):
+        rest = normalized[4:]
+        first_segment = rest.split("/", 1)[0].lower() if rest else ""
+        frontendish = {"components", "pages", "hooks", "styles", "store", "lib", "assets", "tests"}
+        backendish = {"api", "routes", "middleware", "services", "repositories", "models", "controllers", "config", "utils", "types"}
+        if first_segment in frontendish or lower.endswith((".tsx", ".jsx", ".css", ".scss", ".html")):
+            normalized = f"frontend/{normalized}"
+        elif first_segment in backendish:
+            normalized = f"backend/{normalized}"
+
+    return _prefer_stack_consistent_extension(normalized, stack_profile)
+
+
+def _allowed_master_tree_root_segments(
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> set[str]:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    allowed = {
+        "backend",
+        "frontend",
+        "shared",
+        "infra",
+        "apps",
+        "packages",
+        "docs",
+        "scripts",
+        ".github",
+        "public",
+        "tests",
+        "migrations",
+        "docker",
+        "config",
+        "server",
+        "client",
+        "web",
+        "mobile",
+        "cmd",
+        "internal",
+        "pkg",
+        "src",
+        "app",
+    }
+    for path in (contract.get("allowed_source_roots") or []):
+        text = _normalize_master_tree_path_candidate(path)
+        if text:
+            allowed.add(text.split("/", 1)[0].lower())
+    for path in (contract.get("allowed_top_level_dirs") or []):
+        text = _normalize_master_tree_path_candidate(path)
+        if text and "/" not in text:
+            allowed.add(text.lower())
+    for path in (contract.get("root_files") or []):
+        text = _normalize_master_tree_path_candidate(path)
+        if text and "/" not in text:
+            allowed.add(text.lower())
+    return allowed
+
+
+def _is_valid_master_tree_path_candidate(
+    path: str,
+    *,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> bool:
+    normalized = _normalize_master_tree_path_candidate(path)
+    if not normalized:
+        return False
+
+    banned_segments = {
+        "node.js",
+        "express.js",
+        "react.js",
+        "next.js",
+        "math.js",
+        "typescript.js",
+        "javascript.js",
+        "node/express",
+    }
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return False
+    if any(part.lower() in banned_segments for part in parts):
+        return False
+    if any(not _re.match(r"^[A-Za-z0-9._-]+$", part) for part in parts):
+        return False
+
+    first = parts[0].lower()
+    if len(parts) == 1 and _looks_like_repo_file_name(parts[0]):
+        return True
+
+    allowed_roots = _allowed_master_tree_root_segments(stack_profile, workspace_contract)
+    if first not in allowed_roots:
+        return False
+
+    if len(parts) == 1:
+        generic_nested_roots = {
+            "api",
+            "src",
+            "utils",
+            "services",
+            "components",
+            "routes",
+            "hooks",
+            "pages",
+            "store",
+            "types",
+            "lib",
+        }
+        if first in generic_nested_roots:
+            contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+            contract_roots = {
+                _normalize_master_tree_path_candidate(path).split("/", 1)[0].lower()
+                for path in (contract.get("allowed_source_roots") or [])
+                if _normalize_master_tree_path_candidate(path)
+            }
+            if contract_roots and first in contract_roots:
+                return True
+            return False
+
+    return True
+
+
+def _preferred_contract_source_root(
+    workspace_contract: Optional[Dict[str, Any]],
+    kind: str,
+    fallback: str,
+) -> str:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    if kind == "backend":
+        preferred_roots = contract.get("canonical_backend_roots") or []
+    else:
+        preferred_roots = contract.get("canonical_frontend_roots") or []
+    normalized_roots = [
+        _normalize_master_tree_path_candidate(path)
+        for path in preferred_roots
+        if _normalize_master_tree_path_candidate(path)
+    ]
+    if normalized_roots:
+        return sorted(normalized_roots, key=lambda item: (item.count("/"), len(item)))[0]
+    return fallback
+
+
+def _infer_repo_path_from_filename(
+    name: str,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> str:
+    filename = str(name or "").strip().strip("`\"'")
+    if not filename or not _looks_like_repo_file_name(filename):
+        return ""
+    if "/" in filename:
+        return filename
+
+    lower = filename.lower()
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    backend_key = str(stack.get("backend_key") or "").strip()
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    backend_default = "backend/src" if backend_key == "express" else "backend/app"
+    frontend_default = "frontend/src/app" if frontend_key == "nextjs" else "frontend/src"
+    backend_src = _preferred_contract_source_root(workspace_contract, "backend", backend_default)
+    frontend_src = _preferred_contract_source_root(workspace_contract, "frontend", frontend_default)
+
+    if lower in {
+        "readme.md",
+        ".gitignore",
+        ".dockerignore",
+        ".env.example",
+        "docker-compose.yml",
+        "docker-compose.dev.yml",
+        "docker-compose.prod.yml",
+        "makefile",
+        "license",
+        "security.md",
+    }:
+        return filename
+
+    if lower in {"package.json", "tsconfig.json", "next.config.ts", "next.config.js", "vite.config.ts", "vite.config.js"}:
+        if lower.startswith("next.config") or lower.startswith("vite.config") or lower == "package.json" or lower == "tsconfig.json":
+            return f"frontend/{filename}"
+
+    if lower in {"pyproject.toml", "requirements.txt", "requirements-dev.txt", "alembic.ini"}:
+        return f"backend/{filename}"
+
+    if lower in {"main.py", "config.py", "auth.py", "models.py", "database.py", "schemas.py"} and backend_src == "backend":
+        return f"backend/{filename}"
+    if lower in {"index.ts", "app.ts", "server.ts"}:
+        return f"{backend_src}/{filename}"
+    if lower in {"main.py", "config.py"}:
+        return f"{backend_src}/{filename}" if backend_key == "fastapi" else f"backend/{filename}"
+
+    if any(token in lower for token in ("cpu", "limiter", "sanitize", "sanitization", "security", "rate_limit", "ratelimit", "middleware")):
+        return f"{backend_src}/middleware/{filename}" if backend_key == "express" else f"{backend_src}/core/{filename}"
+    if "route" in lower:
+        return f"{backend_src}/api/routes/{filename}" if backend_key == "express" else f"{backend_src}/api/v1/routes/{filename}"
+    if any(token in lower for token in ("service", "parser", "cache", "validation")):
+        return f"{backend_src}/services/{filename}"
+    if any(token in lower for token in ("repo", "repository")) and backend_key == "fastapi":
+        return f"{backend_src}/repositories/{filename}"
+    if lower.endswith((".test.ts", ".spec.ts", ".test.js", ".spec.js", "_test.py")):
+        if lower.endswith(".py"):
+            return f"backend/tests/{filename}"
+        if lower.endswith((".tsx", ".jsx")):
+            return f"frontend/tests/{filename}"
+        return f"backend/tests/{filename}"
+
+    if lower.endswith((".tsx", ".jsx")):
+        if lower in {"app.tsx", "app.jsx", "main.tsx", "main.jsx", "index.tsx", "index.jsx"}:
+            return f"frontend/src/{filename}"
+        if frontend_key == "nextjs" and lower in {"page.tsx", "layout.tsx"}:
+            return f"{frontend_src}/{filename}"
+        if any(token in lower for token in ("page", "screen")):
+            return f"{frontend_src}/pages/{filename}" if frontend_key != "nextjs" else f"{frontend_src}/{filename}"
+        return f"frontend/src/components/{filename}"
+
+    if lower.endswith((".ts", ".js")):
+        if lower.startswith("use"):
+            return f"frontend/src/hooks/{filename}"
+        if "store" in lower:
+            return f"frontend/src/store/{filename}"
+        if any(token in lower for token in ("api", "client")):
+            return f"frontend/src/services/{filename}"
+        return f"frontend/src/utils/{filename}"
+
+    if lower.endswith((".css", ".scss")):
+        return f"frontend/src/styles/{filename}"
+
+    return filename
+
+
+def _default_master_tree_paths(
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    backend_key = str(stack.get("backend_key") or "").strip()
+
+    paths = {
+        "README.md",
+        ".env.example",
+        "docker-compose.yml",
+    }
+
+    if contract.get("status") == "ready":
+        for module in (contract.get("modules") or []):
+            if not isinstance(module, dict):
+                continue
+            for manifest in (module.get("manifests") or [])[:10]:
+                normalized_manifest = _normalize_master_tree_path_candidate(manifest)
+                if normalized_manifest:
+                    paths.add(normalized_manifest)
+        return sorted(paths)
+
+    if frontend_key == "nextjs":
+        paths.update({
+            "frontend/package.json",
+            "frontend/tsconfig.json",
+            "frontend/next.config.ts",
+            "frontend/src/app/layout.tsx",
+            "frontend/src/app/page.tsx",
+        })
+    else:
+        paths.update({
+            "frontend/package.json",
+            "frontend/tsconfig.json",
+            "frontend/vite.config.ts",
+            "frontend/src/main.tsx",
+            "frontend/src/App.tsx",
+        })
+
+    if backend_key == "express":
+        paths.update({
+            "backend/package.json",
+            "backend/tsconfig.json",
+            "backend/src/index.ts",
+            "backend/src/app.ts",
+        })
+    else:
+        paths.update({
+            "backend/requirements.txt",
+            "backend/app/main.py",
+            "backend/app/core/config.py",
+        })
+
+    return sorted(paths)
+
+
+def _collect_master_tree_required_paths(
+    *,
+    workspace_tree: str,
+    tech_spec: str,
+    task_plan: List[Dict[str, Any]],
+    workspace_contract: Optional[Dict[str, Any]] = None,
+    validation: Optional[Dict[str, Any]] = None,
+    stack_profile: Optional[Dict[str, Any]] = None,
+) -> tuple[List[str], List[str]]:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    payload = validation if isinstance(validation, dict) else {}
+    candidates: List[str] = []
+    spec_file_structure = _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
+
+    for source_text in (
+        workspace_tree,
+        spec_file_structure,
+    ):
+        candidates.extend(_extract_task_paths_from_text(source_text))
+
+    for task in task_plan or []:
+        if not isinstance(task, dict):
+            continue
+        for planned in task.get("planned_files") or []:
+            candidates.append(str(planned or ""))
+
+    for key in ("issues_missing_files", "issues_conflicts", "recommendations"):
+        for item in (payload.get(key) or []):
+            candidates.extend(_extract_task_paths_from_text(item))
+
+    candidates.extend(_default_master_tree_paths(stack_profile, contract))
+    candidates.extend(str(path or "") for path in (contract.get("root_files") or []))
+    for module in (contract.get("modules") or []):
+        if not isinstance(module, dict):
+            continue
+        for manifest in (module.get("manifests") or []):
+            candidates.append(str(manifest or ""))
+
+    directories = {
+        str(path or "").strip().strip("/")
+        for path in (contract.get("allowed_source_roots") or [])
+        if str(path or "").strip()
+    }
+    files = set()
+    for candidate in candidates:
+        normalized = _canonicalize_master_tree_path(
+            candidate,
+            stack_profile=stack_profile,
+        )
+        if not normalized:
+            continue
+        inferred = normalized
+        if "/" not in inferred:
+            inferred = _infer_repo_path_from_filename(
+                inferred,
+                stack_profile,
+                workspace_contract=contract,
+            ) or inferred
+        if not _is_valid_master_tree_path_candidate(
+            inferred,
+            stack_profile=stack_profile,
+            workspace_contract=contract,
+        ):
+            continue
+        if "/" in inferred or _looks_like_repo_file_name(os.path.basename(inferred)):
+            files.add(inferred)
+            parent = os.path.dirname(inferred)
+            while parent and parent not in {"."}:
+                if _is_valid_master_tree_path_candidate(
+                    parent,
+                    stack_profile=stack_profile,
+                    workspace_contract=contract,
+                ):
+                    directories.add(parent)
+                parent = os.path.dirname(parent)
+        else:
+            directories.add(inferred)
+
+    return sorted(files), sorted(directories)
+
+
+def _render_tree_from_paths(
+    file_paths: List[str],
+    directory_paths: Optional[List[str]] = None,
+    root_label: str = "project",
+) -> str:
+    tree: Dict[str, Any] = {}
+
+    def ensure_dir(parts: List[str]) -> Dict[str, Any]:
+        cursor = tree
+        for part in parts:
+            cursor = cursor.setdefault(part, {})
+        return cursor
+
+    for dir_path in directory_paths or []:
+        normalized = _normalize_master_tree_path_candidate(dir_path)
+        if not normalized:
+            continue
+        ensure_dir([part for part in normalized.split("/") if part])
+
+    for file_path in file_paths or []:
+        normalized = _normalize_master_tree_path_candidate(file_path)
+        if not normalized:
+            continue
+        parts = [part for part in normalized.split("/") if part]
+        if not parts:
+            continue
+        parent = ensure_dir(parts[:-1])
+        parent.setdefault(parts[-1], None)
+
+    lines = [f"{root_label}/"]
+
+    def walk(node: Dict[str, Any], prefix: str = "") -> None:
+        dir_names = sorted(name for name, value in node.items() if isinstance(value, dict))
+        file_names = sorted(name for name, value in node.items() if value is None)
+        ordered = dir_names + file_names
+        for index, name in enumerate(ordered):
+            is_last = index == len(ordered) - 1
+            branch = "└── " if is_last else "├── "
+            value = node[name]
+            if isinstance(value, dict):
+                lines.append(f"{prefix}{branch}{name}/")
+                walk(value, prefix + ("    " if is_last else "│   "))
+            else:
+                lines.append(f"{prefix}{branch}{name}")
+
+    walk(tree)
+    return "\n".join(lines)
+
+
+def _build_deterministic_master_tree(
+    *,
+    workspace_tree: str,
+    tech_spec: str,
+    task_plan: List[Dict[str, Any]],
+    workspace_contract: Optional[Dict[str, Any]] = None,
+    validation: Optional[Dict[str, Any]] = None,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    fallback_root_label: str = "project",
+) -> str:
+    file_paths, directory_paths = _collect_master_tree_required_paths(
+        workspace_tree=workspace_tree,
+        tech_spec=tech_spec,
+        task_plan=task_plan,
+        workspace_contract=workspace_contract,
+        validation=validation,
+        stack_profile=stack_profile,
+    )
+    if not file_paths and not directory_paths:
+        return ""
+    root_label = _extract_tree_root_label(workspace_tree, fallback=fallback_root_label)
+    return _render_tree_from_paths(file_paths, directory_paths, root_label=root_label)
+
+
+def _sanitize_master_planned_files(
+    paths: List[str],
+    *,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+    limit: int = 8,
+) -> List[str]:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    normalized: List[str] = []
+    seen = set()
+    for raw_path in paths or []:
+        candidate = _canonicalize_master_tree_path(
+            raw_path,
+            stack_profile=stack_profile,
+        )
+        if not candidate:
+            continue
+        if "/" not in candidate:
+            candidate = _infer_repo_path_from_filename(candidate, stack_profile) or candidate
+        if not _is_valid_master_tree_path_candidate(
+            candidate,
+            stack_profile=stack_profile,
+            workspace_contract=contract,
+        ):
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _build_master_task_plan(
+    tasks: List[Dict[str, Any]],
+    limit: Optional[int] = None,
+    *,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    plan = []
+    ordered_tasks = _sort_tasks_for_execution(tasks or [])
+    if isinstance(limit, int) and limit > 0:
+        ordered_tasks = ordered_tasks[:limit]
+    for task in ordered_tasks:
+        task_id = _normalize_task_id(task)
+        task_dependencies = [
+            str(dep).strip()
+            for dep in (task.get("dependencies") or [])
+            if str(dep).strip()
+        ]
+        plan.append({
+            "task_id": str(task_id) if task_id is not None else "",
+            "title": task.get("title") or task.get("taskName") or "Untitled task",
+            "description": str(task.get("description") or "").strip(),
+            "phase": task.get("phase") or task.get("task_phase") or "",
+            "domain": _normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "",
+            "priority": task.get("priority") or "medium",
+            "task_type": task.get("task_type") or "TASK",
+            "status": task.get("status") or "",
+            "wallet": task.get("wallet") or task.get("task_wallet") or 0,
+            "dependencies": task_dependencies,
+            "assignee": task.get("assigned_agent") or "",
+            "planned_files": _sanitize_master_planned_files(
+                _predict_task_file_intents(task),
+                stack_profile=stack_profile,
+                workspace_contract=workspace_contract,
+                limit=8,
+            ),
+        })
+    return plan
+
+
+def _master_worker_signature(project_token: Optional[str] = None) -> str:
+    state = _ensure_project_state(project_token)
+    entries = []
+    for agent_id in sorted(state.get("agent_states", {})):
+        if _is_system_agent_id(agent_id):
+            continue
+        agent = state["agent_states"].get(agent_id) or {}
+        entries.append(
+            "|".join(
+                [
+                    agent_id,
+                    normalize_agent_name(agent_id, agent.get("name")),
+                    str(agent.get("type") or "").strip(),
+                ]
+            )
+        )
+    return "||".join(entries)
+
+
+def _workspace_contract_signature(workspace_contract: Optional[Dict[str, Any]] = None) -> str:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    if not contract:
+        return ""
+    modules = []
+    for module in (contract.get("modules") or []):
+        if not isinstance(module, dict):
+            continue
+        modules.append({
+            "root": str(module.get("root") or "").strip(),
+            "kind": str(module.get("kind") or "").strip(),
+            "source_roots": [
+                str(path or "").strip()
+                for path in (module.get("source_roots") or [])
+                if str(path or "").strip()
+            ],
+        })
+    payload = {
+        "allowed_top_level_dirs": [
+            str(path or "").strip()
+            for path in (contract.get("allowed_top_level_dirs") or [])
+            if str(path or "").strip()
+        ],
+        "allowed_source_roots": [
+            str(path or "").strip()
+            for path in (contract.get("allowed_source_roots") or [])
+            if str(path or "").strip()
+        ],
+        "root_files": [
+            str(path or "").strip()
+            for path in (contract.get("root_files") or [])
+            if str(path or "").strip()
+        ],
+        "modules": modules,
+    }
+    return hashlib.sha1(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
+    phase = str(task.get("phase") or task.get("task_phase") or "").strip().lower()
+    domain = str(_normalize_task_domain(task) or "").strip().lower()
+    predicted_files = [
+        str(path or "").strip().lower()
+        for path in _predict_task_file_intents(task)
+        if str(path or "").strip()
+    ]
+    combined = " ".join(
+        [
+            phase,
+            domain,
+            str(task.get("title") or task.get("taskName") or ""),
+            str(task.get("description") or ""),
+            " ".join(predicted_files),
+        ]
+    ).lower()
+
+    if any(token in combined for token in ("test", "jest", "pytest", "cypress", "qa", "smoke", "accessibility")):
+        return "qa"
+    if any(token in combined for token in ("deploy", "docker", "infra", "ci", "cd", "release", "observability", "monitor")):
+        return "devops"
+    if phase.startswith("frontend") or domain == "frontend":
+        return "frontend"
+    if phase.startswith("backend") or domain == "backend":
+        return "backend"
+    if phase == "integration" or domain == "integration":
+        return "integration"
+    if phase == "foundation" or domain == "foundation":
+        return "foundation"
+    if any(token in combined for token in ("react", "vite", "tsx", "jsx", "component", "css", "scss", "page")):
+        return "frontend"
+    if any(token in combined for token in ("fastapi", "express", "api", "service", "route", "database", "schema", "python", "node")):
+        return "backend"
+    return "general"
+
+
+def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str, Any]] = None) -> set[str]:
+    state = agent_state if isinstance(agent_state, dict) else {}
+    combined = " ".join(
+        [
+            str(agent_id or ""),
+            str(state.get("name") or ""),
+            str(state.get("type") or ""),
+        ]
+    ).lower()
+    lanes = {"general"}
+
+    if any(token in combined for token in ("frontend", "react", "ui", "web", "component", "design")):
+        lanes.add("frontend")
+    if any(token in combined for token in ("backend", "api", "server", "python", "node", "express", "fastapi")):
+        lanes.add("backend")
+    if any(token in combined for token in ("qa", "test", "validator", "quality")):
+        lanes.add("qa")
+    if any(token in combined for token in ("devops", "infra", "deploy", "release", "ops")):
+        lanes.add("devops")
+    if any(token in combined for token in ("integration", "fullstack", "shared")):
+        lanes.add("integration")
+
+    return lanes
+
+
+def _build_master_recommended_assignments(
+    *,
+    tasks: List[Dict[str, Any]],
+    task_plan: List[Dict[str, Any]],
+    project_token: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    state = _ensure_project_state(project_token)
+    agent_states = state.get("agent_states") if isinstance(state.get("agent_states"), dict) else {}
+    worker_agents = [
+        {
+            "id": agent_id,
+            "name": normalize_agent_name(agent_id, (agent_states.get(agent_id) or {}).get("name")),
+            "type": str((agent_states.get(agent_id) or {}).get("type") or "").strip(),
+            "lanes": _infer_agent_assignment_lanes(agent_id, agent_states.get(agent_id) or {}),
+            "sequence": _extract_dev_agent_sequence(agent_id) or 999,
+        }
+        for agent_id in sorted(agent_states)
+        if not _is_system_agent_id(agent_id)
+    ]
+    if not worker_agents:
+        return []
+
+    history_by_agent: Dict[str, Counter] = {}
+    for completed in state.get("completed_tasks") or []:
+        if not isinstance(completed, dict):
+            continue
+        agent_id = str(completed.get("assigned_agent") or "").strip()
+        if not agent_id or _is_system_agent_id(agent_id):
+            continue
+        lane = _classify_task_assignment_lane(completed)
+        counter = history_by_agent.setdefault(agent_id, Counter())
+        counter[lane] += 1
+        domain = str(_normalize_task_domain(completed) or "").strip().lower()
+        if domain:
+            counter[domain] += 1
+
+    load_by_agent = {agent["id"]: 0 for agent in worker_agents}
+    plan_by_task_id = {
+        str(item.get("task_id") or "").strip(): item
+        for item in task_plan
+        if isinstance(item, dict) and str(item.get("task_id") or "").strip()
+    }
+
+    assignments: List[Dict[str, Any]] = []
+    for task in _sort_tasks_for_execution(tasks or []):
+        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+        if not task_id:
+            continue
+        lane = _classify_task_assignment_lane(task)
+        domain = str(_normalize_task_domain(task) or "").strip().lower()
+        upstream_assignee = str(task.get("assigned_agent") or "").strip()
+        best_agent = None
+        best_score = None
+
+        for agent in worker_agents:
+            score = 0
+            reasons: List[str] = []
+            if upstream_assignee and upstream_assignee == agent["id"]:
+                score += 100
+                reasons.append("task already tagged for this agent")
+            if lane in agent["lanes"]:
+                score += 30
+                reasons.append(f"best match for {lane} work")
+            elif domain and domain in agent["lanes"]:
+                score += 24
+                reasons.append(f"aligned to {domain} domain")
+            elif lane in {"foundation", "integration", "general"}:
+                score += 8
+                reasons.append("suitable for cross-cutting work")
+            else:
+                score += 4
+            prior_lane_count = int((history_by_agent.get(agent["id"]) or {}).get(lane, 0))
+            prior_domain_count = int((history_by_agent.get(agent["id"]) or {}).get(domain, 0)) if domain else 0
+            if prior_lane_count:
+                score += min(prior_lane_count, 3) * 6
+                reasons.append(f"has prior {lane} task history")
+            elif prior_domain_count:
+                score += min(prior_domain_count, 3) * 5
+                reasons.append(f"has prior {domain} task history")
+
+            score -= load_by_agent.get(agent["id"], 0) * 3
+            score -= agent["sequence"] * 0.01
+
+            if best_score is None or score > best_score:
+                best_score = score
+                best_agent = {
+                    **agent,
+                    "reason_tokens": reasons,
+                }
+
+        if not best_agent:
+            continue
+
+        load_by_agent[best_agent["id"]] = load_by_agent.get(best_agent["id"], 0) + 1
+        opt_in_username = build_external_agent_username(best_agent["id"], best_agent.get("name"))
+        reason_tokens = list(best_agent.get("reason_tokens") or [])
+        if not reason_tokens:
+            if load_by_agent[best_agent["id"]] == 1:
+                reason_tokens.append("selected as the initial balanced owner")
+            else:
+                reason_tokens.append("selected by balanced round-robin fallback")
+
+        recommendation = {
+            "task_id": task_id,
+            "title": task.get("title") or task.get("taskName") or "Untitled task",
+            "phase": task.get("phase") or task.get("task_phase") or "",
+            "priority": task.get("priority") or "medium",
+            "recommended_agent_id": best_agent["id"],
+            "recommended_agent_name": best_agent.get("name") or get_default_agent_name(best_agent["id"]),
+            "opt_in_username": opt_in_username,
+            "lane": lane,
+            "reason": "; ".join(dict.fromkeys(reason_tokens))[:280],
+        }
+        assignments.append(recommendation)
+
+        plan_entry = plan_by_task_id.get(task_id)
+        if isinstance(plan_entry, dict):
+            plan_entry["assignee"] = recommendation["recommended_agent_id"]
+            plan_entry["recommended_agent_name"] = recommendation["recommended_agent_name"]
+            plan_entry["opt_in_username"] = recommendation["opt_in_username"]
+            plan_entry["assignment_reason"] = recommendation["reason"]
+
+    return assignments
+
+
+def _get_master_recommended_assignment_map(project_token: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    state = _ensure_project_state(project_token)
+    cached = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+    recommendations = cached.get("recommended_assignments")
+    if not isinstance(recommendations, list):
+        return {}
+
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for entry in recommendations:
+        if not isinstance(entry, dict):
+            continue
+        task_id = str(entry.get("task_id") or "").strip()
+        if task_id:
+            mapping[task_id] = entry
+    return mapping
+
+
+def _get_master_task_plan_map(project_token: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    state = _ensure_project_state(project_token)
+    cached = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+    tasks_considered = cached.get("tasks_considered")
+    if not isinstance(tasks_considered, list):
+        return {}
+
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for entry in tasks_considered:
+        if not isinstance(entry, dict):
+            continue
+        task_id = str(entry.get("task_id") or "").strip()
+        if task_id:
+            mapping[task_id] = entry
+    return mapping
+
+
+def _apply_master_task_metadata(task: Optional[Dict[str, Any]], project_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if not isinstance(task, dict):
+        return task
+
+    task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+    if not task_id:
+        return task
+
+    task_plan_entry = _get_master_task_plan_map(project_token).get(task_id) or {}
+    planned_files = [
+        str(path or "").strip()
+        for path in (task_plan_entry.get("planned_files") or [])
+        if str(path or "").strip()
+    ]
+    if planned_files:
+        task["_predicted_files"] = planned_files[:25]
+        task["_predicted_files_source"] = "master_plan"
+    if not task.get("phase") and task_plan_entry.get("phase"):
+        task["phase"] = task_plan_entry.get("phase")
+    if not task.get("task_phase") and task_plan_entry.get("phase"):
+        task["task_phase"] = task_plan_entry.get("phase")
+    return task
+
+
+def _resolve_locked_task_owner(
+    task: Dict[str, Any],
+    recommendation_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    worker_agent_ids: Optional[set[str]] = None,
+) -> str:
+    tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+    recommendations = recommendation_map if isinstance(recommendation_map, dict) else {}
+    workers = worker_agent_ids if isinstance(worker_agent_ids, set) else set()
+
+    recommended_agent_id = str((recommendations.get(tid) or {}).get("recommended_agent_id") or "").strip()
+    if recommended_agent_id and (not workers or recommended_agent_id in workers):
+        return recommended_agent_id
+
+    upstream_assignee = str(task.get("assigned_agent") or "").strip()
+    if upstream_assignee and (not workers or upstream_assignee in workers):
+        return upstream_assignee
+
+    return ""
+
+
+def _log_master_assignment_plan(
+    recommended_assignments: List[Dict[str, Any]],
+    *,
+    project_token: Optional[str] = None,
+) -> None:
+    if not recommended_assignments:
+        _log_master_agent(
+            "Master assignment plan created with no task-owner recommendations.",
+            project_token=project_token,
+        )
+        return
+
+    _log_master_agent(
+        f"Master assignment plan created for {len(recommended_assignments)} task(s).",
+        project_token=project_token,
+    )
+    for entry in recommended_assignments[:50]:
+        if not isinstance(entry, dict):
+            continue
+        task_id = str(entry.get("task_id") or "").strip()
+        title = str(entry.get("title") or "Untitled task").strip()
+        recommended_agent_id = str(entry.get("recommended_agent_id") or "").strip() or "unassigned"
+        opt_in_username = str(entry.get("opt_in_username") or "").strip()
+        reason = str(entry.get("reason") or "").strip()
+        message = (
+            f"Master assignment: [{task_id or '?'}] {title[:120]} -> {recommended_agent_id}"
+            + (f" (opt-in: {opt_in_username})" if opt_in_username else "")
+        )
+        if reason:
+            message += f" | reason: {reason[:180]}"
+        _log_master_agent(message, project_token=project_token)
+
+
+def _master_task_signature(tasks: List[Dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for task in _sort_tasks_for_execution(tasks or []):
+        payload = {
+            "task_id": str(_normalize_task_id(task) or task.get("id") or "").strip(),
+            "title": str(task.get("title") or task.get("taskName") or "").strip(),
+            "description": str(task.get("description") or "").strip(),
+            "priority": str(task.get("priority") or "").strip().lower(),
+            "phase": str(task.get("phase") or task.get("task_phase") or "").strip().lower(),
+            "domain": str(_normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "").strip().lower(),
+            "task_type": str(task.get("task_type") or "").strip().lower(),
+            "dependencies": [
+                str(dep).strip()
+                for dep in (task.get("dependencies") or [])
+                if str(dep).strip()
+            ],
+            "wallet": task.get("wallet") or task.get("task_wallet") or 0,
+        }
+        digest.update(json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _truncate_task_text(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _build_task_context_block(
+    tasks: List[Dict[str, Any]],
+    *,
+    max_total_chars: Optional[int] = None,
+    max_description_chars: int = 220,
+    include_file_hints: bool = False,
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> str:
+    ordered_tasks = _sort_tasks_for_execution(tasks or [])
+    if not ordered_tasks:
+        return "No tasks provided."
+
+    remaining_budget = max_total_chars if isinstance(max_total_chars, int) and max_total_chars > 0 else None
+    lines = [f"Total tasks: {len(ordered_tasks)}"]
+
+    for index, task in enumerate(ordered_tasks, 1):
+        remaining_tasks = len(ordered_tasks) - index
+        min_reserved = remaining_tasks * 52 if remaining_budget is not None else 0
+        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
+        phase = str(task.get("phase") or task.get("task_phase") or "").strip() or "unphased"
+        priority = str(task.get("priority") or "medium").strip() or "medium"
+        domain = str(_normalize_task_domain(task) or "").strip()
+        metadata = " | ".join(part for part in [phase, priority, domain] if part)
+
+        title_budget = 180
+        if remaining_budget is not None:
+            title_budget = max(32, min(180, remaining_budget - min_reserved - 24))
+        title = _truncate_task_text(task.get("title") or task.get("taskName") or "Untitled task", title_budget)
+
+        line = f"{index}. "
+        if task_id:
+            line += f"[{task_id}] "
+        line += f"[{metadata}] {title}"
+
+        desc_limit = max_description_chars
+        if remaining_budget is not None:
+            desc_limit = max(0, min(max_description_chars, remaining_budget - min_reserved - len(line) - 2))
+        task_description = _truncate_task_text(task.get("description") or "", desc_limit)
+        if task_description and desc_limit >= 24:
+            line += f": {task_description}"
+
+        file_hints: List[str] = []
+        if include_file_hints:
+            file_hints = _sanitize_master_planned_files(
+                _predict_task_file_intents(task),
+                stack_profile=stack_profile,
+                workspace_contract=workspace_contract,
+                limit=5,
+            )
+
+        if file_hints:
+            hint_text = f" | File hints: {', '.join(file_hints)}"
+            if remaining_budget is None:
+                line += hint_text
+            else:
+                available = remaining_budget - min_reserved - len(line)
+                if available >= 24:
+                    line += _truncate_task_text(hint_text, available)
+
+        lines.append(line)
+        if remaining_budget is not None:
+            remaining_budget -= len(line) + 1
+
+    return "\n".join(lines)
+
+
+def _infer_project_stack(
+    *,
+    tasks: List[Dict[str, Any]],
+    tech_spec: str = "",
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    combined_text = " ".join(
+        [
+            str(tech_spec or ""),
+            *[
+                " ".join(
+                    str(task.get(key) or "")
+                    for key in ("title", "taskName", "description", "phase", "task_phase")
+                )
+                for task in (tasks or [])
+            ],
+        ]
+    ).lower()
+
+    frontend = None
+    backend = None
+    confidence = "explicit"
+    reason = ""
+
+    if any(token in combined_text for token in ("next.js", "nextjs", "app router", "next.config")):
+        frontend = "nextjs"
+    elif any(token in combined_text for token in ("react", "vite", "tsx", "jsx")):
+        frontend = "react-vite"
+
+    if any(token in combined_text for token in ("fastapi", "pydantic", "sqlalchemy", "uvicorn", "python api")):
+        backend = "fastapi"
+    elif any(token in combined_text for token in ("express", "node api", "node.js", "node/express")):
+        backend = "express"
+
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    allowed_roots = [str(root or "").strip().lower() for root in (contract.get("allowed_source_roots") or [])]
+    if not frontend and any("frontend" in root for root in allowed_roots):
+        frontend = "react-vite"
+    if not backend and any("backend" in root for root in allowed_roots):
+        backend = "fastapi"
+
+    if not frontend and not backend:
+        frontend = "nextjs"
+        backend = "fastapi"
+        confidence = "default"
+        reason = "No explicit framework evidence was found. Using the platform default web stack."
+    elif not frontend:
+        frontend = "nextjs"
+        confidence = "mixed"
+        reason = "Frontend stack was not explicit, so a default frontend stack was selected."
+    elif not backend:
+        backend = "fastapi"
+        confidence = "mixed"
+        reason = "Backend stack was not explicit, so a default backend stack was selected."
+
+    labels = {
+        "nextjs": "Next.js + TypeScript",
+        "react-vite": "React + Vite + TypeScript",
+        "fastapi": "FastAPI + Python",
+        "express": "Node.js + Express + TypeScript",
+    }
+    return {
+        "frontend_key": frontend,
+        "frontend": labels.get(frontend, frontend),
+        "backend_key": backend,
+        "backend": labels.get(backend, backend),
+        "confidence": confidence,
+        "reason": reason,
+    }
+
+
+def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
+    title = "Canonical Project Tree and Task Plan"
+    project_token = str(payload.get("project_token") or "").strip()
+    author_agent_id = str(payload.get("author_agent_id") or "").strip()
+    summary = str(payload.get("summary") or "").strip()
+    workspace_tree = str(payload.get("workspace_tree") or "").rstrip()
+    architecture_overview = str(payload.get("architecture_overview") or "").strip()
+    dependencies = str(payload.get("dependencies") or "").strip()
+    validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
+    tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
+    workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
+    stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
+
+    lines = [f"# {title}"]
+    if project_token:
+        lines.append(f"Project Token: `{project_token}`")
+    if author_agent_id:
+        lines.append(f"Author Agent: `{author_agent_id}`")
+    if summary:
+        lines.append("")
+        lines.append(summary)
+
+    if stack_profile:
+        lines.append("")
+        lines.append("## Stack Decision")
+        lines.append(f"- Frontend: {stack_profile.get('frontend')}")
+        lines.append(f"- Backend: {stack_profile.get('backend')}")
+        lines.append(f"- Confidence: {stack_profile.get('confidence')}")
+        if stack_profile.get("reason"):
+            lines.append(f"- Reason: {stack_profile.get('reason')}")
+
+    if validation:
+        lines.append("")
+        lines.append("## Validation")
+        lines.append(
+            f"- Approved: {bool(validation.get('approved'))}"
+            + (f" | Validator: {validation.get('validator_agent_id')}" if validation.get("validator_agent_id") else "")
+            + (f" | Mode: {validation.get('mode')}" if validation.get("mode") else "")
+            + (f" | Confidence: {validation.get('confidence')}" if validation.get("confidence") not in (None, "") else "")
+        )
+        for issue in (validation.get("issues_missing_files") or [])[:8]:
+            lines.append(f"- Missing/Coverage: {issue}")
+        for issue in (validation.get("issues_conflicts") or [])[:8]:
+            lines.append(f"- Conflict: {issue}")
+        for recommendation in (validation.get("recommendations") or [])[:8]:
+            lines.append(f"- Recommendation: {recommendation}")
+
+    if tasks_considered:
+        lines.append("")
+        lines.append("## Tasks Considered")
+        for task in tasks_considered:
+            if not isinstance(task, dict):
+                continue
+            task_title = str(task.get("title") or task.get("task_title") or "Untitled task").strip()
+            task_phase = str(task.get("phase") or "").strip()
+            task_domain = str(task.get("domain") or "").strip()
+            task_priority = str(task.get("priority") or "").strip()
+            task_type = str(task.get("task_type") or "").strip()
+            task_id = str(task.get("task_id") or "").strip()
+            header = f"- `{task_id}` {task_title}" if task_id else f"- {task_title}"
+            if task_phase or task_domain or task_priority or task_type:
+                header += " | " + " | ".join(
+                    item
+                    for item in [
+                        f"phase={task_phase}" if task_phase else "",
+                        f"domain={task_domain}" if task_domain else "",
+                        f"priority={task_priority}" if task_priority else "",
+                        f"type={task_type}" if task_type else "",
+                    ]
+                    if item
+                )
+            lines.append(header)
+            task_description = _truncate_task_text(task.get("description") or "", 360)
+            if task_description:
+                lines.append(f"  Description: {task_description}")
+            dependencies = [
+                str(dep).strip()
+                for dep in (task.get("dependencies") or [])
+                if str(dep).strip()
+            ]
+            if dependencies:
+                lines.append(f"  Depends on: {', '.join(dependencies[:10])}")
+            planned_files = [
+                str(path or "").strip()
+                for path in (task.get("planned_files") or [])
+                if str(path or "").strip()
+            ]
+            if planned_files:
+                lines.append(f"  Planned files: {', '.join(planned_files[:6])}")
+
+    if workspace_tree:
+        lines.append("")
+        lines.append("## Canonical Project Tree")
+        lines.append("```text")
+        lines.append(workspace_tree)
+        lines.append("```")
+
+    if workspace_contract:
+        allowed_roots = [
+            str(path or "").strip()
+            for path in (workspace_contract.get("allowed_source_roots") or [])
+            if str(path or "").strip()
+        ]
+        if allowed_roots:
+            lines.append("")
+            lines.append("## Canonical Source Roots")
+            for root in allowed_roots[:20]:
+                lines.append(f"- {root}")
+
+    if architecture_overview:
+        lines.append("")
+        lines.append("## Architecture Overview")
+        lines.append(architecture_overview)
+
+    if dependencies:
+        lines.append("")
+        lines.append("## Dependencies")
+        lines.append(dependencies)
+
+    if instructions:
+        lines.append("")
+        lines.append("## Instructions")
+        for instruction in instructions[:10]:
+            lines.append(f"- {instruction}")
+
+    return "\n".join(lines).strip()
+
+
+def _build_public_master_task_plan(task_plan: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    public_plan: List[Dict[str, Any]] = []
+    for entry in task_plan or []:
+        if not isinstance(entry, dict):
+            continue
+        sanitized = dict(entry)
+        for key in (
+            "assignee",
+            "recommended_agent_name",
+            "opt_in_username",
+            "assignment_reason",
+        ):
+            sanitized.pop(key, None)
+        public_plan.append(sanitized)
+    return public_plan
+
+
+async def _generate_detailed_project_tree_plan(
+    *,
+    tasks: List[Dict[str, Any]],
+    brd_summary: str = "",
+    kg_context: str = "",
+    tech_spec: str = "",
+    stack_profile: Optional[Dict[str, Any]] = None,
+) -> str:
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        return ""
+
+    task_list_text = _build_task_context_block(
+        tasks,
+        max_total_chars=16000,
+        max_description_chars=220,
+        include_file_hints=True,
+        stack_profile=stack_profile,
+    )
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    stack_text = (
+        f"Frontend: {stack.get('frontend') or 'unspecified'}\n"
+        f"Backend: {stack.get('backend') or 'unspecified'}\n"
+        f"Confidence: {stack.get('confidence') or 'unspecified'}\n"
+        f"Reason: {stack.get('reason') or 'n/a'}"
+    )
+
+    prompt = f"""You are the Master Architect Agent.
+Create the SINGLE CANONICAL PROJECT TREE that all coding agents must follow.
+
+BUSINESS REQUIREMENTS:
+{brd_summary[:2500] if brd_summary else "Not provided."}
+
+EXISTING CODEBASE CONTEXT:
+{kg_context[:3000] if kg_context else "New project or minimal context."}
+
+EXISTING TECHNICAL SPEC:
+{tech_spec[:3500] if tech_spec else "Not provided."}
+
+ALL TASKS TO COVER IN THE PROJECT STRUCTURE:
+{task_list_text}
+
+STACK DECISION TO FOLLOW:
+{stack_text}
+
+Output rules:
+- Output ONLY one project tree diagram.
+- Include directories and specific file names, not placeholders like "etc" or "other files".
+- Every listed task must have an obvious home in the tree.
+- Include configuration files, tests, shared types/contracts, and integration points when appropriate.
+- Keep the tree consistent with the stack decision above.
+- Use inline comments to briefly explain key files.
+- Choose the best production-ready structure for the tasks, not the easiest structure.
+- Do not include prose before or after the tree.
+"""
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a senior software architect. Output precise canonical file trees.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        content = ""
+        if "choices" in data and data["choices"]:
+            content = data["choices"][0].get("message", {}).get("content", "")
+        content = _re.sub(r"<think>.*?</think>", "", str(content), flags=_re.DOTALL).strip()
+        content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
+        return _strip_markdown_fences(content)
+    except Exception as exc:
+        logger.warning("Master project tree generation failed: %s", exc)
+        return ""
+
+
+def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    candidates = [raw]
+    match = _re.search(r"\{[\s\S]*\}", raw)
+    if match:
+        candidates.insert(0, match.group(0))
+
+    for candidate in candidates:
+        normalized = _strip_markdown_fences(candidate)
+        try:
+            parsed = json.loads(normalized)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "approved"}
+
+
+def _heuristic_master_tree_validation(
+    *,
+    tasks: List[Dict[str, Any]],
+    workspace_tree: str,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+    stack_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    task_count = len(tasks or [])
+    file_line_count = _count_tree_file_lines(workspace_tree)
+    lines_lower = str(workspace_tree or "").lower()
+    expected_roots = []
+
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    for root in contract.get("allowed_source_roots") or []:
+        root_text = str(root or "").strip()
+        if root_text:
+            expected_roots.append(root_text)
+
+    issues = []
+    recommendations = []
+
+    if task_count > 0 and file_line_count < max(6, min(18, task_count // 2 + 4)):
+        issues.append(
+            "The project tree is too shallow relative to the number of tasks and may not contain enough concrete files."
+        )
+
+    for root in expected_roots[:8]:
+        if root.lower() not in lines_lower:
+            issues.append(f"Canonical source root '{root}' is missing from the proposed tree.")
+
+    if "frontend" in lines_lower and "backend" not in lines_lower and any(
+        str(task.get("phase") or task.get("task_phase") or "").startswith("backend")
+        or "backend" in str(task.get("title") or "").lower()
+        for task in tasks or []
+    ):
+        issues.append("Backend-related tasks exist but the tree does not show a backend area.")
+
+    if "backend" in lines_lower and "frontend" not in lines_lower and any(
+        str(task.get("phase") or task.get("task_phase") or "").startswith("frontend")
+        or "frontend" in str(task.get("title") or "").lower()
+        or "ui" in str(task.get("title") or "").lower()
+        for task in tasks or []
+    ):
+        issues.append("Frontend-related tasks exist but the tree does not show a frontend area.")
+
+    if file_line_count < 6:
+        recommendations.append("Add concrete file names for entrypoints, configuration, tests, and feature modules.")
+    if not expected_roots:
+        recommendations.append("Index the repository or establish a workspace contract for stronger structural validation.")
+
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    backend_key = str(stack.get("backend_key") or "").strip()
+    if frontend_key == "nextjs":
+        if "next.config" not in lines_lower and "/app/" not in lines_lower and " app/" not in lines_lower:
+            issues.append("The inferred frontend stack is Next.js, but the tree does not show Next.js structure (app/ or next.config.*).")
+    elif frontend_key == "react-vite":
+        if "vite.config" not in lines_lower and "src/main.tsx" not in lines_lower and "src/main.jsx" not in lines_lower:
+            recommendations.append("Frontend stack appears to be React/Vite; add vite.config.* or src/main.* to make the structure explicit.")
+
+    if backend_key == "fastapi":
+        if "main.py" not in lines_lower and "pyproject.toml" not in lines_lower and "requirements.txt" not in lines_lower:
+            issues.append("The inferred backend stack is FastAPI, but the tree does not show Python/FastAPI entrypoints or dependency files.")
+        if "server.ts" in lines_lower or "express" in lines_lower:
+            issues.append("The inferred backend stack is FastAPI, but the tree contains Node/Express-specific backend files.")
+    elif backend_key == "express":
+        if "package.json" not in lines_lower and "server.ts" not in lines_lower and "app.ts" not in lines_lower:
+            issues.append("The inferred backend stack is Express, but the tree does not show Node/Express entrypoints.")
+        if "main.py" in lines_lower or "pyproject.toml" in lines_lower:
+            issues.append("The inferred backend stack is Express, but the tree contains Python/FastAPI-specific backend files.")
+
+    approved = not issues and file_line_count >= 6
+    return {
+        "approved": approved,
+        "confidence": 0.65 if approved else 0.35,
+        "issues_missing_files": issues[:8],
+        "issues_conflicts": [],
+        "recommendations": recommendations[:8],
+        "corrected_tree": "",
+        "validator_agent_id": "structure_validator",
+        "mode": "heuristic",
+    }
+
+
+async def _validate_master_project_tree_plan(
+    *,
+    tasks: List[Dict[str, Any]],
+    workspace_tree: str,
+    brd_summary: str = "",
+    tech_spec: str = "",
+    workspace_contract: Optional[Dict[str, Any]] = None,
+    stack_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    heuristic = _heuristic_master_tree_validation(
+        tasks=tasks,
+        workspace_tree=workspace_tree,
+        workspace_contract=workspace_contract,
+        stack_profile=stack_profile,
+    )
+
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        return heuristic
+
+    task_lines = _build_task_context_block(
+        tasks,
+        max_total_chars=14000,
+        max_description_chars=200,
+    )
+    spec_file_structure = _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
+    spec_reference = spec_file_structure[:3200] if spec_file_structure else tech_spec[:3200]
+
+    contract_summary = json.dumps({
+        "status": (workspace_contract or {}).get("status"),
+        "allowed_source_roots": list((workspace_contract or {}).get("allowed_source_roots") or [])[:20],
+        "modules": list((workspace_contract or {}).get("modules") or [])[:10],
+    }, ensure_ascii=True, indent=2)
+    stack_summary = json.dumps(stack_profile or {}, ensure_ascii=True, indent=2)
+
+    prompt = f"""You are the Structure Validator Agent.
+Validate whether the proposed canonical project tree is correct and complete enough for the provided task plan.
+
+BUSINESS REQUIREMENTS:
+{brd_summary[:2200] if brd_summary else "Not provided."}
+
+TECHNICAL SPEC FILE STRUCTURE / MANDATORY FILES:
+{spec_reference if spec_reference else "Not provided."}
+
+TASKS:
+{task_lines}
+
+WORKSPACE CONTRACT:
+{contract_summary}
+
+STACK DECISION:
+{stack_summary}
+
+PROPOSED PROJECT TREE:
+{workspace_tree[:6000] if workspace_tree else "No tree provided."}
+
+Return ONLY valid JSON with this exact shape:
+{{
+  "approved": true,
+  "confidence": 0.0,
+  "issues_missing_files": [],
+  "issues_conflicts": [],
+  "recommendations": [],
+  "corrected_tree": ""
+}}
+
+Rules:
+- Approve only if the tree has concrete filenames and clear homes for the tasks.
+- Reject if the tree is too shallow, creates parallel roots, or ignores workspace contract boundaries.
+- Reject if the tree contradicts the stack decision.
+- If rejected, provide a corrected_tree as a full replacement tree, not a diff.
+"""
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a rigorous software architecture validator. Respond only with JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        content = ""
+        if "choices" in data and data["choices"]:
+            content = data["choices"][0].get("message", {}).get("content", "")
+        parsed = _extract_json_object_from_text(content)
+        if not parsed:
+            return heuristic
+        try:
+            confidence = float(parsed.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        ai_result = {
+            "approved": _coerce_bool(parsed.get("approved")),
+            "confidence": confidence,
+            "issues_missing_files": [
+                str(item) for item in (parsed.get("issues_missing_files") or [])[:10]
+            ],
+            "issues_conflicts": [
+                str(item) for item in (parsed.get("issues_conflicts") or [])[:10]
+            ],
+            "recommendations": [
+                str(item) for item in (parsed.get("recommendations") or [])[:10]
+            ],
+            "corrected_tree": _strip_markdown_fences(str(parsed.get("corrected_tree") or "")),
+            "validator_agent_id": "structure_validator",
+            "mode": "ai",
+        }
+        if not ai_result.get("approved") and heuristic.get("approved"):
+            heuristic_override = dict(heuristic)
+            heuristic_override["mode"] = "heuristic_override"
+            recommendations = list(heuristic_override.get("recommendations") or [])
+            recommendations.insert(
+                0,
+                "AI validator rejection was ignored because deterministic heuristic validation approved the tree.",
+            )
+            heuristic_override["recommendations"] = recommendations[:10]
+            return heuristic_override
+        return ai_result
+    except Exception as exc:
+        logger.warning("Master project tree validation failed, using heuristic fallback: %s", exc)
+        return heuristic
+
+
+def _summarize_master_tree_validation(validation: Optional[Dict[str, Any]]) -> str:
+    payload = validation if isinstance(validation, dict) else {}
+    issues_missing = [
+        str(item or "").strip()
+        for item in (payload.get("issues_missing_files") or [])
+        if str(item or "").strip()
+    ]
+    issues_conflicts = [
+        str(item or "").strip()
+        for item in (payload.get("issues_conflicts") or [])
+        if str(item or "").strip()
+    ]
+    recommendations = [
+        str(item or "").strip()
+        for item in (payload.get("recommendations") or [])
+        if str(item or "").strip()
+    ]
+    mode = str(payload.get("mode") or "").strip()
+
+    detail_parts = []
+    if issues_missing:
+        detail_parts.append(f"missing/coverage: {issues_missing[0]}")
+    if issues_conflicts:
+        detail_parts.append(f"conflict: {issues_conflicts[0]}")
+    if recommendations and not detail_parts:
+        detail_parts.append(f"recommendation: {recommendations[0]}")
+    if mode:
+        detail_parts.append(f"mode={mode}")
+    return " | ".join(detail_parts[:3])
+
+
+def _coerce_note_entries(existing_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    entries = existing_payload.get("entries")
+    if isinstance(entries, list):
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+    legacy_entry = {}
+    for key in (
+        "task_id",
+        "task_title",
+        "status",
+        "branch",
+        "planned_files",
+        "completed_files",
+        "symbols_created",
+        "symbols_modified",
+        "next_agent_should",
+        "summary",
+        "started_at",
+        "updated_at",
+        "completed_at",
+    ):
+        value = existing_payload.get(key)
+        if value not in (None, "", [], {}):
+            legacy_entry[key] = value
+    return [legacy_entry] if legacy_entry else []
+
+
+async def _get_existing_note_payload(
+    *,
+    title: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    effective_token = task_token or get_project_task_token(project_token)
+    if not effective_token:
+        return {}
+
+    state = _ensure_project_state(project_token)
+    payload_cache = state.setdefault("note_payload_cache", {})
+    cached_entry = payload_cache.get(title)
+    now = time.time()
+    if isinstance(cached_entry, dict):
+        cached_token = str(cached_entry.get("task_token") or "").strip()
+        cached_age = now - float(cached_entry.get("loaded_at") or 0.0)
+        if cached_token == str(effective_token).strip() and cached_age <= NOTE_PAYLOAD_CACHE_TTL_SECONDS:
+            cached_payload = cached_entry.get("payload")
+            if isinstance(cached_payload, dict):
+                return dict(cached_payload)
+
+    note_id = await _find_note_id_by_title(
+        title,
+        project_token=project_token,
+        task_token=effective_token,
+    )
+    if note_id is None:
+        return {}
+
+    try:
+        from task_service import task_service
+
+        detail = await task_service.get_note_detail(note_id, task_token=effective_token)
+        payload = _parse_agent_note_content((detail or {}).get("content"))
+        payload_cache[title] = {
+            "payload": dict(payload) if isinstance(payload, dict) else {},
+            "loaded_at": now,
+            "task_token": effective_token,
+        }
+        return payload
+    except Exception:
+        return {}
+
+
+async def _load_persisted_master_note(
+    *,
+    title: str,
+    project_token: Optional[str],
+    task_token: Optional[str],
+    tasks: List[Dict[str, Any]],
+    task_signature: str,
+    worker_signature: str,
+    workspace_contract_signature: str = "",
+) -> Dict[str, Any]:
+    payload = await _get_existing_note_payload(
+        title=title,
+        project_token=project_token,
+        task_token=task_token,
+    )
+    if not isinstance(payload, dict) or payload.get("note_type") != "master_project_plan":
+        return {}
+
+    validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    if not validation.get("approved"):
+        return {}
+
+    persisted_task_signature = str(payload.get("task_signature") or "").strip()
+    if persisted_task_signature and persisted_task_signature != task_signature:
+        return {}
+    persisted_contract_signature = str(payload.get("workspace_contract_signature") or "").strip()
+    if workspace_contract_signature and persisted_contract_signature != workspace_contract_signature:
+        return {}
+
+    workspace_tree = str(payload.get("workspace_tree") or "").strip()
+    if not workspace_tree:
+        return {}
+
+    stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
+    workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
+    task_plan = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
+    if not task_plan:
+        task_plan = _build_master_task_plan(
+            tasks=tasks,
+            stack_profile=stack_profile,
+            workspace_contract=workspace_contract,
+        )
+
+    note_id = await _find_note_id_by_title(
+        title,
+        project_token=project_token,
+        task_token=task_token,
+    )
+
+    return {
+        "success": True,
+        "note_id": note_id,
+        "title": title,
+        "task_count": len(task_plan),
+        "validation": validation,
+        "approved": True,
+        "task_signature": task_signature,
+        "worker_signature": worker_signature,
+        "workspace_contract_signature": workspace_contract_signature,
+        "recommended_assignments": [],
+        "tasks_considered": task_plan,
+        "workspace_tree": workspace_tree,
+    }
+
+
+def _merge_agent_note_entry(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(existing or {})
+
+    for key in ("task_id", "task_title", "status", "branch", "next_agent_should", "summary", "updated_at"):
+        value = incoming.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+
+    for key in ("planned_files", "completed_files", "symbols_created", "symbols_modified"):
+        value = incoming.get(key)
+        if isinstance(value, list):
+            merged[key] = value[:25]
+
+    merged["started_at"] = existing.get("started_at") or incoming.get("started_at") or incoming.get("updated_at")
+
+    status_value = str(incoming.get("status") or merged.get("status") or "").lower()
+    if status_value in {"completed", "failed"}:
+        merged["completed_at"] = incoming.get("completed_at") or existing.get("completed_at") or incoming.get("updated_at")
+    else:
+        merged.pop("completed_at", None)
+
+    return merged
+
+
+def _build_agent_note_payload(
+    *,
+    existing_payload: Dict[str, Any],
+    agent_id: str,
+    project_token: Optional[str],
+    entry: Dict[str, Any],
+) -> Dict[str, Any]:
+    entries = _coerce_note_entries(existing_payload)
+    target_idx = None
+    entry_task_id = str(entry.get("task_id") or "").strip()
+
+    for idx in range(len(entries) - 1, -1, -1):
+        candidate_task_id = str((entries[idx] or {}).get("task_id") or "").strip()
+        if candidate_task_id and candidate_task_id == entry_task_id:
+            target_idx = idx
+            break
+
+    if target_idx is None:
+        entries.append(entry)
+    else:
+        entries[target_idx] = _merge_agent_note_entry(entries[target_idx], entry)
+
+    return {
+        "project_token": _note_scope_key(project_token),
+        "agent_id": agent_id,
+        "updated_at": entry.get("updated_at") or _note_timestamp(),
+        "entries": entries[-20:],
+    }
+
+
+def _extract_note_id_from_response(data: Any) -> Optional[int]:
+    if isinstance(data, dict):
+        for key in ("id", "note_id"):
+            value = data.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return int(value)
+            except Exception:
+                continue
+    return None
+
+
+async def _find_note_id_by_title(
+    title: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Optional[int]:
+    effective_token = task_token or get_project_task_token(project_token)
+    if not effective_token:
+        return None
+
+    state = _ensure_project_state(project_token)
+    cache = state.setdefault("note_title_cache", {})
+    cached = cache.get(title)
+    if cached:
+        return cached
+
+    try:
+        from task_service import task_service
+
+        notes = await task_service.list_notes(task_token=effective_token)
+    except Exception:
+        return None
+
+    if not isinstance(notes, list):
+        return None
+
+    for note in notes:
+        if str((note or {}).get("title") or "").strip() != title:
+            continue
+        note_id = _extract_note_id_from_response(note)
+        if note_id is not None:
+            cache[title] = note_id
+            return note_id
+
+    return None
+
+
+async def _upsert_agent_note(
+    *,
+    title: str,
+    content_payload: Dict[str, Any],
+    content_text: Optional[str] = None,
+    user: Optional[str],
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    effective_token = task_token or get_project_task_token(project_token)
+    if not effective_token:
+        return {"success": False, "skipped": True, "reason": "missing_task_token"}
+
+    try:
+        from task_service import task_service
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+    note_id = await _find_note_id_by_title(
+        title,
+        project_token=project_token,
+        task_token=effective_token,
+    )
+
+    payload = {
+        "title": title,
+        "content": (
+            _embed_note_payload(str(content_text).strip(), content_payload)
+            if content_text not in (None, "")
+            else json.dumps(content_payload, ensure_ascii=True, sort_keys=True, indent=2)
+        ),
+    }
+    if note_id is not None:
+        payload["note_id"] = note_id
+    if user:
+        payload["user"] = user
+
+    try:
+        result = await task_service.upsert_note(payload, task_token=effective_token)
+        resolved_note_id = _extract_note_id_from_response(result) or note_id
+        if resolved_note_id is None:
+            resolved_note_id = await _find_note_id_by_title(
+                title,
+                project_token=project_token,
+                task_token=effective_token,
+            )
+        if resolved_note_id is not None:
+            state = _ensure_project_state(project_token)
+            state.setdefault("note_title_cache", {})[title] = resolved_note_id
+            state.setdefault("note_payload_cache", {})[title] = {
+                "payload": dict(content_payload or {}),
+                "loaded_at": time.time(),
+                "task_token": effective_token,
+            }
+        return {
+            "success": True,
+            "note_id": resolved_note_id,
+            "result": result,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def ensure_master_workspace_note(
+    *,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    effective_project = project_token or ""
+    if task_token:
+        set_project_task_token(project_token, task_token)
+
+    state = _ensure_project_state(project_token)
+    title = _master_note_title(project_token)
+
+    async with state["master_note_lock"]:
+        tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+        if not tasks:
+            try:
+                tasks = await _fetch_external_tasks(project_token)
+                state["tasks"] = tasks
+            except Exception as exc:
+                logger.warning("[%s] Failed to fetch tasks for master note: %s", effective_project, exc)
+                tasks = []
+        ctx_mgr = None
+        workspace_contract: Dict[str, Any] = {}
+        workspace_contract_signature = ""
+        try:
+            import context_manager as ctx_mgr  # type: ignore
+
+            repo_creds = _resolve_project_git_credentials(project_token)
+            if effective_project and repo_creds.get("repo_url"):
+                refresh_result = await _refresh_workspace_contract_from_git_repo(
+                    project_token=project_token,
+                    repo_url=repo_creds.get("repo_url") or "",
+                    token=repo_creds.get("token") or "",
+                )
+                if not refresh_result.get("success") and not refresh_result.get("skipped"):
+                    logger.warning(
+                        "[%s] Failed to hydrate workspace contract from git repo: %s",
+                        effective_project,
+                        refresh_result.get("error") or "unknown error",
+                    )
+            workspace_contract = ctx_mgr.get_workspace_contract(effective_project) if effective_project else {}
+            workspace_contract_signature = _workspace_contract_signature(workspace_contract)
+        except Exception as exc:
+            logger.warning("[%s] Failed to prepare workspace contract for master note: %s", effective_project, exc)
+            workspace_contract = {}
+            workspace_contract_signature = ""
+        task_signature = _master_task_signature(tasks)
+        worker_signature = _master_worker_signature(project_token)
+        cached_master_note = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+        if (
+            cached_master_note.get("success")
+            and cached_master_note.get("approved")
+            and cached_master_note.get("title") == title
+            and cached_master_note.get("task_signature") == task_signature
+            and cached_master_note.get("worker_signature") == worker_signature
+            and cached_master_note.get("workspace_contract_signature") == workspace_contract_signature
+        ):
+            try:
+                cached_contract = ctx_mgr.get_workspace_contract(effective_project) if ctx_mgr and effective_project else {}
+                cached_contract = cached_contract if isinstance(cached_contract, dict) else {}
+                cached_tree = str(cached_master_note.get("workspace_tree") or "").strip()
+                if cached_contract.get("status") != "ready" and cached_tree:
+                    refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
+                        effective_project,
+                        cached_tree,
+                    ) if ctx_mgr else {}
+                    refreshed_contract = refreshed_contract if isinstance(refreshed_contract, dict) else {}
+                    if refreshed_contract.get("status") == "ready":
+                        _log_master_agent(
+                            "Reused cached master tree to restore the workspace contract.",
+                            project_token=project_token,
+                    )
+            except Exception as exc:
+                logger.warning("[%s] Failed to restore workspace contract from cached master tree: %s", effective_project, exc)
+            return dict(cached_master_note)
+
+        persisted_master_note = await _load_persisted_master_note(
+            title=title,
+            project_token=project_token,
+            task_token=task_token,
+            tasks=tasks,
+            task_signature=task_signature,
+            worker_signature=worker_signature,
+            workspace_contract_signature=workspace_contract_signature,
+        )
+        if persisted_master_note:
+            try:
+                persisted_tree = str(persisted_master_note.get("workspace_tree") or "").strip()
+                if persisted_tree and ctx_mgr:
+                    refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
+                        effective_project,
+                        persisted_tree,
+                    )
+                    if not isinstance(refreshed_contract, dict):
+                        refreshed_contract = {}
+            except Exception as exc:
+                logger.warning("[%s] Failed to restore workspace contract from persisted master note: %s", effective_project, exc)
+            _log_master_agent(
+                "Reusing published master project tree note for current task plan.",
+                project_token=project_token,
+            )
+            state["master_note_cache"] = dict(persisted_master_note)
+            return dict(persisted_master_note)
+
+        _log_master_agent(
+            "Creating canonical project tree note from the full task plan.",
+            project_token=project_token,
+        )
+
+        tech_spec_record = _project_tech_specs.get(effective_project, {}) if effective_project else {}
+        tech_spec = str((tech_spec_record or {}).get("spec") or "").strip()
+        tech_spec_signature = str((tech_spec_record or {}).get("task_signature") or "").strip()
+        brd_analysis = state.get("brd_analysis") if isinstance(state.get("brd_analysis"), dict) else {}
+        brd_summary = str(
+            brd_analysis.get("summary")
+            or brd_analysis.get("analysis")
+            or ""
+        ).strip()
+
+        kg_context = ""
+        try:
+            if ctx_mgr and effective_project and ctx_mgr.is_project_indexed(effective_project):
+                kg_context = await ctx_mgr.get_full_agent_context(
+                    project_token=effective_project,
+                    task_description="Canonical project structure and architecture overview",
+                    agent_id=MASTER_AGENT_ID,
+                    task_token=task_token,
+                )
+            if ctx_mgr and effective_project:
+                workspace_contract = ctx_mgr.get_workspace_contract(effective_project)
+                workspace_contract_signature = _workspace_contract_signature(workspace_contract)
+        except Exception as exc:
+            logger.warning("[%s] Failed to build context for master note: %s", effective_project, exc)
+            if not workspace_contract:
+                workspace_contract = {}
+
+        if effective_project and (not tech_spec or tech_spec_signature != task_signature):
+            spec_result = await _generate_technical_spec(
+                project_token=effective_project,
+                tasks=tasks,
+                brd_summary=brd_summary,
+                kg_context=kg_context,
+            )
+            refreshed_spec = str(spec_result.get("spec") or "").strip()
+            if refreshed_spec:
+                tech_spec = refreshed_spec
+
+        stack_profile = _infer_project_stack(
+            tasks=tasks,
+            tech_spec=tech_spec,
+            workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+        )
+
+        workspace_tree = _strip_markdown_fences(
+            _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
+        )
+        workspace_tree_source = "tech_spec" if workspace_tree else "none"
+        if _count_tree_file_lines(workspace_tree) < 6:
+            generated_tree = await _generate_detailed_project_tree_plan(
+                tasks=tasks,
+                brd_summary=brd_summary,
+                kg_context=kg_context,
+                tech_spec=tech_spec,
+                stack_profile=stack_profile,
+            )
+            if _count_tree_file_lines(generated_tree) >= _count_tree_file_lines(workspace_tree):
+                workspace_tree = generated_tree
+                workspace_tree_source = "ai_tree_plan"
+
+        if not workspace_tree and isinstance(workspace_contract, dict):
+            roots = list(workspace_contract.get("allowed_source_roots") or [])
+            root_files = list(workspace_contract.get("root_files") or [])
+            lines = ["project/"]
+            for root in roots[:12]:
+                lines.append(f"├── {root}/")
+            for root_file in root_files[:12]:
+                lines.append(f"├── {root_file}")
+            workspace_tree = "\n".join(lines)
+            workspace_tree_source = "workspace_contract"
+
+        architecture_overview = _extract_markdown_section(
+            tech_spec,
+            r"1\.\s*ARCHITECTURE OVERVIEW",
+        )
+        dependencies = _extract_markdown_section(
+            tech_spec,
+            r"6\.\s*DEPENDENCIES",
+        )
+        task_plan = _build_master_task_plan(
+            tasks=tasks,
+            stack_profile=stack_profile,
+            workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+        )
+        recommended_assignments: List[Dict[str, Any]] = []
+        deterministic_tree = _build_deterministic_master_tree(
+            workspace_tree=workspace_tree,
+            tech_spec=tech_spec,
+            task_plan=task_plan,
+            workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+            stack_profile=stack_profile,
+            fallback_root_label=effective_project or "project",
+        )
+        if _count_tree_file_lines(deterministic_tree) > _count_tree_file_lines(workspace_tree):
+            workspace_tree = deterministic_tree
+            workspace_tree_source = "deterministic_spec_merge"
+        validation = await _validate_master_project_tree_plan(
+            tasks=tasks,
+            workspace_tree=workspace_tree,
+            brd_summary=brd_summary,
+            tech_spec=tech_spec,
+            workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+            stack_profile=stack_profile,
+        )
+        corrected_tree = _strip_markdown_fences(str(validation.get("corrected_tree") or ""))
+        if not validation.get("approved") and corrected_tree:
+            revised_validation = await _validate_master_project_tree_plan(
+                tasks=tasks,
+                workspace_tree=corrected_tree,
+                brd_summary=brd_summary,
+                tech_spec=tech_spec,
+                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                stack_profile=stack_profile,
+            )
+            if revised_validation.get("approved"):
+                workspace_tree = corrected_tree
+                validation = revised_validation
+                workspace_tree_source = "validator_corrected_tree"
+            elif _count_tree_file_lines(corrected_tree) > _count_tree_file_lines(workspace_tree):
+                workspace_tree = corrected_tree
+                validation = revised_validation
+                workspace_tree_source = "validator_corrected_tree"
+
+        if not validation.get("approved"):
+            deterministic_tree = _build_deterministic_master_tree(
+                workspace_tree=workspace_tree,
+                tech_spec=tech_spec,
+                task_plan=task_plan,
+                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                validation=validation,
+                stack_profile=stack_profile,
+                fallback_root_label=effective_project or "project",
+            )
+            if deterministic_tree and deterministic_tree != workspace_tree:
+                revised_validation = await _validate_master_project_tree_plan(
+                    tasks=tasks,
+                    workspace_tree=deterministic_tree,
+                    brd_summary=brd_summary,
+                    tech_spec=tech_spec,
+                    workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                    stack_profile=stack_profile,
+                )
+                if revised_validation.get("approved") or _count_tree_file_lines(deterministic_tree) > _count_tree_file_lines(workspace_tree):
+                    workspace_tree = deterministic_tree
+                    validation = revised_validation
+                    workspace_tree_source = "deterministic_spec_merge"
+
+        if not validation.get("approved"):
+            validation_summary = _summarize_master_tree_validation(validation)
+            _log_master_agent(
+                "Master project tree failed validation and will not be published."
+                + (f" {validation_summary}" if validation_summary else ""),
+                level="error",
+                project_token=project_token,
+            )
+            return {
+                "success": False,
+                "reason": "master_tree_validation_failed",
+                "error": (
+                    f"master_tree_validation_failed: {validation_summary}"
+                    if validation_summary
+                    else "master_tree_validation_failed"
+                ),
+                "title": title,
+                "validation": validation,
+            }
+
+        try:
+            refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
+                effective_project,
+                workspace_tree,
+            ) if ctx_mgr else {}
+            refreshed_contract = refreshed_contract if isinstance(refreshed_contract, dict) else {}
+            if refreshed_contract.get("status") == "ready":
+                workspace_contract = refreshed_contract
+                workspace_contract_signature = _workspace_contract_signature(workspace_contract)
+                _log_master_agent(
+                    "Master tree established the workspace contract for agent coordination.",
+                    project_token=project_token,
+                )
+        except Exception as exc:
+            logger.warning("[%s] Failed to bootstrap workspace contract from master tree: %s", effective_project, exc)
+
+        public_task_plan = _build_public_master_task_plan(task_plan)
+        public_payload = {
+            "note_type": "master_project_plan",
+            "project_token": _note_scope_key(project_token),
+            "author_agent_id": MASTER_AGENT_ID,
+            "updated_at": _note_timestamp(),
+            "task_signature": task_signature,
+            "worker_signature": worker_signature,
+            "workspace_contract_signature": workspace_contract_signature,
+            "summary": (
+                "Canonical project tree and implementation plan created by the master agent. "
+                "All worker agents must follow this tree, implement inside these boundaries, "
+                "and align their work with the task plan below."
+            ),
+            "workspace_tree": workspace_tree,
+            "workspace_tree_source": workspace_tree_source,
+            "architecture_overview": architecture_overview[:3000],
+            "dependencies": dependencies[:1800],
+            "tasks_considered": public_task_plan,
+            "stack_profile": stack_profile,
+            "workspace_contract": {
+                "status": workspace_contract.get("status") if isinstance(workspace_contract, dict) else None,
+                "source": workspace_contract.get("source") if isinstance(workspace_contract, dict) else None,
+                "allowed_top_level_dirs": list((workspace_contract or {}).get("allowed_top_level_dirs") or [])[:25],
+                "allowed_source_roots": list((workspace_contract or {}).get("allowed_source_roots") or [])[:25],
+            },
+            "validation": {
+                "approved": bool(validation.get("approved")),
+                "confidence": validation.get("confidence"),
+                "issues_missing_files": list(validation.get("issues_missing_files") or [])[:10],
+                "issues_conflicts": list(validation.get("issues_conflicts") or [])[:10],
+                "recommendations": list(validation.get("recommendations") or [])[:10],
+                "validator_agent_id": validation.get("validator_agent_id") or "structure_validator",
+                "mode": validation.get("mode") or "heuristic",
+            },
+            "instructions": [
+                "Use this canonical tree as the single source of truth for where files should live.",
+                "Every task below must be implemented inside this structure; do not create alternate app roots or duplicate folders.",
+                "Coordinate task pickup through the normal task workflow rather than relying on names written in this note.",
+                "If another agent already has the relevant file in its status note, extend that file instead of recreating the same feature elsewhere.",
+                "Keep per-agent status notes updated so other agents can see live work, completed files, and coordination guidance.",
+                "If a task requires a structural change, update this master note first before coding.",
+            ],
+        }
+        rendered_markdown = _render_master_note_markdown(public_payload)
+
+        result = await _upsert_agent_note(
+            title=title,
+            content_payload=public_payload,
+            content_text=rendered_markdown,
+            user=_note_user_for_agent(MASTER_AGENT_ID),
+            project_token=project_token,
+            task_token=task_token,
+        )
+        if result.get("success"):
+            _log_master_agent(
+                f"Published master project tree note: {title}",
+                project_token=project_token,
+            )
+        else:
+            _log_master_agent(
+                f"Failed to publish master note: {result.get('error', 'unknown error')}",
+                level="error",
+                project_token=project_token,
+            )
+        final_result = {
+            **result,
+            "title": title,
+            "task_count": len(task_plan),
+            "validation": public_payload["validation"],
+            "approved": True,
+            "task_signature": task_signature,
+            "worker_signature": worker_signature,
+            "workspace_contract_signature": workspace_contract_signature,
+            "recommended_assignments": recommended_assignments,
+            "tasks_considered": task_plan,
+            "workspace_tree": workspace_tree,
+        }
+        state["master_note_cache"] = dict(final_result)
+        return final_result
+
+
+async def _publish_agent_status_note(
+    *,
+    agent_id: str,
+    task: Dict[str, Any],
+    status: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    planned_files: Optional[List[str]] = None,
+    completed_files: Optional[List[str]] = None,
+    symbols_created: Optional[List[str]] = None,
+    symbols_modified: Optional[List[str]] = None,
+    next_agent_should: str = "",
+    summary: str = "",
+) -> Dict[str, Any]:
+    task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "unknown")
+    title = _note_title("STATUS", project_token, agent_id)
+    timestamp = _note_timestamp()
+    existing_payload = await _get_existing_note_payload(
+        title=title,
+        project_token=project_token,
+        task_token=task_token,
+    )
+    entry = {
+        "task_id": task_id,
+        "task_title": task.get("title") or task.get("taskName") or "Untitled task",
+        "status": status,
+        "branch": branch_name or "",
+        "planned_files": list(planned_files or [])[:25],
+        "completed_files": list(completed_files or [])[:25],
+        "symbols_created": list(symbols_created or [])[:25],
+        "symbols_modified": list(symbols_modified or [])[:25],
+        "next_agent_should": next_agent_should,
+        "summary": summary or _to_single_line(task.get("description") or ""),
+        "started_at": timestamp,
+        "updated_at": timestamp,
+    }
+    if str(status).lower() in {"completed", "failed"}:
+        entry["completed_at"] = timestamp
+
+    payload = _build_agent_note_payload(
+        existing_payload=existing_payload,
+        agent_id=agent_id,
+        project_token=project_token,
+        entry=entry,
+    )
+    return await _upsert_agent_note(
+        title=title,
+        content_payload=payload,
+        user=_note_user_for_agent(agent_id),
+        project_token=project_token,
+        task_token=task_token,
+    )
+
+
+async def _publish_task_handoff_note(
+    *,
+    agent_id: str,
+    task: Dict[str, Any],
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    completed_files: Optional[List[str]] = None,
+    symbols_created: Optional[List[str]] = None,
+    symbols_modified: Optional[List[str]] = None,
+    summary: str = "",
+) -> Dict[str, Any]:
+    completed = list(completed_files or [])[:25]
+    next_agent_should = (
+        f"Continue from these files: {', '.join(completed[:5])}. "
+        "Do not recreate the same feature in alternate directories."
+        if completed
+        else "Use the latest merged branch artifacts and extend them instead of recreating them."
+    )
+    return await _publish_agent_status_note(
+        agent_id=agent_id,
+        task=task,
+        status="completed",
+        project_token=project_token,
+        task_token=task_token,
+        branch_name=branch_name,
+        completed_files=completed,
+        symbols_created=symbols_created,
+        symbols_modified=symbols_modified,
+        next_agent_should=next_agent_should,
+        summary=summary,
+    )
+
+
+_TASK_PHASE_ORDER = {
+    "foundation": 1,
+    "backend-core": 2,
+    "backend-features": 3,
+    "frontend-core": 4,
+    "frontend-features": 5,
+    "integration": 6,
+}
+
+
+def _get_task_priority_score(task: Dict[str, Any]) -> int:
+    priority = str(task.get("priority") or "medium").lower()
+    return {"high": 3, "medium": 2, "low": 1}.get(priority, 2)
+
+
+def _get_task_phase_order(task: Dict[str, Any]) -> int:
+    phase = str(task.get("phase") or task.get("task_phase") or "").lower().strip()
+    return _TASK_PHASE_ORDER.get(phase, 99)
+
+
+def _coerce_task_execution_order(value: Any) -> Optional[float]:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        match = _re.match(r"^\D*(\d+(?:\.\d+)?)", text)
+        if match:
+            try:
+                return float(match.group(1))
+            except Exception:
+                return None
+    return None
+
+
+def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered = list(tasks or [])
+    indexed_tasks = list(enumerate(ordered))
+    order_fields = (
+        "task_number",
+        "number",
+        "sequence",
+        "sequence_number",
+        "position",
+        "sort_order",
+        "display_order",
+        "order",
+        "serial_number",
+        "serial",
+    )
+
+    def _task_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[int, float, int]:
+        index, task = item
+        for field in order_fields:
+            explicit = _coerce_task_execution_order(task.get(field))
+            if explicit is not None:
+                return (0, explicit, index)
+        return (1, float(index), index)
+
+    indexed_tasks.sort(key=_task_sort_key)
+    return [task for _, task in indexed_tasks]
+
+
+def _normalize_task_domain(task: Dict[str, Any]) -> Optional[str]:
+    raw_domain = str(task.get("domain") or task.get("task_domain") or "").lower().strip()
+    if raw_domain in {"backend", "frontend", "integration", "foundation"}:
+        return raw_domain
+
+    phase = str(task.get("phase") or task.get("task_phase") or "").lower().strip()
+    if phase.startswith("backend"):
+        return "backend"
+    if phase.startswith("frontend"):
+        return "frontend"
+    if phase == "integration":
+        return "integration"
+    if phase == "foundation":
+        return "foundation"
+
+    text = " ".join(
+        str(task.get(part) or "")
+        for part in ("title", "taskName", "description")
+    ).lower()
+    if any(token in text for token in ("react", "frontend", "ui", "component", "vite", "css", "jsx", "tsx")):
+        return "frontend"
+    if any(token in text for token in ("backend", "api", "database", "schema", "sql", "fastapi", "python")):
+        return "backend"
+
+    return raw_domain or None
+
+
+def _extract_task_paths_from_text(text: str) -> List[str]:
+    content = str(text or "")
+    if not content:
+        return []
+
+    patterns = [
+        r"`([^`\n]+\.[A-Za-z0-9]+)`",
+        r"([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+)",
+        r"((?:backend|frontend|src|app|api|routes|services|components)/[A-Za-z0-9_./-]+)",
+        r"\b([A-Za-z0-9_.-]+\.(?:py|js|jsx|ts|tsx|json|yml|yaml|md|sql|css|scss|html))\b",
+    ]
+
+    matches: List[str] = []
+    for pattern in patterns:
+        matches.extend(_re.findall(pattern, content))
+
+    banned_singletons = {
+        "node.js",
+        "express.js",
+        "react.js",
+        "next.js",
+        "math.js",
+        "typescript.js",
+        "javascript.js",
+    }
+
+    normalized = []
+    seen = set()
+    for item in matches:
+        candidate = str(item or "").strip().strip(".,:;()[]{}<>\"'")
+        if not candidate:
+            continue
+        candidate = candidate.replace("\\", "/")
+        if candidate.startswith("/workspace/"):
+            candidate = candidate[len("/workspace/"):]
+        if candidate.startswith("./"):
+            candidate = candidate[2:]
+        candidate_lower = candidate.lower()
+        if "/" not in candidate and candidate_lower in banned_singletons:
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _extend_paths_from_value(target: List[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        target.extend(_extract_task_paths_from_text(value))
+        return
+    if isinstance(value, dict):
+        for nested in value.values():
+            _extend_paths_from_value(target, nested)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _extend_paths_from_value(target, nested)
+
+
+def _predict_task_file_intents(task: Dict[str, Any]) -> List[str]:
+    predicted = list(task.get("_predicted_files") or [])
+    if predicted:
+        if not task.get("_predicted_files_source"):
+            task["_predicted_files_source"] = "provided"
+        return predicted
+
+    candidates: List[str] = []
+    for key in (
+        "affected_files",
+        "file_paths",
+        "files",
+        "target_files",
+        "paths",
+        "touch_files",
+        "artifacts",
+        "deliverables",
+    ):
+        _extend_paths_from_value(candidates, task.get(key))
+
+    _extend_paths_from_value(candidates, task.get("title"))
+    _extend_paths_from_value(candidates, task.get("taskName"))
+    _extend_paths_from_value(candidates, task.get("description"))
+    _extend_paths_from_value(candidates, task.get("summary"))
+    _extend_paths_from_value(candidates, task.get("acceptance_criteria"))
+    _extend_paths_from_value(candidates, task.get("checklist"))
+
+    normalized: List[str] = []
+    seen = set()
+    for path in candidates:
+        candidate = str(path or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+
+    task["_predicted_files"] = normalized[:25]
+    task["_predicted_files_source"] = "task_text"
+    return task["_predicted_files"]
+
+
+def _task_is_fix_task(task: Dict[str, Any]) -> bool:
+    task_name = str(task.get("taskName") or task.get("title") or "").lower()
+    return "fix" in task_name or "bug" in task_name
+
+
+def _check_task_conflicts(
+    agent_id: str,
+    task: Dict[str, Any],
+    live_mem: Any,
+    project_token: Optional[str] = None,
+) -> tuple[bool, str]:
+    task_domain = _normalize_task_domain(task)
+    predicted_files = _predict_task_file_intents(task)
+    predicted_source = str(task.get("_predicted_files_source") or "").strip().lower()
+    if predicted_files and project_token:
+        try:
+            import context_manager as ctx_mgr
+
+            normalized_predicted_files = ctx_mgr.normalize_paths_for_workspace_contract(
+                project_token,
+                predicted_files,
+                task_domain=task_domain,
+            )
+            if normalized_predicted_files:
+                predicted_files = normalized_predicted_files
+                task["_predicted_files"] = predicted_files[:25]
+        except Exception:
+            pass
+    if predicted_files and live_mem:
+        try:
+            inferred_domain = live_mem.infer_domain_for_files(predicted_files)
+        except Exception:
+            inferred_domain = None
+        if inferred_domain:
+            if inferred_domain == "integration" or not task_domain:
+                task_domain = inferred_domain
+            elif (
+                predicted_source == "master_plan"
+                and inferred_domain in {"backend", "frontend"}
+                and task_domain in {"backend", "frontend"}
+                and inferred_domain != task_domain
+            ):
+                task_domain = inferred_domain
+    if task_domain:
+        task["_resolved_task_domain"] = task_domain
+
+    if not live_mem:
+        return False, ""
+
+    if predicted_files:
+        if project_token:
+            try:
+                import context_manager as ctx_mgr
+
+                contract_validation = ctx_mgr.validate_paths_against_workspace_contract(
+                    project_token,
+                    predicted_files,
+                    task_domain=task_domain,
+                )
+                if not contract_validation.get("allowed", True):
+                    violations = contract_validation.get("violations") or []
+                    return True, "; ".join(violations[:5])
+            except Exception:
+                pass
+
+        blocked = []
+        if task_domain in {"backend", "frontend"}:
+            for file_path in predicted_files:
+                allowed, reason = live_mem.can_agent_edit_file(task_domain, file_path)
+                if not allowed:
+                    blocked.append(f"{file_path}: {reason}")
+        if blocked:
+            return True, "; ".join(blocked[:5])
+
+        conflict_map = live_mem.get_file_conflicts(agent_id, predicted_files)
+        if conflict_map:
+            compact = [
+                f"{path} -> {', '.join(sorted(editors))}"
+                for path, editors in sorted(conflict_map.items())
+            ]
+            return True, "; ".join(compact[:5])
+    elif task_domain in {"backend", "frontend"}:
+        with live_mem._lock:
+            for other_agent_id, record in live_mem.active_tasks.items():
+                if other_agent_id == agent_id:
+                    continue
+                if record.task_domain == task_domain and not record.files_touched:
+                    return True, (
+                        f"domain '{task_domain}' already busy by {other_agent_id} "
+                        f"for '{record.task_title}'"
+                    )
+
+    return False, ""
+
+
+async def _claim_initial_task_assignments(
+    agents_config: Dict[str, Dict[str, str]] = None,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Prepare the ordered agent queue for supervisor execution.
+    Tasks are picked by agents themselves later at run time.
+    """
+    state = _ensure_project_state(project_token)
+    if task_token:
+        state["task_token"] = task_token
+    project_agents = state["agent_states"]
+
+    idle_agents = [
+        a for a in project_agents.values()
+        if (
+            (a["status"] == "idle")
+            or _is_waiting_for_master_plan(a)
+        )
+        and not _is_system_agent_id(a["id"])
+    ]
+    if not idle_agents:
+        raise ValueError("No idle agents. Reset agents or add new ones.")
+
+    try:
+        external_tasks = await _fetch_external_tasks(project_token)
+        if not external_tasks:
+            raise ValueError("No tasks available from the external task API. Generate tasks first.")
+        state["tasks"] = external_tasks
+    except Exception as exc:
+        raise
+
+    await _restore_persisted_agent_assignments(
+        project_token=project_token,
+        task_token=task_token,
+        agent_ids=[agent["id"] for agent in idle_agents],
+        external_tasks=external_tasks,
+    )
+
+    if agents_config:
+        for agent in idle_agents:
+            agent_cfg = agents_config.get(agent["id"]) or {}
+            repo_val = agent_cfg.get("git_repo_url")
+            token_val = agent_cfg.get("git_token")
+            if repo_val:
+                agent["git_repo_url"] = repo_val.strip()
+            if token_val:
+                agent["git_token"] = token_val.strip()
+
+    serial_agents = sorted(idle_agents, key=lambda item: item["id"])
+    assignments = [(agent["id"], None) for agent in serial_agents]
+
+    if not assignments:
+        raise ValueError("No idle agents available for serial execution.")
+
+    return {
+        "idle_agents": [agent["id"] for agent in idle_agents],
+        "assignments": assignments,
+    }
 
 
 async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
@@ -4265,121 +8376,159 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     if task_token:
         set_project_task_token(project_token, task_token)
     state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
     claimed_task_ids = state["claimed_task_ids"]
+    task_claim_lock = state["task_claim_lock"]
     
     # Check integration gate - if blocked, only allow fix tasks
     try:
         import context_manager as ctx_mgr
         live_mem = ctx_mgr.get_live_memory(project_token or "")
+        workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
         if live_mem.is_integration_blocked():
             # Only allow tasks with "fix" or "Fix" in the name when integration is blocked
             integration_blocked = True
         else:
             integration_blocked = False
-        current_phase = live_mem.get_current_phase()
     except Exception:
         live_mem = None
+        workspace_contract = {"status": "insufficient"}
         integration_blocked = False
-        current_phase = None
+
+    if live_mem and workspace_contract.get("status") != "ready":
+        with live_mem._lock:
+            other_active = [
+                aid for aid in live_mem.active_tasks
+                if aid != agent_id and not _is_system_agent_id(aid)
+            ]
+        if other_active:
+            logger.info(
+                f"[{agent_id}] Workspace contract not ready; waiting for bootstrap agent(s): {other_active}"
+            )
+            return None
     
     external_tasks = await _fetch_external_tasks(project_token)
-    
-    # Get current active sprint from project state (if available)
-    current_sprint_id = None
-    try:
-        project_state = _ensure_project_state(project_token)
-        # Try to get current sprint from state or from first available sprint
-        # For now, we'll determine current sprint based on phase progression
-        # This can be enhanced later with explicit sprint tracking
-    except Exception:
-        pass
-    
-    # Sort tasks by priority (high first), then by phase order, then by task_id
-    PHASE_ORDER = {
-        "foundation": 1,
-        "backend-core": 2,
-        "backend-features": 3,
-        "frontend-core": 4,
-        "frontend-features": 5,
-        "integration": 6,
-    }
-    
-    def get_priority_score(task: Dict[str, Any]) -> int:
-        priority = (task.get("priority") or "medium").lower()
-        return {"high": 3, "medium": 2, "low": 1}.get(priority, 2)
-    
-    def get_phase_order(task: Dict[str, Any]) -> int:
-        phase = task.get("phase") or task.get("task_phase") or ""
-        return PHASE_ORDER.get(phase, 99)  # Unknown phases go last
-    
-    external_tasks.sort(key=lambda t: (
-        -get_priority_score(t),
-        get_phase_order(t),
-        str(_normalize_task_id(t) or t.get("id") or "")
-    ))
-    
-    for t in external_tasks:
-        tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
-        status_lower = (t.get("status") or "").lower()
-        
-        # Skip if completed or already claimed
-        if status_lower in ("completed", "done") or tid in claimed_task_ids:
-            continue
-        
-        # Integration gate: if blocked, only allow fix tasks
-        if integration_blocked:
-            task_name = (t.get("taskName") or t.get("title") or "").lower()
-            if "fix" not in task_name and "bug" not in task_name.lower():
-                continue  # Skip non-fix tasks when integration is blocked
-        
-        # Sprint filtering: if current_sprint_id is set, only show tasks from that sprint
-        if current_sprint_id:
-            task_sprint_id = t.get("sprint") or t.get("sprint_id")
-            if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
-                continue  # Skip tasks from other sprints
-        
-        # Phase filtering: if current_phase is set, only show tasks from that phase
-        # Also, prioritize tasks from earlier phases (foundation before backend, etc.)
-        task_phase = t.get("phase") or t.get("task_phase")
-        if current_phase:
-            if task_phase and task_phase != current_phase:
-                continue  # Skip tasks from other phases
-        elif task_phase:
-            # If no current_phase set, but task has phase, ensure we work in phase order
-            # This ensures foundation tasks come before backend tasks, etc.
-            # (Already handled by sorting above, but this is a safety check)
+
+    async with task_claim_lock:
+        active_owned_ids = _active_owned_task_ids(project_token)
+        completed_task_ids = {
+            _task_identity(task)
+            for task in (state.get("completed_tasks") or [])
+            if isinstance(task, dict)
+        }
+        external_status_by_id = {
+            str(_normalize_task_id(task) or task.get("external_id") or task.get("id")): str(task.get("status") or "").strip().lower()
+            for task in external_tasks
+        }
+        stale_claims = []
+        for claimed_id in list(claimed_task_ids):
+            if claimed_id in active_owned_ids:
+                continue
+            if claimed_id in completed_task_ids:
+                continue
+            ext_status = external_status_by_id.get(str(claimed_id))
+            if ext_status is None or not _task_status_is_done(ext_status):
+                claimed_task_ids.discard(claimed_id)
+                stale_claims.append(str(claimed_id))
+        if stale_claims:
+            logger.info(
+                f"[{agent_id}] Released stale claimed task ids: {', '.join(sorted(stale_claims)[:10])}"
+            )
+
+        # Get current active sprint from project state (if available)
+        current_sprint_id = None
+        try:
+            project_state = _ensure_project_state(project_token)
+            # Try to get current sprint from state or from first available sprint
+            # For now, we'll determine current sprint based on phase progression
+            # This can be enhanced later with explicit sprint tracking
+        except Exception:
             pass
-        
-        # Dependency checking
-        if live_mem:
-            # Get dependencies from task
-            task_deps = t.get("dependencies", [])
-            if not task_deps:
-                # Try to infer from linked_tasks (reverse dependency)
-                linked = t.get("linked_tasks", [])
-                if linked:
-                    task_deps = [str(lt) for lt in linked]
-            
-            # Register dependencies if not already registered
-            if task_deps:
-                live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
-            
-            # Check if all dependencies are completed
-            if not live_mem.check_task_dependencies(tid):
-                blocking = live_mem.get_blocking_tasks(tid)
-                logger.info(
-                    f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
-                )
-                continue  # Skip this task, try next one
-        
-        # All checks passed - claim this task
-        claimed_task_ids.add(tid)
-        # Also claim its linked tasks
-        for lt in (t.get("linked_tasks") or []):
-            claimed_task_ids.add(str(lt))
-        return t
-    
-    return None
+
+        external_tasks = _sort_tasks_for_execution(external_tasks)
+
+        def _new_skip_reasons() -> Dict[str, int]:
+            return {
+                "completed_or_claimed": 0,
+                "integration_gate": 0,
+                "sprint_mismatch": 0,
+                "dependency_blocked": 0,
+                "conflict_blocked": 0,
+            }
+
+        def _try_pick_task() -> tuple[Optional[Dict[str, Any]], Dict[str, int]]:
+            skip_reasons = _new_skip_reasons()
+
+            for t in external_tasks:
+                _apply_master_task_metadata(t, project_token=project_token)
+                tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
+                status_lower = (t.get("status") or "").lower()
+
+                # Skip if completed or already claimed
+                if _task_status_is_done(status_lower) or tid in claimed_task_ids:
+                    skip_reasons["completed_or_claimed"] += 1
+                    continue
+
+                # Integration gate: if blocked, only allow fix tasks
+                if integration_blocked:
+                    task_name = (t.get("taskName") or t.get("title") or "").lower()
+                    if "fix" not in task_name and "bug" not in task_name.lower():
+                        skip_reasons["integration_gate"] += 1
+                        continue
+
+                if current_sprint_id:
+                    task_sprint_id = t.get("sprint") or t.get("sprint_id")
+                    if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
+                        skip_reasons["sprint_mismatch"] += 1
+                        continue
+
+                if live_mem:
+                    task_deps = t.get("dependencies", [])
+                    if not task_deps:
+                        linked = t.get("linked_tasks", [])
+                        if linked:
+                            task_deps = [str(lt) for lt in linked]
+
+                    if task_deps:
+                        live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+
+                    if not live_mem.check_task_dependencies(tid):
+                        blocking = live_mem.get_blocking_tasks(tid)
+                        logger.info(
+                            f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
+                        )
+                        skip_reasons["dependency_blocked"] += 1
+                        continue
+
+                    blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+                    if blocked:
+                        logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                        skip_reasons["conflict_blocked"] += 1
+                        continue
+
+                claimed_task_ids.add(tid)
+                for lt in (t.get("linked_tasks") or []):
+                    claimed_task_ids.add(str(lt))
+                agent = project_agents.get(agent_id)
+                if agent:
+                    reserved_task = _apply_master_task_metadata(dict(t), project_token=project_token)
+                    if project_token:
+                        reserved_task.setdefault("_project_token", project_token)
+                    agent["current_task"] = reserved_task
+                    agent["resume_pending_task"] = True
+                return t, skip_reasons
+
+            return None, skip_reasons
+
+        task, skip_reasons = _try_pick_task()
+        if task:
+            return task
+
+        logger.info(
+            f"[{agent_id}] No eligible task found from {len(external_tasks)} fetched task(s). "
+            f"Skip summary: {skip_reasons}. Claimed ids remaining: {len(claimed_task_ids)}"
+        )
+        return None
 
 
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
@@ -4417,6 +8566,16 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
     last_result = None
 
+    if not assigned_task and not _is_system_agent_id(agent_id):
+        try:
+            await _restore_persisted_agent_assignments(
+                project_token=project_token,
+                task_token=task_token,
+                agent_ids=[agent_id],
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to restore persisted assignment for %s: %s", project_token or "", agent_id, exc)
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = await _run_agent_once(
@@ -4442,6 +8601,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
             if attempt < MAX_RETRIES:
                 delay = RETRY_DELAYS[attempt - 1]
                 agent["status"] = "running"
+                agent["resume_pending_task"] = False
                 agent["progress"] = 0
                 retry_msg = (
                     f"⚠️ Attempt {attempt}/{MAX_RETRIES} failed: {error_msg}. "
@@ -4482,6 +8642,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     f"Auto-retrying in {delay}s..."
                 )
                 agent["status"] = "running"
+                agent["resume_pending_task"] = False
                 agent["progress"] = 0
                 agent["progress_message"] = retry_msg
                 agent["output_log"].append({
@@ -4494,6 +8655,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 continue
             else:
                 agent["status"] = "error"
+                agent["resume_pending_task"] = False
                 agent["progress"] = 0
                 agent["progress_message"] = f"Error after {MAX_RETRIES} retries: {str(e)}"
                 agent["output_log"].append({
@@ -4541,49 +8703,104 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         agent["git_token"] = git_token.strip()
 
     use_git = bool(agent.get("git_repo_url"))
+    master_note_result = None
+    if not _is_system_agent_id(agent_id):
+        try:
+            master_note_result = await ensure_master_workspace_note(
+                project_token=project_token,
+                task_token=task_token,
+            )
+        except Exception as exc:
+            master_note_result = {"success": False, "error": str(exc)}
+        if not master_note_result.get("success"):
+            validation_summary = _summarize_master_tree_validation(master_note_result.get("validation"))
+            raise ValueError(
+                "Master project tree is not validated yet. "
+                f"Reason: {master_note_result.get('error') or master_note_result.get('reason') or 'unknown'}"
+                + (f" ({validation_summary})" if validation_summary else "")
+            )
 
     # 1. Get the first task
+    resumed_existing_task = False
     if assigned_task:
         task = assigned_task
+    elif isinstance(agent.get("current_task"), dict):
+        resumed_task = _apply_master_task_metadata(dict(agent["current_task"]), project_token=project_token)
+        resumed_task_id = _task_identity(resumed_task)
+        external_tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+        if resumed_task_id:
+            external_match = next(
+                (
+                    ext_task for ext_task in external_tasks
+                    if _task_identity(ext_task) == resumed_task_id
+                ),
+                None,
+            )
+            if external_match and not _task_status_is_done(external_match.get("status")):
+                resumed_task = _apply_master_task_metadata(dict(external_match), project_token=project_token)
+        if project_token:
+            resumed_task.setdefault("_project_token", project_token)
+        if resumed_task_id and not _task_status_is_done(resumed_task.get("status")):
+            task = resumed_task
+            resumed_existing_task = True
+        else:
+            agent["current_task"] = None
+            agent["resume_pending_task"] = False
+            task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
     else:
         task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
-        if not task:
-            now = datetime.utcnow().isoformat()
-            agent["status"] = "idle"
-            agent["progress"] = 0
-            agent["progress_message"] = "No tasks available"
-            agent["current_task"] = None
-            agent["last_run"] = now
-            agent["output_log"].append({
-                "time": now,
-                "type": "info",
-                "message": "No tasks available or all are completed/claimed."
-            })
-            return {
-                "success": False,
-                "agent_id": agent_id,
-                "error": "No tasks available or all are completed/claimed.",
-                "reason": "no_tasks",
-                "tasks_completed": 0,
-                "duration": 0,
-            }
+    if not task:
+        now = datetime.utcnow().isoformat()
+        agent["status"] = "idle"
+        agent["resume_pending_task"] = False
+        agent["progress"] = 0
+        agent["progress_message"] = "No tasks available"
+        agent["current_task"] = None
+        agent["last_run"] = now
+        agent["output_log"].append({
+            "time": now,
+            "type": "info",
+            "message": "No tasks available or all are completed/claimed."
+        })
+        return {
+            "success": False,
+            "agent_id": agent_id,
+            "error": "No tasks available or all are completed/claimed.",
+            "reason": "no_tasks",
+            "tasks_completed": 0,
+            "duration": 0,
+        }
+    task = _apply_master_task_metadata(task, project_token=project_token)
     if isinstance(task, dict) and project_token:
         task.setdefault("_project_token", project_token)
 
-    # Initialize phase if not set (start with foundation phase)
-    try:
-        import context_manager as ctx_mgr
-        live_mem = ctx_mgr.get_live_memory(project_token or "")
-        if live_mem.get_current_phase() is None:
-            # Set initial phase to foundation
-            live_mem.set_current_phase("foundation")
-            logger.info(f"[{agent_id}] Initialized project phase to 'foundation'")
-    except Exception:
-        pass  # Non-critical, continue
-
     # Set agent to running
     agent["status"] = "running"
+    agent["resume_pending_task"] = False
     agent["output_log"] = []
+    if master_note_result:
+        if master_note_result.get("success"):
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"Master note loaded: {master_note_result.get('title')}"
+            })
+        else:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"Master note unavailable: {master_note_result.get('error') or master_note_result.get('reason') or 'unknown'}"
+            })
+    if resumed_existing_task:
+        task_id = _task_identity(task)
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": (
+                f"Recovered assigned task [{task_id or '?'}] {str(task.get('title') or task.get('taskName') or 'Untitled task')[:120]} "
+                "from persisted coordination state."
+            ),
+        })
     project_status_ok = await _update_project_status(
         "On Going",
         project_token=project_token,
@@ -4613,6 +8830,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             task["assigned_agent"] = agent_id
             task["assigned_agent_name"] = started_by_name
             task["started_at"] = datetime.utcnow().isoformat()
+            agent["resume_pending_task"] = False
+            coordination_branch = (force_branch if force_branch else _branch_name_for_task(task)) if use_git else None
 
             # ── Register in Cross-Agent Shared Memory ────────────────
             try:
@@ -4620,19 +8839,22 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 live_mem = ctx_mgr.get_live_memory(project_token or "")
                 task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
                 task_phase = task.get("phase") or task.get("task_phase")
-                task_domain = task.get("domain") or task.get("task_domain")
+                task_domain = task.get("_resolved_task_domain") or task.get("domain") or task.get("task_domain") or _normalize_task_domain(task)
                 task_deps = task.get("dependencies", [])
+                predicted_files = _predict_task_file_intents(task)
                 
                 live_mem.register_task_start(
                     agent_id=agent_id,
                     task_title=task.get("title", "Untitled"),
                     task_description=task.get("description", "")[:500],
-                    branch_name=(force_branch if force_branch else _branch_name_for_task(task)) if use_git else None,
+                    branch_name=coordination_branch,
                     task_id=task_id,
                     task_phase=task_phase,
                     task_domain=task_domain,
                     dependencies=[str(d) for d in task_deps],
                 )
+                if predicted_files:
+                    live_mem.register_file_intent(agent_id, predicted_files)
                 other_active = [
                     aid for aid in live_mem.active_tasks
                     if aid != agent_id
@@ -4848,6 +9070,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 project_token=project_token,
                                 task_description="Full system architecture overview",
                                 agent_id="architect_agent",
+                                task_token=task_token,
                             )
                     except Exception:
                         pass
@@ -4891,6 +9114,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         task_description=task.get("description", ""),
                         task_type=task.get("task_type"),
                         agent_id=agent_id,
+                        task_token=task_token,
                     )
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -4939,11 +9163,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
 
             agent["progress"] = 25
-            agent["progress_message"] = "AI is generating project code..."
+            agent["progress_message"] = "AI is generating build script..."
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": "Calling AI model to generate project code..."
+                "message": "Calling AI model to generate build script..."
             })
 
             generated_code, thought = await _call_ai_for_code(
@@ -4960,10 +9184,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"AI generated {len(generated_code.splitlines())} lines of builder code"
+                "message": f"AI generated {len(generated_code.splitlines())} lines of build script"
             })
 
-            # ── Execute builder code ─────────────────────────────────
+            # ── Execute build script ─────────────────────────────────
             result = await asyncio.to_thread(
                 _exec_script_in_container, container_name, generated_code, f"build_{agent_id}"
             )
@@ -5101,11 +9325,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 except Exception:
                     pass  # Non-critical
 
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": "Calling AI model to generate fix code..."
-                })
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "Calling AI model to generate fix script..."
+                    })
 
                 try:
                     fix_code, thought = await _call_ai_for_fix(
@@ -5128,7 +9352,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"AI generated {len(fix_code.splitlines())} lines of fix code"
+                        "message": f"AI generated {len(fix_code.splitlines())} lines of fix script"
                     })
 
                     result = await asyncio.to_thread(
@@ -5236,18 +9460,17 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # ═════════════════════════════════════════════════════════
             # MARK CHECKLIST ITEMS COMPLETE
-            # Only if real code was generated (more than just session notes)
+            # Only if the workspace capture contains real project files.
             # ═════════════════════════════════════════════════════════
             workspace_file_count = workspace_tree.count('FILE:')
             normalized_task_id = _normalize_task_id(task)
-            if workspace_file_count <= 1:
-                # Only the agent handoff session note exists — no real code
+            if workspace_file_count <= 0:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "warning",
                     "message": (
-                        f"⚠️ Skipping checklist completion: only {workspace_file_count} file(s) "
-                        f"captured — AI may not have produced real code"
+                        "⚠️ Skipping checklist completion: no files captured from /workspace/ "
+                        "— AI may not have produced real code"
                     )
                 })
             elif checklist and normalized_task_id:
@@ -5338,6 +9561,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 project_token=project_token or "",
                                 task_description=linked_task.get("description", lt_title),
                                 task_type=linked_task.get("task_type"),
+                                task_token=task_token,
                             )
                     except Exception:
                         pass
@@ -5366,29 +9590,6 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
                             "message": f"API: linked task progress 40% {'ok' if prog_ok else 'skipped/failed'}"
-                        })
-
-                    linked_note_result = await asyncio.to_thread(
-                        _append_agent_session_note,
-                        container_name,
-                        agent_id,
-                        linked_task,
-                        lt_branch,
-                        lt_result.get("exit_code", -1),
-                        0,
-                        True,
-                    )
-                    if linked_note_result.get("success"):
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"Updated session note: {linked_note_result.get('path')}"
-                        })
-                    else:
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "error",
-                            "message": linked_note_result.get("error", "Failed to update session note.")
                         })
 
                     lt_commit = await asyncio.to_thread(
@@ -5521,29 +9722,6 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             if use_git and branch_name:
                 agent["progress"] = 95
                 agent["progress_message"] = f"Committing and pushing to {branch_name}..."
-
-                note_result = await asyncio.to_thread(
-                    _append_agent_session_note,
-                    container_name,
-                    agent_id,
-                    task,
-                    branch_name,
-                    result.get("exit_code", -1),
-                    fix_iteration,
-                    False,
-                )
-                if note_result.get("success"):
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"Updated session note: {note_result.get('path')}"
-                    })
-                else:
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "error",
-                        "message": note_result.get("error", "Failed to update session note.")
-                    })
 
                 commit_result = await asyncio.to_thread(
                     _commit_and_push, container_name, task["title"], branch_name
@@ -5843,6 +10021,49 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     ),
                 )
 
+                try:
+                    note_branch = ((commit_result or {}).get("branch") if isinstance(commit_result, dict) else None) or branch_name or coordination_branch
+                    note_status = "completed" if result["exit_code"] == 0 else "failed"
+                    status_summary = (
+                        f"{'Completed' if result['exit_code'] == 0 else 'Failed'} task "
+                        f"'{task['title']}' in {elapsed}s. "
+                        f"Touched {len(touched_files)} files and generated "
+                        f"{len(symbols.get('created', []))} new symbols."
+                    )
+                    status_note = await _publish_agent_status_note(
+                        agent_id=agent_id,
+                        task=task,
+                        status=note_status,
+                        project_token=project_token,
+                        task_token=task_token,
+                        branch_name=note_branch,
+                        planned_files=_predict_task_file_intents(task),
+                        completed_files=touched_files,
+                        symbols_created=symbols.get("created", []),
+                        symbols_modified=symbols.get("modified", []),
+                        next_agent_should=(
+                            (
+                                f"Continue from these files: {', '.join(touched_files[:5])}. "
+                                "Extend the existing implementation instead of recreating it."
+                            )
+                            if result["exit_code"] == 0 and touched_files
+                            else "Inspect the failed task context and resume from the same planned files."
+                        ),
+                        summary=status_summary,
+                    )
+                    if status_note.get("success"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Coordination note updated: {note_status} status published"
+                        })
+                except Exception as note_err:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Coordination note publish skipped: {str(note_err)[:80]}"
+                    })
+
                 # 2) Feed generated code back into the Knowledge Graph + RAG
                 #    This is the core Blitzy pattern: KG as living source of truth.
                 #    Only do this for successful builds — failed code shouldn't
@@ -5889,6 +10110,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 task = None  # exit loop
             else:
                 task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+                task = _apply_master_task_metadata(task, project_token=project_token)
                 if isinstance(task, dict) and project_token:
                     task.setdefault("_project_token", project_token)
                 if task:
@@ -5917,6 +10139,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
         total_elapsed = round(time.time() - total_start, 1)
         agent["status"] = "completed"
+        agent["resume_pending_task"] = False
         agent["progress"] = 100
         agent["progress_message"] = f"All done! {tasks_completed} task(s) in {total_elapsed}s"
         agent["current_task"] = None
@@ -5941,6 +10164,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             bootstrap_signal_sent = True
         elapsed = round(time.time() - total_start, 1)
         agent["status"] = "error"
+        agent["resume_pending_task"] = False
         agent["progress"] = 0
         agent["progress_message"] = f"Error: {str(e)}"
         agent["output_log"].append({
@@ -5950,6 +10174,47 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         })
         agent["last_run"] = datetime.utcnow().isoformat()
         agent["current_task"] = None
+
+        try:
+            import context_manager as ctx_mgr
+            live_mem = ctx_mgr.get_live_memory(project_token or "")
+            if task:
+                live_mem.register_task_complete(
+                    agent_id=agent_id,
+                    files_touched=_predict_task_file_intents(task),
+                    exit_code=1,
+                    summary=str(e)[:300],
+                )
+            live_mem.release_file_intent(agent_id)
+        except Exception:
+            pass
+
+        if task:
+            try:
+                active_branch = locals().get("branch_name") or locals().get("coordination_branch") or force_branch
+                note_result = await _publish_agent_status_note(
+                    agent_id=agent_id,
+                    task=task,
+                    status="failed",
+                    project_token=project_token,
+                    task_token=task_token,
+                    branch_name=active_branch,
+                    planned_files=_predict_task_file_intents(task),
+                    next_agent_should="Resume or repair this task in the same files instead of starting a parallel implementation.",
+                    summary=str(e)[:300],
+                )
+                if note_result.get("success"):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "Coordination note updated: failure status published"
+                    })
+            except Exception as note_err:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"Coordination failure note skipped: {str(note_err)[:80]}"
+                })
 
         # Clean up container on error
         if container_created:
@@ -6332,33 +10597,29 @@ async def deploy_preview(
         logger.info(f"[Preview] {msg}")
 
     try:
-        # 1. Create container (using python:3.10-slim initially for cloning)
+        # 1. Create container from the shared runtime blueprint for cloning
         _log("Creating temporary clone container...")
         create_res = _create_persistent_container(container_name)
         if not create_res.get("success"):
             raise RuntimeError(f"Failed to create container: {create_res.get('error')}")
 
-        # 2. Install git
-        _log("Installing git...")
-        subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1"],
-            capture_output=True, text=True, timeout=120,
-        )
+        toolchain_result = _verify_container_toolchain(container_name)
+        if not toolchain_result.get("success"):
+            raise RuntimeError(toolchain_result.get("error", "Preview runtime toolchain verification failed"))
 
-        # 3. Clone the repo (agent/integration branch)
+        # 2. Clone the repo (agent/integration branch)
         auth_url = git_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
         _log(f"Cloning {GIT_INTEGRATION_BRANCH} branch...")
         clone = subprocess.run(
             ["docker", "exec", "-w", "/", container_name,
              "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
              auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
             raise RuntimeError(f"Git clone failed: {clone.stderr}")
 
-        # 4. Detect the project stack
+        # 3. Detect the project stack
         _log("Detecting project tech stack...")
         stack = _detect_project_stack(container_name)
         pstate["stack"] = stack
@@ -6725,7 +10986,18 @@ async def stop_preview(project_token: Optional[str] = None) -> Dict[str, Any]:
 # ── Agent & Task Management Helpers ─────────────────────────────────────────
 
 def get_pending_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
-    return []
+    state = _ensure_project_state(project_token)
+    claimed_task_ids = state["claimed_task_ids"]
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+    pending = []
+    for task in _sort_tasks_for_execution(tasks):
+        tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+        if _task_status_is_done(task.get("status")):
+            continue
+        if tid and tid in claimed_task_ids:
+            continue
+        pending.append(task)
+    return pending
 
 def get_agent_status(agent_id: str, project_token: Optional[str] = None) -> Dict[str, Any]:
     project_agents = _get_agent_states(project_token)
@@ -6740,10 +11012,21 @@ def get_all_agents(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def reset_agent(agent_id: str, project_token: Optional[str] = None) -> Dict[str, Any]:
     project_agents = _get_agent_states(project_token)
+    state = _ensure_project_state(project_token)
+    claimed_task_ids = state["claimed_task_ids"]
     agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
+    current_task = agent.get("current_task") if isinstance(agent.get("current_task"), dict) else None
+    task_id = _task_identity(current_task)
+    if task_id:
+        claimed_task_ids.discard(task_id)
+    for linked_id in (current_task.get("linked_tasks") or []) if current_task else []:
+        linked_key = str(linked_id or "").strip()
+        if linked_key:
+            claimed_task_ids.discard(linked_key)
     agent["status"] = "idle"
+    agent["resume_pending_task"] = False
     agent["progress"] = 0
     agent["progress_message"] = ""
     agent["current_task"] = None
@@ -6824,17 +11107,27 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
                          project_token: Optional[str] = None,
                          task_token: Optional[str] = None) -> Dict[str, Any]:
     """
-    Assign initial tasks to all idle agents and run them in CONTINUOUS mode.
-    Each agent keeps picking the next uncompleted task after finishing its current one,
-    only stopping when ALL tasks are done. Agents run concurrently.
+    Run idle agents simultaneously.
+    Each agent picks tasks for itself from the shared ordered queue and continues
+    until no eligible tasks remain.
     """
+    prime_project_git_credentials(agents_config, project_token=project_token)
+    try:
+        import langgraph_workflow
+
+        return await langgraph_workflow.run_agent_supervisor_workflow(
+            agents_config=agents_config,
+            project_token=project_token,
+            task_token=task_token,
+        )
+    except ImportError as exc:
+        logger.warning("LangGraph workflow unavailable, falling back to legacy runner: %s", exc)
+
     state = _ensure_project_state(project_token)
     if task_token:
         state["task_token"] = task_token
     project_agents = state["agent_states"]
-    claimed_task_ids = state["claimed_task_ids"]
 
-    # 1. Synchronously claim all idle agents immediately so UI updates instantly
     idle_agents = [
         a for a in project_agents.values()
         if a["status"] == "idle" and not _is_system_agent_id(a["id"])
@@ -6842,67 +11135,17 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
     if not idle_agents:
         raise ValueError("No idle agents. Reset agents or add new ones.")
 
-    for agent in idle_agents:
-        agent["status"] = "running"
-        agent["progress"] = 0
-        agent["output_log"] = []
-        agent["progress_message"] = "Initializing (fetching tasks)..."
-
-    # Fetch all tasks (this is async)
     try:
         external_tasks = await _fetch_external_tasks(project_token)
         if not external_tasks:
             raise ValueError("No tasks available from the external task API. Generate tasks first.")
-
-        # Filter to uncompleted, unclaimed tasks
-        available_tasks = [
-            t for t in external_tasks
-            if (t.get("status") or "").lower() not in ("completed", "done")
-            and str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in claimed_task_ids
-        ]
-
-        if not available_tasks:
-            raise ValueError("No unclaimed tasks available.")
-            
+        state["tasks"] = external_tasks
     except Exception as e:
-        # Roll back state if task fetching failed
-        for agent in idle_agents:
-            agent["status"] = "idle"
-            agent["progress"] = 0
-            agent["progress_message"] = ""
-            agent["error"] = str(e)
         raise
 
-    if not available_tasks:
-        raise ValueError("No unclaimed tasks available.")
-
-    # Assign one initial task per agent
-    assignments = []
-    used_task_ids = set()
-    for agent in idle_agents:
-        if not available_tasks:
-            break
-        task = available_tasks.pop(0)
-        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id"))
-        used_task_ids.add(task_id)
-
-        # Also claim linked tasks
-        linked_ids = [str(lt) for lt in (task.get("linked_tasks") or [])]
-        for lid in linked_ids:
-            used_task_ids.add(lid)
-
-        claimed_task_ids.update(used_task_ids)
-        assignments.append((agent["id"], task))
-
-        # Remove linked tasks from the available pool
-        available_tasks = [
-            t for t in available_tasks
-            if str(_normalize_task_id(t) or t.get("external_id") or t.get("id")) not in used_task_ids
-        ]
-
-    # Set individual git config on agents if provided via agents_config
+    ordered_agent_ids = [agent["id"] for agent in sorted(idle_agents, key=lambda item: item["id"])]
     if agents_config:
-        for aid, task in assignments:
+        for aid in ordered_agent_ids:
             if aid in agents_config:
                 repo_val = agents_config[aid].get("git_repo_url")
                 if repo_val:
@@ -6911,28 +11154,28 @@ async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
                 if token_val:
                     project_agents[aid]["git_token"] = token_val.strip()
 
-    # Launch all agents concurrently in CONTINUOUS mode
-    async def _run_one(agent_id, assigned_task):
+    launched_agents = list(ordered_agent_ids)
+
+    async def _run_one(agent_id: str) -> Dict[str, Any]:
         try:
             return await run_agent(
                 agent_id,
-                assigned_task=assigned_task,
+                assigned_task=None,
                 continuous=True,
                 ignore_running_check=True,
                 project_token=project_token,
                 task_token=task_token,
             )
         except Exception as e:
-            return {"success": False, "agent_id": agent_id, "error": str(e)}
+            return {"success": False, "agent_id": agent_id, "error": str(e), "tasks_completed": 0}
 
-    coroutines = [_run_one(aid, task) for aid, task in assignments]
-    results = await asyncio.gather(*coroutines, return_exceptions=True)
+    results = await asyncio.gather(*(_run_one(agent_id) for agent_id in ordered_agent_ids), return_exceptions=True)
 
     return {
-        "launched": len(assignments),
-        "agents": [aid for aid, _ in assignments],
+        "launched": len(launched_agents),
+        "agents": launched_agents,
         "results": [
-            r if isinstance(r, dict) else {"error": str(r)}
-            for r in results
+            result if isinstance(result, dict) else {"success": False, "error": str(result), "tasks_completed": 0}
+            for result in results
         ],
     }

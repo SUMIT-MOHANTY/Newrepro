@@ -6,6 +6,7 @@ import ResourceOnboarding from './pages/ResourceOnboarding';
 import GovernanceForm from './pages/GovernanceForm';
 import PrerequisiteClassification from './pages/PrerequisiteClassification';
 import TaskCreation from './pages/TaskCreation';
+import AgentAnalysis from './pages/AgentAnalysis';
 import GitHubCallback from './pages/GitHubCallback';
 import AzureDevOpsCallback from './pages/AzureDevOpsCallback';
 import SsoCallback from './pages/SsoCallback';
@@ -78,6 +79,11 @@ function App() {
         <Route path="/task-creation" element={
           <AppLayout>
             {(layoutProps) => <TaskCreation {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/agent-analysis" element={
+          <AppLayout>
+            {(layoutProps) => <AgentAnalysis {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/app/:projectId" element={

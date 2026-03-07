@@ -191,7 +191,8 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         }
       }
 
-      if (sharedToCreate === 0 && dedicatedToCreate === 0) {
+      // Only show error if no agents selected AND no agents already exist for this project
+      if (sharedToCreate === 0 && dedicatedToCreate === 0 && existingSharedCount === 0 && existingDedicatedCount === 0) {
         setSubmitError('Please select how many Shared and/or Dedicated agents you want to add.');
         return;
       }
@@ -326,6 +327,11 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
               <p className="text-xs text-app-text-muted">
                 Uses shared organization capacity to add dev agents that can be reused across projects.
               </p>
+              {existingSharedCount > 0 && (
+                <p className="text-[11px] font-semibold text-emerald-700 mt-1">
+                  {existingSharedCount} already added for this project
+                </p>
+              )}
               <div className="mt-1 flex items-center justify-between">
                 <p className="text-[11px] font-semibold text-app-text-muted">Add more shared agents</p>
                 <div className="inline-flex items-center gap-2">
@@ -386,6 +392,11 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
               <p className="text-xs text-app-text-muted">
                 Uses dedicated organization capacity to add dev agents only for this project.
               </p>
+              {existingDedicatedCount > 0 && (
+                <p className="text-[11px] font-semibold text-blue-700 mt-1">
+                  {existingDedicatedCount} already added for this project
+                </p>
+              )}
               <div className="mt-1 flex items-center justify-between">
                 <p className="text-[11px] font-semibold text-app-text-muted">Add more dedicated agents</p>
                 <div className="inline-flex items-center gap-2">

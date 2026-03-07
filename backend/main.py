@@ -2296,6 +2296,7 @@ async def get_project_roadmap_step(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
+    force_step: Optional[int] = None,  # Optional query param to force a specific step
 ):
     """
     Get the current roadmap step for a project.
@@ -2338,6 +2339,20 @@ async def get_project_roadmap_step(
 
     if not governance:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Refresh the governance object to ensure we have the latest steps_data
+    db.refresh(governance)
+
+    # Check for stored steps data - this represents the last reached step
+    stored_steps_data = governance.steps_data
+    stored_last_reached_step = None
+    if stored_steps_data and isinstance(stored_steps_data, dict):
+        stored_last_reached_step = stored_steps_data.get("current_step")
+        if stored_last_reached_step is not None:
+            try:
+                stored_last_reached_step = int(stored_last_reached_step)
+            except (ValueError, TypeError):
+                stored_last_reached_step = None
 
     # Step 0 (Project Initiation) is always complete once governance exists.
     # Governance sits between Requirement Screening and Agent Analysis.
@@ -2394,6 +2409,7 @@ async def get_project_roadmap_step(
 
             if all_page_results:
                 has_tasks = True
+                print(f"Roadmap: Detected {len(all_page_results)} tasks for project {identifier}, has_tasks=True")
 
                 done_statuses = {"completed", "done", "closed", "complete", "resolved"}
 
@@ -2418,6 +2434,11 @@ async def get_project_roadmap_step(
         except Exception as e:
             print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
             # If task check fails, keep the last known roadmap state.
+            # But if we have a task token, assume tasks might exist and check stored step
+            if x_task_token and stored_last_reached_step == TASK_CREATION_IDX:
+                # If we're at Task Creation and have a task token, try to progress
+                # This handles cases where task detection temporarily fails
+                pass
 
     # 4. Check runtime agent statuses for true "On Flight" execution
     try:
@@ -2478,7 +2499,7 @@ async def get_project_roadmap_step(
 
             if onboarding_complete:
                 on_flight_done = all_tasks_complete and not any_agent_working
-
+                
                 if on_flight_done:
                     step_statuses[ON_FLIGHT_IDX] = "completed"
                     if deploy_success:
@@ -2491,26 +2512,97 @@ async def get_project_roadmap_step(
                     step_statuses[ON_FLIGHT_IDX] = "active"
                     step_statuses[COMPLETE_IDX] = "pending"
 
-    # Derive current step from explicit statuses.
+    # Derive current step from explicit statuses (computed based on current state)
     active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)
     if active_step is not None:
-        current_step = active_step
+        computed_step = active_step
     else:
         completed_indices = [idx for idx, status in enumerate(step_statuses) if status == "completed"]
-        current_step = completed_indices[-1] if completed_indices else 0
+        computed_step = completed_indices[-1] if completed_indices else 0
+    
+    print(f"Roadmap: Project {identifier} - has_tasks={has_tasks}, computed_step={computed_step}, stored_step={stored_last_reached_step}, step_statuses={step_statuses}")
 
-    return {
+    # Use stored last reached step if it exists, otherwise use computed step
+    # The stored step represents the furthest step the user has reached - NEVER go backwards
+    if stored_last_reached_step is not None and stored_last_reached_step >= 0:
+        # Always use the stored step as the baseline (last reached step)
+        # Only update if computed step is HIGHER (we've progressed further)
+        if computed_step > stored_last_reached_step:
+            # We've progressed further, update the stored step
+            stored_last_reached_step = computed_step
+            final_current_step = stored_last_reached_step
+            # Use the computed step_statuses since they reflect the actual current state
+            # The computed statuses already show Resource Onboarding as active when tasks exist
+            # Don't rebuild - keep the computed statuses
+        elif stored_last_reached_step == TASK_CREATION_IDX and (has_tasks or x_task_token):
+            # Special case: If we're at Task Creation (5) and tasks exist OR we have a task token,
+            # progress to Resource Onboarding (6)
+            # This handles the case where tasks exist but has_tasks detection failed
+            # If we have a task token, it's likely tasks exist even if detection failed
+            stored_last_reached_step = RESOURCE_ONBOARDING_IDX
+            final_current_step = RESOURCE_ONBOARDING_IDX
+            # Update step_statuses to reflect Resource Onboarding as active
+            step_statuses[TASK_CREATION_IDX] = "completed"
+            step_statuses[RESOURCE_ONBOARDING_IDX] = "active"
+            computed_step = RESOURCE_ONBOARDING_IDX  # Update computed_step to match
+        elif computed_step == stored_last_reached_step:
+            # Same step - use computed step_statuses to reflect current state (e.g., On Flight when agents are running)
+            final_current_step = computed_step
+            # Keep the computed step_statuses as they reflect the actual current state
+            # This ensures On Flight shows as active when agents are working, even if stored step is Resource Onboarding
+        else:
+            # Use stored step (never go backwards)
+            final_current_step = stored_last_reached_step
+            # Rebuild step_statuses based on the stored step only if we haven't progressed
+            new_step_statuses = ["pending"] * len(STEP_LABELS)
+            
+            # Mark all steps up to (but not including) the final step as completed
+            for i in range(final_current_step):
+                if i < len(new_step_statuses):
+                    new_step_statuses[i] = "completed"
+            
+            # Mark the final step as active (the last reached step)
+            if final_current_step < len(new_step_statuses):
+                new_step_statuses[final_current_step] = "active"
+            
+            step_statuses = new_step_statuses
+    else:
+        # No stored step, use computed step and save it
+        final_current_step = computed_step
+        stored_last_reached_step = computed_step
+
+    # Prepare the roadmap data
+    roadmap_data = {
         "result_id": governance.id,
         "project_token": roadmap_project_token or str(governance.id),
         "project_name": governance.project_name,
-        "current_step": current_step,
-        "current_step_label": STEP_LABELS[current_step] if current_step < len(STEP_LABELS) else "Complete",
+        "current_step": final_current_step,
+        "current_step_label": STEP_LABELS[final_current_step] if final_current_step < len(STEP_LABELS) else "Complete",
         "total_steps": len(STEP_LABELS),
         "steps": STEP_LABELS,
         "step_statuses": step_statuses,
         "failed_step": failed_step,
         "classification": governance.classification,
     }
+
+    # Save steps data to database (update last reached step)
+    # Only save if we have a valid stored_last_reached_step
+    try:
+        if stored_last_reached_step is not None and stored_last_reached_step >= 0:
+            governance.steps_data = {
+                "steps": STEP_LABELS,
+                "step_statuses": step_statuses,
+                "current_step": stored_last_reached_step,  # Store the last reached step (never goes backwards)
+                "current_step_label": STEP_LABELS[stored_last_reached_step] if stored_last_reached_step < len(STEP_LABELS) else "Complete",
+                "failed_step": failed_step,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            db.commit()
+    except Exception as e:
+        print(f"Failed to save steps data to database: {e}")
+        db.rollback()
+
+    return roadmap_data
 
 
 def _doc_has_completed_analysis(doc: models.Document) -> bool:
@@ -3751,6 +3843,7 @@ async def list_agents(
     project_token: Optional[str] = None,
     include_defaults: bool = True,
     kind: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Get status of all AI agents."""
     organization_name = _require_organization(current_user)
@@ -3781,6 +3874,10 @@ async def list_agents(
         query = query.filter(models.Agent.project_token.is_(None))
     records = query.all()
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+    await agent_service._restore_persisted_agent_assignments(
+        project_token=project_token,
+        task_token=x_task_token,
+    )
 
     visible_runtime_ids: Dict[str, str] = {}
     for row in mapping_rows:
@@ -3808,10 +3905,24 @@ async def list_agents(
 @app.get("/agents/tasks")
 async def get_pending_tasks(
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Get all pending tasks waiting to be picked up by agents."""
     project_token = _normalize_project_token(project_token)
+    _ensure_default_agents(db, project_token)
+    query = db.query(models.Agent)
+    if project_token:
+        query = query.filter(models.Agent.project_token == project_token)
+    else:
+        query = query.filter(models.Agent.project_token.is_(None))
+    records = query.all()
+    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+    await agent_service._restore_persisted_agent_assignments(
+        project_token=project_token,
+        task_token=x_task_token,
+    )
     return {
         "pending_tasks": agent_service.get_pending_tasks(project_token),
         "completed_tasks": agent_service.get_completed_tasks(project_token),
@@ -3950,10 +4061,24 @@ async def get_agent_status(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Get the current status and details of a specific agent."""
     try:
         project_token = _normalize_project_token(project_token)
+        _ensure_default_agents(db, project_token)
+        query = db.query(models.Agent)
+        if project_token:
+            query = query.filter(models.Agent.project_token == project_token)
+        else:
+            query = query.filter(models.Agent.project_token.is_(None))
+        records = query.all()
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+        await agent_service._restore_persisted_agent_assignments(
+            project_token=project_token,
+            task_token=x_task_token,
+            agent_ids=[agent_id],
+        )
         agent = agent_service.get_agent_status(agent_id, project_token)
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         return {"agent": _sanitize_agent_for_user(agent, global_cred)}
@@ -4076,7 +4201,8 @@ async def run_all_agents(
     project_token: Optional[str] = None,
 ):
     """
-    Start all idle agents simultaneously in the BACKGROUND.
+    Start the supervisor loop in the BACKGROUND.
+    Idle agents will pick tasks themselves from the shared ordered queue.
     Returns immediately — frontend polls /agents for real-time updates.
     """
     project_token = _normalize_project_token(project_token)
@@ -4131,6 +4257,11 @@ async def run_all_agents(
         for agent in idle_agents:
             agent["git_repo_url"] = None
             agent["git_token"] = None
+
+    agent_service.mark_run_all_waiting_state(
+        project_token,
+        [a["id"] for a in idle_agents],
+    )
 
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
@@ -4550,6 +4681,13 @@ class TaskOptInRequest(BaseModel):
     task_id: int
     username: str
 
+
+class AgentNoteUpsertRequest(BaseModel):
+    note_id: Optional[int] = None
+    title: str
+    content: str
+    user: Optional[str] = None
+
 @app.post("/api/agent/tasks/")
 async def create_external_agent_task(
     task: AgentTaskCreate,
@@ -4779,6 +4917,50 @@ async def get_agent_dashboard(
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard info: {e}")
+
+
+@app.put("/api/agent/notes/")
+async def upsert_agent_note(
+    payload: AgentNoteUpsertRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Create or update an agent note in the external task management API."""
+    try:
+        return await task_service.upsert_note(payload.dict(exclude_none=True), task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to save note")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save note: {e}")
+
+
+@app.get("/api/agent/notes/")
+async def list_agent_notes(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """List agent notes from the external task management API."""
+    try:
+        return await task_service.list_notes(task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch notes")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch notes: {e}")
+
+
+@app.get("/api/agent/notes/{note_id}/")
+async def get_agent_note_detail(
+    note_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Fetch one agent note from the external task management API."""
+    try:
+        return await task_service.get_note_detail(note_id, task_token=x_task_token)
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to fetch note detail")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch note detail: {e}")
 
 class AutoGenerateRequest(BaseModel):
     project_token: str
