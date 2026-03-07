@@ -1,4 +1,4 @@
-import { ArrowRight, FileText, BrainCircuit, Workflow, Zap, Activity, CheckCircle, Database, Code, Shield, Volume2, VolumeX } from 'lucide-react';
+import { ArrowRight, FileText, Sparkles, Workflow, Zap, Activity, CheckCircle, Database, Code, Shield, Volume2, VolumeX } from 'lucide-react';
 import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import gsap from 'gsap';
@@ -243,7 +243,7 @@ const AnimatedWorkflowDiagram = () => {
             <button
               onClick={() => setExecutionMode('agentic')}
               className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'agentic' ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
-              AI First
+              <Sparkles className={`inline h-4 w-4 mr-1.5 ${executionMode === 'agentic' ? 'text-white' : 'text-slate-400'}`} />AI First
             </button>
             <button
               onClick={() => setExecutionMode('coexistence')}
@@ -317,9 +317,9 @@ const AnimatedWorkflowDiagram = () => {
           <path className="path-nxdune-deploy" d="M 650 350 C 750 350, 800 550, 950 550" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" />
 
           {/* Human Paths */}
-          <path className="path-nxdune-human" d="M 650 350 C 680 350, 700 60, 720 60" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
-          <path className="path-human-nxdune" d="M 720 60 C 700 60, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
-          <path className="path-dev-human" d="M 950 150 C 900 150, 850 80, 720 60" stroke="#f59e0b" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-nxdune-human" d="M 650 350 C 680 350, 700 80, 720 80" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-human-nxdune" d="M 720 80 C 700 80, 680 350, 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
+          <path className="path-dev-human" d="M 950 150 C 900 150, 850 100, 720 80" stroke="#f59e0b" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
 
           <path className="path-nxdune-human-test" d="M 650 350 L 800 350" stroke="url(#gradDsuite)" strokeWidth="4" fill="none" filter="url(#glowFlow)" opacity="0" />
           <path className="path-human-test-nxdune" d="M 800 350 L 650 350" stroke="url(#gradReturn)" strokeWidth="2" fill="none" strokeDasharray="5,5" filter="url(#glowFlow)" opacity="0" />
@@ -384,7 +384,7 @@ const AnimatedWorkflowDiagram = () => {
             <div className="nxdune-pulse absolute inset-0 bg-indigo-500 rounded-2xl blur-xl opacity-0"></div>
             <div className="nxdune-ring absolute inset-0 rounded-2xl border-2 border-indigo-500/50"></div>
             <div className="relative w-32 h-24 bg-white border border-indigo-500/30 rounded-2xl shadow-[0_0_30px_rgba(99,102,241,0.2)] flex flex-col items-center justify-center p-3">
-              <div className="absolute -top-3 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[9px] font-bold rounded-full border border-indigo-200 uppercase tracking-wider">The Hub</div>
+              <div className="absolute -top-3 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[9px] font-bold rounded-full border border-indigo-200 uppercase tracking-wider">Information Hub</div>
               <img src={Logo1} alt="Nxdune" className="w-10 h-10 object-contain mb-1" />
               <span className="text-xs font-bold text-slate-800">Nxdune</span>
               <span className="text-[9px] text-slate-500">Task Router</span>
@@ -392,7 +392,7 @@ const AnimatedWorkflowDiagram = () => {
           </div>
 
           {/* Human Dev Node */}
-          <div className={`absolute top-[60px] left-[720px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
+          <div className={`absolute top-[80px] left-[720px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
             <div className="human-pulse absolute inset-0 bg-amber-500 rounded-2xl blur-xl opacity-0"></div>
             <div className="human-ring absolute inset-0 rounded-2xl border-2 border-amber-500/50"></div>
             <div className="relative w-28 h-20 bg-white border border-amber-500/30 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.15)] flex flex-col items-center justify-center p-2">
@@ -1087,7 +1087,7 @@ const HowItWorks = () => {
             One Document. <br /> Autonomous Engineering.
           </h1>
           <p className="text-xl sm:text-2xl text-app-text-label leading-relaxed max-w-2xl mx-auto">
-            Discover how DSuite orchestrates a highly-specialized swarm of AI agents to instantly build, test, and deploy software from a single requirements document.
+            Discover how DSuite orchestrates a highly-specialized swarm of <Sparkles className="inline h-4 w-4 mx-1 text-blue-600" />AI agents to instantly build, test, and deploy software from a single requirements document.
           </p>
         </div>
       </section>

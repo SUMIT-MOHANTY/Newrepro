@@ -5,7 +5,7 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
     ArrowRight, Zap, CheckCircle, Shield, Workflow,
     FileText, FileCode, FileSpreadsheet, FileJson, File,
-    Database, Server, Layout, Code, Terminal, Cpu
+    Database, Server, Layout, Code, Terminal, Cpu, Sparkles
 } from 'lucide-react';
 import Logo from '../assets/logo.png';
 import masterLogo from '../assets/logo1.png';
@@ -551,7 +551,7 @@ const LandingPage = () => {
             subtitle: 'Human-Led Development',
             icon: <Code className="h-5 w-5 text-white" />,
             color: 'from-blue-600 to-cyan-500',
-            description: 'In this model, all work is performed manually by developers. AI is only used as a reference tool.',
+            description: <>In this model, all work is performed manually by developers. <Sparkles className="inline h-4 w-4 mx-1 text-blue-600" />AI is only used as a reference tool.</>,
             brief: 'Teams follow a fully human-led delivery path where architecture decisions, coding standards, and validation gates are handled directly by engineers. This model minimizes automation risk and gives leadership complete visibility into every change before release. It is effective when accuracy, accountability, and auditability are more important than delivery speed.',
             executiveView: [
                 'Maximum human control',
@@ -567,11 +567,11 @@ const LandingPage = () => {
         },
         {
             key: 'auto-complete',
-            title: 'AI Assist Mode',
+            title: <><Sparkles className="inline h-5 w-5 mr-1.5 text-indigo-600" />AI Assist Mode</>,
             subtitle: 'AI-Assisted Productivity',
             icon: <Terminal className="h-5 w-5 text-white" />,
             color: 'from-indigo-600 to-violet-500',
-            description: 'AI acts as a smart assistant, suggesting improvements and accelerating routine tasks while humans remain in full control.',
+            description: <><Sparkles className="inline h-4 w-4 mx-1 text-indigo-600" />AI acts as a smart assistant, suggesting improvements and accelerating routine tasks while humans remain in full control.</>,
             brief: 'This mode improves day-to-day engineering throughput by automating routine drafting, code suggestions, and repetitive refinement work. Developers still make final decisions and keep ownership of quality, security, and release readiness. It provides quick productivity gains without requiring major process or governance changes.',
             executiveView: [
                 'Improves productivity without reducing oversight',
@@ -591,8 +591,8 @@ const LandingPage = () => {
             subtitle: 'Intent-Driven Development',
             icon: <FileCode className="h-5 w-5 text-white" />,
             color: 'from-fuchsia-600 to-pink-500',
-            description: 'Teams describe desired outcomes, and AI generates structured outputs rapidly. Humans refine and validate.',
-            brief: 'Vibe Coding is intent-first: teams define business outcomes and AI translates them into draft implementation paths quickly. This allows rapid concept testing, faster prototyping cycles, and accelerated early-stage feature development. Human review remains essential to align outputs with architecture standards and governance expectations.',
+            description: <>Teams describe desired outcomes, and <Sparkles className="inline h-4 w-4 mx-1 text-fuchsia-600" />AI generates structured outputs rapidly. Humans refine and validate.</>,
+            brief: <>Vibe Coding is intent-first: teams define business outcomes and <Sparkles className="inline h-4 w-4 mx-1 text-fuchsia-600" />AI translates them into draft implementation paths quickly. This allows rapid concept testing, faster prototyping cycles, and accelerated early-stage feature development. Human review remains essential to align outputs with architecture standards and governance expectations.</>,
             executiveView: [
                 'Rapid prototyping',
                 'Faster product launches',
@@ -611,8 +611,8 @@ const LandingPage = () => {
             subtitle: 'Human + AI Collaboration Model',
             icon: <CheckCircle className="h-5 w-5 text-white" />,
             color: 'from-emerald-600 to-teal-500',
-            description: 'Humans and AI actively collaborate. AI handles repetitive and analytical tasks while humans focus on strategy, architecture, and decision-making.',
-            brief: 'Co-Existence combines human judgment with AI execution in a shared workflow. AI accelerates analysis, drafting, and repetitive implementation tasks while people guide architecture, prioritization, and final sign-off decisions. This balance supports sustainable scale in enterprise engineering without sacrificing control or quality.',
+            description: <>Humans and <Sparkles className="inline h-4 w-4 mx-1 text-emerald-600" />AI actively collaborate. AI handles repetitive and analytical tasks while humans focus on strategy, architecture, and decision-making.</>,
+            brief: <>Co-Existence combines human judgment with <Sparkles className="inline h-4 w-4 mx-1 text-emerald-600" />AI execution in a shared workflow. AI accelerates analysis, drafting, and repetitive implementation tasks while people guide architecture, prioritization, and final sign-off decisions. This balance supports sustainable scale in enterprise engineering without sacrificing control or quality.</>,
             executiveView: [
                 'Balanced automation',
                 'Higher productivity',
@@ -628,12 +628,12 @@ const LandingPage = () => {
         },
         {
             key: 'sandbox',
-            title: 'AI First Mode',
+            title: <><Sparkles className="inline h-5 w-5 mr-1.5 text-sky-600" />AI First Mode</>,
             subtitle: 'Fully Autonomous AI Environment',
             icon: <Shield className="h-5 w-5 text-white" />,
             color: 'from-sky-600 to-cyan-500',
-            description: 'AI independently builds, tests, and iterates with minimal human involvement.',
-            brief: 'Sandbox mode runs autonomous AI workflows inside a separate, isolated environment to reduce impact on core systems. It enables rapid experimentation, repeated test cycles, and controlled iteration at high speed. This is suited for internal innovation tracks where strong monitoring and clear boundaries are already in place.',
+            description: <><Sparkles className="inline h-4 w-4 mx-1 text-sky-600" />AI independently builds, tests, and iterates with minimal human involvement.</>,
+            brief: <>Sandbox mode runs autonomous <Sparkles className="inline h-4 w-4 mx-1 text-sky-600" />AI workflows inside a separate, isolated environment to reduce impact on core systems. It enables rapid experimentation, repeated test cycles, and controlled iteration at high speed. This is suited for internal innovation tracks where strong monitoring and clear boundaries are already in place.</>,
             executiveView: [
                 'Maximum speed',
                 'High experimentation potential',
@@ -695,8 +695,8 @@ const LandingPage = () => {
                 icon: <Workflow className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Creates guided prompts from tickets and user stories',
-                    'Reviews AI suggestions for architecture fit',
-                    'Controls where AI assistance is allowed'
+                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-indigo-500" />Reviews AI suggestions for architecture fit</>,
+                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-indigo-500" />Controls where AI assistance is allowed</>
                 ],
                 authority: 'Final approval on assisted outputs before merge',
                 mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
@@ -706,11 +706,11 @@ const LandingPage = () => {
                 persona: 'Individual Contributors',
                 icon: <Code className="h-4 w-4 text-white" />,
                 responsibilities: [
-                    'Use AI suggestions and manually validate every change',
+                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-indigo-500" />Use AI suggestions and manually validate every change</>,
                     'Handle final refinement and reliability hardening',
                     'Write tests and ship production-ready code'
                 ],
-                authority: 'Approve/reject AI-assisted code',
+                authority: <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-indigo-500" />Approve/reject AI-assisted code</>,
                 mapsTo: 'Software Engineers (all levels)'
             },
             {
@@ -820,7 +820,7 @@ const LandingPage = () => {
                 persona: 'Individual Contributors',
                 icon: <Code className="h-4 w-4 text-white" />,
                 responsibilities: [
-                    'Audit AI-generated code and test artifacts',
+                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-sky-500" />Audit AI-generated code and test artifacts</>,
                     'Fix reliability/security issues before promotion',
                     'Own production deployment decisions'
                 ],
@@ -941,7 +941,7 @@ const LandingPage = () => {
                             Transform <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Ideas</span> with Intelligence
                         </h1>
                         <p className="text-lg sm:text-xl text-app-text-label leading-relaxed max-w-lg mx-auto lg:mx-0">
-                            Instantly analyze concepts, ideas, and Business Requirement Documents (BRDs) with advanced AI. Get feasibility checks and technical blueprints in seconds.
+                            Instantly analyze concepts, ideas, and Business Requirement Documents (BRDs) with advanced <Sparkles className="inline h-4 w-4 mx-1 text-blue-600" />AI. Get feasibility checks and technical blueprints in seconds.
                         </p>
                         <div className="flex flex-col sm:flex-row gap-4 pt-4 justify-center lg:justify-start">
                             <button
@@ -1054,10 +1054,10 @@ const LandingPage = () => {
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="text-center max-w-4xl mx-auto mb-10">
                         <h2 className="text-3xl font-bold tracking-tight text-app-text-main sm:text-4xl mb-4">
-                            AI Collaboration Models in Software Development
+                            <Sparkles className="inline h-6 w-6 mr-2 text-blue-600" />AI Collaboration Models in Software Development
                         </h2>
                         <p className="text-lg text-app-text-label">
-                            Executive Overview: As organizations adopt AI in engineering, each operating model balances control, speed, risk, and automation differently.
+                            Executive Overview: As organizations adopt <Sparkles className="inline h-4 w-4 mx-1 text-blue-600" />AI in engineering, each operating model balances control, speed, risk, and automation differently.
                         </p>
                     </div>
 
@@ -1154,17 +1154,17 @@ const LandingPage = () => {
 
                                     <p className="text-[10px] font-bold tracking-widest uppercase text-app-text-light mb-2">Responsibilities</p>
                                     <ul className="space-y-1.5 mb-3">
-                                        {item.responsibilities.map((point) => (
-                                            <li key={point} className="flex items-start gap-2 text-xs text-app-text-label leading-relaxed">
+                                        {item.responsibilities.map((point, idx) => (
+                                            <li key={idx} className="flex items-start gap-2 text-xs text-app-text-label leading-relaxed">
                                                 <CheckCircle className="h-3.5 w-3.5 text-app-status-success mt-0.5 shrink-0" />
-                                                <span>{point}</span>
+                                                <span>{typeof point === 'string' ? point : point}</span>
                                             </li>
                                         ))}
                                     </ul>
 
                                     <div className="rounded-lg border border-app-border-light bg-app-bg-card p-2.5 space-y-2">
                                         <p className="text-xs text-app-text-label leading-relaxed">
-                                            <span className="font-semibold text-app-text-main">Decision Authority:</span> {item.authority}
+                                            <span className="font-semibold text-app-text-main">Decision Authority:</span> {typeof item.authority === 'string' ? item.authority : item.authority}
                                         </p>
                                         <p className="text-xs text-app-text-label leading-relaxed">
                                             <span className="font-semibold text-app-text-main">Maps to:</span> {item.mapsTo}
