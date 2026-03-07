@@ -901,7 +901,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         processMode !== 'developer_only'
     );
     const isGlobalGitConfigValid = processMode === 'developer_only' || Boolean(
-        globalGitRepoUrl.trim() && (hasSavedGlobalGitToken || globalGitToken.trim())
+        globalGitRepoUrl.trim()
     );
 
     const handleSubmit = async () => {
@@ -922,9 +922,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 if (!repo) {
                     throw new Error('Git repository URL is required.');
                 }
-                if (!hasSavedGlobalGitToken && !pat) {
-                    throw new Error('Global PAT is required.');
-                }
+                // PAT is optional - no longer required
 
                 // Save global Git config from prerequisites so all agents reuse it.
                 const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
@@ -1288,7 +1286,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                         <div className="mt-2">
                                                             <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: Text</p>
                                                             <input
-                                                                type="text"
+                                                                type={item.containsSecret ? "password" : "text"}
                                                                 placeholder="Type your answer"
                                                                 value={item.userValue || ''}
                                                                 onChange={(e) => updateValue(item.id, e.target.value)}
@@ -1300,7 +1298,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                         <div className="mt-2">
                                                             <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: URL</p>
                                                             <input
-                                                                type="url"
+                                                                type={item.containsSecret ? "password" : "url"}
                                                                 placeholder="https://example.com"
                                                                 value={item.userValue || ''}
                                                                 onChange={(e) => updateValue(item.id, e.target.value)}
@@ -1416,7 +1414,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 </div>
                                 <div>
                                     <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
-                                        Personal Access Token {!hasSavedGlobalGitToken && <span className="text-red-500">*</span>}
+                                        Personal Access Token
                                     </label>
                                     <input
                                         type="password"
