@@ -2338,6 +2338,20 @@ async def get_project_roadmap_step(
     if not governance:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Refresh the governance object to ensure we have the latest steps_data
+    db.refresh(governance)
+
+    # Check for stored steps data - this represents the last reached step
+    stored_steps_data = governance.steps_data
+    stored_last_reached_step = None
+    if stored_steps_data and isinstance(stored_steps_data, dict):
+        stored_last_reached_step = stored_steps_data.get("current_step")
+        if stored_last_reached_step is not None:
+            try:
+                stored_last_reached_step = int(stored_last_reached_step)
+            except (ValueError, TypeError):
+                stored_last_reached_step = None
+
     # Step 0 (Project Initiation) is always complete once governance exists.
     # Governance sits between Requirement Screening and Agent Analysis.
     current_step = 3  # default active step after governance is Agent Analysis
@@ -2490,26 +2504,77 @@ async def get_project_roadmap_step(
                     step_statuses[ON_FLIGHT_IDX] = "active"
                     step_statuses[COMPLETE_IDX] = "pending"
 
-    # Derive current step from explicit statuses.
+    # Derive current step from explicit statuses (computed based on current state)
     active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)
     if active_step is not None:
-        current_step = active_step
+        computed_step = active_step
     else:
         completed_indices = [idx for idx, status in enumerate(step_statuses) if status == "completed"]
-        current_step = completed_indices[-1] if completed_indices else 0
+        computed_step = completed_indices[-1] if completed_indices else 0
 
-    return {
+    # Use stored last reached step if it exists, otherwise use computed step
+    # The stored step represents the furthest step the user has reached - NEVER go backwards
+    if stored_last_reached_step is not None and stored_last_reached_step >= 0:
+        # Always use the stored step as the baseline (last reached step)
+        # Only update if computed step is HIGHER (we've progressed further)
+        if computed_step > stored_last_reached_step:
+            # We've progressed further, update the stored step
+            stored_last_reached_step = computed_step
+            final_current_step = stored_last_reached_step
+        else:
+            # Use stored step (never go backwards)
+            final_current_step = stored_last_reached_step
+        
+        # Rebuild step_statuses based on the final_current_step (stored last reached step)
+        new_step_statuses = ["pending"] * len(STEP_LABELS)
+        
+        # Mark all steps up to (but not including) the final step as completed
+        for i in range(final_current_step):
+            if i < len(new_step_statuses):
+                new_step_statuses[i] = "completed"
+        
+        # Mark the final step as active (the last reached step)
+        if final_current_step < len(new_step_statuses):
+            new_step_statuses[final_current_step] = "active"
+        
+        step_statuses = new_step_statuses
+    else:
+        # No stored step, use computed step and save it
+        final_current_step = computed_step
+        stored_last_reached_step = computed_step
+
+    # Prepare the roadmap data
+    roadmap_data = {
         "result_id": governance.id,
         "project_token": roadmap_project_token or str(governance.id),
         "project_name": governance.project_name,
-        "current_step": current_step,
-        "current_step_label": STEP_LABELS[current_step] if current_step < len(STEP_LABELS) else "Complete",
+        "current_step": final_current_step,
+        "current_step_label": STEP_LABELS[final_current_step] if final_current_step < len(STEP_LABELS) else "Complete",
         "total_steps": len(STEP_LABELS),
         "steps": STEP_LABELS,
         "step_statuses": step_statuses,
         "failed_step": failed_step,
         "classification": governance.classification,
     }
+
+    # Save steps data to database (update last reached step)
+    # Only save if we have a valid stored_last_reached_step
+    try:
+        if stored_last_reached_step is not None and stored_last_reached_step >= 0:
+            governance.steps_data = {
+                "steps": STEP_LABELS,
+                "step_statuses": step_statuses,
+                "current_step": stored_last_reached_step,  # Store the last reached step (never goes backwards)
+                "current_step_label": STEP_LABELS[stored_last_reached_step] if stored_last_reached_step < len(STEP_LABELS) else "Complete",
+                "failed_step": failed_step,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            db.commit()
+    except Exception as e:
+        print(f"Failed to save steps data to database: {e}")
+        db.rollback()
+
+    return roadmap_data
 
 
 def _doc_has_completed_analysis(doc: models.Document) -> bool:

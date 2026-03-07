@@ -41,6 +41,15 @@ def migrate():
         else:
             print("[OK] prerequisites_completed_at column already exists")
 
+        # Add steps_data column if it doesn't exist (stores roadmap steps as JSON)
+        if 'steps_data' not in columns:
+            print("Adding steps_data column...")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN steps_data TEXT"))
+            conn.commit()
+            print("[OK] steps_data column added")
+        else:
+            print("[OK] steps_data column already exists")
+
         print("\nMigration completed successfully!")
 
 if __name__ == "__main__":

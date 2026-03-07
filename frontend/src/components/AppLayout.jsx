@@ -453,7 +453,13 @@ export default function AppLayout({ children }) {
     }, []);
 
     // Drive the active roadmap step from the frontend route (UI-only logic)
+    // BUT: If we have server roadmap data, use the server's current_step instead
     const forcedRoadmapStepIndex = useMemo(() => {
+        // If we have server roadmap data, use it instead of computing from route
+        if (hasServerRoadmap && roadmapData?.current_step !== undefined && roadmapData?.current_step !== null) {
+            return roadmapData.current_step;
+        }
+
         const path = location.pathname;
 
         // Dummy reference to satisfy linter and ensure memo updates on storage event
@@ -503,7 +509,7 @@ export default function AppLayout({ children }) {
         }
 
         return null;
-    }, [location.pathname, roadmapData?.current_step, roadmapData?.steps, storageNonce, hasSelectedProjectGovernance]);
+    }, [location.pathname, roadmapData?.current_step, roadmapData?.steps, storageNonce, hasSelectedProjectGovernance, hasServerRoadmap]);
 
     // When the focused step is already done, render it green+highlighted instead of yellow
     const forcedStepCompleted = useMemo(() => {
@@ -705,8 +711,8 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* ── Project-level Roadmap Stepper — shown on all pages ── */}
-                {roadmapDataForView && (
+                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents ── */}
+                {roadmapDataForView && location.pathname !== '/agents' && (
                     <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto">
                         <RoadmapHeader
                             steps={roadmapDataForView.steps || []}
