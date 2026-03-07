@@ -45,7 +45,7 @@ _COMMON_SAFE_TOP_LEVEL_DIRS = {
     "migrations", "alembic", "infra", "ops", "deploy", "k8s", "config", "configs",
     "public", "static", "assets", "examples", "fixtures", "docker", "nginx",
     "cypress", "playwright", "e2e", "monitoring", "grafana", "prometheus",
-    "load-tests", "perf", "performance", "helm", "charts", "terraform",
+    "load-tests", "perf", "performance", "helm", "charts", "terraform", ".docker",
 }
 _COMMON_MODULE_SAFE_DIRS = {
     "tests", "test", "docs", "scripts", "migrations", "alembic", "public", "static", "assets",
@@ -258,6 +258,17 @@ def _infer_module_kind(module_root: str, file_paths: List[str]) -> str:
 
 def _derive_source_roots_for_module(module_root: str, module_kind: str, file_paths: List[str]) -> List[str]:
     candidates = set()
+    normalized_module_root = _normalize_contract_path(module_root)
+    if module_kind == "backend":
+        has_flat_backend_sources = any(
+            _path_is_under(path, normalized_module_root)
+            and _relative_to_root(path, normalized_module_root).count("/") == 0
+            and os.path.splitext(_normalize_contract_path(path))[1].lower() == ".py"
+            for path in (file_paths or [])
+        )
+        if has_flat_backend_sources:
+            candidates.add(normalized_module_root)
+
     for path in file_paths:
         if not _path_is_under(path, module_root) or not _is_source_like_path(path):
             continue
@@ -749,12 +760,16 @@ def validate_paths_against_workspace_contract(
         if rel_first in _COMMON_MODULE_SAFE_DIRS:
             continue
 
+        module_kind = str(module.get("kind") or "generic").strip().lower()
+        module_root = _normalize_contract_path(module.get("root") or ".")
         source_roots = module.get("source_roots") or [module.get("root") or "."]
         if any(_path_is_under(path, source_root) for source_root in source_roots):
             continue
 
-        module_kind = module.get("kind") or "generic"
-        if task_domain == "frontend" or (task_domain is None and _is_frontend_like_path(path)):
+        if module_kind == "backend" and path.endswith(".py") and _path_is_under(path, module_root):
+            continue
+
+        if _is_frontend_like_path(path):
             violations.append(
                 f"{path}: frontend-like file is outside allowed source roots for module "
                 f"'{module.get('root') or '.'}' ({', '.join(source_roots[:6])})"
