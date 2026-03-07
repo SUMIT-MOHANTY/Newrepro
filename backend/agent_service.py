@@ -7115,6 +7115,7 @@ async def ensure_master_workspace_note(
         ):
             try:
                 cached_contract = ctx_mgr.get_workspace_contract(effective_project) if ctx_mgr and effective_project else {}
+                cached_contract = cached_contract if isinstance(cached_contract, dict) else {}
                 cached_tree = str(cached_master_note.get("workspace_tree") or "").strip()
                 if cached_contract.get("status") != "ready" and cached_tree:
                     refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(

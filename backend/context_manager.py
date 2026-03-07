@@ -554,6 +554,7 @@ def get_workspace_contract(project_token: str, refresh: bool = False) -> Dict[st
     token = (project_token or "").strip()
     project_ctx = _ensure_project_context(token)
     cached = project_ctx.get("workspace_contract")
+    cached = cached if isinstance(cached, dict) else {}
     if cached and not refresh and _workspace_contract_source_priority(cached.get("source")) >= _WORKSPACE_CONTRACT_SOURCE_PRIORITY["repo_index"]:
         return cached
 
@@ -571,7 +572,7 @@ def get_workspace_contract(project_token: str, refresh: bool = False) -> Dict[st
         merge_ready=True,
         force_refresh=refresh,
     )
-    return contract
+    return contract if isinstance(contract, dict) else {"status": "insufficient"}
 
 
 def update_workspace_contract_from_workspace_tree(project_token: str, workspace_tree: str) -> Dict[str, Any]:
