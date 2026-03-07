@@ -243,6 +243,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "timer_log_state": {},
             "completed_tasks": [],
             "tasks": [],
+            "master_task_context": [],
             "brd_analysis": {},
             "master_note_cache": {},
             "master_note_lock": asyncio.Lock(),
@@ -275,6 +276,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state.setdefault("persisted_assignment_restore", {})
         state.setdefault("workspace_contract_probe", {})
         state.setdefault("tasks", [])
+        state.setdefault("master_task_context", [])
         state.setdefault("brd_analysis", {})
         state.setdefault("master_note_cache", {})
         state.setdefault("master_note_lock", asyncio.Lock())
@@ -283,6 +285,84 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
     return _ensure_project_state(project_token)["agent_states"]
+
+
+def _flatten_seed_checklists(raw_groups: Any) -> List[Dict[str, Any]]:
+    flattened: List[Dict[str, Any]] = []
+    if not isinstance(raw_groups, list):
+        return flattened
+
+    for group in raw_groups:
+        if not isinstance(group, dict):
+            continue
+        items = group.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("title") or "").strip()
+                completed = bool(item.get("completed"))
+            else:
+                text = str(item or "").strip()
+                completed = False
+            if text:
+                flattened.append({"text": text, "completed": completed})
+    return flattened
+
+
+def _normalize_seed_task(task: Dict[str, Any], sequence_number: int, project_token: Optional[str] = None) -> Dict[str, Any]:
+    task_id = str(task.get("task_id") or task.get("id") or f"TASK-{sequence_number:02d}").strip()
+    title = str(task.get("title") or task.get("taskName") or "Untitled Task").strip()
+    task_type = str(task.get("task_type") or task.get("type") or "TASK").strip().upper() or "TASK"
+    planned_start = task.get("planned_start") or task.get("startdate") or task.get("start_date")
+    planned_end = task.get("planned_end") or task.get("deadline") or task.get("end_date")
+
+    return {
+        **dict(task),
+        "id": task_id,
+        "external_id": task_id,
+        "task_id": task_id,
+        "taskName": title,
+        "title": title,
+        "description": str(task.get("description") or "").strip(),
+        "task_type": task_type,
+        "type": str(task.get("type") or task_type).strip().lower(),
+        "status": str(task.get("status") or "todo").strip().lower() or "todo",
+        "priority": str(task.get("priority") or "medium").strip().lower() or "medium",
+        "wallet": task.get("wallet", task.get("story_points", 0)) or task.get("story_points", 0),
+        "story_points": task.get("story_points", task.get("wallet", 0)) or task.get("wallet", 0),
+        "sequence_number": task.get("sequence_number", sequence_number),
+        "dependencies": [
+            str(dep).strip()
+            for dep in (task.get("dependencies") or [])
+            if str(dep).strip()
+        ],
+        "linked_tasks": [
+            str(dep).strip()
+            for dep in (task.get("linked_tasks") or [])
+            if str(dep).strip()
+        ],
+        "checklist": _flatten_seed_checklists(task.get("checklists")),
+        "startdate": planned_start,
+        "deadline": planned_end,
+        "sprint_id": task.get("sprint_id"),
+        "sprint_name": task.get("sprint_name"),
+        "milestone_id": task.get("milestone_id"),
+        "milestone_name": task.get("milestone_name"),
+        "_project_token": project_token,
+    }
+
+
+def seed_project_tasks(project_token: Optional[str], tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    state = _ensure_project_state(project_token)
+    normalized_tasks = [
+        _normalize_seed_task(task, index + 1, project_token=project_token)
+        for index, task in enumerate(tasks or [])
+        if isinstance(task, dict)
+    ]
+    state["master_task_context"] = normalized_tasks
+    state["master_note_cache"] = {}
+    return normalized_tasks
 
 
 def _is_waiting_for_master_plan(agent: Optional[Dict[str, Any]]) -> bool:
@@ -699,6 +779,17 @@ async def _generate_technical_spec(
         max_total_chars=14000,
         max_description_chars=220,
     )
+    stack_profile = _infer_project_stack(
+        tasks=tasks,
+        tech_spec="\n".join(part for part in (brd_summary, kg_context) if part),
+        workspace_contract={},
+    )
+    stack_text = (
+        f"Frontend: {stack_profile.get('frontend') or 'unspecified'}\n"
+        f"Backend: {stack_profile.get('backend') or 'unspecified'}\n"
+        f"Confidence: {stack_profile.get('confidence') or 'unspecified'}\n"
+        f"Reason: {stack_profile.get('reason') or 'n/a'}"
+    )
 
     architect_prompt = f"""You are a Senior Software Architect Agent. Your job is to produce a
 CANONICAL TECHNICAL SPECIFICATION that all coding agents will reference as the single source of truth.
@@ -712,20 +803,26 @@ EXISTING CODEBASE KNOWLEDGE (from Knowledge Graph):
 TASKS TO BE IMPLEMENTED BY AGENTS:
 {task_list_text}
 
+STACK DECISION TO FOLLOW:
+{stack_text}
+
 Generate a Technical Specification with these EXACT sections:
 
 ## 1. ARCHITECTURE OVERVIEW
 - System layers (frontend, backend, database, external services)
 - Module breakdown and responsibilities
 - Data flow between modules
+- If a layer is not required (for example, a frontend-only static site with no backend), explicitly write "Not applicable for this project."
 
 ## 2. API CONTRACTS
 - List every API endpoint with: method, path, request body schema, response schema
 - Use consistent field naming throughout (choose snake_case or camelCase and state it)
+- If the project has no backend/API surface, explicitly write "Not applicable for this project."
 
 ## 3. DATA MODELS
 - Every database table/model with exact field names, types, and constraints
 - Relationships between models (FK, many-to-many, etc.)
+- If the project has no persistent data model, explicitly write "Not applicable for this project."
 
 ## 4. FILE STRUCTURE (CRITICAL - Output as a tree diagram!)
 You MUST output a specific directory tree like this example:
@@ -754,11 +851,14 @@ portfolio/
 ```
 
 For YOUR project, output the exact directory tree with:
-- All directories and subdirectories
+- Only the directories actually required by the tasks and stack decision
 - Every file with its purpose in comments
-- Backend files in `backend/` directory
-- Frontend files in `frontend/` directory
-- Configuration files in appropriate locations
+- Backend files in `backend/` only if the project truly has backend work
+- Frontend files in `frontend/` only if the project truly has frontend work
+- Configuration files only when the tasks/spec explicitly require them
+- For static HTML/CSS sites, prefer `frontend/index.html`, `frontend/styles.css`, and only the minimal supporting files
+- Do not invent backend, database, Docker, CI, or package-manager files for a minimal static project
+- Do not duplicate the same file in multiple roots
 
 ## 5. NAMING CONVENTIONS
 - Variable naming: snake_case / camelCase
@@ -4711,7 +4811,6 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
                 str(task.get("title") or "").lower(),
                 str(task.get("id") or ""),
             )
-
         normalized.sort(key=_task_sort_key)
         return normalized
     except Exception as e:
@@ -4721,7 +4820,6 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
 
 async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, project_token: Optional[str] = None, task_token: Optional[str] = None):
     """Mark a single checklist item as completed via external API."""
-    from task_service import task_service
     try:
         if not task_id:
             return
@@ -4731,6 +4829,7 @@ async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, 
                 "text": item.get("text", ""),
                 "completed": True if i <= item_index else item.get("completed", False),
             })
+        from task_service import task_service
         task_token = task_token or get_project_task_token(project_token)
         await task_service.add_checklist_to_task(int(task_id), updated, task_token=task_token)
     except Exception as e:
@@ -5209,6 +5308,23 @@ def _is_stack_consistent_master_tree_path(
             return False
         if lower in {"frontend/src/main.tsx", "frontend/src/main.jsx"}:
             return False
+    elif frontend_key == "static-html":
+        if basename in {"next.config.js", "next.config.ts", "next.config.mjs", "vite.config.js", "vite.config.ts"}:
+            return False
+        if lower in {
+            "frontend/src/main.tsx",
+            "frontend/src/main.jsx",
+            "frontend/src/main.ts",
+            "frontend/src/main.js",
+            "frontend/src/app.tsx",
+            "frontend/src/app.jsx",
+            "frontend/src/index.html",
+            "frontend/src/styles.css",
+        }:
+            return False
+    elif frontend_key == "none":
+        if lower.startswith("frontend/"):
+            return False
 
     if backend_key == "fastapi":
         if lower in {"backend/package.json", "backend/tsconfig.json"}:
@@ -5219,6 +5335,9 @@ def _is_stack_consistent_master_tree_path(
         if lower.startswith("backend/") and basename in {"requirements.txt", "pyproject.toml", "alembic.ini"}:
             return False
         if lower.endswith(".py") and (lower == "backend/main.py" or lower.startswith("backend/app/")):
+            return False
+    elif backend_key == "none":
+        if lower.startswith("backend/"):
             return False
 
     return True
@@ -5247,6 +5366,15 @@ def _canonicalize_master_tree_path(
             normalized = f"frontend/{normalized}"
         elif first_segment in backendish:
             normalized = f"backend/{normalized}"
+
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    lower = normalized.lower()
+    if frontend_key == "static-html":
+        if lower.startswith("frontend/src/"):
+            normalized = "frontend/" + normalized[len("frontend/src/"):]
+        elif lower.startswith("src/"):
+            normalized = f"frontend/{normalized[len('src/'):]}"
 
     return _prefer_stack_consistent_extension(normalized, stack_profile)
 
@@ -5380,6 +5508,19 @@ def _preferred_contract_source_root(
     return fallback
 
 
+def _module_root_from_source_root(source_root: str, fallback: str) -> str:
+    normalized = _normalize_master_tree_path_candidate(source_root)
+    if not normalized:
+        return fallback
+    if normalized.endswith("/src/app"):
+        return normalized[:-len("/src/app")] or fallback
+    if normalized.endswith("/src"):
+        return normalized[:-len("/src")] or fallback
+    if "/src/" in normalized:
+        return normalized.split("/src/", 1)[0] or fallback
+    return normalized
+
+
 def _infer_repo_path_from_filename(
     name: str,
     stack_profile: Optional[Dict[str, Any]] = None,
@@ -5396,9 +5537,16 @@ def _infer_repo_path_from_filename(
     backend_key = str(stack.get("backend_key") or "").strip()
     frontend_key = str(stack.get("frontend_key") or "").strip()
     backend_default = "backend/src" if backend_key == "express" else "backend"
-    frontend_default = "frontend/src/app" if frontend_key == "nextjs" else "frontend/src"
+    if frontend_key == "nextjs":
+        frontend_default = "frontend/src/app"
+    elif frontend_key == "static-html":
+        frontend_default = "frontend"
+    else:
+        frontend_default = "frontend/src"
     backend_src = _preferred_contract_source_root(workspace_contract, "backend", backend_default)
     frontend_src = _preferred_contract_source_root(workspace_contract, "frontend", frontend_default)
+    backend_root = _module_root_from_source_root(backend_src, "backend")
+    frontend_root = _module_root_from_source_root(frontend_src, "frontend")
 
     if lower in {
         "readme.md",
@@ -5414,19 +5562,32 @@ def _infer_repo_path_from_filename(
     }:
         return filename
 
-    if lower in {"package.json", "tsconfig.json", "next.config.ts", "next.config.js", "vite.config.ts", "vite.config.js"}:
-        if lower.startswith("next.config") or lower.startswith("vite.config") or lower == "package.json" or lower == "tsconfig.json":
-            return f"frontend/{filename}"
+    if lower in {
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "next.config.ts",
+        "next.config.js",
+        "vite.config.ts",
+        "vite.config.js",
+    }:
+        if frontend_key in {"nextjs", "react-vite", "static-html"} or lower.startswith(("next.config", "vite.config")):
+            return f"{frontend_root}/{filename}"
+        if backend_key == "express":
+            return f"{backend_root}/{filename}"
+
+    if lower in {"deploy.yml", "deploy.yaml", "ci.yml", "ci.yaml", "release.yml", "release.yaml"}:
+        return f".github/workflows/{filename}"
 
     if lower in {"pyproject.toml", "requirements.txt", "requirements-dev.txt", "alembic.ini"}:
-        return f"backend/{filename}"
+        return f"{backend_root}/{filename}"
 
     if lower in {"main.py", "config.py", "auth.py", "models.py", "database.py", "schemas.py"} and backend_src == "backend":
-        return f"backend/{filename}"
+        return f"{backend_root}/{filename}"
     if lower in {"index.ts", "app.ts", "server.ts"}:
         return f"{backend_src}/{filename}"
     if lower in {"main.py", "config.py"}:
-        return f"{backend_src}/{filename}" if backend_key == "fastapi" else f"backend/{filename}"
+        return f"{backend_src}/{filename}" if backend_key == "fastapi" else f"{backend_root}/{filename}"
 
     if any(token in lower for token in ("cpu", "limiter", "sanitize", "sanitization", "security", "rate_limit", "ratelimit", "middleware")):
         return f"{backend_src}/middleware/{filename}" if backend_key == "express" else f"{backend_src}/core/{filename}"
@@ -5452,7 +5613,12 @@ def _infer_repo_path_from_filename(
             return f"{frontend_src}/pages/{filename}" if frontend_key != "nextjs" else f"{frontend_src}/{filename}"
         return f"frontend/src/components/{filename}"
 
+    if lower.endswith(".html"):
+        return f"{frontend_root}/{filename}"
+
     if lower.endswith((".ts", ".js")):
+        if frontend_key == "static-html":
+            return f"{frontend_root}/{filename}"
         if lower.startswith("use"):
             return f"frontend/src/hooks/{filename}"
         if "store" in lower:
@@ -5462,6 +5628,8 @@ def _infer_repo_path_from_filename(
         return f"frontend/src/utils/{filename}"
 
     if lower.endswith((".css", ".scss")):
+        if frontend_key == "static-html":
+            return f"{frontend_root}/{filename}"
         return f"frontend/src/styles/{filename}"
 
     return filename
@@ -5476,11 +5644,7 @@ def _default_master_tree_paths(
     frontend_key = str(stack.get("frontend_key") or "").strip()
     backend_key = str(stack.get("backend_key") or "").strip()
 
-    paths = {
-        "README.md",
-        ".env.example",
-        "docker-compose.yml",
-    }
+    paths = {"README.md"}
 
     if contract.get("status") == "ready":
         for module in (contract.get("modules") or []):
@@ -5500,13 +5664,19 @@ def _default_master_tree_paths(
             "frontend/src/app/layout.tsx",
             "frontend/src/app/page.tsx",
         })
-    else:
+    elif frontend_key == "react-vite":
         paths.update({
             "frontend/package.json",
             "frontend/tsconfig.json",
             "frontend/vite.config.ts",
+            "frontend/index.html",
             "frontend/src/main.tsx",
             "frontend/src/App.tsx",
+        })
+    elif frontend_key == "static-html":
+        paths.update({
+            "frontend/index.html",
+            "frontend/styles.css",
         })
 
     if backend_key == "express":
@@ -5748,6 +5918,31 @@ def _build_master_task_plan(
             "wallet": task.get("wallet") or task.get("task_wallet") or 0,
             "dependencies": task_dependencies,
             "assignee": task.get("assigned_agent") or "",
+            "task_json": {
+                "project_id": task.get("project_id"),
+                "project_name": task.get("project_name"),
+                "task_id": task.get("task_id") or (str(task_id) if task_id is not None else ""),
+                "parent_id": task.get("parent_id"),
+                "type": task.get("type") or str(task.get("task_type") or "").lower(),
+                "title": task.get("title") or task.get("taskName") or "Untitled task",
+                "description": str(task.get("description") or "").strip(),
+                "status": task.get("status") or "",
+                "priority": task.get("priority") or "medium",
+                "story_points": task.get("story_points", task.get("wallet") or task.get("task_wallet") or 0),
+                "sprint_id": task.get("sprint_id"),
+                "sprint_name": task.get("sprint_name"),
+                "milestone_id": task.get("milestone_id"),
+                "reporter": task.get("reporter"),
+                "assignee": task.get("assignee") or "",
+                "resource_names": list(task.get("resource_names") or [])[:10] if isinstance(task.get("resource_names"), list) else [],
+                "planned_start": task.get("planned_start") or task.get("startdate") or task.get("start_date"),
+                "planned_end": task.get("planned_end") or task.get("deadline") or task.get("end_date"),
+                "estimated_hours": task.get("estimated_hours"),
+                "wbs": task.get("wbs"),
+                "level": task.get("level"),
+                "dependencies": task_dependencies,
+                "checklists": task.get("checklists") if isinstance(task.get("checklists"), list) else [],
+            },
             "planned_files": _sanitize_master_planned_files(
                 _predict_task_file_intents(task),
                 stack_profile=stack_profile,
@@ -6218,18 +6413,15 @@ def _infer_project_stack(
     tech_spec: str = "",
     workspace_contract: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    combined_text = " ".join(
-        [
-            str(tech_spec or ""),
-            *[
-                " ".join(
-                    str(task.get(key) or "")
-                    for key in ("title", "taskName", "description", "phase", "task_phase")
-                )
-                for task in (tasks or [])
-            ],
-        ]
+    task_text = " ".join(
+        " ".join(
+            str(task.get(key) or "")
+            for key in ("title", "taskName", "description", "phase", "task_phase", "domain", "task_domain")
+        )
+        for task in (tasks or [])
     ).lower()
+    spec_text = str(tech_spec or "").lower()
+    combined_text = " ".join([spec_text, task_text]).strip()
 
     frontend = None
     backend = None
@@ -6257,29 +6449,71 @@ def _infer_project_stack(
         frontend_scores["nextjs"] += 4
     if any("vite.config" in path for path in contract_manifests):
         frontend_scores["react-vite"] += 4
+    if any(path.endswith("/index.html") or path == "index.html" for path in contract_manifests):
+        frontend_scores["static-html"] += 4
+    if any(path.endswith("/styles.css") or path.endswith("/style.css") for path in contract_manifests):
+        frontend_scores["static-html"] += 2
 
     for token in ("next.js", "nextjs", "app router", "next.config"):
-        if token in combined_text:
+        if token in task_text:
+            frontend_scores["nextjs"] += 4
+        elif token in combined_text:
             frontend_scores["nextjs"] += 3
     for token in (
         "react", "vite", "tsx", "jsx", "react testing library", "cypress",
         "toast", "theme toggle", "component", "history panel", "scientific keypad",
         "nginx static", "static container",
     ):
-        if token in combined_text:
+        if token in task_text:
+            frontend_scores["react-vite"] += 2
+        elif token in combined_text:
             frontend_scores["react-vite"] += 1
+    for token in (
+        "static html", "static-only", "static only", "pure html", "pure css",
+        "single html", "single static", "frontend only", "frontend-only",
+        "landing page", "marketing page", "index.html", "styles.css",
+        "vanilla js", "vanilla javascript",
+    ):
+        if token in task_text:
+            frontend_scores["static-html"] += 3
+        elif token in combined_text:
+            frontend_scores["static-html"] += 1
 
     for token in ("fastapi", "pydantic", "sqlalchemy", "uvicorn", "python api"):
-        if token in combined_text:
+        if token in task_text:
+            backend_scores["fastapi"] += 3
+        elif token in combined_text:
             backend_scores["fastapi"] += 2
     for token in ("express", "node api", "node.js", "node/express"):
-        if token in combined_text:
+        if token in task_text:
+            backend_scores["express"] += 3
+        elif token in combined_text:
             backend_scores["express"] += 2
+
+    for root in contract_roots:
+        if "frontend" in root or root.endswith("web") or root.endswith("client"):
+            frontend_scores["react-vite"] += 1
+        if "backend" in root or root.endswith("api") or root.endswith("server"):
+            backend_scores["fastapi"] += 2
+
+    frontend_task_evidence = any(
+        str(task.get("phase") or task.get("task_phase") or "").strip().lower().startswith("frontend")
+        or str(_normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "").strip().lower() == "frontend"
+        for task in (tasks or [])
+    ) or any(token in task_text for token in ("html", "css", "ui", "page", "component", "landing"))
+    backend_task_evidence = any(
+        str(task.get("phase") or task.get("task_phase") or "").strip().lower().startswith("backend")
+        or str(_normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "").strip().lower() == "backend"
+        for task in (tasks or [])
+    ) or any(
+        token in task_text
+        for token in ("api", "database", "schema", "model", "auth", "server", "endpoint", "fastapi", "express", "python")
+    )
 
     if frontend_scores:
         frontend = sorted(
             frontend_scores.items(),
-            key=lambda item: (item[1], item[0] == "react-vite"),
+            key=lambda item: (item[1], item[0] in {"static-html", "react-vite"}),
             reverse=True,
         )[0][0]
 
@@ -6291,29 +6525,64 @@ def _infer_project_stack(
         )[0][0]
 
     if not frontend and any("frontend" in root for root in contract_roots):
-        frontend = "react-vite"
+        frontend = "static-html" if any(
+            path.endswith("/index.html") or path.endswith("/styles.css")
+            for path in contract_manifests
+        ) else "react-vite"
     if not backend and any("backend" in root for root in contract_roots):
         backend = "fastapi"
 
+    explicit_frontend_only = (
+        frontend_task_evidence
+        and not backend_task_evidence
+        and not any("backend" in root for root in contract_roots)
+    )
+    explicit_backend_only = (
+        backend_task_evidence
+        and not frontend_task_evidence
+        and not any("frontend" in root for root in contract_roots)
+    )
+
+    if explicit_frontend_only:
+        if not frontend or frontend == "none":
+            frontend = "static-html" if frontend_scores.get("static-html") >= frontend_scores.get("react-vite") else "react-vite"
+        backend = "none"
+        if frontend == "static-html":
+            reason = "Tasks describe a frontend-only static site, so no backend stack was added."
+        else:
+            reason = "Tasks describe frontend-only work, so no backend stack was added."
+    elif explicit_backend_only:
+        if not backend or backend == "none":
+            backend = "fastapi"
+        frontend = "none"
+        reason = "Tasks describe backend-only work, so no frontend stack was added."
+
     if not frontend and not backend:
-        frontend = "react-vite"
-        backend = "fastapi"
+        frontend = "static-html"
+        backend = "none"
         confidence = "default"
-        reason = "No explicit framework evidence was found. Using the platform default web stack."
+        reason = "No backend evidence was found. Defaulting to a minimal static frontend project."
     elif not frontend:
-        frontend = "react-vite"
+        frontend = "react-vite" if backend != "none" else "none"
         confidence = "mixed"
-        reason = "Frontend stack was not explicit, so a default frontend stack was selected."
+        reason = reason or "Frontend stack was not explicit, so no frontend stack was added."
     elif not backend:
-        backend = "fastapi"
-        confidence = "mixed"
-        reason = "Backend stack was not explicit, so a default backend stack was selected."
+        if frontend == "static-html" or explicit_frontend_only:
+            backend = "none"
+            confidence = "mixed"
+            reason = reason or "No backend evidence was found for this frontend-only project."
+        else:
+            backend = "fastapi"
+            confidence = "mixed"
+            reason = reason or "Backend stack was not explicit, so a default backend stack was selected."
 
     labels = {
+        "static-html": "Static HTML + CSS",
         "nextjs": "Next.js + TypeScript",
         "react-vite": "React + Vite + TypeScript",
         "fastapi": "FastAPI + Python",
         "express": "Node.js + Express + TypeScript",
+        "none": "None / not required",
     }
     return {
         "frontend_key": frontend,
@@ -6525,6 +6794,11 @@ Output rules:
 - Every listed task must have an obvious home in the tree.
 - Include configuration files, tests, shared types/contracts, and integration points when appropriate.
 - Keep the tree consistent with the stack decision above.
+- Use only directories that are justified by the tasks or existing codebase context.
+- For static/frontend-only projects, do not invent backend/, database, Docker, or API files.
+- Do not duplicate files across roots (for example both `index.html` and `frontend/index.html`).
+- Prefer `.github/workflows/deploy.yml` over a duplicate root-level `deploy.yml` when the task is a GitHub Actions workflow.
+- For static HTML/CSS projects, prefer `frontend/index.html` and `frontend/styles.css` instead of `frontend/src/*`.
 - Use inline comments to briefly explain key files.
 - Choose the best production-ready structure for the tasks, not the easiest structure.
 - Do not include prose before or after the tree.
@@ -6605,6 +6879,17 @@ def _heuristic_master_tree_validation(
 
     contract = workspace_contract if isinstance(workspace_contract, dict) else {}
     stack = stack_profile if isinstance(stack_profile, dict) else {}
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    backend_key = str(stack.get("backend_key") or "").strip()
+    minimum_file_lines = 6
+    if frontend_key == "static-html" and backend_key == "none":
+        minimum_file_lines = 3
+    elif frontend_key in {"static-html", "none"} or backend_key == "none":
+        minimum_file_lines = 4
+    expected_file_lines = max(
+        minimum_file_lines,
+        min(18, task_count // 2 + (3 if minimum_file_lines <= 4 else 4)),
+    )
     for root in contract.get("allowed_source_roots") or []:
         root_text = str(root or "").strip()
         if root_text:
@@ -6613,7 +6898,7 @@ def _heuristic_master_tree_validation(
     issues = []
     recommendations = []
 
-    if task_count > 0 and file_line_count < max(6, min(18, task_count // 2 + 4)):
+    if task_count > 0 and file_line_count < expected_file_lines:
         issues.append(
             "The project tree is too shallow relative to the number of tasks and may not contain enough concrete files."
         )
@@ -6637,19 +6922,27 @@ def _heuristic_master_tree_validation(
     ):
         issues.append("Frontend-related tasks exist but the tree does not show a frontend area.")
 
-    if file_line_count < 6:
+    if file_line_count < minimum_file_lines:
         recommendations.append("Add concrete file names for entrypoints, configuration, tests, and feature modules.")
     if not expected_roots:
         recommendations.append("Index the repository or establish a workspace contract for stronger structural validation.")
 
-    frontend_key = str(stack.get("frontend_key") or "").strip()
-    backend_key = str(stack.get("backend_key") or "").strip()
     if frontend_key == "nextjs":
         if "next.config" not in lines_lower and "/app/" not in lines_lower and " app/" not in lines_lower:
             issues.append("The inferred frontend stack is Next.js, but the tree does not show Next.js structure (app/ or next.config.*).")
     elif frontend_key == "react-vite":
         if "vite.config" not in lines_lower and "src/main.tsx" not in lines_lower and "src/main.jsx" not in lines_lower:
             recommendations.append("Frontend stack appears to be React/Vite; add vite.config.* or src/main.* to make the structure explicit.")
+    elif frontend_key == "static-html":
+        if "index.html" not in lines_lower:
+            issues.append("The inferred frontend stack is a static HTML/CSS site, but the tree does not show an index.html entry page.")
+        if "vite.config" in lines_lower or "next.config" in lines_lower:
+            issues.append("The inferred frontend stack is a static HTML/CSS site, but the tree contains framework-specific config files.")
+        if "frontend/src/index.html" in lines_lower or "frontend/src/styles.css" in lines_lower:
+            issues.append("Static frontend entry files must live directly under frontend/, not under frontend/src/.")
+    elif frontend_key == "none":
+        if "frontend/" in lines_lower or "\nfrontend" in lines_lower:
+            issues.append("No frontend stack is required for this task plan, but the tree still contains a frontend area.")
 
     if backend_key == "fastapi":
         if "main.py" not in lines_lower and "pyproject.toml" not in lines_lower and "requirements.txt" not in lines_lower:
@@ -6661,8 +6954,13 @@ def _heuristic_master_tree_validation(
             issues.append("The inferred backend stack is Express, but the tree does not show Node/Express entrypoints.")
         if "main.py" in lines_lower or "pyproject.toml" in lines_lower:
             issues.append("The inferred backend stack is Express, but the tree contains Python/FastAPI-specific backend files.")
+    elif backend_key == "none":
+        if "backend/" in lines_lower or "\nbackend" in lines_lower:
+            issues.append("No backend stack is required for this task plan, but the tree still contains a backend area.")
+        if "requirements.txt" in lines_lower or "pyproject.toml" in lines_lower or "uvicorn" in lines_lower:
+            issues.append("No backend stack is required for this task plan, but backend-specific dependency files are still present.")
 
-    approved = not issues and file_line_count >= 6
+    approved = not issues and file_line_count >= minimum_file_lines
     return {
         "approved": approved,
         "confidence": 0.65 if approved else 0.35,
@@ -6980,6 +7278,9 @@ async def _load_persisted_master_note(
         "recommended_assignments": [],
         "tasks_considered": task_plan,
         "workspace_tree": workspace_tree,
+        "stack_profile": stack_profile,
+        "workspace_contract": workspace_contract,
+        "instructions": list(payload.get("instructions") or [])[:12],
     }
 
 
@@ -7162,7 +7463,10 @@ async def ensure_master_workspace_note(
     title = _master_note_title(project_token)
 
     async with state["master_note_lock"]:
-        tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+        master_tasks = state.get("master_task_context") if isinstance(state.get("master_task_context"), list) else []
+        tasks = list(master_tasks) if master_tasks else []
+        if not tasks:
+            tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
         if not tasks:
             try:
                 tasks = await _fetch_external_tasks(project_token)
@@ -7518,6 +7822,9 @@ async def ensure_master_workspace_note(
             "recommended_assignments": recommended_assignments,
             "tasks_considered": task_plan,
             "workspace_tree": workspace_tree,
+            "stack_profile": stack_profile,
+            "workspace_contract": public_payload["workspace_contract"],
+            "instructions": list(public_payload.get("instructions") or [])[:12],
         }
         state["master_note_cache"] = dict(final_result)
         return final_result
@@ -10349,7 +10656,250 @@ def _find_available_preview_port() -> int:
     raise RuntimeError("No available ports in preview range")
 
 
-def _detect_project_stack(container_name: str) -> Dict[str, Any]:
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    deduped: List[str] = []
+    seen = set()
+    for raw_value in values:
+        value = str(raw_value or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _workspace_relative_path(path: Any) -> str:
+    return _normalize_master_tree_path_candidate(path)
+
+
+def _path_matches_deploy_root(path: Any, root: Any) -> bool:
+    normalized_path = _workspace_relative_path(path)
+    normalized_root = _workspace_relative_path(root)
+    if not normalized_path or not normalized_root:
+        return False
+    return normalized_path == normalized_root or normalized_path.startswith(normalized_root + "/")
+
+
+def _path_matches_any_deploy_root(path: Any, roots: List[str]) -> bool:
+    normalized_path = _workspace_relative_path(path)
+    if not normalized_path:
+        return False
+    return any(_path_matches_deploy_root(normalized_path, root) for root in (roots or []))
+
+
+def _runtime_root_candidates(path: Any) -> List[str]:
+    normalized = _workspace_relative_path(path)
+    if not normalized:
+        return []
+
+    if "." in os.path.basename(normalized):
+        normalized = os.path.dirname(normalized).strip("/")
+    if not normalized:
+        return []
+
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return []
+
+    trim_segments = {
+        "src",
+        "app",
+        "apps",
+        "pages",
+        "components",
+        "hooks",
+        "styles",
+        "assets",
+        "public",
+        "lib",
+        "core",
+        "api",
+        "server",
+        "client",
+        "ui",
+    }
+
+    candidates: List[str] = []
+    current = list(parts)
+    while current:
+        candidate = "/".join(current).strip("/")
+        if candidate:
+            candidates.append(candidate)
+        if current[-1].lower() not in trim_segments:
+            break
+        current = current[:-1]
+
+    return _dedupe_preserve_order(candidates)
+
+
+def _looks_like_frontend_repo_path(path: Any) -> bool:
+    normalized = _workspace_relative_path(path).lower()
+    if not normalized:
+        return False
+
+    parts = [part for part in normalized.split("/") if part]
+    basename = os.path.basename(normalized)
+    if any(part in {"frontend", "client", "web", "site", "ui"} for part in parts):
+        return True
+    if basename.startswith(("vite.config", "next.config")):
+        return True
+    return basename.endswith((".tsx", ".jsx", ".ts", ".js", ".css", ".scss", ".html"))
+
+
+def _looks_like_backend_repo_path(path: Any) -> bool:
+    normalized = _workspace_relative_path(path).lower()
+    if not normalized:
+        return False
+
+    parts = [part for part in normalized.split("/") if part]
+    basename = os.path.basename(normalized)
+    if any(part in {"backend", "api", "server", "service", "services"} for part in parts):
+        return True
+    if basename in {"requirements.txt", "pyproject.toml", "manage.py", "alembic.ini"}:
+        return True
+    if basename in {"main.py", "app.py"} and any(part in {"backend", "api", "server", "service", "services"} for part in parts[:-1]):
+        return True
+    return False
+
+
+async def _load_master_deploy_hints(project_token: Optional[str]) -> Dict[str, Any]:
+    effective_project = str(project_token or "").strip()
+    if not effective_project:
+        return {}
+
+    state = _ensure_project_state(project_token)
+    cached_note = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+    title = _master_note_title(project_token)
+
+    payload: Dict[str, Any] = {}
+    if (
+        cached_note.get("approved")
+        and (
+            cached_note.get("workspace_tree")
+            or cached_note.get("stack_profile")
+            or cached_note.get("workspace_contract")
+        )
+    ):
+        payload = dict(cached_note)
+
+    if not payload.get("stack_profile") or not payload.get("workspace_contract") or not payload.get("workspace_tree"):
+        persisted = await _get_existing_note_payload(
+            title=title,
+            project_token=project_token,
+        )
+        validation = persisted.get("validation") if isinstance(persisted.get("validation"), dict) else {}
+        if persisted.get("note_type") == "master_project_plan" and validation.get("approved"):
+            merged_payload = dict(payload)
+            merged_payload.update({
+                "workspace_tree": persisted.get("workspace_tree") or payload.get("workspace_tree"),
+                "stack_profile": persisted.get("stack_profile") if isinstance(persisted.get("stack_profile"), dict) else payload.get("stack_profile"),
+                "workspace_contract": persisted.get("workspace_contract") if isinstance(persisted.get("workspace_contract"), dict) else payload.get("workspace_contract"),
+                "instructions": persisted.get("instructions") if isinstance(persisted.get("instructions"), list) else payload.get("instructions"),
+            })
+            payload = merged_payload
+
+    stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
+    workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
+    workspace_tree = str(payload.get("workspace_tree") or "").strip()
+    if not stack_profile and not workspace_contract and not workspace_tree:
+        return {}
+
+    frontend_key = str(stack_profile.get("frontend_key") or "").strip().lower()
+    backend_key = str(stack_profile.get("backend_key") or "").strip().lower()
+
+    preferred_frontend_roots: List[str] = []
+    preferred_backend_roots: List[str] = []
+    preferred_static_files: List[str] = []
+
+    allowed_source_roots = [
+        _workspace_relative_path(root)
+        for root in (workspace_contract.get("allowed_source_roots") or [])
+        if _workspace_relative_path(root)
+    ]
+
+    for root in allowed_source_roots:
+        is_frontend_root = frontend_key not in {"", "none"} and (
+            _looks_like_frontend_repo_path(root)
+            or backend_key == "none"
+            or (frontend_key == "static-html" and not _looks_like_backend_repo_path(root))
+        )
+        is_backend_root = backend_key not in {"", "none"} and (
+            _looks_like_backend_repo_path(root)
+            or frontend_key == "none"
+        )
+
+        if is_frontend_root:
+            preferred_frontend_roots.extend(_runtime_root_candidates(root))
+        if is_backend_root:
+            preferred_backend_roots.extend(_runtime_root_candidates(root))
+
+    tree_paths: List[str] = []
+    if workspace_tree:
+        try:
+            import context_manager as ctx_mgr  # type: ignore
+
+            tree_paths = [
+                _workspace_relative_path(path)
+                for path in ctx_mgr._extract_file_paths_from_canonical_tree(workspace_tree)
+                if _workspace_relative_path(path)
+            ]
+        except Exception:
+            tree_paths = []
+
+    for path in tree_paths:
+        basename = os.path.basename(path).lower()
+
+        if basename == "index.html":
+            preferred_static_files.append(path)
+            if frontend_key not in {"", "none"}:
+                preferred_frontend_roots.extend(_runtime_root_candidates(path))
+            continue
+
+        if basename in {"requirements.txt", "pyproject.toml", "manage.py", "main.py", "app.py"}:
+            if backend_key not in {"", "none"}:
+                preferred_backend_roots.extend(_runtime_root_candidates(path))
+            continue
+
+        if basename.startswith(("vite.config", "next.config")):
+            if frontend_key not in {"", "none"}:
+                preferred_frontend_roots.extend(_runtime_root_candidates(path))
+            continue
+
+        if basename == "package.json":
+            if frontend_key not in {"", "none"} and _looks_like_frontend_repo_path(path):
+                preferred_frontend_roots.extend(_runtime_root_candidates(path))
+            if backend_key == "express" and (_looks_like_backend_repo_path(path) or frontend_key == "none"):
+                preferred_backend_roots.extend(_runtime_root_candidates(path))
+
+    preferred_frontend_roots = _dedupe_preserve_order(preferred_frontend_roots)
+    preferred_backend_roots = _dedupe_preserve_order(preferred_backend_roots)
+    preferred_static_files = _dedupe_preserve_order(preferred_static_files)
+
+    preferred_runtime = ""
+    if frontend_key == "static-html":
+        preferred_runtime = "static"
+    elif frontend_key not in {"", "none"}:
+        preferred_runtime = "node"
+    elif backend_key == "express":
+        preferred_runtime = "node"
+    elif backend_key not in {"", "none"}:
+        preferred_runtime = "python"
+
+    if not preferred_frontend_roots and not preferred_backend_roots and not preferred_static_files and not preferred_runtime:
+        return {}
+
+    return {
+        "source": "master_note",
+        "stack_profile": stack_profile,
+        "workspace_contract": workspace_contract,
+        "preferred_runtime": preferred_runtime,
+        "preferred_frontend_roots": preferred_frontend_roots,
+        "preferred_backend_roots": preferred_backend_roots,
+        "preferred_static_files": preferred_static_files,
+    }
+
+
+def _detect_project_stack(container_name: str, deployment_hints: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Auto-detect the tech stack inside the container's /workspace."""
     stack = {
         "type": "static",
@@ -10360,6 +10910,26 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
         "workdir": "/workspace",
         "detected_from": "/workspace/index.html",
     }
+    hints = deployment_hints if isinstance(deployment_hints, dict) else {}
+    stack_profile = hints.get("stack_profile") if isinstance(hints.get("stack_profile"), dict) else {}
+    frontend_key = str(stack_profile.get("frontend_key") or "").strip().lower()
+    backend_key = str(stack_profile.get("backend_key") or "").strip().lower()
+    preferred_runtime = str(hints.get("preferred_runtime") or "").strip().lower()
+    preferred_frontend_roots = [
+        _workspace_relative_path(path)
+        for path in (hints.get("preferred_frontend_roots") or [])
+        if _workspace_relative_path(path)
+    ]
+    preferred_backend_roots = [
+        _workspace_relative_path(path)
+        for path in (hints.get("preferred_backend_roots") or [])
+        if _workspace_relative_path(path)
+    ]
+    preferred_static_files = [
+        _workspace_relative_path(path)
+        for path in (hints.get("preferred_static_files") or [])
+        if _workspace_relative_path(path)
+    ]
 
     def _cat_file(path: str, timeout: int = 10) -> Optional[str]:
         result = subprocess.run(
@@ -10382,6 +10952,9 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
             return "/workspace"
         return path.rsplit("/", 1)[0] or "/workspace"
 
+    def _repo_rel(path: str) -> str:
+        return _workspace_relative_path(path)
+
     def _find_files(file_name: str, max_depth: int = 5) -> List[str]:
         result = subprocess.run(
             [
@@ -10397,6 +10970,53 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
         if result.returncode != 0 or not result.stdout.strip():
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def _resolve_static_candidate(force_scan: bool = False) -> Optional[Dict[str, Any]]:
+        candidate_paths: List[str] = []
+        for relative_path in preferred_static_files:
+            full_path = f"/workspace/{relative_path}"
+            if _file_exists(full_path):
+                candidate_paths.append(full_path)
+
+        if force_scan or preferred_frontend_roots:
+            for index_path in _find_files("index.html", max_depth=6):
+                if index_path not in candidate_paths:
+                    candidate_paths.append(index_path)
+
+        if not candidate_paths:
+            return None
+
+        def _static_score(index_path: str) -> int:
+            relative_path = _repo_rel(index_path)
+            workdir = _repo_rel(_dirname(index_path))
+            score = 0
+            if relative_path in preferred_static_files:
+                score += 320
+            if _path_matches_any_deploy_root(relative_path, preferred_frontend_roots):
+                score += 220
+            if _path_matches_any_deploy_root(workdir, preferred_frontend_roots):
+                score += 220
+            if index_path == "/workspace/index.html":
+                score += 180
+            if "/frontend/" in index_path or "/client/" in index_path or "/web/" in index_path:
+                score += 80
+            if relative_path.endswith("public/index.html"):
+                score -= 120
+            return score
+
+        index_path = max(candidate_paths, key=_static_score)
+        workdir = _dirname(index_path)
+        if workdir.endswith("/public"):
+            workdir = _dirname(workdir)
+        return {
+            "type": "static",
+            "image": "python:3.10-slim",
+            "port": 8080,
+            "install_cmd": "",
+            "start_cmd": f"cd {workdir} && python3 -m http.server 8080",
+            "workdir": workdir,
+            "detected_from": index_path,
+        }
 
     node_candidates: List[tuple[str, str]] = []
     root_package = _cat_file("/workspace/package.json")
@@ -10429,6 +11049,8 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
                 has_workspaces = False
 
             score = 0
+            rel_package_path = _repo_rel(package_path)
+            rel_workdir = _repo_rel(_dirname(package_path))
             if package_path == "/workspace/package.json":
                 score += 200
             if "/frontend/" in package_path or package_path.endswith("/frontend/package.json"):
@@ -10456,6 +11078,19 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
             if package_path == "/workspace/package.json" and looks_fullstack_orchestrator:
                 # Prefer leaf frontend package when root start script expects extra runtimes.
                 score -= 260
+            if _path_matches_any_deploy_root(rel_package_path, preferred_frontend_roots):
+                score += 240
+            if _path_matches_any_deploy_root(rel_workdir, preferred_frontend_roots):
+                score += 240
+            if _path_matches_any_deploy_root(rel_package_path, preferred_backend_roots):
+                score += 150 if backend_key == "express" else 50
+            if _path_matches_any_deploy_root(rel_workdir, preferred_backend_roots):
+                score += 150 if backend_key == "express" else 50
+            if preferred_runtime == "node":
+                if frontend_key not in {"", "none"} and _path_matches_any_deploy_root(rel_workdir, preferred_frontend_roots):
+                    score += 60
+                elif frontend_key in {"", "none"} and backend_key == "express":
+                    score += 40
             return score
 
         package_path, package_content = max(node_candidates, key=_node_candidate_score)
@@ -10555,6 +11190,11 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
             stack["port"] = 3000
             return stack
 
+    if preferred_runtime == "static" or frontend_key == "static-html":
+        static_candidate = _resolve_static_candidate(force_scan=True)
+        if static_candidate:
+            return static_candidate
+
     python_candidates: List[tuple[str, str]] = []
     root_requirements = _cat_file("/workspace/requirements.txt")
     if root_requirements is not None:
@@ -10570,6 +11210,8 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
         def _python_candidate_score(candidate: tuple[str, str]) -> int:
             req_path, req_content = candidate
             text = req_content.lower()
+            rel_req_path = _repo_rel(req_path)
+            rel_workdir = _repo_rel(_dirname(req_path))
             score = 0
             if req_path == "/workspace/requirements.txt":
                 score += 200
@@ -10581,6 +11223,12 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
                 score += 20
             if "django" in text:
                 score += 20
+            if _path_matches_any_deploy_root(rel_req_path, preferred_backend_roots):
+                score += 260
+            if _path_matches_any_deploy_root(rel_workdir, preferred_backend_roots):
+                score += 260
+            if preferred_runtime == "python" or backend_key in {"fastapi", "django"}:
+                score += 40
             return score
 
         req_path, req_content = max(python_candidates, key=_python_candidate_score)
@@ -10620,16 +11268,9 @@ def _detect_project_stack(container_name: str) -> Dict[str, Any]:
             stack["port"] = 8000
         return stack
 
-    check_html = subprocess.run(
-        ["docker", "exec", container_name, "test", "-f", "/workspace/index.html"],
-        capture_output=True, text=True, timeout=5,
-    )
-    if check_html.returncode == 0:
-        stack["type"] = "static"
-        stack["workdir"] = "/workspace"
-        stack["detected_from"] = "/workspace/index.html"
-        stack["start_cmd"] = "cd /workspace && python3 -m http.server 8080"
-        stack["port"] = 8080
+    static_candidate = _resolve_static_candidate(force_scan=not python_candidates)
+    if static_candidate:
+        return static_candidate
 
     return stack
 
@@ -10673,6 +11314,7 @@ async def deploy_preview(
         "server_log": "",
     }
     pstate = _preview_states[pk]
+    deployment_hints: Dict[str, Any] = {}
 
     def _log(msg: str):
         pstate["logs"].append({
@@ -10682,6 +11324,33 @@ async def deploy_preview(
         logger.info(f"[Preview] {msg}")
 
     try:
+        try:
+            deployment_hints = await _load_master_deploy_hints(project_token)
+        except Exception as hint_err:
+            deployment_hints = {}
+            logger.warning("[%s] Failed to load master deploy hints: %s", pk, hint_err)
+
+        if deployment_hints:
+            stack_profile = deployment_hints.get("stack_profile") if isinstance(deployment_hints.get("stack_profile"), dict) else {}
+            frontend_roots = list(deployment_hints.get("preferred_frontend_roots") or [])
+            backend_roots = list(deployment_hints.get("preferred_backend_roots") or [])
+            preferred_runtime = str(deployment_hints.get("preferred_runtime") or "").strip()
+            summary_bits = []
+            if stack_profile.get("frontend"):
+                summary_bits.append(f"frontend={stack_profile.get('frontend')}")
+            if stack_profile.get("backend"):
+                summary_bits.append(f"backend={stack_profile.get('backend')}")
+            if preferred_runtime:
+                summary_bits.append(f"runtime={preferred_runtime}")
+            _log(
+                "Master Agent deployment hints loaded"
+                + (f" ({', '.join(summary_bits)})" if summary_bits else "")
+            )
+            if frontend_roots:
+                _log(f"Preferred frontend roots from canonical tree: {', '.join(frontend_roots[:4])}")
+            if backend_roots:
+                _log(f"Preferred backend roots from canonical tree: {', '.join(backend_roots[:4])}")
+
         # 1. Create container from the shared runtime blueprint for cloning
         _log("Creating temporary clone container...")
         create_res = _create_persistent_container(container_name)
@@ -10706,7 +11375,7 @@ async def deploy_preview(
 
         # 3. Detect the project stack
         _log("Detecting project tech stack...")
-        stack = _detect_project_stack(container_name)
+        stack = _detect_project_stack(container_name, deployment_hints=deployment_hints)
         pstate["stack"] = stack
         _log(f"Detected: {stack['type']} project")
         if stack.get("detected_from"):

@@ -117,14 +117,22 @@ class TaskManagementService:
                 if task_token:
                     headers = {
                         "Authorization": f"Bearer {task_token}",
-                        "Content-Type": "application/json",
                         "Accept": "application/json"
                     }
                 else:
                     headers = await self._get_headers()
 
                 request_kwargs = dict(kwargs)
-                request_kwargs["headers"] = {**request_kwargs.get("headers", {}), **headers}
+                request_headers = dict(request_kwargs.pop("headers", {}) or {})
+                has_multipart_body = "files" in request_kwargs
+                has_json_body = "json" in request_kwargs
+
+                if has_multipart_body:
+                    headers.pop("Content-Type", None)
+                elif has_json_body and "Content-Type" not in headers:
+                    headers["Content-Type"] = "application/json"
+
+                request_kwargs["headers"] = {**headers, **request_headers}
 
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.request(method, url, **request_kwargs)
@@ -199,6 +207,21 @@ class TaskManagementService:
     async def create_task(self, task_data: dict, task_token: Optional[str] = None) -> dict:
         """Create a new task in external task management API."""
         return await self._make_request("POST", "/api/agent/tasks/", task_token=task_token, json=task_data)
+
+    async def create_tasks_batch(self, payload: Any, task_token: Optional[str] = None) -> dict:
+        """Create tasks in bulk in the external task management API."""
+        serialized_payload = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        headers = {"X-Task-Token": task_token} if task_token else {}
+        files = {
+            "file": ("generated_tasks.json", serialized_payload, "application/json")
+        }
+        return await self._make_request(
+            "POST",
+            "/api/agent/tasks/batch/",
+            task_token=task_token,
+            headers=headers,
+            files=files,
+        )
 
     async def get_sprints(self, task_token: Optional[str] = None) -> dict:
         """Fetch sprints from external task management API."""

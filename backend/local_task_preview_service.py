@@ -1,0 +1,715 @@
+import logging
+import json
+import re
+from html import escape
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+import ai_service
+from agent_service import MASTER_AGENT_ID
+
+logger = logging.getLogger(__name__)
+
+TYPE_CONFIG = {
+    "EPIC": {"prefix": "EPIC", "level": 1},
+    "FEATURE": {"prefix": "FEAT", "level": 2},
+    "STORY": {"prefix": "STORY", "level": 3},
+    "TASK": {"prefix": "TASK", "level": 4},
+    "BUG": {"prefix": "BUG", "level": 4},
+}
+
+
+def _format_date(value: date) -> str:
+    return value.strftime("%Y-%m-%d")
+
+
+def _parse_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _parse_timeline_deadline(timeline: Any, *, start_date: date) -> date:
+    default_deadline = start_date + timedelta(days=30)
+    lower = str(timeline or "").strip().lower()
+    if not lower:
+        return default_deadline
+
+    matchers = (
+        (r"(\d+)(?:\s*-\s*(\d+))?\s*week", 7),
+        (r"(\d+)(?:\s*-\s*(\d+))?\s*month", 30),
+        (r"(\d+)(?:\s*-\s*(\d+))?\s*day", 1),
+        (r"(\d+)(?:\s*-\s*(\d+))?\s*year", 365),
+    )
+    for pattern, unit_days in matchers:
+        match = re.search(pattern, lower)
+        if not match:
+            continue
+        upper_bound = int(match.group(2) or match.group(1))
+        return start_date + timedelta(days=max(upper_bound * unit_days, 1))
+
+    return default_deadline
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_priority(value: Any) -> str:
+    priority = str(value or "").strip().lower()
+    if priority in {"high", "medium", "low"}:
+        return priority
+    return "medium"
+
+
+def _normalize_task_type(value: Any) -> str:
+    candidate = str(value or "TASK").strip().upper()
+    if candidate in TYPE_CONFIG:
+        return candidate
+    return "TASK"
+
+
+def _display_name(raw_name: Optional[str]) -> str:
+    cleaned = str(raw_name or "").strip()
+    return cleaned or "Master Agent"
+
+
+def _coalesce_date(*values: Any) -> Optional[date]:
+    for value in values:
+        parsed = _parse_date(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _normalize_project_dates(analysis_payload: Dict[str, Any]) -> tuple[date, date]:
+    project_meta = analysis_payload.get("projectMeta")
+    if not isinstance(project_meta, dict):
+        project_meta = {}
+    metrics = analysis_payload.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+
+    start_date = _coalesce_date(
+        analysis_payload.get("project_start_date"),
+        analysis_payload.get("project_start"),
+        analysis_payload.get("start_date"),
+        analysis_payload.get("startDate"),
+        analysis_payload.get("projectStartDate"),
+        project_meta.get("project_start_date"),
+        project_meta.get("project_start"),
+        project_meta.get("start_date"),
+        project_meta.get("startDate"),
+        project_meta.get("projectStartDate"),
+    ) or date.today()
+
+    explicit_deadline = _coalesce_date(
+        analysis_payload.get("project_deadline"),
+        analysis_payload.get("project_end_date"),
+        analysis_payload.get("project_end"),
+        analysis_payload.get("deadline"),
+        analysis_payload.get("end_date"),
+        analysis_payload.get("endDate"),
+        analysis_payload.get("projectDeadline"),
+        analysis_payload.get("projectEndDate"),
+        project_meta.get("project_deadline"),
+        project_meta.get("project_end_date"),
+        project_meta.get("project_end"),
+        project_meta.get("deadline"),
+        project_meta.get("end_date"),
+        project_meta.get("endDate"),
+        project_meta.get("projectDeadline"),
+        project_meta.get("projectEndDate"),
+    )
+    deadline = explicit_deadline
+    if deadline is None:
+        timeline = metrics.get("timeline") or project_meta.get("timeline")
+        deadline = _parse_timeline_deadline(timeline, start_date=start_date)
+    if deadline < start_date:
+        deadline = start_date if explicit_deadline is not None else start_date + timedelta(days=30)
+    return start_date, deadline
+
+
+def _derive_total_wallet(analysis_payload: Dict[str, Any], analysis_report: str) -> int:
+    metrics = analysis_payload.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+
+    complexity = str(metrics.get("complexity") or "").strip().lower()
+    base_wallet = {
+        "low": 24,
+        "medium": 40,
+        "high": 60,
+    }.get(complexity, 36)
+
+    timeline = str(metrics.get("timeline") or "").strip().lower()
+    if "year" in timeline:
+        base_wallet += 20
+    elif "month" in timeline:
+        month_values = [int(m) for m in re.findall(r"\d+", timeline)]
+        if month_values:
+            base_wallet += max(month_values) * 2
+    elif "week" in timeline:
+        week_values = [int(w) for w in re.findall(r"\d+", timeline)]
+        if week_values:
+            base_wallet += max(week_values)
+
+    lower_analysis = analysis_report.lower()
+    if "enterprise" in lower_analysis or "complex" in lower_analysis:
+        base_wallet += 8
+
+    return max(20, min(base_wallet, 90))
+
+
+def _build_analysis_context(
+    analysis_report: str,
+    prerequisites: List[Dict[str, Any]],
+    custom_rules: Optional[str],
+) -> str:
+    parts: List[str] = [str(analysis_report or "").strip()]
+
+    if prerequisites:
+        prereq_lines = ["PREREQUISITES & CREDENTIALS (confirmed by the team):"]
+        for item in prerequisites:
+            name = str(item.get("name") or "Unknown").strip()
+            description = str(item.get("description") or "").strip()
+            category = str(item.get("category") or "other").strip()
+            priority = str(item.get("priority") or "medium").strip()
+            provided = bool(item.get("provided"))
+            status = "PROVIDED" if provided else "NOT YET PROVIDED"
+
+            details: List[str] = []
+            if not bool(item.get("containsSecret")):
+                user_value = str(item.get("userValue") or "").strip()
+                user_file = str(item.get("userFileName") or "").strip()
+                user_notes = str(item.get("userNotes") or "").strip()
+                if user_value:
+                    details.append(f"Value: {user_value}")
+                if user_file:
+                    details.append(f"File: {user_file}")
+                if user_notes:
+                    details.append(f"Notes: {user_notes}")
+
+            line = f"- [{status}] {name} ({category}, {priority})"
+            if description:
+                line += f": {description}"
+            if details:
+                line += f" | Team Input: {' | '.join(details)}"
+            prereq_lines.append(line)
+        parts.append("\n".join(prereq_lines))
+
+    if custom_rules:
+        parts.append(f"CUSTOM RULES TO FOLLOW:\n{custom_rules.strip()}")
+
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def _normalize_task_dates(
+    start_value: Any,
+    end_value: Any,
+    *,
+    min_date: date,
+    max_date: date,
+    require_strict_order: bool = False,
+) -> tuple[str, str]:
+    start_date = _parse_date(start_value) or min_date
+    end_date = _parse_date(end_value) or max_date
+
+    if start_date < min_date:
+        start_date = min_date
+    if start_date > max_date:
+        start_date = max_date
+
+    if require_strict_order:
+        if end_date <= start_date:
+            start_date = min_date
+            end_date = max_date
+    elif end_date < start_date:
+        end_date = start_date
+
+    if end_date > max_date:
+        end_date = max_date
+    if require_strict_order:
+        if end_date <= start_date and min_date < max_date:
+            start_date = min_date
+            end_date = max_date
+    elif end_date < start_date:
+        end_date = start_date
+
+    return _format_date(start_date), _format_date(end_date)
+
+
+def _normalize_dependencies(value: Any) -> List[int]:
+    if not isinstance(value, list):
+        return []
+
+    dependencies: List[int] = []
+    for item in value:
+        seq = _safe_int(item, default=0)
+        if seq > 0 and seq not in dependencies:
+            dependencies.append(seq)
+    return dependencies
+
+
+def _normalize_generated_task(
+    raw_task: Dict[str, Any],
+    *,
+    sequence_number: int,
+    project_start: date,
+    project_deadline: date,
+) -> Dict[str, Any]:
+    task_name = str(raw_task.get("taskName") or "").strip()
+    task_description = str(raw_task.get("description") or "").strip()
+    task_type = _normalize_task_type(raw_task.get("task_type"))
+    wallet = max(1, min(_safe_int(raw_task.get("wallet"), default=1), 10))
+    start_iso, end_iso = _normalize_task_dates(
+        raw_task.get("startdate"),
+        raw_task.get("deadline"),
+        min_date=project_start,
+        max_date=project_deadline,
+    )
+
+    return {
+        "sequence_number": sequence_number,
+        "taskName": task_name,
+        "description": task_description,
+        "task_type": task_type,
+        "priority": _normalize_priority(raw_task.get("priority")),
+        "wallet": wallet,
+        "startdate": start_iso,
+        "deadline": end_iso,
+        "dependencies": _normalize_dependencies(raw_task.get("dependencies")),
+        "phase": str(raw_task.get("phase") or "").strip().lower(),
+        "domain": str(raw_task.get("domain") or "").strip().lower(),
+    }
+
+
+def _fallback_checklist(title: str, task_type: str) -> List[Dict[str, Any]]:
+    checklist_title = "Planning" if task_type in {"epic", "feature"} else "Execution"
+    return [
+        {
+            "title": checklist_title,
+            "items": [
+                f"Review scope for {title}",
+                f"Implement {title.lower()}",
+                f"Validate and document {title.lower()}",
+            ],
+        }
+    ]
+
+
+def _select_parent_id(
+    *,
+    level: int,
+    dependency_ids: List[str],
+    latest_by_level: Dict[int, str],
+    task_meta_by_id: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    best_parent_id: Optional[str] = None
+    best_parent_level = 0
+
+    for dep_id in dependency_ids:
+        dep_meta = task_meta_by_id.get(dep_id)
+        if not dep_meta:
+            continue
+        dep_level = _safe_int(dep_meta.get("level"), 0)
+        if dep_level < level and dep_level > best_parent_level:
+            best_parent_id = dep_id
+            best_parent_level = dep_level
+
+    if best_parent_id:
+        return best_parent_id
+
+    for candidate_level in range(level - 1, 0, -1):
+        candidate = latest_by_level.get(candidate_level)
+        if candidate:
+            return candidate
+
+    return None
+
+
+def _extract_numeric_suffix(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, int):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+
+    match = re.search(r"(\d+)$", text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _normalize_preview_project_reference(project_reference: Any, project_token: str) -> Any:
+    if project_reference not in (None, ""):
+        numeric_reference = _extract_numeric_suffix(project_reference)
+        if numeric_reference is not None and str(project_reference).strip().isdigit():
+            return numeric_reference
+        return project_reference
+    return project_token
+
+
+def _wrap_html_paragraph(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "<p></p>"
+    return f"<p>{escape(text)}</p>"
+
+
+def _build_preview_checklist(checklists: Any) -> Optional[str]:
+    if not isinstance(checklists, list):
+        return None
+
+    checklist_items: List[Dict[str, Any]] = []
+    for group in checklists:
+        if not isinstance(group, dict):
+            continue
+        raw_items = group.get("items")
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items:
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("title") or "").strip()
+                completed = bool(item.get("completed"))
+            else:
+                text = str(item or "").strip()
+                completed = False
+            if text:
+                checklist_items.append({
+                    "text": text,
+                    "completed": completed,
+                })
+
+    if not checklist_items:
+        return None
+
+    return json.dumps(
+        {
+            "checklistItems": checklist_items,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _build_preview_json_tasks(
+    structured_tasks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    preview_tasks: List[Dict[str, Any]] = []
+    for task in structured_tasks:
+        checklist_payload = _build_preview_checklist(task.get("checklists"))
+
+        payload: Dict[str, Any] = {
+            "taskName": task.get("title") or "Untitled Task",
+            "task_type": str(task.get("type") or "task").upper(),
+            "description": _wrap_html_paragraph(task.get("description")),
+            "startdate": task.get("planned_start"),
+            "planned_start": task.get("planned_start"),
+            "deadline": task.get("planned_end"),
+            "priority": task.get("priority") or "medium",
+            "task_wallet": max(
+                _safe_int(task.get("story_points"), 0),
+                _safe_int(task.get("estimated_hours"), 0) // 8,
+                0,
+            ),
+        }
+
+        if checklist_payload:
+            payload["checklist"] = checklist_payload
+
+        preview_tasks.append(payload)
+
+    return preview_tasks
+
+
+def _build_structured_tasks(
+    raw_tasks: List[Dict[str, Any]],
+    *,
+    project_id: str,
+    project_name: str,
+    sprint: Dict[str, Any],
+    milestone: Dict[str, Any],
+    reporter_name: str,
+) -> List[Dict[str, Any]]:
+    type_counters: Dict[str, int] = {}
+    seq_to_task_id: Dict[int, str] = {}
+    latest_by_level: Dict[int, str] = {}
+    child_count_by_parent: Dict[str, int] = {}
+    task_meta_by_id: Dict[str, Dict[str, Any]] = {}
+    structured_tasks: List[Dict[str, Any]] = []
+    root_count = 0
+
+    for index, raw_task in enumerate(raw_tasks):
+        task_type = _normalize_task_type(raw_task.get("task_type"))
+        config = TYPE_CONFIG[task_type]
+        type_counters[task_type] = type_counters.get(task_type, 0) + 1
+        task_id = f"{config['prefix']}-{type_counters[task_type]:02d}"
+        dependency_ids = [
+            seq_to_task_id[seq]
+            for seq in raw_task.get("dependencies", [])
+            if seq in seq_to_task_id
+        ]
+
+        level = config["level"]
+        parent_id = None if level == 1 else _select_parent_id(
+            level=level,
+            dependency_ids=dependency_ids,
+            latest_by_level=latest_by_level,
+            task_meta_by_id=task_meta_by_id,
+        )
+
+        if parent_id is None:
+            root_count += 1
+            wbs = str(root_count)
+        else:
+            child_count_by_parent[parent_id] = child_count_by_parent.get(parent_id, 0) + 1
+            parent_wbs = str(task_meta_by_id[parent_id]["wbs"])
+            wbs = f"{parent_wbs}.{child_count_by_parent[parent_id]}"
+            if parent_id not in dependency_ids:
+                dependency_ids.append(parent_id)
+
+        structured = {
+            "project_id": project_id,
+            "project_name": project_name,
+            "task_id": task_id,
+            "parent_id": parent_id,
+            "type": task_type.lower(),
+            "title": raw_task.get("taskName") or "Untitled Task",
+            "description": raw_task.get("description") or "",
+            "status": "in_progress" if index == 0 else "todo",
+            "priority": raw_task.get("priority") or "medium",
+            "story_points": 0 if task_type == "EPIC" else raw_task.get("wallet", 1),
+            "sprint_id": sprint["id"],
+            "sprint_name": sprint["name"],
+            "milestone_id": milestone["id"],
+            "reporter": MASTER_AGENT_ID,
+            "assignee": "",
+            "resource_names": [reporter_name],
+            "planned_start": raw_task.get("startdate"),
+            "planned_end": raw_task.get("deadline"),
+            "estimated_hours": max(_safe_int(raw_task.get("wallet"), 1) * 8, 8),
+            "wbs": wbs,
+            "level": level,
+            "dependencies": dependency_ids,
+            "checklists": [],
+        }
+
+        structured_tasks.append(structured)
+        seq_to_task_id[_safe_int(raw_task.get("sequence_number"), 0)] = task_id
+        task_meta_by_id[task_id] = {"level": level, "wbs": wbs}
+        latest_by_level[level] = task_id
+        for deeper_level in range(level + 1, 5):
+            latest_by_level.pop(deeper_level, None)
+
+    return structured_tasks
+
+
+async def _attach_checklists(
+    *,
+    structured_tasks: List[Dict[str, Any]],
+    analysis_report: str,
+) -> None:
+    checklist_inputs = [
+        {
+            "id": task["task_id"],
+            "taskName": task["title"],
+            "description": task["description"],
+            "task_type": str(task["type"]).upper(),
+            "priority": task["priority"],
+        }
+        for task in structured_tasks
+    ]
+
+    checklist_map: Dict[str, Any] = {}
+    try:
+        checklist_map = await ai_service.generate_checklists_for_tasks(
+            tasks_with_ids=checklist_inputs,
+            analysis_report=analysis_report,
+        )
+    except Exception as exc:
+        logger.warning(f"Checklist generation failed for preview payload: {exc}")
+
+    for task in structured_tasks:
+        raw_items = checklist_map.get(task["task_id"]) if isinstance(checklist_map, dict) else None
+        if isinstance(raw_items, list):
+            items = [
+                str(item.get("text") or "").strip()
+                for item in raw_items
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ]
+            if items:
+                task["checklists"] = [
+                    {
+                        "title": "Planning" if task["type"] in {"epic", "feature"} else "Execution",
+                        "items": items,
+                    }
+                ]
+                continue
+
+        task["checklists"] = _fallback_checklist(task["title"], task["type"])
+
+
+async def _generate_ai_tasks(
+    *,
+    analysis_report: str,
+    reporter: str,
+    project_deadline: str,
+    total_wallet: int,
+    project_start: date,
+    project_end: date,
+    custom_rules: Optional[str],
+) -> tuple[List[Dict[str, Any]], int]:
+    agents = [{"user_id": 1, "username": reporter}]
+    normalized_tasks: List[Dict[str, Any]] = []
+
+    raw_tasks = await ai_service.generate_tasks_for_project(
+        analysis_report=analysis_report,
+        agents=agents,
+        project_deadline=project_deadline,
+        project_wallet=total_wallet,
+    )
+
+    for index, raw_task in enumerate(raw_tasks or []):
+        task_name = str(raw_task.get("taskName") or "").strip()
+        if not task_name:
+            continue
+
+        normalized = _normalize_generated_task(
+            raw_task,
+            sequence_number=len(normalized_tasks) + 1,
+            project_start=project_start,
+            project_deadline=project_end,
+        )
+        normalized_tasks.append(normalized)
+
+    remaining_wallet = max(
+        total_wallet - sum(max(_safe_int(task.get("wallet"), 0), 0) for task in normalized_tasks),
+        0,
+    )
+    return normalized_tasks, remaining_wallet
+
+
+async def build_local_task_plan_preview(
+    *,
+    project_token: str,
+    project_name: str,
+    project_reference: Any = None,
+    sprint_reference: Any = None,
+    milestone_reference: Any = None,
+    analysis_report: str = "",
+    analysis_payload: Optional[Dict[str, Any]] = None,
+    prerequisites: Optional[List[Dict[str, Any]]] = None,
+    reporter_name: Optional[str] = None,
+    custom_rules: Optional[str] = None,
+) -> Dict[str, Any]:
+    analysis_payload = analysis_payload or {}
+    prerequisites = prerequisites or []
+
+    reporter = _display_name(reporter_name)
+    project_start, project_deadline = _normalize_project_dates(analysis_payload)
+    total_wallet = _derive_total_wallet(analysis_payload, analysis_report)
+    deadline_iso = _format_date(project_deadline)
+    analysis_context = _build_analysis_context(analysis_report, prerequisites, custom_rules)
+
+    sprint_plan = await ai_service.generate_sprint_milestone_plan(
+        analysis_report=analysis_context,
+        project_name=project_name,
+        project_deadline=deadline_iso,
+    )
+
+    sprint_payload = sprint_plan.get("sprint") if isinstance(sprint_plan, dict) else {}
+    milestone_payload = sprint_plan.get("milestone") if isinstance(sprint_plan, dict) else {}
+    sprint_start_iso, sprint_deadline_iso = _normalize_task_dates(
+        sprint_payload.get("start_date"),
+        sprint_payload.get("deadline"),
+        min_date=project_start,
+        max_date=project_deadline,
+        require_strict_order=True,
+    )
+    sprint = {
+        "id": "SPR-01",
+        "name": str(sprint_payload.get("name") or "Sprint 1").strip() or "Sprint 1",
+        "summary": str(sprint_payload.get("summary") or f"Initial sprint for {project_name or 'the project'}").strip(),
+        "start_date": sprint_start_iso,
+        "deadline": sprint_deadline_iso,
+    }
+    sprint_start = _parse_date(sprint["start_date"]) or project_start
+    sprint_deadline = _parse_date(sprint["deadline"]) or project_deadline
+    milestone_start_iso, milestone_deadline_iso = _normalize_task_dates(
+        milestone_payload.get("start_date"),
+        milestone_payload.get("deadline"),
+        min_date=sprint_start,
+        max_date=sprint_deadline,
+    )
+    milestone = {
+        "id": "MS-01",
+        "name": str(milestone_payload.get("name") or "Phase 1 Complete").strip() or "Phase 1 Complete",
+        "sprint_id": sprint["id"],
+        "start_date": milestone_start_iso,
+        "deadline": milestone_deadline_iso,
+    }
+
+    raw_tasks, remaining_wallet = await _generate_ai_tasks(
+        analysis_report=analysis_context,
+        reporter=reporter,
+        project_deadline=deadline_iso,
+        total_wallet=total_wallet,
+        project_start=project_start,
+        project_end=project_deadline,
+        custom_rules=custom_rules,
+    )
+
+    structured_tasks = _build_structured_tasks(
+        raw_tasks,
+        project_id=str(project_token or "PROJ-001"),
+        project_name=project_name or "Untitled Project",
+        sprint=sprint,
+        milestone=milestone,
+        reporter_name=reporter,
+    )
+    await _attach_checklists(structured_tasks=structured_tasks, analysis_report=analysis_context)
+    preview_tasks = _build_preview_json_tasks(structured_tasks)
+
+    return {
+        "status": "success",
+        "preview_mode": True,
+        "message": (
+            f"AI generated {len(structured_tasks)} task preview item(s) from the analysis report. "
+            "No external task API call was made."
+        ),
+        "project_start_date": _format_date(project_start),
+        "project_deadline": deadline_iso,
+        "project_wallet": total_wallet,
+        "remaining_wallet": remaining_wallet,
+        "tasks_created": len(structured_tasks),
+        "sprint_id": sprint["id"],
+        "milestone_id": milestone["id"],
+        "created_sprint": sprint,
+        "created_milestone": milestone,
+        "created_sprints": [sprint],
+        "created_milestones": [milestone],
+        "sprints": [sprint],
+        "milestones": [milestone],
+        "tasks": structured_tasks,
+        "preview_json": preview_tasks,
+    }
