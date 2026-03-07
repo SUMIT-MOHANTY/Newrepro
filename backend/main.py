@@ -3722,6 +3722,7 @@ async def list_agents(
     project_token: Optional[str] = None,
     include_defaults: bool = True,
     kind: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Get status of all AI agents."""
     organization_name = _require_organization(current_user)
@@ -3752,6 +3753,10 @@ async def list_agents(
         query = query.filter(models.Agent.project_token.is_(None))
     records = query.all()
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+    await agent_service._restore_persisted_agent_assignments(
+        project_token=project_token,
+        task_token=x_task_token,
+    )
 
     visible_runtime_ids: Dict[str, str] = {}
     for row in mapping_rows:
@@ -3779,10 +3784,24 @@ async def list_agents(
 @app.get("/agents/tasks")
 async def get_pending_tasks(
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Get all pending tasks waiting to be picked up by agents."""
     project_token = _normalize_project_token(project_token)
+    _ensure_default_agents(db, project_token)
+    query = db.query(models.Agent)
+    if project_token:
+        query = query.filter(models.Agent.project_token == project_token)
+    else:
+        query = query.filter(models.Agent.project_token.is_(None))
+    records = query.all()
+    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+    await agent_service._restore_persisted_agent_assignments(
+        project_token=project_token,
+        task_token=x_task_token,
+    )
     return {
         "pending_tasks": agent_service.get_pending_tasks(project_token),
         "completed_tasks": agent_service.get_completed_tasks(project_token),
@@ -3921,10 +3940,24 @@ async def get_agent_status(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    x_task_token: Optional[str] = Header(None),
 ):
     """Get the current status and details of a specific agent."""
     try:
         project_token = _normalize_project_token(project_token)
+        _ensure_default_agents(db, project_token)
+        query = db.query(models.Agent)
+        if project_token:
+            query = query.filter(models.Agent.project_token == project_token)
+        else:
+            query = query.filter(models.Agent.project_token.is_(None))
+        records = query.all()
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+        await agent_service._restore_persisted_agent_assignments(
+            project_token=project_token,
+            task_token=x_task_token,
+            agent_ids=[agent_id],
+        )
         agent = agent_service.get_agent_status(agent_id, project_token)
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         return {"agent": _sanitize_agent_for_user(agent, global_cred)}
@@ -4047,7 +4080,8 @@ async def run_all_agents(
     project_token: Optional[str] = None,
 ):
     """
-    Start all idle agents simultaneously in the BACKGROUND.
+    Start the supervisor loop in the BACKGROUND.
+    Idle agents will pick tasks themselves from the shared ordered queue.
     Returns immediately — frontend polls /agents for real-time updates.
     """
     project_token = _normalize_project_token(project_token)
