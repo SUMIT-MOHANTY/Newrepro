@@ -8,6 +8,10 @@ import {
     Database, Server, Layout, Code, Terminal, Cpu
 } from 'lucide-react';
 import Logo from '../assets/logo.png';
+import masterLogo from '../assets/logo1.png';
+import nModLogo from '../assets/N-Mod-icon.png';
+import kaktoxLogo from '../assets/Kaktox.png';
+import spxLogo from '../assets/spx-logo 3.png';
 import Login from './Login';
 import Signup from './Signup';
 
@@ -195,25 +199,32 @@ const Interactive3DScroll = () => {
         {
             title: "DSuite Master Analysis",
             desc: "Document is uploaded into DSuite. The platform analyzes requirements, validates architecture direction, and prepares an execution-ready blueprint.",
-            icon: <FileText className="h-16 w-16 text-blue-500" />,
+            logo: null,
+            logoText: "DSuite",
             color: "from-blue-500 to-cyan-400"
         },
         {
             title: "Nxdune Orchestration",
             desc: "The DSuite blueprint is routed to Nxdune. Nxdune creates the workspace and automatically distributes Dev, Test, and Deploy tasks to agents.",
-            icon: <Workflow className="h-16 w-16 text-indigo-500" />,
+            logo: masterLogo,
             color: "from-indigo-500 to-purple-400"
         },
         {
-            title: "Dev + Test Agent Execution",
-            desc: "Dev Agent works through N-Mod EXT to build the solution. Test Agent runs Kaktox validations and confirms quality before release.",
-            icon: <Code className="h-16 w-16 text-pink-500" />,
+            title: "Dev Agent Execution",
+            desc: "Dev Agent works through N-Mod EXT to build the solution, implementing code and creating the necessary components.",
+            logo: nModLogo,
             color: "from-pink-500 to-rose-400"
+        },
+        {
+            title: "Test Agent Execution",
+            desc: "Test Agent runs Kaktox validations and confirms quality before release, ensuring the solution meets all requirements.",
+            logo: kaktoxLogo,
+            color: "from-purple-500 to-pink-400"
         },
         {
             title: "Deploy Agent -> CloudSpx",
             desc: "After approval, Deploy Agent pushes the validated build through CloudSpx pipelines while execution traceability stays visible in Nxdune.",
-            icon: <Server className="h-16 w-16 text-green-500" />,
+            logo: spxLogo,
             color: "from-green-500 to-emerald-400"
         }
     ];
@@ -303,8 +314,16 @@ const Interactive3DScroll = () => {
                                 <div className={`absolute inset-0 rounded-[2rem] bg-gradient-to-br ${step.color} opacity-20`} style={{ transform: 'translateZ(-48px)' }}></div>
                                 <div className="absolute inset-0 rounded-[2rem] bg-app-bg-card/95 border border-white/10 shadow-xl flex items-center justify-center" style={{ transformStyle: "preserve-3d" }}>
                                     <div className={`absolute inset-0 bg-gradient-to-br ${step.color} opacity-10 rounded-[2rem]`}></div>
-                                    <div className="float-shape shadow-lg bg-white/5 p-8 rounded-3xl border border-white/10" style={{ willChange: "transform" }}>
-                                        {step.icon}
+                                    <div className="float-shape shadow-lg bg-gray-50/95 rounded-3xl border border-gray-200 flex items-center justify-center overflow-hidden" style={{ willChange: "transform", width: 'calc(100% - 2rem)', height: 'calc(100% - 2rem)', padding: '2rem' }}>
+                                        {step.logoText ? (
+                                            <div className="text-6xl sm:text-7xl font-extrabold text-slate-900 tracking-tight" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                                                {step.logoText}
+                                            </div>
+                                        ) : step.logo ? (
+                                            <img src={step.logo} alt={step.title} className="w-full h-full object-contain" />
+                                        ) : (
+                                            step.icon
+                                        )}
                                     </div>
                                     {/* Decorative 3D elements */}
                                     <div className="float-shape absolute top-6 left-6 w-16 h-16 rounded-2xl bg-gradient-to-tr from-white/10 to-transparent border border-white/10" style={{ transform: 'translateZ(-40px) translateX(20px)', willChange: "transform" }}></div>
