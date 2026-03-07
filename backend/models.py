@@ -200,4 +200,7 @@ class GovernanceResponse(Base):
     # Track when prerequisites were acknowledged
     prerequisites_completed_at = Column(DateTime, nullable=True)
 
+    # Store roadmap steps data (steps, step_statuses, current_step, etc.)
+    steps_data = Column(JSON, nullable=True)
+
     owner = relationship("User", back_populates="governance_responses")

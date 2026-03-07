@@ -1,4 +1,5 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
     CheckCircle2, Circle, AlertCircle, Loader2,
     FolderOpen, ShieldCheck, Brain, KeyRound, ListChecks, Bot, Flag, UserPlus
@@ -81,7 +82,9 @@ const styles = {
 /**
  * RoadmapHeader — Railway-track dotted stepper.
  */
-const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null, activeStepCompleted = false }) => {
+const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null, activeStepCompleted = false, selectedProjectKey = null }) => {
+    const navigate = useNavigate();
+    
     if (!steps.length) return null;
 
     const baseStatuses =
@@ -114,10 +117,10 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
     // Map step labels to navigable routes
     const STEP_ROUTES = {
         'Project Initiation': '/new-project',
-        'Governance': '/new-project',
+        'Governance': '/new-project/governance',
         'Requirement Screening': '/dashboard',
         'AI Analysis': '/dashboard',
-        'Agent Analysis': '/dashboard',
+        'Agent Analysis': '/agent-analysis',
         'Prerequisite Classification': '/prerequisites',
         'Task Creation': '/task-creation',
         'Resource Onboarding': '/resource-onboarding',
@@ -125,9 +128,14 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Complete': '/status-dashboard',
     };
 
-    const handleStepClick = () => {
-        // Navigation from roadmap is disabled as requested.
-        return;
+    const handleStepClick = (stepLabel, stepIndex) => {
+        if (!selectedProjectKey) return;
+        
+        const route = STEP_ROUTES[stepLabel];
+        if (!route) return;
+        
+        // Navigate to the route for the selected project
+        navigate(route);
     };
 
     // percentage of the track that is "filled"
@@ -150,6 +158,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
                         const status = statuses[index];
                         const StepIcon = STEP_ICONS[step] || Circle;
                         const labelPosition = index % 2 === 0 ? 'top' : 'bottom';
+                        // Make all steps clickable if a project is selected
+                        const isClickable = Boolean(selectedProjectKey);
                         return (
                             <StepNode
                                 key={index}
@@ -158,8 +168,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
                                 status={status}
                                 icon={StepIcon}
                                 labelPosition={labelPosition}
-                                clickable={false}
-                                onClick={handleStepClick}
+                                clickable={isClickable}
+                                onClick={() => handleStepClick(step, index)}
                             />
                         );
                     })}

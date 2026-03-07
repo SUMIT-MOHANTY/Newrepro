@@ -92,6 +92,18 @@ def _join_contract_root(root: str, rel: str) -> str:
     return f"{norm_root}/{norm_rel}"
 
 
+def _path_matches_pattern(path: str, pattern: str) -> bool:
+    import fnmatch
+
+    norm_path = _normalize_contract_path(path)
+    norm_pattern = _normalize_contract_path(pattern)
+    if fnmatch.fnmatch(norm_path, norm_pattern):
+        return True
+    if norm_pattern.startswith("**/"):
+        return fnmatch.fnmatch(norm_path, norm_pattern[3:])
+    return False
+
+
 def _is_config_like_path(path: str) -> bool:
     base = os.path.basename(_normalize_contract_path(path))
     if base in _MANIFEST_BASENAMES:
@@ -369,6 +381,84 @@ def update_workspace_contract_from_workspace_tree(project_token: str, workspace_
     return contract
 
 
+def _extract_file_paths_from_canonical_tree(tree_text: str) -> List[str]:
+    paths: List[str] = []
+    stack: List[str] = []
+
+    for raw_line in str(tree_text or "").splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        stripped = line.strip().strip("`")
+        if stripped.lower() in {"text", "project/"}:
+            continue
+
+        content = line
+        while content.startswith(("│", " ", "\t")):
+            content = content[1:]
+        if content.startswith(("├──", "└──")):
+            content = content[3:].lstrip("─ ").strip()
+        else:
+            content = stripped
+
+        if not content or content.startswith("#"):
+            continue
+
+        if " # " in content:
+            content = content.split(" # ", 1)[0].rstrip()
+        elif "  #" in content:
+            content = content.split("  #", 1)[0].rstrip()
+
+        if not content:
+            continue
+
+        indent_prefix = raw_line.split(content, 1)[0]
+        depth = indent_prefix.count("│") + (indent_prefix.count("    ") if "    " in indent_prefix else 0)
+        while len(stack) > depth:
+            stack.pop()
+
+        name = content.rstrip("/")
+        if not name:
+            continue
+
+        if "." not in name and "/" not in name and name.lower() not in {
+            "backend", "frontend", "shared", "infra", "src", "app", "api", "services",
+            "components", "hooks", "pages", "styles", "tests", "public", "scripts",
+            "workflows", "migrations", "models", "schemas", "repositories", "core",
+            "db", "tasks", "store", "types", "lib", "utils", "constants", ".github",
+        } and not raw_line.strip().endswith("/"):
+            continue
+
+        current_path = "/".join(stack + [name]) if stack else name
+
+        if raw_line.strip().endswith("/"):
+            stack.append(name)
+            continue
+
+        if "/" in name and raw_line.strip() == content:
+            current_path = name
+        paths.append(current_path)
+
+    return sorted({path for path in paths if path and not path.endswith("/")})
+
+
+def update_workspace_contract_from_canonical_tree(project_token: str, workspace_tree: str) -> Dict[str, Any]:
+    token = (project_token or "").strip()
+    project_ctx = _project_contexts.setdefault(token, {})
+    existing = project_ctx.get("workspace_contract") or {}
+    if existing.get("status") == "ready":
+        return existing
+
+    file_paths = _extract_file_paths_from_canonical_tree(workspace_tree)
+    contract = _build_workspace_contract_from_file_paths(
+        token,
+        file_paths,
+        source="master_tree",
+    )
+    project_ctx["workspace_contract"] = contract
+    return contract
+
+
 def build_workspace_contract_context(project_token: str) -> str:
     contract = get_workspace_contract(project_token)
     if contract.get("status") != "ready":
@@ -412,7 +502,7 @@ def validate_paths_against_workspace_contract(
 ) -> Dict[str, Any]:
     contract = get_workspace_contract(project_token)
     normalized_paths = [
-        _normalize_contract_path(path)
+        _remap_path_to_workspace_contract(path, contract, task_domain=task_domain)
         for path in (file_paths or [])
         if _normalize_contract_path(path) not in {"", "."}
     ]
@@ -477,6 +567,94 @@ def validate_paths_against_workspace_contract(
     }
 
 
+def _remap_path_to_workspace_contract(
+    path: str,
+    contract: Dict[str, Any],
+    task_domain: Optional[str] = None,
+) -> str:
+    normalized = _normalize_contract_path(path)
+    parts = normalized.split("/")
+    if len(parts) <= 1:
+        return normalized
+
+    top_level = parts[0]
+    if top_level in set(contract.get("allowed_top_level_dirs") or []):
+        return normalized
+    if top_level in _COMMON_SAFE_TOP_LEVEL_DIRS:
+        return normalized
+
+    modules = contract.get("modules") or []
+    preferred_kinds = {task_domain} if task_domain in {"backend", "frontend"} else set()
+    preferred_roots: Set[str] = set()
+    candidate_roots: Set[str] = set()
+    backend_candidate_roots: Set[str] = set()
+    frontend_candidate_roots: Set[str] = set()
+    next_segment = parts[1].lower() if len(parts) > 1 else ""
+
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        kind = str(module.get("kind") or "").strip().lower()
+        source_roots = module.get("source_roots") or [module.get("root") or "."]
+        for source_root in source_roots:
+            normalized_root = _normalize_contract_path(str(source_root or ""))
+            if normalized_root == ".":
+                continue
+            if os.path.basename(normalized_root) != top_level:
+                continue
+            candidate_roots.add(normalized_root)
+            if preferred_kinds and kind in preferred_kinds:
+                preferred_roots.add(normalized_root)
+            if kind == "backend":
+                backend_candidate_roots.add(normalized_root)
+            elif kind == "frontend":
+                frontend_candidate_roots.add(normalized_root)
+
+    selected_root = ""
+    if len(preferred_roots) == 1:
+        selected_root = next(iter(preferred_roots))
+    elif next_segment in {"components", "pages", "hooks", "styles", "contexts", "context", "providers", "layouts", "assets"} and len(frontend_candidate_roots) == 1:
+        selected_root = next(iter(frontend_candidate_roots))
+    elif next_segment in {"routes", "controllers", "services", "models", "schemas", "middleware", "repositories", "db"} and len(backend_candidate_roots) == 1:
+        selected_root = next(iter(backend_candidate_roots))
+    elif len(candidate_roots) == 1:
+        selected_root = next(iter(candidate_roots))
+
+    if not selected_root:
+        return normalized
+
+    suffix = "/".join(parts[1:]) if len(parts) > 1 else "."
+    return _join_contract_root(selected_root, suffix or ".")
+
+
+def normalize_paths_for_workspace_contract(
+    project_token: str,
+    file_paths: List[str],
+    task_domain: Optional[str] = None,
+) -> List[str]:
+    contract = get_workspace_contract(project_token)
+    if contract.get("status") != "ready":
+        return [
+            _normalize_contract_path(path)
+            for path in (file_paths or [])
+            if _normalize_contract_path(path) not in {"", "."}
+        ]
+
+    normalized_paths: List[str] = []
+    seen = set()
+    for raw_path in file_paths or []:
+        candidate = _remap_path_to_workspace_contract(
+            raw_path,
+            contract,
+            task_domain=task_domain,
+        )
+        if candidate in {"", "."} or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized_paths.append(candidate)
+    return normalized_paths
+
+
 # ---------------------------------------------------------------------------
 #  Layer 4 — Cross-Agent Shared Memory
 # ---------------------------------------------------------------------------
@@ -512,8 +690,9 @@ class ProjectLiveMemory:
     in the same process.
     """
 
-    def __init__(self):
+    def __init__(self, project_token: Optional[str] = None):
         self._lock = threading.Lock()
+        self._project_token = str(project_token or "").strip()
         # agent_id -> AgentTaskRecord (current or most recent task)
         self.active_tasks: Dict[str, AgentTaskRecord] = {}
         # Ordered history of completed records (newest first, capped)
@@ -533,6 +712,10 @@ class ProjectLiveMemory:
         self._file_ownership: Dict[str, str] = {}
         # Shared files that require coordination
         self._shared_files: Set[str] = set()
+        # Domain roots inferred from workspace contract
+        self._contract_backend_roots: Set[str] = set()
+        self._contract_frontend_roots: Set[str] = set()
+        self._contract_partition_signature: str = ""
         # Initialize file partitioning rules
         self._init_file_partitioning_rules()
 
@@ -554,7 +737,7 @@ class ProjectLiveMemory:
         # Frontend-owned files (exclusive)
         self._frontend_files = {
             # React/Vue/Angular files
-            "**/frontend/src/**", "**/client/src/**", "**/src/**",
+            "**/frontend/src/**", "**/client/src/**", "src/**",
             "**/public/**", "**/static/**",
             # Frontend config
             "**/package.json", "**/yarn.lock", "**/pnpm-lock.yaml",
@@ -570,18 +753,113 @@ class ProjectLiveMemory:
             "**/.env.example",  # Both backend and frontend env vars
         }
 
+    def _refresh_contract_domain_roots(self) -> None:
+        token = self._project_token
+        if not token:
+            return
+        try:
+            contract = get_workspace_contract(token)
+        except Exception:
+            return
+        if not isinstance(contract, dict):
+            return
+
+        backend_roots: Set[str] = set()
+        frontend_roots: Set[str] = set()
+
+        for root in (contract.get("canonical_backend_roots") or []):
+            normalized = _normalize_contract_path(str(root or ""))
+            if normalized != ".":
+                backend_roots.add(normalized)
+        for root in (contract.get("canonical_frontend_roots") or []):
+            normalized = _normalize_contract_path(str(root or ""))
+            if normalized != ".":
+                frontend_roots.add(normalized)
+
+        for module in (contract.get("modules") or []):
+            if not isinstance(module, dict):
+                continue
+            kind = str(module.get("kind") or "").strip().lower()
+            if kind not in {"backend", "frontend"}:
+                continue
+            roots = module.get("source_roots") or [module.get("root") or "."]
+            for root in roots:
+                normalized = _normalize_contract_path(str(root or ""))
+                if normalized == ".":
+                    continue
+                if kind == "backend":
+                    backend_roots.add(normalized)
+                else:
+                    frontend_roots.add(normalized)
+
+        signature = json.dumps(
+            {
+                "status": contract.get("status"),
+                "detected_at": contract.get("detected_at"),
+                "source": contract.get("source"),
+                "backend_roots": sorted(backend_roots),
+                "frontend_roots": sorted(frontend_roots),
+            },
+            sort_keys=True,
+        )
+        if signature == self._contract_partition_signature:
+            return
+
+        with self._lock:
+            self._contract_backend_roots = backend_roots
+            self._contract_frontend_roots = frontend_roots
+            self._contract_partition_signature = signature
+
+    def is_shared_file(self, file_path: str) -> bool:
+        normalized_path = _normalize_contract_path(file_path)
+        for pattern in self._shared_files:
+            if _path_matches_pattern(normalized_path, pattern):
+                return True
+        return False
+
+    def _resolve_domain_owner_from_contract(self, file_path: str) -> Optional[str]:
+        self._refresh_contract_domain_roots()
+        normalized = _normalize_contract_path(file_path)
+        if normalized == ".":
+            return None
+
+        backend_matches = [
+            root for root in self._contract_backend_roots
+            if _path_is_under(normalized, root)
+        ]
+        frontend_matches = [
+            root for root in self._contract_frontend_roots
+            if _path_is_under(normalized, root)
+        ]
+
+        if backend_matches and not frontend_matches:
+            return "backend"
+        if frontend_matches and not backend_matches:
+            return "frontend"
+        if backend_matches and frontend_matches:
+            backend_depth = max(len(root) for root in backend_matches)
+            frontend_depth = max(len(root) for root in frontend_matches)
+            if backend_depth > frontend_depth:
+                return "backend"
+            if frontend_depth > backend_depth:
+                return "frontend"
+        return None
+
     def get_file_owner(self, file_path: str) -> Optional[str]:
         """Determine which domain should own a file based on its path."""
-        import fnmatch
+        normalized_path = _normalize_contract_path(file_path)
+        contract_owner = self._resolve_domain_owner_from_contract(normalized_path)
+        if contract_owner:
+            return contract_owner
 
         # Check backend ownership
         for pattern in self._backend_files:
-            if fnmatch.fnmatch(file_path, pattern):
+            if _path_matches_pattern(normalized_path, pattern):
                 return "backend"
 
         # Check frontend ownership
         for pattern in self._frontend_files:
-            if fnmatch.fnmatch(file_path, pattern):
+            if _path_matches_pattern(normalized_path, pattern):
                 return "frontend"
 
         # Default to shared (requires coordination)
@@ -592,35 +870,38 @@ class ProjectLiveMemory:
         Check if an agent can edit a file based on domain ownership.
         Returns (allowed, reason).
         """
-        import fnmatch
+        normalized_path = _normalize_contract_path(file_path)
 
         # Check if it's a shared file
-        for pattern in self._shared_files:
-            if fnmatch.fnmatch(file_path, pattern):
-                # Shared files need coordination - check if anyone else is editing
-                editors = self.file_locks.get(file_path, set())
-                if editors:
-                    return False, f"Shared file '{file_path}' currently being edited by: {editors}"
-                return True, "Shared file - coordination required"
+        if self.is_shared_file(normalized_path):
+            return True, "Shared file - coordination required"
 
-        # Check backend ownership
-        for pattern in self._backend_files:
-            if fnmatch.fnmatch(file_path, pattern):
-                if agent_domain == "backend":
-                    return True, "Backend-owned file"
-                else:
-                    return False, f"File '{file_path}' is owned by backend domain"
-
-        # Check frontend ownership
-        for pattern in self._frontend_files:
-            if fnmatch.fnmatch(file_path, pattern):
-                if agent_domain == "frontend":
-                    return True, "Frontend-owned file"
-                else:
-                    return False, f"File '{file_path}' is owned by frontend domain"
+        owner = self.get_file_owner(normalized_path)
+        if owner == "backend":
+            if agent_domain == "backend":
+                return True, "Backend-owned file"
+            return False, f"File '{normalized_path}' is owned by backend domain"
+        if owner == "frontend":
+            if agent_domain == "frontend":
+                return True, "Frontend-owned file"
+            return False, f"File '{normalized_path}' is owned by frontend domain"
 
         # Unknown file - allow but log warning
         return True, "Unknown file type - allowing edit"
+
+    def infer_domain_for_files(self, file_paths: List[str]) -> Optional[str]:
+        owners: Set[str] = set()
+        for file_path in file_paths or []:
+            owner = self.get_file_owner(file_path)
+            if owner in {"backend", "frontend"}:
+                owners.add(owner)
+        if owners == {"backend"}:
+            return "backend"
+        if owners == {"frontend"}:
+            return "frontend"
+        if len(owners) > 1:
+            return "integration"
+        return None
 
     def register_task_start(
         self,
@@ -689,7 +970,7 @@ class ProjectLiveMemory:
         normalized_paths = []
         seen = set()
         for file_path in file_paths or []:
-            candidate = str(file_path or "").strip()
+            candidate = _normalize_contract_path(file_path)
             if not candidate or candidate in seen:
                 continue
             seen.add(candidate)
@@ -715,7 +996,10 @@ class ProjectLiveMemory:
     def release_file_intent(self, agent_id: str, file_paths: Optional[List[str]] = None):
         """Release file intent locks for a specific agent."""
         with self._lock:
-            targets = list(file_paths or self.file_locks.keys())
+            targets = [
+                _normalize_contract_path(path)
+                for path in (file_paths or self.file_locks.keys())
+            ]
             for fp in list(targets):
                 editors = self.file_locks.get(fp)
                 if not editors:
@@ -732,9 +1016,12 @@ class ProjectLiveMemory:
         with self._lock:
             conflicts = {}
             for fp in target_files:
-                others = self.file_locks.get(fp, set()) - {agent_id}
+                normalized = _normalize_contract_path(fp)
+                if self.is_shared_file(normalized):
+                    continue
+                others = self.file_locks.get(normalized, set()) - {agent_id}
                 if others:
-                    conflicts[fp] = list(others)
+                    conflicts[normalized] = list(others)
             return conflicts
 
     def get_agent_domain(self, agent_id: str) -> Optional[str]:
@@ -907,7 +1194,7 @@ _project_live_memories: Dict[str, ProjectLiveMemory] = {}
 def get_live_memory(project_token: str) -> ProjectLiveMemory:
     """Get or create the shared live memory for a project."""
     if project_token not in _project_live_memories:
-        _project_live_memories[project_token] = ProjectLiveMemory()
+        _project_live_memories[project_token] = ProjectLiveMemory(project_token=project_token)
     return _project_live_memories[project_token]
 
 
@@ -1153,6 +1440,20 @@ def _parse_note_payload(raw_content: Any) -> Dict[str, Any]:
             return parsed
     except Exception:
         pass
+    payload_match = re.search(
+        r"<!--\s*AGENT_NOTE_PAYLOAD\s*(?P<payload>[\s\S]*?)-->",
+        text,
+        flags=re.DOTALL,
+    )
+    if payload_match:
+        candidate = str(payload_match.group("payload") or "").strip()
+        if candidate:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
     return {"summary": text}
 
 
@@ -1195,8 +1496,8 @@ async def get_agent_notes_context(
     max_notes: int = 8,
 ) -> str:
     """
-    Retrieve structured agent status/handoff notes from the external task API
-    and convert them into a concise prompt-friendly summary.
+    Retrieve the master project-plan note plus shared agent status notes
+    and convert them into prompt-friendly coordination context.
     """
     effective_token = str(task_token or "").strip()
     if not effective_token:
@@ -1216,21 +1517,197 @@ async def get_agent_notes_context(
     if not isinstance(notes, list):
         return ""
 
+    master_prefix = _note_title_for_prefix("MASTER_PLAN", project_token)
     status_prefix = _note_title_for_prefix("STATUS", project_token)
 
+    master_candidates = []
     relevant = []
     for note in notes:
         title = str((note or {}).get("title") or "").strip()
+        if title.startswith(master_prefix):
+            master_candidates.append(note)
         if title.startswith(status_prefix):
             relevant.append(note)
         if len(relevant) >= max_notes * 2:
-            break
-
-    if not relevant:
-        return ""
+            if len(master_candidates) >= 1:
+                break
 
     live_entries = []
     history_entries = []
+    lines = []
+    has_content = False
+
+    def _note_sort_key(note: Dict[str, Any]) -> int:
+        value = note.get("id") or note.get("note_id") or 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    if master_candidates:
+        master_candidates.sort(key=_note_sort_key, reverse=True)
+        master_note = master_candidates[0]
+        master_note_id = master_note.get("id") or master_note.get("note_id")
+        if master_note_id:
+            try:
+                detail = await task_service.get_note_detail(int(master_note_id), task_token=effective_token)
+                raw_content = str(detail.get("content") or "").strip()
+                payload = _parse_note_payload(raw_content)
+                title = str(detail.get("title") or master_note.get("title") or "").strip()
+                structured_master_note = any(
+                    key in payload
+                    for key in (
+                        "workspace_tree",
+                        "tasks_considered",
+                        "validation",
+                        "stack_profile",
+                    )
+                )
+                if not structured_master_note and raw_content:
+                    has_content = True
+                    lines.append("=== MASTER PROJECT PLAN NOTE ===")
+                    lines.append(raw_content[:7000])
+                    lines.append("=== END MASTER PROJECT PLAN NOTE ===")
+                    payload = {}
+                summary = str(payload.get("summary") or "").strip()
+                workspace_tree = str(payload.get("workspace_tree") or "").strip()
+                architecture_overview = str(payload.get("architecture_overview") or "").strip()
+                dependencies = str(payload.get("dependencies") or "").strip()
+                instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
+                tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
+                recommended_assignments = payload.get("recommended_assignments") if isinstance(payload.get("recommended_assignments"), list) else []
+                workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
+                validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+                stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
+                allowed_roots = [
+                    str(path or "").strip()
+                    for path in (workspace_contract.get("allowed_source_roots") or [])
+                    if str(path or "").strip()
+                ]
+
+                if structured_master_note:
+                    lines.append("=== MASTER PROJECT PLAN NOTE ===")
+                    lines.append(f"Title: {title}")
+                    if summary:
+                        has_content = True
+                        lines.append(summary)
+                    if stack_profile:
+                        has_content = True
+                        lines.append("\nSTACK DECISION:")
+                        lines.append(
+                            f"  - frontend={stack_profile.get('frontend')}"
+                            + (f" | backend={stack_profile.get('backend')}" if stack_profile.get("backend") else "")
+                            + (f" | confidence={stack_profile.get('confidence')}" if stack_profile.get("confidence") else "")
+                        )
+                    if tasks_considered:
+                        has_content = True
+                        lines.append("\nTASKS CONSIDERED BY MASTER AGENT:")
+                        for task in tasks_considered[:20]:
+                            if not isinstance(task, dict):
+                                continue
+                            task_title = str(task.get("title") or task.get("task_title") or "Untitled task")
+                            task_phase = str(task.get("phase") or "").strip()
+                            task_priority = str(task.get("priority") or "").strip()
+                            lines.append(
+                                f"  - {task_title}"
+                                + (f" | phase={task_phase}" if task_phase else "")
+                                + (f" | priority={task_priority}" if task_priority else "")
+                            )
+                            planned_files = [
+                                str(path or "").strip()
+                                for path in (task.get("planned_files") or [])
+                                if str(path or "").strip()
+                            ]
+                            if planned_files:
+                                lines.append(f"    Planned files: {', '.join(planned_files[:6])}")
+                            assignee = str(task.get("assignee") or "").strip()
+                            opt_in_username = str(task.get("opt_in_username") or "").strip()
+                            assignment_reason = str(task.get("assignment_reason") or "").strip()
+                            if assignee or opt_in_username:
+                                lines.append(
+                                    "    Recommended owner: "
+                                    + " | ".join(
+                                        item
+                                        for item in [
+                                            assignee,
+                                            f"opt-in={opt_in_username}" if opt_in_username else "",
+                                        ]
+                                        if item
+                                    )
+                                )
+                            if assignment_reason:
+                                lines.append(f"    Master reason: {assignment_reason[:220]}")
+                    if recommended_assignments:
+                        has_content = True
+                        lines.append("\nMASTER RECOMMENDED TASK OWNERSHIP:")
+                        for entry in recommended_assignments[:20]:
+                            if not isinstance(entry, dict):
+                                continue
+                            title_text = str(entry.get("title") or "Untitled task").strip()
+                            recommended_agent_id = str(entry.get("recommended_agent_id") or "").strip()
+                            opt_in_username = str(entry.get("opt_in_username") or "").strip()
+                            lines.append(
+                                f"  - {title_text}"
+                                + (
+                                    " -> "
+                                    + " | ".join(
+                                        item
+                                        for item in [
+                                            recommended_agent_id,
+                                            f"opt-in={opt_in_username}" if opt_in_username else "",
+                                        ]
+                                        if item
+                                    )
+                                    if recommended_agent_id or opt_in_username
+                                    else ""
+                                )
+                            )
+                            reason = str(entry.get("reason") or "").strip()
+                            if reason:
+                                lines.append(f"    Reason: {reason[:220]}")
+                    if workspace_tree:
+                        has_content = True
+                        lines.append("\nCANONICAL PROJECT TREE:")
+                        lines.append(workspace_tree[:4500])
+                    if architecture_overview:
+                        has_content = True
+                        lines.append("\nARCHITECTURE OVERVIEW:")
+                        lines.append(architecture_overview[:1500])
+                    if allowed_roots:
+                        has_content = True
+                        lines.append("\nCANONICAL SOURCE ROOTS:")
+                        for root in allowed_roots[:12]:
+                            lines.append(f"  - {root}")
+                    if dependencies:
+                        has_content = True
+                        lines.append("\nKEY DEPENDENCIES:")
+                        lines.append(dependencies[:900])
+                    if validation:
+                        has_content = True
+                        validator_agent_id = str(validation.get("validator_agent_id") or "structure_validator").strip()
+                        mode = str(validation.get("mode") or "").strip()
+                        confidence = validation.get("confidence")
+                        lines.append("\nVALIDATION:")
+                        lines.append(
+                            f"  - approved={bool(validation.get('approved'))}"
+                            + (f" | validator={validator_agent_id}" if validator_agent_id else "")
+                            + (f" | mode={mode}" if mode else "")
+                            + (f" | confidence={confidence}" if confidence not in (None, "") else "")
+                        )
+                        for issue in (validation.get("issues_missing_files") or [])[:6]:
+                            lines.append(f"  - missing/coverage: {str(issue)[:220]}")
+                        for issue in (validation.get("issues_conflicts") or [])[:6]:
+                            lines.append(f"  - conflict: {str(issue)[:220]}")
+                        for recommendation in (validation.get("recommendations") or [])[:6]:
+                            lines.append(f"  - recommendation: {str(recommendation)[:220]}")
+                    if instructions:
+                        has_content = True
+                        lines.append("\nMASTER INSTRUCTIONS:")
+                        for instruction in instructions[:8]:
+                            lines.append(f"  - {str(instruction)[:240]}")
+                    lines.append("=== END MASTER PROJECT PLAN NOTE ===")
+            except Exception as e:
+                logger.warning(f"[{project_token}] Failed to read master note: {e}")
 
     for note in relevant:
         note_id = (note or {}).get("id") or (note or {}).get("note_id")
@@ -1270,15 +1747,13 @@ async def get_agent_notes_context(
             if len(history_entries) >= max_notes * 3:
                 break
 
-    lines = ["=== STRUCTURED AGENT NOTES ==="]
-    has_content = False
-
     live_entries.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
     history_entries.sort(key=lambda entry: str(entry.get("updated_at") or ""), reverse=True)
 
     if live_entries:
         has_content = True
-        lines.append("\nLIVE STATUS NOTES:")
+        lines.append("\n=== SHARED AGENT STATUS NOTES ===")
+        lines.append("LIVE STATUS NOTES:")
         for entry in live_entries[:max_notes]:
             lines.append(
                 f"  - {entry.get('agent_id', 'unknown')} | "
@@ -1314,7 +1789,8 @@ async def get_agent_notes_context(
     if not has_content:
         return ""
 
-    lines.append("\n=== END STRUCTURED AGENT NOTES ===")
+    if live_entries or history_entries:
+        lines.append("\n=== END SHARED AGENT STATUS NOTES ===")
     return "\n".join(lines)
 
 

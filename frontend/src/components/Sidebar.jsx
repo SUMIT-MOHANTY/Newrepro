@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
@@ -21,6 +21,7 @@ export default function Sidebar({
     deletingProjectKey,
 }) {
     const navigate = useNavigate();
+    const location = useLocation();
     // Agents state
     const [agents, setAgents] = useState([]);
     const [agentsLoading, setAgentsLoading] = useState(false);
@@ -72,14 +73,14 @@ export default function Sidebar({
                     type="button"
                     aria-label="Close sidebar"
                     onClick={() => setIsSidebarOpen(false)}
-                    className="fixed inset-0 z-30 bg-black/40 transition-opacity duration-300 ease-in-out md:hidden"
+                    className="fixed inset-0 z-[240] bg-black/40 transition-opacity duration-300 ease-in-out md:hidden"
                 />
             )}
 
             <div className={`hidden md:block transition-[width] duration-300 ease-in-out flex-shrink-0 ${isSidebarOpen ? 'w-72' : 'w-0'}`} />
 
             <div
-                className={`fixed inset-y-0 left-0 z-40 w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+                className={`fixed inset-y-0 left-0 z-[250] w-72 bg-app-text-main border-r border-gray-800 flex flex-col text-app-border shadow-xl transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
             >
                 <div className="h-16 flex items-center px-2 border-b border-gray-800 bg-app-text-main shrink-0">
                     <div className="flex items-center justify-between w-full">
@@ -120,9 +121,7 @@ export default function Sidebar({
                                         <div key={project.key} className="flex items-center gap-1">
                                             <button
                                                 onClick={() => handleSelectProject(project)}
-                                                className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
-                                                    ? 'bg-blue-900/40 text-blue-100 border-blue-800'
-                                                    : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'}
+                                                className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key ? 'bg-blue-900/40 text-blue-100 border-blue-800' : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'}
                                                 `}
                                                 title={project.name}
                                             >
@@ -154,17 +153,6 @@ export default function Sidebar({
                             )}
                         </div>
                     </div>
-
-                    {/* Agents Section – navigates to full page */}
-                    <div className="mb-4">
-                        <button
-                            onClick={() => navigate('/agents')}
-                            className="flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 bg-blue-900/40 text-blue-100 border border-blue-800"
-                        >
-                            <Users className="w-4 h-4 mr-3" />
-                            Agents
-                        </button>
-                    </div>
                 </div>
 
                 <div className="p-4 border-t border-gray-800 bg-app-text-main shrink-0">
@@ -177,10 +165,9 @@ export default function Sidebar({
                     </button>
                     {user?.is_org_admin && (
                         <button
-                            onClick={() => {
-                                setCurrentView('organizationAdmin');
-                                setIsSidebarOpen(false);
-                            }}
+onClick={() => {
+                            setCurrentView('organizationAdmin');
+                        }}
                             className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin' ? 'bg-indigo-900/40 text-indigo-100 border border-indigo-800' : 'text-app-border hover:bg-app-text-label hover:text-white'
                                 }`}
                         >
@@ -188,6 +175,15 @@ export default function Sidebar({
                             SSO Configuration
                         </button>
                     )}
+                    <button
+                        onClick={() => {
+                            navigate('/agents');
+                        }}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents') ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
+                    >
+                        <Users className="w-4 h-4 mr-3" />
+                        Agents
+                    </button>
                     <button
                         onClick={() => setShowSettings(true)}
                         className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2"

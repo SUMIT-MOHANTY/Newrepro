@@ -13,6 +13,7 @@ class AgentWorkflowState(TypedDict, total=False):
     project_token: Optional[str]
     task_token: Optional[str]
     agents_config: Dict[str, Dict[str, str]]
+    master_note: Dict[str, Any]
     assignments: List[Dict[str, Any]]
     launched_agents: List[str]
     results: List[Dict[str, Any]]
@@ -24,14 +25,57 @@ class AgentWorkflowState(TypedDict, total=False):
 _CHECKPOINTER = InMemorySaver()
 
 
-async def _plan_assignments(state: AgentWorkflowState) -> Dict[str, Any]:
+async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str, Any]:
     import agent_service
 
-    claimed = await agent_service._claim_initial_task_assignments(
-        agents_config=state.get("agents_config"),
+    result = await agent_service.ensure_master_workspace_note(
         project_token=state.get("project_token"),
         task_token=state.get("task_token"),
     )
+    errors = list(state.get("errors") or [])
+    if not result.get("success") and not result.get("skipped"):
+        reason = result.get("error") or result.get("reason") or "unknown error"
+        errors.append(f"master note: {reason}")
+        agent_service.complete_run_all_waiting_state(
+            state.get("project_token"),
+            success=False,
+            error_message=str(reason),
+        )
+    else:
+        agent_service.complete_run_all_waiting_state(
+            state.get("project_token"),
+            success=True,
+        )
+    return {
+        "master_note": result,
+        "errors": errors,
+    }
+
+
+def _route_after_master_note(state: AgentWorkflowState) -> str:
+    master_note = state.get("master_note") or {}
+    if master_note.get("success"):
+        return "plan_assignments"
+    return "finalize"
+
+
+async def _plan_assignments(state: AgentWorkflowState) -> Dict[str, Any]:
+    import agent_service
+
+    try:
+        claimed = await agent_service._claim_initial_task_assignments(
+            agents_config=state.get("agents_config"),
+            project_token=state.get("project_token"),
+            task_token=state.get("task_token"),
+        )
+    except Exception as exc:
+        logger.warning("Initial task planning produced no launchable assignments: %s", exc)
+        errors = list(state.get("errors") or [])
+        errors.append(f"planning: {str(exc)}")
+        return {
+            "assignments": [],
+            "errors": errors,
+        }
     assignments = [
         {"agent_id": agent_id, "task": task}
         for agent_id, task in claimed.get("assignments", [])
@@ -109,8 +153,16 @@ async def _finalize(state: AgentWorkflowState) -> Dict[str, Any]:
     assignments = state.get("assignments") or []
     results = state.get("results") or []
     launched_agents = state.get("launched_agents") or []
+    master_note = state.get("master_note") or {}
     summary = {
         "workflow": "langgraph",
+        "master_note": {
+            "success": master_note.get("success"),
+            "title": master_note.get("title"),
+            "note_id": master_note.get("note_id"),
+            "task_count": master_note.get("task_count"),
+            "validation": master_note.get("validation"),
+        },
         "launched": len(assignments),
         "agents": launched_agents,
         "results": results,
@@ -122,11 +174,20 @@ async def _finalize(state: AgentWorkflowState) -> Dict[str, Any]:
 
 def _build_workflow():
     builder = StateGraph(AgentWorkflowState)
+    builder.add_node("publish_master_workspace_note", _publish_master_workspace_note)
     builder.add_node("plan_assignments", _plan_assignments)
     builder.add_node("run_parallel_agents", _run_parallel_agents)
     builder.add_node("await_merge_completion", _await_merge_completion)
     builder.add_node("finalize", _finalize)
-    builder.add_edge(START, "plan_assignments")
+    builder.add_edge(START, "publish_master_workspace_note")
+    builder.add_conditional_edges(
+        "publish_master_workspace_note",
+        _route_after_master_note,
+        {
+            "plan_assignments": "plan_assignments",
+            "finalize": "finalize",
+        },
+    )
     builder.add_conditional_edges(
         "plan_assignments",
         _route_after_planning,

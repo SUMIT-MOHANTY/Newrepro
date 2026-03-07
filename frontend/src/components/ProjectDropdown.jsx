@@ -41,6 +41,7 @@ export default function ProjectDropdown({
     const getStatusColor = (status) => {
         switch (status) {
             case 'analysis_complete': return 'bg-emerald-500';
+            case 'screening_complete': return 'bg-sky-500';
             case 'ready_for_upload': return 'bg-amber-400';
             case 'processing': return 'bg-blue-500';
             default: return 'bg-gray-400';
@@ -50,6 +51,7 @@ export default function ProjectDropdown({
     const getStatusLabel = (status) => {
         switch (status) {
             case 'analysis_complete': return 'Complete';
+            case 'screening_complete': return 'Screened';
             case 'ready_for_upload': return 'Pending';
             case 'processing': return 'In Progress';
             default: return 'Unknown';

@@ -1369,6 +1369,32 @@ def _count_org_agent_usage(
             dedicated_used += 1
     return shared_used, dedicated_used
 
+
+def _count_org_dedicated_usage_for_project(
+    db: Session,
+    organization_name: str,
+    project_token: Optional[str],
+) -> int:
+    """Return dedicated usage for a single project, excluding built-in defaults."""
+    org = _normalized_text(organization_name)
+    normalized_project_token = _normalize_project_token(project_token)
+    if not org or not normalized_project_token:
+        return 0
+
+    rows = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == org.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.project_token == normalized_project_token,
+    ).all()
+
+    dedicated_used = 0
+    for row in rows:
+        kind = _normalize_agent_kind(row.agent_kind, row.project_token, is_default=bool(row.is_default))
+        if kind == "dedicated":
+            dedicated_used += 1
+    return dedicated_used
+
+
 def _get_or_init_org_agent_quota(
     db: Session,
     organization_name: str,
@@ -1690,6 +1716,32 @@ def save_document_history(
     db.refresh(db_doc)
     return db_doc
 
+@app.put("/history/{document_id}", response_model=schemas.Document)
+def update_document_history(
+    document_id: int,
+    document: schemas.DocumentCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update an existing document history entry for the current user."""
+    db_doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.owner_id == current_user.id,
+    ).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    payload = document.dict()
+    db_doc.filename = payload["filename"]
+    db_doc.content_preview = payload.get("content_preview")
+    db_doc.full_content = payload.get("full_content")
+    db_doc.analysis_result = payload.get("analysis_result")
+
+    db.add(db_doc)
+    db.commit()
+    db.refresh(db_doc)
+    return db_doc
+
 @app.post("/documents/upload-and-analyze")
 async def upload_and_analyze_document(
     file: UploadFile = File(...),
@@ -1858,24 +1910,58 @@ async def submit_governance_response(
 
     recommendation_text = _generate_recommendation(scoring_result, answers_dict)
 
-    # Save response to database
-    db_response = models.GovernanceResponse(
-        owner_id=current_user.id,
-        project_token=str(uuid.uuid4()),
-        project_name=request.project_name,
-        answers=detailed_answers,
-        business_value_score=scoring_result["dimension_scores"].get("Business Value & Urgency"),
-        data_sensitivity_score=scoring_result["dimension_scores"].get("Data Sensitivity"),
-        integration_complexity_score=scoring_result["dimension_scores"].get("Integration & Architecture Complexity"),
-        operational_impact_score=scoring_result["dimension_scores"].get("Operational Impact"),
-        ai_risk_score=scoring_result["dimension_scores"].get("AI Risk"),
-        ownership_score=scoring_result["dimension_scores"].get("Ownership & Support"),
-        weighted_score=scoring_result["weighted_score"],
-        classification=scoring_result["classification"],
-        recommendation=recommendation_text,
-    )
-    
-    db.add(db_response)
+    project_token = _normalize_project_token(request.project_token) or str(uuid.uuid4())
+    db_response = None
+
+    if request.project_token:
+        db_response = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id == current_user.id,
+            models.GovernanceResponse.project_token == project_token,
+        ).first()
+        if not db_response:
+            conflicting_response = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == project_token,
+            ).first()
+            if conflicting_response and conflicting_response.owner_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Project token is not available for this user")
+
+    if db_response:
+        db_response.project_name = request.project_name
+        db_response.submission_date = datetime.utcnow()
+        db_response.answers = detailed_answers
+        db_response.business_value_score = scoring_result["dimension_scores"].get("Business Value & Urgency")
+        db_response.data_sensitivity_score = scoring_result["dimension_scores"].get("Data Sensitivity")
+        db_response.integration_complexity_score = scoring_result["dimension_scores"].get("Integration & Architecture Complexity")
+        db_response.operational_impact_score = scoring_result["dimension_scores"].get("Operational Impact")
+        db_response.ai_risk_score = scoring_result["dimension_scores"].get("AI Risk")
+        db_response.ownership_score = scoring_result["dimension_scores"].get("Ownership & Support")
+        db_response.weighted_score = scoring_result["weighted_score"]
+        db_response.classification = scoring_result["classification"]
+        db_response.recommendation = recommendation_text
+        if request.client_id:
+            db_response.client_id = request.client_id
+        if request.client_secret:
+            db_response.client_secret = request.client_secret
+    else:
+        db_response = models.GovernanceResponse(
+            owner_id=current_user.id,
+            project_token=project_token,
+            project_name=request.project_name,
+            answers=detailed_answers,
+            business_value_score=scoring_result["dimension_scores"].get("Business Value & Urgency"),
+            data_sensitivity_score=scoring_result["dimension_scores"].get("Data Sensitivity"),
+            integration_complexity_score=scoring_result["dimension_scores"].get("Integration & Architecture Complexity"),
+            operational_impact_score=scoring_result["dimension_scores"].get("Operational Impact"),
+            ai_risk_score=scoring_result["dimension_scores"].get("AI Risk"),
+            ownership_score=scoring_result["dimension_scores"].get("Ownership & Support"),
+            weighted_score=scoring_result["weighted_score"],
+            classification=scoring_result["classification"],
+            recommendation=recommendation_text,
+            client_id=request.client_id,
+            client_secret=request.client_secret,
+        )
+        db.add(db_response)
+
     db.commit()
     db.refresh(db_response)
     
@@ -1898,6 +1984,9 @@ async def submit_governance_response(
         classification_description=scoring_result["classification_description"],
         recommendation=recommendation_text,
         hard_stops=scoring_result["hard_stops"],
+        pending_revision_reason=db_response.pending_revision_reason,
+        client_id=db_response.client_id,
+        client_secret=db_response.client_secret,
     )
 
 
@@ -2206,14 +2295,15 @@ async def get_project_roadmap_step(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
+    force_step: Optional[int] = None,  # Optional query param to force a specific step
 ):
     """
     Get the current roadmap step for a project.
 
     Steps:
         0 - Project Initiation           (project created)
-        1 - Governance                   (governance questionnaire submitted)
-        2 - Requirement Screening        (awaiting BRD analysis)
+        1 - Requirement Screening        (awaiting BRD analysis)
+        2 - Governance                   (governance questionnaire submitted)
         3 - Agent Analysis               (BRD analysis completed)
         4 - Prerequisite Classification  (prerequisites / credentials identified)
         5 - Task Creation                (tasks auto-generated via external API)
@@ -2227,8 +2317,8 @@ async def get_project_roadmap_step(
     """
     STEP_LABELS = [
         "Project Initiation",
-        "Governance",
         "Requirement Screening",
+        "Governance",
         "Agent Analysis",
         "Prerequisite Classification",
         "Task Creation",
@@ -2249,9 +2339,23 @@ async def get_project_roadmap_step(
     if not governance:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Refresh the governance object to ensure we have the latest steps_data
+    db.refresh(governance)
+
+    # Check for stored steps data - this represents the last reached step
+    stored_steps_data = governance.steps_data
+    stored_last_reached_step = None
+    if stored_steps_data and isinstance(stored_steps_data, dict):
+        stored_last_reached_step = stored_steps_data.get("current_step")
+        if stored_last_reached_step is not None:
+            try:
+                stored_last_reached_step = int(stored_last_reached_step)
+            except (ValueError, TypeError):
+                stored_last_reached_step = None
+
     # Step 0 (Project Initiation) is always complete once governance exists.
-    # Step 1 (Governance) is complete once questionnaire is submitted.
-    current_step = 2  # default active step before analysis is completed
+    # Governance sits between Requirement Screening and Agent Analysis.
+    current_step = 3  # default active step after governance is Agent Analysis
     failed_step = None
     roadmap_project_token = _normalize_project_token(governance.project_token or str(governance.id))
 
@@ -2304,6 +2408,7 @@ async def get_project_roadmap_step(
 
             if all_page_results:
                 has_tasks = True
+                print(f"Roadmap: Detected {len(all_page_results)} tasks for project {identifier}, has_tasks=True")
 
                 done_statuses = {"completed", "done", "closed", "complete", "resolved"}
 
@@ -2328,6 +2433,11 @@ async def get_project_roadmap_step(
         except Exception as e:
             print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
             # If task check fails, keep the last known roadmap state.
+            # But if we have a task token, assume tasks might exist and check stored step
+            if x_task_token and stored_last_reached_step == TASK_CREATION_IDX:
+                # If we're at Task Creation and have a task token, try to progress
+                # This handles cases where task detection temporarily fails
+                pass
 
     # 4. Check runtime agent statuses for true "On Flight" execution
     try:
@@ -2354,12 +2464,12 @@ async def get_project_roadmap_step(
         print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
 
     # Backend roadmap progression:
-    # Project Initiation -> Governance -> Requirement Screening -> Agent Analysis ->
+    # Project Initiation -> Requirement Screening -> Governance -> Agent Analysis ->
     # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
     # On Flight -> Complete
     PROJECT_INIT_IDX = 0
-    GOVERNANCE_IDX = 1
-    REQUIREMENT_SCREENING_IDX = 2
+    REQUIREMENT_SCREENING_IDX = 1
+    GOVERNANCE_IDX = 2
     AGENT_ANALYSIS_IDX = 3
     PREREQ_IDX = 4
     TASK_CREATION_IDX = 5
@@ -2370,12 +2480,12 @@ async def get_project_roadmap_step(
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[PROJECT_INIT_IDX] = "completed"
 
+    step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
+    step_statuses[GOVERNANCE_IDX] = "completed"
+
     if not has_analysis:
-        step_statuses[GOVERNANCE_IDX] = "completed"
-        step_statuses[REQUIREMENT_SCREENING_IDX] = "active"
+        step_statuses[AGENT_ANALYSIS_IDX] = "active"
     else:
-        step_statuses[GOVERNANCE_IDX] = "completed"
-        step_statuses[REQUIREMENT_SCREENING_IDX] = "completed"
         step_statuses[AGENT_ANALYSIS_IDX] = "completed"
         step_statuses[PREREQ_IDX] = "completed" if prerequisites_done else "active"
 
@@ -2388,7 +2498,7 @@ async def get_project_roadmap_step(
 
             if onboarding_complete:
                 on_flight_done = all_tasks_complete and not any_agent_working
-
+                
                 if on_flight_done:
                     step_statuses[ON_FLIGHT_IDX] = "completed"
                     if deploy_success:
@@ -2401,26 +2511,97 @@ async def get_project_roadmap_step(
                     step_statuses[ON_FLIGHT_IDX] = "active"
                     step_statuses[COMPLETE_IDX] = "pending"
 
-    # Derive current step from explicit statuses.
+    # Derive current step from explicit statuses (computed based on current state)
     active_step = next((idx for idx, status in enumerate(step_statuses) if status == "active"), None)
     if active_step is not None:
-        current_step = active_step
+        computed_step = active_step
     else:
         completed_indices = [idx for idx, status in enumerate(step_statuses) if status == "completed"]
-        current_step = completed_indices[-1] if completed_indices else 0
+        computed_step = completed_indices[-1] if completed_indices else 0
+    
+    print(f"Roadmap: Project {identifier} - has_tasks={has_tasks}, computed_step={computed_step}, stored_step={stored_last_reached_step}, step_statuses={step_statuses}")
 
-    return {
+    # Use stored last reached step if it exists, otherwise use computed step
+    # The stored step represents the furthest step the user has reached - NEVER go backwards
+    if stored_last_reached_step is not None and stored_last_reached_step >= 0:
+        # Always use the stored step as the baseline (last reached step)
+        # Only update if computed step is HIGHER (we've progressed further)
+        if computed_step > stored_last_reached_step:
+            # We've progressed further, update the stored step
+            stored_last_reached_step = computed_step
+            final_current_step = stored_last_reached_step
+            # Use the computed step_statuses since they reflect the actual current state
+            # The computed statuses already show Resource Onboarding as active when tasks exist
+            # Don't rebuild - keep the computed statuses
+        elif stored_last_reached_step == TASK_CREATION_IDX and (has_tasks or x_task_token):
+            # Special case: If we're at Task Creation (5) and tasks exist OR we have a task token,
+            # progress to Resource Onboarding (6)
+            # This handles the case where tasks exist but has_tasks detection failed
+            # If we have a task token, it's likely tasks exist even if detection failed
+            stored_last_reached_step = RESOURCE_ONBOARDING_IDX
+            final_current_step = RESOURCE_ONBOARDING_IDX
+            # Update step_statuses to reflect Resource Onboarding as active
+            step_statuses[TASK_CREATION_IDX] = "completed"
+            step_statuses[RESOURCE_ONBOARDING_IDX] = "active"
+            computed_step = RESOURCE_ONBOARDING_IDX  # Update computed_step to match
+        elif computed_step == stored_last_reached_step:
+            # Same step - use computed step_statuses to reflect current state (e.g., On Flight when agents are running)
+            final_current_step = computed_step
+            # Keep the computed step_statuses as they reflect the actual current state
+            # This ensures On Flight shows as active when agents are working, even if stored step is Resource Onboarding
+        else:
+            # Use stored step (never go backwards)
+            final_current_step = stored_last_reached_step
+            # Rebuild step_statuses based on the stored step only if we haven't progressed
+            new_step_statuses = ["pending"] * len(STEP_LABELS)
+            
+            # Mark all steps up to (but not including) the final step as completed
+            for i in range(final_current_step):
+                if i < len(new_step_statuses):
+                    new_step_statuses[i] = "completed"
+            
+            # Mark the final step as active (the last reached step)
+            if final_current_step < len(new_step_statuses):
+                new_step_statuses[final_current_step] = "active"
+            
+            step_statuses = new_step_statuses
+    else:
+        # No stored step, use computed step and save it
+        final_current_step = computed_step
+        stored_last_reached_step = computed_step
+
+    # Prepare the roadmap data
+    roadmap_data = {
         "result_id": governance.id,
         "project_token": roadmap_project_token or str(governance.id),
         "project_name": governance.project_name,
-        "current_step": current_step,
-        "current_step_label": STEP_LABELS[current_step] if current_step < len(STEP_LABELS) else "Complete",
+        "current_step": final_current_step,
+        "current_step_label": STEP_LABELS[final_current_step] if final_current_step < len(STEP_LABELS) else "Complete",
         "total_steps": len(STEP_LABELS),
         "steps": STEP_LABELS,
         "step_statuses": step_statuses,
         "failed_step": failed_step,
         "classification": governance.classification,
     }
+
+    # Save steps data to database (update last reached step)
+    # Only save if we have a valid stored_last_reached_step
+    try:
+        if stored_last_reached_step is not None and stored_last_reached_step >= 0:
+            governance.steps_data = {
+                "steps": STEP_LABELS,
+                "step_statuses": step_statuses,
+                "current_step": stored_last_reached_step,  # Store the last reached step (never goes backwards)
+                "current_step_label": STEP_LABELS[stored_last_reached_step] if stored_last_reached_step < len(STEP_LABELS) else "Complete",
+                "failed_step": failed_step,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            db.commit()
+    except Exception as e:
+        print(f"Failed to save steps data to database: {e}")
+        db.rollback()
+
+    return roadmap_data
 
 
 def _doc_has_completed_analysis(doc: models.Document) -> bool:
@@ -3922,6 +4103,11 @@ async def run_all_agents(
             agent["git_repo_url"] = None
             agent["git_token"] = None
 
+    agent_service.mark_run_all_waiting_state(
+        project_token,
+        [a["id"] for a in idle_agents],
+    )
+
     # Fire-and-forget: all agents run in background
     # Note: run_all_agents synchronously marks them as "running" as its first step.
     bg_task = asyncio.create_task(
@@ -3979,7 +4165,12 @@ async def add_agent(
     quota = _get_or_init_org_agent_quota(db, organization_name)
     shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
     if agent_kind == "dedicated":
-        if dedicated_used >= int(quota.dedicated_quota or 0):
+        dedicated_used_for_project = _count_org_dedicated_usage_for_project(
+            db,
+            organization_name,
+            project_token,
+        )
+        if dedicated_used_for_project >= int(quota.dedicated_quota or 0):
             raise HTTPException(
                 status_code=400,
                 detail="Dedicated agent capacity exceeded. Add more dedicated agents in Organization before creating new ones.",
