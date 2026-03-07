@@ -36,10 +36,31 @@ def _frontend_callback_url() -> str:
     return f"{settings.frontend_url.rstrip('/')}/azure-devops/callback"
 
 
-def get_oauth_url(state: str = "") -> str:
-    client_id = (settings.azure_devops_client_id or "").strip()
-    if not client_id:
-        raise ValueError("AZURE_DEVOPS_CLIENT_ID is not configured")
+def get_oauth_url(state: str = "", client_id: Optional[str] = None, client_secret: Optional[str] = None, checked_project_credentials: bool = False) -> str:
+    """
+    Get Azure DevOps OAuth URL.
+    
+    Args:
+        state: OAuth state parameter
+        client_id: Optional project-specific client_id. If not provided, uses global settings.
+        client_secret: Optional project-specific client_secret (not used in URL, but validated).
+        checked_project_credentials: True if project credentials were checked (even if they were None/empty).
+    """
+    # Use project-specific client_id if provided, otherwise fall back to global settings
+    effective_client_id = (client_id or "").strip() or (settings.azure_devops_client_id or "").strip()
+    if not effective_client_id:
+        if checked_project_credentials:
+            # Project-specific credentials were checked but are empty/NULL
+            raise ValueError("Azure DevOps OAuth is not configured for this project. Please set azure_devops_client_id and azure_devops_client_secret for this project in the database, or configure global AZURE_DEVOPS_CLIENT_ID in backend .env file.")
+        else:
+            # No project credentials provided, and global is also not set
+            raise ValueError("AZURE_DEVOPS_CLIENT_ID is not configured. Please set AZURE_DEVOPS_CLIENT_ID and AZURE_DEVOPS_CLIENT_SECRET in backend .env file.")
+    
+    # Validate client_secret if provided (for consistency check)
+    if client_secret:
+        effective_secret = (client_secret or "").strip()
+        if not effective_secret:
+            raise ValueError("AZURE_DEVOPS_CLIENT_SECRET is not configured for this project")
 
     redirect_uri = quote(_frontend_callback_url(), safe="")
     scope = quote("vso.code", safe="")
@@ -47,7 +68,7 @@ def get_oauth_url(state: str = "") -> str:
 
     return (
         f"{AZDO_OAUTH_AUTHORIZE_URL}"
-        f"?client_id={quote(client_id, safe='')}"
+        f"?client_id={quote(effective_client_id, safe='')}"
         f"&response_type=Assertion"
         f"&state={encoded_state}"
         f"&scope={scope}"
@@ -55,10 +76,20 @@ def get_oauth_url(state: str = "") -> str:
     )
 
 
-async def exchange_code_for_token(code: str) -> Dict[str, Any]:
-    client_id = (settings.azure_devops_client_id or "").strip()
-    client_secret = (settings.azure_devops_client_secret or "").strip()
-    if not client_id or not client_secret:
+async def exchange_code_for_token(code: str, client_id: Optional[str] = None, client_secret: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Exchange OAuth code for access token.
+    
+    Args:
+        code: OAuth authorization code
+        client_id: Optional project-specific client_id. If not provided, uses global settings.
+        client_secret: Optional project-specific client_secret. If not provided, uses global settings.
+    """
+    # Use project-specific credentials if provided, otherwise fall back to global settings
+    effective_client_id = (client_id or "").strip() or (settings.azure_devops_client_id or "").strip()
+    effective_client_secret = (client_secret or "").strip() or (settings.azure_devops_client_secret or "").strip()
+    
+    if not effective_client_id or not effective_client_secret:
         raise ValueError("Azure DevOps OAuth credentials are not configured")
 
     payload = {

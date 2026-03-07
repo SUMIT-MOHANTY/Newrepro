@@ -199,6 +199,13 @@ class GovernanceResponse(Base):
     client_id = Column(String, nullable=True)
     client_secret = Column(String, nullable=True)
 
+    # Azure DevOps OAuth credentials (per-project)
+    azure_devops_client_id = Column(String, nullable=True)
+    azure_devops_client_secret = Column(String, nullable=True)
+    azure_devops_organization = Column(String, nullable=True)
+    azure_devops_project = Column(String, nullable=True)
+    azure_devops_tenant_id = Column(String, nullable=True)
+
     # Track when prerequisites were acknowledged
     prerequisites_completed_at = Column(DateTime, nullable=True)
 

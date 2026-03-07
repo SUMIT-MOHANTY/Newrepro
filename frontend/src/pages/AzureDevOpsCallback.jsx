@@ -9,6 +9,7 @@ const AzureDevOpsCallback = () => {
 
     useEffect(() => {
         const code = searchParams.get('code');
+        const state = searchParams.get('state');
         if (!code) {
             setStatus('Missing authorization code. Please try again.');
             return;
@@ -17,7 +18,15 @@ const AzureDevOpsCallback = () => {
         const exchange = async () => {
             try {
                 const token = localStorage.getItem('token');
-                const resp = await fetch(API_ENDPOINTS.AZURE_DEVOPS_CALLBACK, {
+                // Build URL with state query parameter if available
+                let callbackUrl = API_ENDPOINTS.AZURE_DEVOPS_CALLBACK;
+                if (state) {
+                    const url = new URL(callbackUrl);
+                    url.searchParams.set('state', state);
+                    callbackUrl = url.toString();
+                }
+                
+                const resp = await fetch(callbackUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

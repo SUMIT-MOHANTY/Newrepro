@@ -2795,11 +2795,41 @@ async def github_repos(
 
 @app.get("/azure-devops/auth-url")
 async def azure_devops_auth_url(
+    project_token: Optional[str] = None,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
-    """Return the Azure DevOps OAuth authorization URL."""
+    """Return the Azure DevOps OAuth authorization URL. Supports project-specific credentials."""
     try:
-        url = azure_devops_oauth_service.get_oauth_url(state=str(current_user.id))
+        project_client_id = None
+        project_client_secret = None
+        checked_project_credentials = False
+        
+        # If project_token is provided, try to get project-specific credentials
+        if project_token:
+            gov_res = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == project_token,
+                models.GovernanceResponse.owner_id == current_user.id
+            ).first()
+            if gov_res:
+                checked_project_credentials = True
+                project_client_id = gov_res.azure_devops_client_id
+                project_client_secret = gov_res.azure_devops_client_secret
+        
+        # Include project_token in state so callback can use it
+        state_data = {"user_id": str(current_user.id)}
+        if project_token:
+            state_data["project_token"] = project_token
+        
+        import json
+        state = json.dumps(state_data)
+        
+        url = azure_devops_oauth_service.get_oauth_url(
+            state=state,
+            client_id=project_client_id,
+            client_secret=project_client_secret,
+            checked_project_credentials=checked_project_credentials
+        )
         return {"url": url}
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2812,12 +2842,40 @@ class AzureDevOpsCallbackPayload(BaseModel):
 @app.post("/azure-devops/callback")
 async def azure_devops_callback(
     payload: AzureDevOpsCallbackPayload,
+    state: Optional[str] = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Exchange an OAuth code for an Azure DevOps token and persist it."""
+    """Exchange an OAuth code for an Azure DevOps token and persist it. Supports project-specific credentials."""
     try:
-        token_data = await azure_devops_oauth_service.exchange_code_for_token(payload.code)
+        project_token = None
+        project_client_id = None
+        project_client_secret = None
+        
+        # Parse state to get project_token if present
+        if state:
+            try:
+                import json
+                state_data = json.loads(state)
+                project_token = state_data.get("project_token")
+            except:
+                pass
+        
+        # If project_token is provided, get project-specific credentials
+        if project_token:
+            gov_res = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == project_token,
+                models.GovernanceResponse.owner_id == current_user.id
+            ).first()
+            if gov_res:
+                project_client_id = gov_res.azure_devops_client_id
+                project_client_secret = gov_res.azure_devops_client_secret
+        
+        token_data = await azure_devops_oauth_service.exchange_code_for_token(
+            payload.code,
+            client_id=project_client_id,
+            client_secret=project_client_secret
+        )
         access_token = (token_data.get("access_token") or "").strip()
         if not access_token:
             raise HTTPException(status_code=400, detail="Failed to obtain Azure DevOps token")
@@ -2867,6 +2925,84 @@ async def azure_devops_status(
     }
 
 
+class AzureDevOpsCredentialsPayload(BaseModel):
+    project_token: str
+    organization: Optional[str] = None
+    project: Optional[str] = None
+    tenant_id: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+
+
+@app.get("/azure-devops/credentials/{project_token}")
+async def get_azure_devops_credentials(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get Azure DevOps OAuth credentials for a specific project."""
+    try:
+        gov_res = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == project_token,
+            models.GovernanceResponse.owner_id == current_user.id
+        ).first()
+        
+        if not gov_res:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        return {
+            "organization": gov_res.azure_devops_organization or None,
+            "project": gov_res.azure_devops_project or None,
+            "tenant_id": gov_res.azure_devops_tenant_id or None,
+            "client_id": gov_res.azure_devops_client_id or None,
+            "client_secret": gov_res.azure_devops_client_secret or None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get credentials: {e}")
+
+
+@app.post("/azure-devops/save-credentials")
+async def save_azure_devops_credentials(
+    payload: AzureDevOpsCredentialsPayload,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Save Azure DevOps OAuth credentials for a specific project."""
+    try:
+        gov_res = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == payload.project_token,
+            models.GovernanceResponse.owner_id == current_user.id
+        ).first()
+        
+        if not gov_res:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Update credentials if provided
+        if payload.organization is not None:
+            gov_res.azure_devops_organization = payload.organization
+        if payload.project is not None:
+            gov_res.azure_devops_project = payload.project
+        if payload.tenant_id is not None:
+            gov_res.azure_devops_tenant_id = payload.tenant_id
+        if payload.client_id is not None:
+            gov_res.azure_devops_client_id = payload.client_id
+        if payload.client_secret is not None:
+            gov_res.azure_devops_client_secret = payload.client_secret
+        
+        db.commit()
+        
+        return {
+            "status": "saved",
+            "message": "Azure DevOps credentials saved successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save credentials: {e}")
+
+
 @app.post("/azure-devops/disconnect")
 async def azure_devops_disconnect(
     current_user: models.User = Depends(auth.get_current_user),
@@ -2901,6 +3037,63 @@ async def azure_devops_repos(
         raise HTTPException(status_code=status_code, detail="Failed to fetch Azure DevOps repositories.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch Azure DevOps repositories: {e}")
+
+
+class ListProjectReposRequest(BaseModel):
+    project_token: str
+    organization: str
+    project: str
+
+
+@app.post("/azure-devops/list-project-repos")
+async def list_project_repos(
+    payload: ListProjectReposRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List repositories in a specific Azure DevOps project."""
+    try:
+        # Try to get project-specific credentials first
+        gov_res = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == payload.project_token,
+            models.GovernanceResponse.owner_id == current_user.id
+        ).first()
+        
+        access_token = None
+        
+        # Try OAuth token from user's connected account
+        user_token = (current_user.azure_devops_token or "").strip()
+        if user_token:
+            access_token = user_token
+        
+        if not access_token:
+            raise HTTPException(
+                status_code=400,
+                detail="Azure DevOps authentication required. Please connect your Azure DevOps account first."
+            )
+        
+        repos = await azure_devops_service.list_project_repositories(
+            organization=payload.organization,
+            project=payload.project,
+            pat=None,
+            access_token=access_token,
+        )
+        
+        return {"repos": repos}
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else 502
+        detail = "Failed to fetch repositories from Azure DevOps project."
+        if e.response is not None:
+            try:
+                error_payload = e.response.json() or {}
+                detail = str(error_payload.get("message") or error_payload.get("value") or detail)
+            except Exception:
+                detail = str(e.response.text or detail)
+        raise HTTPException(status_code=status_code, detail=detail)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list project repositories: {e}")
 
 
 class RepoContextRequest(BaseModel):

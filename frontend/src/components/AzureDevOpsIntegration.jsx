@@ -16,6 +16,7 @@ const AzureDevOpsIntegration = ({
     onClearRepo,
     onRepoSelected,
     inline = false,
+    selectedProjectKey = null,
 }) => {
     const [connected, setConnected] = useState(false);
     const [azureUsername, setAzureUsername] = useState('');
@@ -26,6 +27,15 @@ const AzureDevOpsIntegration = ({
     const [showRepoList, setShowRepoList] = useState(false);
     const [searchFilter, setSearchFilter] = useState('');
     const [connectError, setConnectError] = useState('');
+    const [showCredentialsForm, setShowCredentialsForm] = useState(false);
+    const [savingCredentials, setSavingCredentials] = useState(false);
+    const [credentials, setCredentials] = useState({
+        organization: '',
+        project: '',
+        tenant_id: '',
+        client_id: '',
+        client_secret: '',
+    });
 
     const getToken = () => localStorage.getItem('token');
 
@@ -47,17 +57,113 @@ const AzureDevOpsIntegration = ({
         checkStatus();
     }, [checkStatus]);
 
+    // Load saved credentials when project changes
+    useEffect(() => {
+        const loadCredentials = async () => {
+            if (!selectedProjectKey) {
+                setCredentials({
+                    organization: '',
+                    project: '',
+                    tenant_id: '',
+                    client_id: '',
+                    client_secret: '',
+                });
+                setShowCredentialsForm(false);
+                return;
+            }
+
+            try {
+                const resp = await fetch(`${API_ENDPOINTS.AZURE_DEVOPS_GET_CREDENTIALS}/${selectedProjectKey}`, {
+                    headers: { Authorization: `Bearer ${getToken()}` },
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const hasCredentials = data.organization || data.project || data.tenant_id || data.client_id || data.client_secret;
+                    if (hasCredentials) {
+                        setCredentials({
+                            organization: data.organization || '',
+                            project: data.project || '',
+                            tenant_id: data.tenant_id || '',
+                            client_id: data.client_id || '',
+                            client_secret: data.client_secret || '',
+                        });
+                        // Show form if credentials exist
+                        setShowCredentialsForm(true);
+                    } else {
+                        setCredentials({
+                            organization: '',
+                            project: '',
+                            tenant_id: '',
+                            client_id: '',
+                            client_secret: '',
+                        });
+                        setShowCredentialsForm(false);
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load Azure DevOps credentials:', e);
+            }
+        };
+
+        loadCredentials();
+    }, [selectedProjectKey]);
+
+    const handleSaveCredentials = async () => {
+        if (!selectedProjectKey) {
+            setConnectError('Please select a project first.');
+            return;
+        }
+        
+        setSavingCredentials(true);
+        setConnectError('');
+        try {
+            const resp = await fetch(API_ENDPOINTS.AZURE_DEVOPS_SAVE_CREDENTIALS, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${getToken()}`,
+                },
+                body: JSON.stringify({
+                    project_token: selectedProjectKey,
+                    ...credentials,
+                }),
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.detail || 'Failed to save credentials');
+            }
+            setShowCredentialsForm(false);
+            // After saving, try to connect
+            await handleConnect();
+        } catch (e) {
+            setConnectError(e.message || 'Failed to save credentials.');
+            console.error('Save credentials error:', e);
+        } finally {
+            setSavingCredentials(false);
+        }
+    };
+
     const handleConnect = async () => {
         setConnectError('');
         try {
-            const resp = await fetch(API_ENDPOINTS.AZURE_DEVOPS_AUTH_URL, {
+            // Build URL with project_token query parameter if available
+            let authUrl = API_ENDPOINTS.AZURE_DEVOPS_AUTH_URL;
+            if (selectedProjectKey) {
+                const url = new URL(authUrl);
+                url.searchParams.set('project_token', selectedProjectKey);
+                authUrl = url.toString();
+            }
+            
+            const resp = await fetch(authUrl, {
                 headers: { Authorization: `Bearer ${getToken()}` },
             });
             if (!resp.ok) {
                 const errData = await resp.json().catch(() => ({}));
                 let message = errData.detail || `Failed to get Azure DevOps auth URL (HTTP ${resp.status})`;
-                if (String(message).includes('AZURE_DEVOPS_CLIENT_ID')) {
-                    message = 'Azure DevOps OAuth is not configured on backend (missing AZURE_DEVOPS_CLIENT_ID).';
+                if (String(message).includes('AZURE_DEVOPS_CLIENT_ID') || String(message).includes('not configured')) {
+                    // Show credentials form if credentials are missing
+                    setShowCredentialsForm(true);
+                    return;
                 }
                 throw new Error(message);
             }
@@ -157,16 +263,71 @@ const AzureDevOpsIntegration = ({
         if (!connected) {
             return (
                 <div className="space-y-1.5">
-                    <button
-                        type="button"
-                        onClick={handleConnect}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-app-text-label bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-all active:scale-95 border border-app-border"
-                    >
-                        <AzureDevOpsIcon className="w-3.5 h-3.5" />
-                        Connect Azure DevOps
-                    </button>
-                    {connectError && (
-                        <p className="max-w-[320px] text-[11px] font-medium text-app-status-error">{connectError}</p>
+                    {showCredentialsForm ? (
+                        <div className="border border-app-border rounded-lg p-3 bg-app-bg-card space-y-2 min-w-[320px]">
+                            <div className="flex items-center justify-between mb-2">
+                                <h4 className="text-xs font-bold text-app-text-main">Azure DevOps Credentials</h4>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowCredentialsForm(false)}
+                                    className="text-[10px] text-app-text-muted hover:text-app-text-main"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            <input
+                                type="text"
+                                value={credentials.organization}
+                                onChange={(e) => setCredentials({ ...credentials, organization: e.target.value })}
+                                className="w-full px-2 py-1.5 text-[11px] border border-app-border rounded focus:ring-1 focus:ring-app-primary outline-none bg-app-bg-page"
+                            />
+                            <input
+                                type="text"
+                                value={credentials.project}
+                                onChange={(e) => setCredentials({ ...credentials, project: e.target.value })}
+                                className="w-full px-2 py-1.5 text-[11px] border border-app-border rounded focus:ring-1 focus:ring-app-primary outline-none bg-app-bg-page"
+                            />
+                            <input
+                                type="text"
+                                value={credentials.tenant_id}
+                                onChange={(e) => setCredentials({ ...credentials, tenant_id: e.target.value })}
+                                className="w-full px-2 py-1.5 text-[11px] border border-app-border rounded focus:ring-1 focus:ring-app-primary outline-none bg-app-bg-page"
+                            />
+                            <input
+                                type="text"
+                                value={credentials.client_id}
+                                onChange={(e) => setCredentials({ ...credentials, client_id: e.target.value })}
+                                className="w-full px-2 py-1.5 text-[11px] border border-app-border rounded focus:ring-1 focus:ring-app-primary outline-none bg-app-bg-page"
+                            />
+                            <input
+                                type="password"
+                                value={credentials.client_secret}
+                                onChange={(e) => setCredentials({ ...credentials, client_secret: e.target.value })}
+                                className="w-full px-2 py-1.5 text-[11px] border border-app-border rounded focus:ring-1 focus:ring-app-primary outline-none bg-app-bg-page"
+                            />
+                            <button
+                                type="button"
+                                onClick={handleSaveCredentials}
+                                disabled={savingCredentials || !selectedProjectKey}
+                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-white bg-app-primary rounded hover:bg-app-primary-dark transition-colors disabled:opacity-50"
+                            >
+                                {savingCredentials ? 'Saving...' : 'Save & Connect'}
+                            </button>
+                        </div>
+                    ) : (
+                        <>
+                            <button
+                                type="button"
+                                onClick={handleConnect}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-app-text-label bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-all active:scale-95 border border-app-border"
+                            >
+                                <AzureDevOpsIcon className="w-3.5 h-3.5" />
+                                Connect Azure DevOps
+                            </button>
+                            {connectError && (
+                                <p className="max-w-[320px] text-[11px] font-medium text-app-status-error">{connectError}</p>
+                            )}
+                        </>
                     )}
                 </div>
             );
@@ -262,17 +423,99 @@ const AzureDevOpsIntegration = ({
 
     if (!connected) {
         return (
-            <div className="space-y-2">
-                <button
-                    type="button"
-                    onClick={handleConnect}
-                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-app-primary rounded-lg hover:bg-app-primary-dark transition-colors"
-                >
-                    <AzureDevOpsIcon className="w-4 h-4" />
-                    Connect Azure DevOps
-                </button>
-                {connectError && (
-                    <p className="text-xs font-medium text-app-status-error">{connectError}</p>
+            <div className="space-y-3">
+                {showCredentialsForm ? (
+                    <div className="space-y-3 border border-app-border rounded-lg p-4 bg-app-bg-card">
+                        <div className="flex items-center justify-between">
+                            <h4 className="text-sm font-bold text-app-text-main">Azure DevOps Credentials</h4>
+                            <button
+                                type="button"
+                                onClick={() => setShowCredentialsForm(false)}
+                                className="text-xs text-app-text-muted hover:text-app-text-main"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                        <div className="space-y-2">
+                            <div>
+                                <label className="text-xs font-semibold text-app-text-label mb-1 block">Organization</label>
+                                <input
+                                    type="text"
+                                    value={credentials.organization}
+                                    onChange={(e) => setCredentials({ ...credentials, organization: e.target.value })}
+                                    className="w-full px-3 py-2 text-xs border border-app-border rounded-lg focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none bg-app-bg-page"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-app-text-label mb-1 block">Project</label>
+                                <input
+                                    type="text"
+                                    value={credentials.project}
+                                    onChange={(e) => setCredentials({ ...credentials, project: e.target.value })}
+                                    className="w-full px-3 py-2 text-xs border border-app-border rounded-lg focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none bg-app-bg-page"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-app-text-label mb-1 block">Tenant ID</label>
+                                <input
+                                    type="text"
+                                    value={credentials.tenant_id}
+                                    onChange={(e) => setCredentials({ ...credentials, tenant_id: e.target.value })}
+                                    className="w-full px-3 py-2 text-xs border border-app-border rounded-lg focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none bg-app-bg-page"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-app-text-label mb-1 block">Client ID</label>
+                                <input
+                                    type="text"
+                                    value={credentials.client_id}
+                                    onChange={(e) => setCredentials({ ...credentials, client_id: e.target.value })}
+                                    className="w-full px-3 py-2 text-xs border border-app-border rounded-lg focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none bg-app-bg-page"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-app-text-label mb-1 block">Client Secret</label>
+                                <input
+                                    type="password"
+                                    value={credentials.client_secret}
+                                    onChange={(e) => setCredentials({ ...credentials, client_secret: e.target.value })}
+                                    className="w-full px-3 py-2 text-xs border border-app-border rounded-lg focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none bg-app-bg-page"
+                                />
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={handleSaveCredentials}
+                            disabled={savingCredentials || !selectedProjectKey}
+                            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-app-primary rounded-lg hover:bg-app-primary-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            {savingCredentials ? (
+                                <>
+                                    <span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full"></span>
+                                    Saving...
+                                </>
+                            ) : (
+                                <>
+                                    <AzureDevOpsIcon className="w-4 h-4" />
+                                    Save & Connect
+                                </>
+                            )}
+                        </button>
+                    </div>
+                ) : (
+                    <>
+                        <button
+                            type="button"
+                            onClick={handleConnect}
+                            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-app-primary rounded-lg hover:bg-app-primary-dark transition-colors"
+                        >
+                            <AzureDevOpsIcon className="w-4 h-4" />
+                            Connect Azure DevOps
+                        </button>
+                        {connectError && (
+                            <p className="text-xs font-medium text-app-status-error">{connectError}</p>
+                        )}
+                    </>
                 )}
             </div>
         );
