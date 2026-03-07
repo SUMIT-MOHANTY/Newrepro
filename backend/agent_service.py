@@ -129,28 +129,44 @@ WORKSPACE_CONTRACT_PROBE_TTL_SECONDS = 300.0
 
 TECH_SPEC_ARCHITECT_SYSTEM_PROMPT = (
     "You are a Senior Software Architect. Produce precise, unambiguous technical specifications. "
+    "The user content includes an authoritative PLANNING_PACKET_JSON. Parse that JSON before reasoning. "
+    "Treat the task titles, descriptions, checklists, planned file hints, current repo tree, stack decision, "
+    "stack evidence, and workspace contract in that packet as the primary source of truth. "
+    "Do not fall back to generic scaffolds when they contradict the packet. "
+    "Never mix mutually exclusive stacks in one response, such as Flask with Express, Flask/Jinja with React/Vite, "
+    "React with Vue, or Next.js with static HTML. "
     "When defining file structure, output exactly one final canonical project tree. "
     "Choose one production-ready structure and commit to it. "
     "Never output alternative roots, conditional structures, migration options, fallback layouts, "
     "or prose such as 'pick one', 'if X then Y', or 'the tree collapses to'. "
     "If the current repository tree already establishes a root, preserve it unless the requirements "
-    "clearly force a migration. Resolve ambiguity yourself before responding."
+    "clearly force a migration. "
+    "For Flask + Jinja projects, keep templates and static assets inside the Flask application structure "
+    "instead of inventing a separate Node frontend."
 )
 
 MASTER_TREE_GENERATOR_SYSTEM_PROMPT = (
     "You are a senior software architect generating the canonical project tree used by all worker agents. "
+    "The user content includes an authoritative PLANNING_PACKET_JSON. Parse that JSON first and treat it as binding. "
+    "Use the task details and checklist items as hard evidence for what the tree must contain. "
     "Return exactly one final tree with one fixed canonical root. "
     "Choose one solid structure and commit to it. "
     "Never output alternate roots, conditional variants, migration notes, fallback layouts, "
     "multiple diagrams, or prose like 'pick one'. "
+    "Never combine conflicting frameworks in one tree. "
+    "If the packet indicates Flask + Jinja, do not invent Express, React, Vite, Next.js, or a separate frontend app root "
+    "unless the tasks explicitly require them. "
     "The tree must be production-ready, structurally complete for the tasks, and consistent with the "
     "current repository tree, workspace contract, and stack decision."
 )
 
 MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
-    "You are a rigorous software architecture validator. Respond only with JSON. "
+    "You are a rigorous software architecture validator. The user content includes an authoritative "
+    "PLANNING_PACKET_JSON. Parse that JSON before evaluating the tree. Respond only with JSON. "
     "Reject any project tree that contains ambiguity, multiple candidate roots, alternative layouts, "
-    "conditional wording, migration options, or more than one tree. "
+    "conditional wording, migration options, more than one tree, or mixed stack signals that contradict the packet. "
+    "Reject trees that introduce frameworks or roots that are not supported by the task details, checklist evidence, "
+    "current repo tree, stack decision, and workspace contract. "
     "Approve only one complete replacement tree with one fixed root. "
     "If rejected, corrected_tree must be one full replacement tree, not a diff or a set of options."
 )
@@ -920,6 +936,19 @@ async def _generate_technical_spec(
         stack_profile=stack_profile,
         workspace_contract=workspace_contract,
     )
+    planning_packet_json = json.dumps(
+        _build_master_planning_packet(
+            tasks=tasks,
+            brd_summary=brd_summary,
+            kg_context=kg_context,
+            tech_spec="",
+            stack_profile=stack_profile,
+            workspace_contract=workspace_contract,
+            repo_tree_context=repo_tree_context,
+        ),
+        ensure_ascii=True,
+        indent=2,
+    )
     stack_text = (
         f"Frontend: {stack_profile.get('frontend') or 'unspecified'}\n"
         f"Backend: {stack_profile.get('backend') or 'unspecified'}\n"
@@ -938,6 +967,9 @@ EXISTING CODEBASE KNOWLEDGE (from Knowledge Graph):
 
 CURRENT GIT PROJECT TREE SNAPSHOT:
 {repo_tree_context[:4000] if repo_tree_context else "Not provided."}
+
+AUTHORITATIVE PLANNING_PACKET_JSON:
+{planning_packet_json}
 
 TASKS TO BE IMPLEMENTED BY AGENTS (titles, descriptions, checklists, and file hints):
 {task_list_text}
@@ -964,7 +996,10 @@ Generate a Technical Specification with these EXACT sections:
 - If the project has no persistent data model, explicitly write "Not applicable for this project."
 
 ## 4. FILE STRUCTURE (CRITICAL - Output as a tree diagram!)
-You MUST output a specific directory tree like this example:
+You MUST output a specific directory tree. The example below is only for formatting syntax.
+Do NOT copy its frameworks or directory names unless the PLANNING_PACKET_JSON requires them.
+
+Formatting example:
 
 ```
 portfolio/
@@ -993,6 +1028,9 @@ For YOUR project, output the exact directory tree with:
 - Only the directories actually required by the tasks and stack decision
 - Every file with its purpose in comments
 - Output exactly one final canonical tree. Do not output alternatives, migrations, conditional variants, or "pick one" instructions.
+- Treat the PLANNING_PACKET_JSON as authoritative. Resolve contradictions in favor of task details, checklist evidence, stack evidence, and the current repo tree.
+- Never mix conflicting stacks in one spec. For example: Flask with Express, Flask/Jinja with React/Vite, React with Vue, or Next.js with static HTML.
+- If the tasks indicate Flask + Jinja, keep templates and static assets within the Flask application structure.
 - Extend the current repo tree when possible instead of inventing alternate roots
 - If the current repo tree already establishes an app root, preserve that root unless the BRD/tasks clearly require a migration
 - Backend files in `backend/` only if the project truly has backend work and no stronger existing root is already established
@@ -5450,6 +5488,21 @@ def _is_stack_consistent_master_tree_path(
             return False
         if lower in {"frontend/src/main.tsx", "frontend/src/main.jsx"}:
             return False
+    elif frontend_key == "jinja-html":
+        if basename in {
+            "next.config.js",
+            "next.config.ts",
+            "next.config.mjs",
+            "vite.config.js",
+            "vite.config.ts",
+            "package.json",
+            "tsconfig.json",
+        }:
+            return False
+        if lower.startswith("frontend/"):
+            return False
+        if lower.startswith("app/templates/") or lower.startswith("app/static/"):
+            return True
     elif frontend_key == "static-html":
         if basename in {"next.config.js", "next.config.ts", "next.config.mjs", "vite.config.js", "vite.config.ts"}:
             return False
@@ -5472,6 +5525,13 @@ def _is_stack_consistent_master_tree_path(
         if lower in {"backend/package.json", "backend/tsconfig.json"}:
             return False
         if lower.startswith("backend/src/") and lower.endswith((".ts", ".js")):
+            return False
+    elif backend_key == "flask":
+        if lower in {"backend/package.json", "backend/tsconfig.json"}:
+            return False
+        if lower.startswith("backend/src/") and lower.endswith((".ts", ".js")):
+            return False
+        if basename in {"app.ts", "server.ts"}:
             return False
     elif backend_key == "express":
         if lower.startswith("backend/") and basename in {"requirements.txt", "pyproject.toml", "alembic.ini"}:
@@ -5517,6 +5577,22 @@ def _canonicalize_master_tree_path(
             normalized = "frontend/" + normalized[len("frontend/src/"):]
         elif lower.startswith("src/"):
             normalized = f"frontend/{normalized[len('src/'):]}"
+    elif frontend_key == "jinja-html":
+        if lower.startswith("frontend/"):
+            rel = normalized[len("frontend/"):].lstrip("/")
+            rel_lower = rel.lower()
+            if rel_lower.startswith("templates/"):
+                normalized = f"app/{rel}"
+            elif rel_lower.startswith("static/"):
+                normalized = f"app/{rel}"
+            elif rel_lower.endswith(".html"):
+                normalized = f"app/templates/{rel}"
+            elif rel_lower.endswith((".css", ".scss", ".js")):
+                normalized = f"app/static/{rel}"
+        elif lower.startswith("templates/"):
+            normalized = f"app/{normalized}"
+        elif lower.startswith("static/"):
+            normalized = f"app/{normalized}"
 
     return _prefer_stack_consistent_extension(normalized, stack_profile)
 
@@ -5663,6 +5739,28 @@ def _module_root_from_source_root(source_root: str, fallback: str) -> str:
     return normalized
 
 
+def _flask_template_root_from_source_root(source_root: str) -> str:
+    normalized = _normalize_master_tree_path_candidate(source_root)
+    if not normalized:
+        return "app/templates"
+    if normalized.endswith("/templates"):
+        return normalized
+    if normalized.endswith("/static"):
+        return normalized[:-len("/static")] + "/templates"
+    return normalized.rstrip("/") + "/templates"
+
+
+def _flask_static_root_from_source_root(source_root: str) -> str:
+    normalized = _normalize_master_tree_path_candidate(source_root)
+    if not normalized:
+        return "app/static"
+    if normalized.endswith("/static"):
+        return normalized
+    if normalized.endswith("/templates"):
+        return normalized[:-len("/templates")] + "/static"
+    return normalized.rstrip("/") + "/static"
+
+
 def _infer_repo_path_from_filename(
     name: str,
     stack_profile: Optional[Dict[str, Any]] = None,
@@ -5678,9 +5776,16 @@ def _infer_repo_path_from_filename(
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     backend_key = str(stack.get("backend_key") or "").strip()
     frontend_key = str(stack.get("frontend_key") or "").strip()
-    backend_default = "backend/src" if backend_key == "express" else "backend"
+    if backend_key == "express":
+        backend_default = "backend/src"
+    elif backend_key == "flask":
+        backend_default = "app"
+    else:
+        backend_default = "backend"
     if frontend_key == "nextjs":
         frontend_default = "frontend/src/app"
+    elif frontend_key == "jinja-html":
+        frontend_default = "app/templates"
     elif frontend_key == "static-html":
         frontend_default = "frontend"
     else:
@@ -5689,6 +5794,8 @@ def _infer_repo_path_from_filename(
     frontend_src = _preferred_contract_source_root(workspace_contract, "frontend", frontend_default)
     backend_root = _module_root_from_source_root(backend_src, "backend")
     frontend_root = _module_root_from_source_root(frontend_src, "frontend")
+    flask_template_root = _flask_template_root_from_source_root(frontend_src if frontend_key == "jinja-html" else backend_src)
+    flask_static_root = _flask_static_root_from_source_root(frontend_src if frontend_key == "jinja-html" else backend_src)
 
     if lower in {
         "readme.md",
@@ -5722,6 +5829,8 @@ def _infer_repo_path_from_filename(
         return f".github/workflows/{filename}"
 
     if lower in {"pyproject.toml", "requirements.txt", "requirements-dev.txt", "alembic.ini"}:
+        if backend_key == "flask":
+            return filename
         return f"{backend_root}/{filename}"
 
     if lower in {"main.py", "config.py", "auth.py", "models.py", "database.py", "schemas.py"} and backend_src == "backend":
@@ -5730,17 +5839,27 @@ def _infer_repo_path_from_filename(
         return f"{backend_src}/{filename}"
     if lower in {"main.py", "config.py"}:
         return f"{backend_src}/{filename}" if backend_key == "fastapi" else f"{backend_root}/{filename}"
+    if lower in {"app.py", "__init__.py", "wsgi.py"} and backend_key == "flask":
+        return f"{backend_root}/{filename}"
+    if lower in {"gunicorn_conf.py", "gunicorn.conf.py"} and backend_key == "flask":
+        return filename
 
     if any(token in lower for token in ("cpu", "limiter", "sanitize", "sanitization", "security", "rate_limit", "ratelimit", "middleware")):
         return f"{backend_src}/middleware/{filename}" if backend_key == "express" else f"{backend_src}/core/{filename}"
     if "route" in lower:
-        return f"{backend_src}/api/routes/{filename}" if backend_key == "express" else f"{backend_src}/api/v1/routes/{filename}"
+        if backend_key == "express":
+            return f"{backend_src}/api/routes/{filename}"
+        if backend_key == "flask":
+            return f"{backend_root}/{filename}"
+        return f"{backend_src}/api/v1/routes/{filename}"
     if any(token in lower for token in ("service", "parser", "cache", "validation")):
         return f"{backend_src}/services/{filename}"
     if any(token in lower for token in ("repo", "repository")) and backend_key == "fastapi":
         return f"{backend_src}/repositories/{filename}"
     if lower.endswith((".test.ts", ".spec.ts", ".test.js", ".spec.js", "_test.py")):
         if lower.endswith(".py"):
+            if backend_key == "flask":
+                return f"tests/{filename}"
             return f"backend/tests/{filename}"
         if lower.endswith((".tsx", ".jsx")):
             return f"frontend/tests/{filename}"
@@ -5756,9 +5875,13 @@ def _infer_repo_path_from_filename(
         return f"frontend/src/components/{filename}"
 
     if lower.endswith(".html"):
+        if frontend_key == "jinja-html":
+            return f"{flask_template_root}/{filename}"
         return f"{frontend_root}/{filename}"
 
     if lower.endswith((".ts", ".js")):
+        if frontend_key == "jinja-html":
+            return f"{flask_static_root}/{filename}"
         if frontend_key == "static-html":
             return f"{frontend_root}/{filename}"
         if lower.startswith("use"):
@@ -5770,9 +5893,16 @@ def _infer_repo_path_from_filename(
         return f"frontend/src/utils/{filename}"
 
     if lower.endswith((".css", ".scss")):
+        if frontend_key == "jinja-html":
+            return f"{flask_static_root}/{filename}"
         if frontend_key == "static-html":
             return f"{frontend_root}/{filename}"
         return f"frontend/src/styles/{filename}"
+
+    if lower.endswith(".py") and backend_key == "flask":
+        if lower.startswith("test_") or lower.endswith("_test.py"):
+            return f"tests/{filename}"
+        return f"{backend_root}/{filename}"
 
     return filename
 
@@ -5806,6 +5936,13 @@ def _default_master_tree_paths(
             "frontend/src/app/layout.tsx",
             "frontend/src/app/page.tsx",
         })
+    elif frontend_key == "jinja-html":
+        paths.update({
+            "app/templates/base.html",
+            "app/templates/index.html",
+            "app/static/styles.css",
+            "app/static/ux.js",
+        })
     elif frontend_key == "react-vite":
         paths.update({
             "frontend/package.json",
@@ -5827,6 +5964,13 @@ def _default_master_tree_paths(
             "backend/tsconfig.json",
             "backend/src/index.ts",
             "backend/src/app.ts",
+        })
+    elif backend_key == "flask":
+        paths.update({
+            "requirements.txt",
+            "gunicorn_conf.py",
+            "app/__init__.py",
+            "tests/test_app.py",
         })
     else:
         paths.update({
@@ -6578,6 +6722,273 @@ def _build_task_context_block(
     return "\n".join(lines)
 
 
+def _build_stack_evidence_summary(
+    *,
+    tasks: List[Dict[str, Any]],
+    brd_summary: str = "",
+    tech_spec: str = "",
+    repo_tree_context: str = "",
+    workspace_contract: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    contract_paths = [
+        str(path or "").strip().lower()
+        for path in (contract.get("allowed_source_roots") or [])
+        if str(path or "").strip()
+    ]
+    contract_paths.extend(
+        str(path or "").strip().lower()
+        for path in (contract.get("root_files") or [])
+        if str(path or "").strip()
+    )
+    for module in (contract.get("modules") or []):
+        if not isinstance(module, dict):
+            continue
+        contract_paths.extend(
+            str(path or "").strip().lower()
+            for path in (module.get("manifests") or [])
+            if str(path or "").strip()
+        )
+
+    task_fragments: List[str] = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        task_fragments.extend(
+            [
+                str(task.get("title") or task.get("taskName") or ""),
+                str(task.get("description") or ""),
+                " ".join(_extract_task_checklist_items(task, limit=16)),
+            ]
+        )
+    combined_text = " ".join(
+        part for part in [brd_summary, tech_spec, repo_tree_context, " ".join(task_fragments)] if str(part or "").strip()
+    ).lower()
+
+    evidence_rules = {
+        "frontend": {
+            "jinja-html": (
+                "jinja",
+                "jinja2",
+                "render_template",
+                "base.html",
+                "templates/",
+                "template inheritance",
+                "server-side rendered html",
+            ),
+            "static-html": (
+                "static html",
+                "pure html",
+                "single html",
+                "index.html",
+                "styles.css",
+                "vanilla js",
+                "vanilla javascript",
+            ),
+            "react-vite": (
+                "react",
+                "vite",
+                "tsx",
+                "jsx",
+                "react testing library",
+            ),
+            "nextjs": (
+                "next.js",
+                "nextjs",
+                "app router",
+                "next.config",
+            ),
+            "vue": (
+                "vue",
+                "pinia",
+                "vue-router",
+                ".vue",
+            ),
+        },
+        "backend": {
+            "flask": (
+                "flask",
+                "gunicorn",
+                "blueprint",
+                "create_app",
+                "app factory",
+                ".flaskenv",
+                "werkzeug",
+            ),
+            "fastapi": (
+                "fastapi",
+                "uvicorn",
+                "pydantic",
+                "sqlalchemy",
+                "openapi",
+            ),
+            "express": (
+                "express",
+                "node.js",
+                "node/express",
+                "app.ts",
+                "server.ts",
+                "typescript",
+            ),
+            "django": (
+                "django",
+                "manage.py",
+                "wsgi.py",
+                "asgi.py",
+            ),
+        },
+    }
+
+    summary: Dict[str, Any] = {"frontend": {}, "backend": {}, "conflicts": []}
+    for scope, scope_rules in evidence_rules.items():
+        for label, terms in scope_rules.items():
+            matched_terms = []
+            for term in terms:
+                if term in combined_text or any(term in path for path in contract_paths):
+                    matched_terms.append(term)
+            summary[scope][label] = {
+                "score": len(matched_terms),
+                "matched_terms": matched_terms[:8],
+            }
+
+    frontend_hits = [
+        label for label, payload in summary["frontend"].items()
+        if isinstance(payload, dict) and payload.get("score", 0) > 0
+    ]
+    backend_hits = [
+        label for label, payload in summary["backend"].items()
+        if isinstance(payload, dict) and payload.get("score", 0) > 0
+    ]
+    if len(frontend_hits) > 1:
+        summary["conflicts"].append(
+            f"Frontend evidence mentions multiple frameworks: {', '.join(frontend_hits[:4])}"
+        )
+    if len(backend_hits) > 1:
+        summary["conflicts"].append(
+            f"Backend evidence mentions multiple frameworks: {', '.join(backend_hits[:4])}"
+        )
+    return summary
+
+
+def _build_master_planning_packet(
+    *,
+    tasks: List[Dict[str, Any]],
+    brd_summary: str = "",
+    kg_context: str = "",
+    tech_spec: str = "",
+    stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+    repo_tree_context: str = "",
+) -> Dict[str, Any]:
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    task_plan = _build_master_task_plan(
+        tasks,
+        limit=40,
+        stack_profile=stack,
+        workspace_contract=contract,
+    )
+    compact_tasks: List[Dict[str, Any]] = []
+    for entry in task_plan:
+        if not isinstance(entry, dict):
+            continue
+        compact_tasks.append({
+            "task_id": str(entry.get("task_id") or "").strip(),
+            "title": _truncate_task_text(entry.get("title") or "Untitled task", 180),
+            "description": _truncate_task_text(entry.get("description") or "", 420),
+            "task_type": str(entry.get("task_type") or "").strip(),
+            "priority": str(entry.get("priority") or "").strip(),
+            "phase": str(entry.get("phase") or "").strip(),
+            "domain": str(entry.get("domain") or "").strip(),
+            "dependencies": [
+                str(dep).strip()
+                for dep in (entry.get("dependencies") or [])
+                if str(dep).strip()
+            ][:10],
+            "checklist": [
+                str(item).strip()
+                for item in (entry.get("checklist") or [])
+                if str(item).strip()
+            ][:10],
+            "planned_files": [
+                str(path).strip()
+                for path in (entry.get("planned_files") or [])
+                if str(path).strip()
+            ][:10],
+        })
+
+    contract_modules = []
+    for module in (contract.get("modules") or [])[:12]:
+        if not isinstance(module, dict):
+            continue
+        contract_modules.append({
+            "name": str(module.get("name") or "").strip(),
+            "kind": str(module.get("kind") or "").strip(),
+            "root": str(module.get("root") or "").strip(),
+            "manifests": [
+                str(path or "").strip()
+                for path in (module.get("manifests") or [])
+                if str(path or "").strip()
+            ][:12],
+        })
+
+    packet = {
+        "stack_decision": {
+            "frontend_key": str(stack.get("frontend_key") or "").strip(),
+            "frontend": str(stack.get("frontend") or "").strip(),
+            "backend_key": str(stack.get("backend_key") or "").strip(),
+            "backend": str(stack.get("backend") or "").strip(),
+            "confidence": str(stack.get("confidence") or "").strip(),
+            "reason": _truncate_task_text(stack.get("reason") or "", 300),
+        },
+        "stack_evidence": _build_stack_evidence_summary(
+            tasks=tasks,
+            brd_summary=brd_summary,
+            tech_spec=tech_spec,
+            repo_tree_context=repo_tree_context,
+            workspace_contract=contract,
+        ),
+        "workspace_contract": {
+            "status": str(contract.get("status") or "").strip(),
+            "source": str(contract.get("source") or "").strip(),
+            "allowed_source_roots": [
+                str(path or "").strip()
+                for path in (contract.get("allowed_source_roots") or [])
+                if str(path or "").strip()
+            ][:20],
+            "canonical_frontend_roots": [
+                str(path or "").strip()
+                for path in (contract.get("canonical_frontend_roots") or [])
+                if str(path or "").strip()
+            ][:10],
+            "canonical_backend_roots": [
+                str(path or "").strip()
+                for path in (contract.get("canonical_backend_roots") or [])
+                if str(path or "").strip()
+            ][:10],
+            "root_files": [
+                str(path or "").strip()
+                for path in (contract.get("root_files") or [])
+                if str(path or "").strip()
+            ][:20],
+            "modules": contract_modules,
+        },
+        "current_repo_tree": repo_tree_context[:5000],
+        "existing_codebase_context": kg_context[:3500],
+        "brd_summary": brd_summary[:5000],
+        "tech_spec_excerpt": tech_spec[:5000],
+        "tasks": compact_tasks,
+        "hard_constraints": [
+            "Output one final canonical structure only.",
+            "Do not mix conflicting frameworks in one project tree.",
+            "Every planned file must have a home inside the canonical tree.",
+            "Prefer extending the current repo tree over inventing parallel roots.",
+            "If Flask + Jinja is indicated, keep templates and static assets inside the Flask app structure.",
+        ],
+    }
+    return packet
+
+
 def _infer_project_stack(
     *,
     tasks: List[Dict[str, Any]],
@@ -6607,6 +7018,11 @@ def _infer_project_stack(
         for path in (module.get("manifests") or [])
         if str(path or "").strip()
     ]
+    contract_manifests.extend(
+        str(path or "").strip().lower()
+        for path in (contract.get("root_files") or [])
+        if str(path or "").strip()
+    )
     contract_roots = [
         str(root or "").strip().lower()
         for root in (contract.get("allowed_source_roots") or [])
@@ -6624,6 +7040,16 @@ def _infer_project_stack(
         frontend_scores["static-html"] += 4
     if any(path.endswith("/styles.css") or path.endswith("/style.css") for path in contract_manifests):
         frontend_scores["static-html"] += 2
+    if any("/templates/" in path or path.endswith("/templates") for path in contract_manifests):
+        frontend_scores["jinja-html"] += 4
+    if any("/static/" in path or path.endswith("/static") for path in contract_manifests):
+        frontend_scores["jinja-html"] += 2
+    if any(path.endswith("/base.html") for path in contract_manifests):
+        frontend_scores["jinja-html"] += 3
+    if any(token in path for path in contract_manifests for token in ("gunicorn", ".flaskenv", "wsgi.py")):
+        backend_scores["flask"] += 3
+    if any(path.endswith("/app.py") or path.endswith("/__init__.py") for path in contract_manifests):
+        backend_scores["flask"] += 1
 
     for token in ("next.js", "nextjs", "app router", "next.config"):
         if token in task_text:
@@ -6650,6 +7076,23 @@ def _infer_project_stack(
         elif token in combined_text:
             frontend_scores["static-html"] += 1
 
+    for token in (
+        "jinja", "jinja2", "render_template", "base.html", "templates/",
+        "template inheritance", "server-side rendered html", "flask template",
+    ):
+        if token in task_text:
+            frontend_scores["jinja-html"] += 4
+        elif token in combined_text:
+            frontend_scores["jinja-html"] += 2
+
+    for token in (
+        "flask", "gunicorn", "blueprint", "create_app", "app factory",
+        ".flaskenv", "wsgi", "werkzeug",
+    ):
+        if token in task_text:
+            backend_scores["flask"] += 4
+        elif token in combined_text:
+            backend_scores["flask"] += 2
     for token in ("fastapi", "pydantic", "sqlalchemy", "uvicorn", "python api"):
         if token in task_text:
             backend_scores["fastapi"] += 3
@@ -6664,36 +7107,54 @@ def _infer_project_stack(
     for root in contract_roots:
         if "frontend" in root or root.endswith("web") or root.endswith("client"):
             frontend_scores["react-vite"] += 1
+        if root.endswith("templates") or root.endswith("static"):
+            frontend_scores["jinja-html"] += 2
         if "backend" in root or root.endswith("api") or root.endswith("server"):
             backend_scores["fastapi"] += 2
+        if root == "app" or root.endswith("/app"):
+            backend_scores["flask"] += 2
 
     frontend_task_evidence = any(
         str(task.get("phase") or task.get("task_phase") or "").strip().lower().startswith("frontend")
         or str(_normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "").strip().lower() == "frontend"
         for task in (tasks or [])
-    ) or any(token in task_text for token in ("html", "css", "ui", "page", "component", "landing"))
+    ) or any(token in task_text for token in ("html", "css", "ui", "page", "component", "landing", "jinja", "template"))
     backend_task_evidence = any(
         str(task.get("phase") or task.get("task_phase") or "").strip().lower().startswith("backend")
         or str(_normalize_task_domain(task) or task.get("domain") or task.get("task_domain") or "").strip().lower() == "backend"
         for task in (tasks or [])
     ) or any(
         token in task_text
-        for token in ("api", "database", "schema", "model", "auth", "server", "endpoint", "fastapi", "express", "python")
+        for token in ("api", "database", "schema", "model", "auth", "server", "endpoint", "fastapi", "express", "python", "flask", "gunicorn")
     )
 
     if frontend_scores:
+        frontend_priority = {
+            "jinja-html": 4,
+            "static-html": 3,
+            "react-vite": 2,
+            "nextjs": 1,
+        }
         frontend = sorted(
             frontend_scores.items(),
-            key=lambda item: (item[1], item[0] in {"static-html", "react-vite"}),
+            key=lambda item: (item[1], frontend_priority.get(item[0], 0)),
             reverse=True,
         )[0][0]
 
     if backend_scores:
+        backend_priority = {
+            "flask": 4,
+            "fastapi": 3,
+            "express": 2,
+        }
         backend = sorted(
             backend_scores.items(),
-            key=lambda item: (item[1], item[0] == "fastapi"),
+            key=lambda item: (item[1], backend_priority.get(item[0], 0)),
             reverse=True,
         )[0][0]
+
+    if backend == "flask" and frontend_scores.get("jinja-html", 0) >= max(1, frontend_scores.get("static-html", 0)):
+        frontend = "jinja-html"
 
     if not frontend and any("frontend" in root for root in contract_roots):
         frontend = "static-html" if any(
@@ -6702,6 +7163,10 @@ def _infer_project_stack(
         ) else "react-vite"
     if not backend and any("backend" in root for root in contract_roots):
         backend = "fastapi"
+    if not backend and backend_scores.get("flask", 0) > 0:
+        backend = "flask"
+    if not frontend and frontend_scores.get("jinja-html", 0) > 0:
+        frontend = "jinja-html"
 
     explicit_frontend_only = (
         frontend_task_evidence
@@ -6716,15 +7181,22 @@ def _infer_project_stack(
 
     if explicit_frontend_only:
         if not frontend or frontend == "none":
-            frontend = "static-html" if frontend_scores.get("static-html") >= frontend_scores.get("react-vite") else "react-vite"
-        backend = "none"
-        if frontend == "static-html":
+            if frontend_scores.get("jinja-html", 0) > max(frontend_scores.get("static-html", 0), frontend_scores.get("react-vite", 0)):
+                frontend = "jinja-html"
+            else:
+                frontend = "static-html" if frontend_scores.get("static-html") >= frontend_scores.get("react-vite") else "react-vite"
+        if frontend == "jinja-html":
+            backend = "flask"
+            reason = "Tasks describe Flask-rendered templates, so Flask + Jinja was selected."
+        elif frontend == "static-html":
+            backend = "none"
             reason = "Tasks describe a frontend-only static site, so no backend stack was added."
         else:
+            backend = "none"
             reason = "Tasks describe frontend-only work, so no backend stack was added."
     elif explicit_backend_only:
         if not backend or backend == "none":
-            backend = "fastapi"
+            backend = "flask" if backend_scores.get("flask", 0) >= backend_scores.get("fastapi", 0) else "fastapi"
         frontend = "none"
         reason = "Tasks describe backend-only work, so no frontend stack was added."
 
@@ -6734,11 +7206,18 @@ def _infer_project_stack(
         confidence = "default"
         reason = "No backend evidence was found. Defaulting to a minimal static frontend project."
     elif not frontend:
-        frontend = "react-vite" if backend != "none" else "none"
+        if backend == "flask" and frontend_scores.get("jinja-html", 0) > 0:
+            frontend = "jinja-html"
+        else:
+            frontend = "react-vite" if backend != "none" else "none"
         confidence = "mixed"
         reason = reason or "Frontend stack was not explicit, so no frontend stack was added."
     elif not backend:
-        if frontend == "static-html" or explicit_frontend_only:
+        if frontend == "jinja-html":
+            backend = "flask"
+            confidence = "mixed"
+            reason = reason or "Jinja template evidence implies a Flask backend."
+        elif frontend == "static-html" or explicit_frontend_only:
             backend = "none"
             confidence = "mixed"
             reason = reason or "No backend evidence was found for this frontend-only project."
@@ -6748,9 +7227,11 @@ def _infer_project_stack(
             reason = reason or "Backend stack was not explicit, so a default backend stack was selected."
 
     labels = {
+        "jinja-html": "Jinja2 Templates + HTML/CSS",
         "static-html": "Static HTML + CSS",
         "nextjs": "Next.js + TypeScript",
         "react-vite": "React + Vite + TypeScript",
+        "flask": "Flask + Python",
         "fastapi": "FastAPI + Python",
         "express": "Node.js + Express + TypeScript",
         "none": "None / not required",
@@ -6968,6 +7449,19 @@ async def _generate_detailed_project_tree_plan(
         f"Confidence: {stack.get('confidence') or 'unspecified'}\n"
         f"Reason: {stack.get('reason') or 'n/a'}"
     )
+    planning_packet_json = json.dumps(
+        _build_master_planning_packet(
+            tasks=tasks,
+            brd_summary=brd_summary,
+            kg_context=kg_context,
+            tech_spec=tech_spec,
+            stack_profile=stack_profile,
+            workspace_contract=workspace_contract,
+            repo_tree_context=repo_tree_context,
+        ),
+        ensure_ascii=True,
+        indent=2,
+    )
 
     prompt = f"""You are the Master Architect Agent.
 Create the SINGLE CANONICAL PROJECT TREE that all coding agents must follow.
@@ -6984,6 +7478,9 @@ CURRENT GIT PROJECT TREE SNAPSHOT:
 EXISTING TECHNICAL SPEC:
 {tech_spec[:3500] if tech_spec else "Not provided."}
 
+AUTHORITATIVE PLANNING_PACKET_JSON:
+{planning_packet_json}
+
 ALL TASKS TO COVER IN THE PROJECT STRUCTURE (titles, descriptions, checklists, file hints):
 {task_list_text}
 
@@ -6994,6 +7491,9 @@ Output rules:
 - Output ONLY one project tree diagram.
 - The tree must declare exactly one fixed canonical root.
 - Never output multiple alternatives, fallback layouts, conditional notes, or instructions like "pick only one".
+- Treat the PLANNING_PACKET_JSON as authoritative structured input. Use it before relying on generic scaffold defaults.
+- Resolve framework contradictions in favor of the task details, checklist evidence, stack evidence, and current repo tree.
+- Never mix conflicting stacks in one tree, such as Flask with Express, Flask/Jinja with React/Vite, React with Vue, or Next.js with static HTML.
 - Include directories and specific file names, not placeholders like "etc" or "other files".
 - Every listed task must have an obvious home in the tree.
 - Include configuration files, tests, shared types/contracts, and integration points when appropriate.
@@ -7002,6 +7502,7 @@ Output rules:
 - Prefer extending the current git repo tree over inventing alternate roots when the repo already establishes a clear structure.
 - If the current repo tree already establishes an application root, keep that root unless the BRD/tasks clearly require a migration.
 - For static/frontend-only projects, do not invent backend/, database, Docker, or API files.
+- For Flask + Jinja projects, keep HTML templates under templates/ and browser assets under static/ inside the Flask app structure; do not invent a separate Node frontend root.
 - Do not duplicate files across roots (for example both `index.html` and `frontend/index.html`).
 - Prefer `.github/workflows/deploy.yml` over a duplicate root-level `deploy.yml` when the task is a GitHub Actions workflow.
 - For static HTML/CSS projects, keep `index.html` and `styles.css` together in the repo's canonical static root; do not invent `frontend/` if a different root already exists.
@@ -7185,6 +7686,15 @@ def _heuristic_master_tree_validation(
     if frontend_key == "nextjs":
         if "next.config" not in lines_lower and "/app/" not in lines_lower and " app/" not in lines_lower:
             issues.append("The inferred frontend stack is Next.js, but the tree does not show Next.js structure (app/ or next.config.*).")
+    elif frontend_key == "jinja-html":
+        if "/templates/" not in lines_lower and "templates/" not in lines_lower:
+            issues.append("The inferred frontend stack is Jinja templates, but the tree does not show a templates/ directory.")
+        if "/static/" not in lines_lower and "static/" not in lines_lower:
+            recommendations.append("Flask/Jinja frontend should usually include a static/ directory for CSS and browser-side JS.")
+        if "frontend/" in lines_lower or "\nfrontend" in lines_lower:
+            issues.append("The inferred frontend stack is Jinja templates, but the tree still creates a separate frontend root.")
+        if "vite.config" in lines_lower or "next.config" in lines_lower or "frontend/src/" in lines_lower:
+            issues.append("The inferred frontend stack is Jinja templates, but the tree still contains Node/frontend framework structure.")
     elif frontend_key == "react-vite":
         if "vite.config" not in lines_lower and "src/main.tsx" not in lines_lower and "src/main.jsx" not in lines_lower:
             recommendations.append("Frontend stack appears to be React/Vite; add vite.config.* or src/main.* to make the structure explicit.")
@@ -7204,6 +7714,13 @@ def _heuristic_master_tree_validation(
             issues.append("The inferred backend stack is FastAPI, but the tree does not show Python/FastAPI entrypoints or dependency files.")
         if "server.ts" in lines_lower or "express" in lines_lower:
             issues.append("The inferred backend stack is FastAPI, but the tree contains Node/Express-specific backend files.")
+    elif backend_key == "flask":
+        if "requirements.txt" not in lines_lower and "pyproject.toml" not in lines_lower:
+            issues.append("The inferred backend stack is Flask, but the tree does not show Python dependency files.")
+        if "app/__init__.py" not in lines_lower and "app.py" not in lines_lower and "wsgi.py" not in lines_lower:
+            issues.append("The inferred backend stack is Flask, but the tree does not show a Flask app entrypoint or app package.")
+        if "server.ts" in lines_lower or "app.ts" in lines_lower or "backend/src/" in lines_lower:
+            issues.append("The inferred backend stack is Flask, but the tree contains Node/Express-specific backend files.")
     elif backend_key == "express":
         if "package.json" not in lines_lower and "server.ts" not in lines_lower and "app.ts" not in lines_lower:
             issues.append("The inferred backend stack is Express, but the tree does not show Node/Express entrypoints.")
@@ -7270,6 +7787,19 @@ async def _validate_master_project_tree_plan(
         "modules": list((workspace_contract or {}).get("modules") or [])[:10],
     }, ensure_ascii=True, indent=2)
     stack_summary = json.dumps(stack_profile or {}, ensure_ascii=True, indent=2)
+    planning_packet_json = json.dumps(
+        _build_master_planning_packet(
+            tasks=tasks,
+            brd_summary=brd_summary,
+            kg_context="",
+            tech_spec=tech_spec,
+            stack_profile=stack_profile,
+            workspace_contract=workspace_contract,
+            repo_tree_context=repo_tree_context,
+        ),
+        ensure_ascii=True,
+        indent=2,
+    )
 
     prompt = f"""You are the Structure Validator Agent.
 Validate whether the proposed canonical project tree is correct and complete enough for the provided task plan.
@@ -7282,6 +7812,9 @@ TECHNICAL SPEC FILE STRUCTURE / MANDATORY FILES:
 
 CURRENT GIT PROJECT TREE SNAPSHOT:
 {repo_tree_context[:3500] if repo_tree_context else "Not provided."}
+
+AUTHORITATIVE PLANNING_PACKET_JSON:
+{planning_packet_json}
 
 TASKS (titles, descriptions, checklists, file hints):
 {task_lines}
@@ -7309,8 +7842,12 @@ Rules:
 - Approve only if the tree has concrete filenames and clear homes for the tasks.
 - Reject if the tree is too shallow, creates parallel roots, or ignores workspace contract boundaries.
 - Reject if the tree contradicts the stack decision.
+- Reject if the tree contradicts the structured evidence in PLANNING_PACKET_JSON.
+- Reject if the tree mixes conflicting stacks, such as Flask with Express, Flask/Jinja with React/Vite, React with Vue, or Next.js with static HTML.
+- Reject if task planned_files from the packet do not fit cleanly inside the proposed tree.
 - Reject if the tree contains alternatives, conditional wording, multiple diagrams, or more than one candidate root.
 - Reject if the tree invents a new top-level application root when the current repo tree already establishes a different canonical root.
+- Reject if Flask + Jinja is indicated but the tree invents a separate Node frontend app root instead of using template/static structure.
 - If rejected, provide a corrected_tree as a full replacement tree, not a diff.
 """
 
@@ -11155,12 +11692,14 @@ async def _load_master_deploy_hints(project_token: Optional[str]) -> Dict[str, A
     for root in allowed_source_roots:
         is_frontend_root = frontend_key not in {"", "none"} and (
             _looks_like_frontend_repo_path(root)
+            or (frontend_key == "jinja-html" and any(token in root for token in ("templates", "static")))
             or backend_key == "none"
             or (frontend_key == "static-html" and not _looks_like_backend_repo_path(root))
         )
         is_backend_root = backend_key not in {"", "none"} and (
             _looks_like_backend_repo_path(root)
             or frontend_key == "none"
+            or (backend_key == "flask" and (root == "app" or root.endswith("/app")))
         )
 
         if is_frontend_root:
@@ -11213,6 +11752,8 @@ async def _load_master_deploy_hints(project_token: Optional[str]) -> Dict[str, A
     preferred_runtime = ""
     if frontend_key == "static-html":
         preferred_runtime = "static"
+    elif frontend_key == "jinja-html":
+        preferred_runtime = "python"
     elif frontend_key not in {"", "none"}:
         preferred_runtime = "node"
     elif backend_key == "express":
@@ -11562,7 +12103,7 @@ def _detect_project_stack(container_name: str, deployment_hints: Optional[Dict[s
                 score += 260
             if _path_matches_any_deploy_root(rel_workdir, preferred_backend_roots):
                 score += 260
-            if preferred_runtime == "python" or backend_key in {"fastapi", "django"}:
+            if preferred_runtime == "python" or backend_key in {"fastapi", "flask", "django"}:
                 score += 40
             return score
 
