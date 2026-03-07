@@ -2295,6 +2295,7 @@ async def get_project_roadmap_step(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
+    force_step: Optional[int] = None,  # Optional query param to force a specific step
 ):
     """
     Get the current roadmap step for a project.
@@ -2407,6 +2408,7 @@ async def get_project_roadmap_step(
 
             if all_page_results:
                 has_tasks = True
+                print(f"Roadmap: Detected {len(all_page_results)} tasks for project {identifier}, has_tasks=True")
 
                 done_statuses = {"completed", "done", "closed", "complete", "resolved"}
 
@@ -2431,6 +2433,11 @@ async def get_project_roadmap_step(
         except Exception as e:
             print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
             # If task check fails, keep the last known roadmap state.
+            # But if we have a task token, assume tasks might exist and check stored step
+            if x_task_token and stored_last_reached_step == TASK_CREATION_IDX:
+                # If we're at Task Creation and have a task token, try to progress
+                # This handles cases where task detection temporarily fails
+                pass
 
     # 4. Check runtime agent statuses for true "On Flight" execution
     try:
@@ -2511,6 +2518,8 @@ async def get_project_roadmap_step(
     else:
         completed_indices = [idx for idx, status in enumerate(step_statuses) if status == "completed"]
         computed_step = completed_indices[-1] if completed_indices else 0
+    
+    print(f"Roadmap: Project {identifier} - has_tasks={has_tasks}, computed_step={computed_step}, stored_step={stored_last_reached_step}, step_statuses={step_statuses}")
 
     # Use stored last reached step if it exists, otherwise use computed step
     # The stored step represents the furthest step the user has reached - NEVER go backwards
@@ -2521,23 +2530,36 @@ async def get_project_roadmap_step(
             # We've progressed further, update the stored step
             stored_last_reached_step = computed_step
             final_current_step = stored_last_reached_step
+            # Use the computed step_statuses since they reflect the actual current state
+            # The computed statuses already show Resource Onboarding as active when tasks exist
+            # Don't rebuild - keep the computed statuses
+        elif stored_last_reached_step == TASK_CREATION_IDX and (has_tasks or x_task_token):
+            # Special case: If we're at Task Creation (5) and tasks exist OR we have a task token,
+            # progress to Resource Onboarding (6)
+            # This handles the case where tasks exist but has_tasks detection failed
+            # If we have a task token, it's likely tasks exist even if detection failed
+            stored_last_reached_step = RESOURCE_ONBOARDING_IDX
+            final_current_step = RESOURCE_ONBOARDING_IDX
+            # Update step_statuses to reflect Resource Onboarding as active
+            step_statuses[TASK_CREATION_IDX] = "completed"
+            step_statuses[RESOURCE_ONBOARDING_IDX] = "active"
+            computed_step = RESOURCE_ONBOARDING_IDX  # Update computed_step to match
         else:
             # Use stored step (never go backwards)
             final_current_step = stored_last_reached_step
-        
-        # Rebuild step_statuses based on the final_current_step (stored last reached step)
-        new_step_statuses = ["pending"] * len(STEP_LABELS)
-        
-        # Mark all steps up to (but not including) the final step as completed
-        for i in range(final_current_step):
-            if i < len(new_step_statuses):
-                new_step_statuses[i] = "completed"
-        
-        # Mark the final step as active (the last reached step)
-        if final_current_step < len(new_step_statuses):
-            new_step_statuses[final_current_step] = "active"
-        
-        step_statuses = new_step_statuses
+            # Rebuild step_statuses based on the stored step only if we haven't progressed
+            new_step_statuses = ["pending"] * len(STEP_LABELS)
+            
+            # Mark all steps up to (but not including) the final step as completed
+            for i in range(final_current_step):
+                if i < len(new_step_statuses):
+                    new_step_statuses[i] = "completed"
+            
+            # Mark the final step as active (the last reached step)
+            if final_current_step < len(new_step_statuses):
+                new_step_statuses[final_current_step] = "active"
+            
+            step_statuses = new_step_statuses
     else:
         # No stored step, use computed step and save it
         final_current_step = computed_step

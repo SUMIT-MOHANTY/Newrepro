@@ -121,9 +121,7 @@ export default function Sidebar({
                                         <div key={project.key} className="flex items-center gap-1">
                                             <button
                                                 onClick={() => handleSelectProject(project)}
-                                                className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation')
-                                                    ? 'bg-blue-900/40 text-blue-100 border-blue-800'
-                                                    : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'}
+                                                className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key ? 'bg-blue-900/40 text-blue-100 border-blue-800' : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-white'}
                                                 `}
                                                 title={project.name}
                                             >

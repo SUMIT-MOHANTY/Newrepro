@@ -305,7 +305,7 @@ export default function AppLayout({ children }) {
             'Project Initiation': '/new-project',
             'Requirement Screening': '/dashboard',
             'Governance': '/new-project/governance',
-            'Agent Analysis': '/dashboard',
+            'Agent Analysis': '/agent-analysis',
             'Prerequisite Classification': '/prerequisites',
             'Task Creation': '/task-creation',
             'Resource Onboarding': '/resource-onboarding',
@@ -554,6 +554,11 @@ export default function AppLayout({ children }) {
             }
             return hasSelectedProjectGovernance ? agentIdx : reqIdx;
         }
+        
+        if (path === '/agent-analysis') {
+            const agentIdx = idx('Agent Analysis') ?? 3;
+            return agentIdx;
+        }
 
         return null;
     }, [location.pathname, roadmapData?.current_step, roadmapData?.steps, storageNonce, hasSelectedProjectGovernance, hasServerRoadmap]);
@@ -598,26 +603,30 @@ export default function AppLayout({ children }) {
         
         // Fetch roadmap data to determine which page to navigate to
         try {
-            const roadmapResponse = await fetchRoadmapStep(project.key);
+            // Prefer the project token if it exists – the backend uses this to locate the project
+            const identifier = project.projectToken || project.key;
+            const roadmapResponse = await fetchRoadmapStep(identifier);
             if (roadmapResponse && roadmapResponse.current_step_label) {
                 const stepLabel = roadmapResponse.current_step_label;
                 
-                // Map step label to route
+                // Map step label to route (same mapping as before)
                 const stepLabelToRoute = {
                     'Project Initiation': '/new-project',
                     'Requirement Screening': '/dashboard',
                     'Governance': '/new-project/governance',
-                    'Agent Analysis': '/dashboard',
+                    'Agent Analysis': '/agent-analysis',
                     'Prerequisite Classification': '/prerequisites',
                     'Task Creation': '/task-creation',
                     'Resource Onboarding': '/resource-onboarding',
                     'On Flight': '/status-dashboard',
                     'Complete': '/status-dashboard',
                 };
-                
                 const targetRoute = stepLabelToRoute[stepLabel];
-                if (targetRoute && location.pathname !== targetRoute) {
+                if (targetRoute) {
+                    // Always navigate to the target route (even if we are already there) to force a refresh
                     navigate(targetRoute);
+                    // Ensure we have the freshest roadmap data for the newly selected project
+                    refetchRoadmapData();
                     return;
                 }
             }
@@ -625,9 +634,12 @@ export default function AppLayout({ children }) {
             console.error('Failed to fetch roadmap for navigation:', error);
         }
         
-        // Fallback to default project path if roadmap fetch fails
+        // Fallback – navigate to the generic project URL (uses token if available)
         const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
-        if (location.pathname !== targetPath) navigate(targetPath);
+        if (location.pathname !== targetPath) {
+            navigate(targetPath);
+            refetchRoadmapData();
+        }
     };
 
     const getProjectSidebarSubtitle = (project) => {
@@ -736,7 +748,7 @@ export default function AppLayout({ children }) {
                                 </h2>
                             </div>
 
-                            {(currentView === 'statusDashboard' || currentView === 'taskCreation' || currentView === 'resourceOnboarding') && (
+                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                     {currentView === 'statusDashboard' && (
                                         <>
@@ -757,7 +769,7 @@ export default function AppLayout({ children }) {
                                             selectedKey={selectedProjectKey}
                                             onSelect={(proj) => {
                                                 if (!proj?.key || proj.key === selectedProjectKey) return;
-                                                setSelectedProjectKey(proj.key);
+                                                handleSelectProject(proj);
                                             }}
                                             theme="dark"
                                         />
@@ -799,6 +811,7 @@ export default function AppLayout({ children }) {
                             failedStep={roadmapDataForView.failed_step ?? null}
                             activeStepIndex={forcedRoadmapStepIndex}
                             activeStepCompleted={forcedStepCompleted}
+                            selectedProjectKey={selectedProjectKey}
                         />
                     </div>
                 )}
