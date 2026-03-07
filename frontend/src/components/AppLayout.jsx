@@ -288,6 +288,16 @@ export default function AppLayout({ children }) {
 
     const [storageNonce, forceUpdate] = React.useReducer(x => x + 1, 0);
     const { data: roadmapDataResult, refetch: refetchRoadmapData } = useRoadmapData(selectedProjectKey);
+    // Refetch roadmap whenever we land on pages where the step may have changed (Resource Onboarding or Status Dashboard)
+    useEffect(() => {
+        if (selectedProjectKey && ['/resource-onboarding', '/status-dashboard', '/a/'].some(p => location.pathname.startsWith(p))) {
+            // Add a small delay to ensure backend has processed any state changes
+            const timer = setTimeout(() => {
+                refetchRoadmapData();
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [location.pathname, selectedProjectKey, refetchRoadmapData]);
     const lastNavigatedProjectRef = React.useRef(null);
     
     // Navigate to the appropriate page based on roadmap step when project is selected

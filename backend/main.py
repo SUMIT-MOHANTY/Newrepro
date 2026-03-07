@@ -2498,7 +2498,7 @@ async def get_project_roadmap_step(
 
             if onboarding_complete:
                 on_flight_done = all_tasks_complete and not any_agent_working
-
+                
                 if on_flight_done:
                     step_statuses[ON_FLIGHT_IDX] = "completed"
                     if deploy_success:
@@ -2544,6 +2544,11 @@ async def get_project_roadmap_step(
             step_statuses[TASK_CREATION_IDX] = "completed"
             step_statuses[RESOURCE_ONBOARDING_IDX] = "active"
             computed_step = RESOURCE_ONBOARDING_IDX  # Update computed_step to match
+        elif computed_step == stored_last_reached_step:
+            # Same step - use computed step_statuses to reflect current state (e.g., On Flight when agents are running)
+            final_current_step = computed_step
+            # Keep the computed step_statuses as they reflect the actual current state
+            # This ensures On Flight shows as active when agents are working, even if stored step is Resource Onboarding
         else:
             # Use stored step (never go backwards)
             final_current_step = stored_last_reached_step
