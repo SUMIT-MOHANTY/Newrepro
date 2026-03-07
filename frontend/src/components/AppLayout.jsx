@@ -349,13 +349,39 @@ export default function AppLayout({ children }) {
         const targetRoute = stepLabelToRoute[stepLabel];
         if (!targetRoute) return;
         
+        // Special handling for Agent Analysis: Don't auto-navigate unless user clicked "Proceed to Agent Analysis"
+        // This prevents auto-redirect when viewing Governance score page
+        if (targetRoute === '/agent-analysis') {
+            const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
+            const isOnGovernancePage = location.pathname === '/new-project/governance' || location.pathname.startsWith('/new-project/governance');
+            
+            // Don't auto-navigate to Agent Analysis if:
+            // 1. User is on Governance page (viewing score)
+            // 2. Flag is not set (user hasn't clicked "Proceed to Agent Analysis")
+            if (isOnGovernancePage || !shouldStartAnalysis) {
+                return; // Stay on current page, don't navigate
+            }
+        }
+        
+        // Special handling for Prerequisites: Don't auto-navigate from Agent Analysis page
+        // User should manually click "Review Prerequisites" button to navigate
+        if (targetRoute === '/prerequisites') {
+            const isOnAgentAnalysisPage = location.pathname === '/agent-analysis' || location.pathname.startsWith('/agent-analysis');
+            
+            // Don't auto-navigate to Prerequisites if user is on Agent Analysis page
+            // Let them manually click the button to navigate
+            if (isOnAgentAnalysisPage) {
+                return; // Stay on Agent Analysis page, don't auto-navigate
+            }
+        }
+        
         // Navigate if:
         // 1. We're on a project URL (/a/{token}) - redirect to step page
         // 2. We're not on the correct step page already
         // 3. We're not on special pages like /agents
         const isOnProjectUrl = location.pathname.startsWith('/a/');
         const isOnTargetRoute = location.pathname.startsWith(targetRoute);
-        const isOnSpecialPage = ['/agents', '/organization-admin'].includes(location.pathname);
+        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins'].includes(location.pathname);
         
         if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage) {
             lastNavigatedProjectRef.current = selectedProjectKey;
@@ -836,8 +862,8 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents ── */}
-                {roadmapDataForView && location.pathname !== '/agents' && (
+{/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
+{roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
                     <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                         <RoadmapHeader
                             steps={roadmapDataForView.steps || []}

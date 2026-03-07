@@ -207,11 +207,19 @@ const GovernanceForm = ({
                 setProjectName(currentProjectName);
             }
 
+            // Check if user is in edit mode (went back from result page to edit)
+            const isEditMode = sessionStorage.getItem('governanceEditMode') === 'true';
+            
             const savedResult = getStoredJson('governanceResult');
-            if (savedResult && matchesCurrentProject(savedResult)) {
+            // Don't restore result if user is in edit mode (they want to edit the form)
+            if (savedResult && matchesCurrentProject(savedResult) && !isEditMode) {
                 setResult(savedResult);
             } else {
                 setResult(null);
+                // Clear edit mode flag after checking
+                if (isEditMode) {
+                    sessionStorage.removeItem('governanceEditMode');
+                }
             }
 
             const storageKey = selectedProjectKey ? `governance_wizard_step_${selectedProjectKey}` : 'governance_wizard_step_new';
@@ -327,6 +335,8 @@ const GovernanceForm = ({
                         dimension_scores: normalizedDS,
                     };
                     persistGovernanceData(ctx, normalizedResultData);
+                    // Clear edit mode flag when submitting (new submission)
+                    sessionStorage.removeItem('governanceEditMode');
                     setResult(normalizedResultData);
                     upsertDraftProject({
                         key: resultData.project_token || selectedProjectKey,
@@ -379,6 +389,16 @@ const GovernanceForm = ({
             // Clear stored result so it doesn't get restored by useEffect
             sessionStorage.removeItem('governanceResult');
             localStorage.removeItem('governanceResult');
+            // Set flag to indicate user wants to edit (prevents result restoration)
+            sessionStorage.setItem('governanceEditMode', 'true');
+            // Also clear governanceContext result_id to allow re-editing
+            const savedContext = getStoredJson('governanceContext');
+            if (savedContext && savedContext.result_id) {
+                const updatedContext = { ...savedContext };
+                delete updatedContext.result_id;
+                sessionStorage.setItem('governanceContext', JSON.stringify(updatedContext));
+                localStorage.setItem('governanceContext', JSON.stringify(updatedContext));
+            }
         }} />;
     }
 
@@ -1118,6 +1138,7 @@ const GovernanceResult = ({ result, onBack }) => {
                         <button
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
+                                sessionStorage.setItem('shouldStartAnalysis', 'true');
                                 window.location.href = `/a/${result.project_token}`;
                             }}
                             className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"

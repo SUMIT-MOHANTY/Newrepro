@@ -16,6 +16,7 @@ import OrganizationAdmin from './pages/OrganizationAdmin';
 import AppPreview from './pages/AppPreview';
 import AppLayout from './components/AppLayout';
 import AgentsPage from './components/AgentsPage';
+import Plugins from './pages/Plugins';
 
 function App() {
   return (
@@ -81,14 +82,19 @@ function App() {
             {(layoutProps) => <TaskCreation {...layoutProps} />}
           </AppLayout>
         } />
-        <Route path="/agent-analysis" element={
-          <AppLayout>
-            {(layoutProps) => <AgentAnalysis {...layoutProps} />}
-          </AppLayout>
-        } />
-        <Route path="/app/:projectId" element={
-          <AppPreview />
-        } />
+<Route path="/agent-analysis" element={
+  <AppLayout>
+    {(layoutProps) => <AgentAnalysis {...layoutProps} />}
+  </AppLayout>
+} />
+<Route path="/plugins" element={
+  <AppLayout>
+    {(layoutProps) => <Plugins {...layoutProps} />}
+  </AppLayout>
+} />
+<Route path="/app/:projectId" element={
+  <AppPreview />
+} />
       </Routes>
     </Router>
   );

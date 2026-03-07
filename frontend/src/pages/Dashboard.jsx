@@ -1721,78 +1721,13 @@ const Dashboard = ({
     fetchAnalysisRef.current = fetchAnalysis;
     streamAnalysisRef.current = streamAnalysis;
 
+    // Analysis triggering is now handled entirely by AgentAnalysis.jsx
+    // Dashboard should not trigger analysis automatically anymore
+    // This useEffect is kept for potential future use but currently disabled
     useEffect(() => {
-        const latestDocument = selectedProject?.latestDocument;
-        if (!selectedProjectKey || !hasGovernanceAssessment || !latestDocument) return;
-        if (selectedProject?.governanceResultId && !governanceContext) return;
-        if (processing || result) return;
-        const pendingAnalysis = parseStoredDocumentAnalysis(latestDocument);
-        if (!isPendingGovernanceAnalysis(pendingAnalysis) || !latestDocument.full_content) return;
-
-        const runPendingAnalysis = async () => {
-            const token = localStorage.getItem('token');
-            if (!token) {
-                handleLogout();
-                return;
-            }
-
-            const pendingRepoContext = pendingAnalysis?.repoContextState || null;
-            const effectiveGovernanceContext = governanceContext || pendingAnalysis?.governanceContext || null;
-            const initialResult = {
-                id: latestDocument.id,
-                filename: latestDocument.filename,
-                extraction: {
-                    markdown: latestDocument.full_content,
-                    html: '',
-                    num_pages: null,
-                },
-                analysis: analyzeWithAi ? { analysis: '', reasoning: '' } : null,
-                revisionNumber: pendingAnalysis?.projectMeta?.revision_number || (selectedProject?.documents?.length || 1),
-            };
-
-            setRepoContext(pendingRepoContext);
-            projectStateUpdaterRef.current(selectedProjectKey, {
-                processing: true,
-                error: '',
-                result: initialResult,
-                aiQuestions: [],
-                userAnswers: {},
-                userFeedback: '',
-                progress: 70,
-                progressMessage: 'Governance completed. Starting Agent Analysis...',
-            });
-
-            const aiPayload = {
-                document_content: pendingRepoContext?.context
-                    ? `${latestDocument.full_content}\n\n${pendingRepoContext.context}`
-                    : latestDocument.full_content,
-                api_url: aiConfig?.apiUrl || undefined,
-                api_key: aiConfig?.apiKey || undefined,
-                model: aiConfig?.model || undefined,
-                stream: streamResponse,
-                governance_context: effectiveGovernanceContext || undefined,
-            };
-
-            try {
-                if (streamResponse) {
-                    await streamAnalysisRef.current(aiPayload, token, initialResult, selectedProjectKey, {
-                        repoContext: pendingRepoContext,
-                        governanceContext: effectiveGovernanceContext,
-                    });
-                } else {
-                    await fetchAnalysisRef.current(aiPayload, token, initialResult, selectedProjectKey, {
-                        repoContext: pendingRepoContext,
-                        governanceContext: effectiveGovernanceContext,
-                    });
-                }
-            } catch (err) {
-                projectStateUpdaterRef.current(selectedProjectKey, { error: err.message || 'Agent Analysis failed.' });
-            } finally {
-                projectStateUpdaterRef.current(selectedProjectKey, { processing: false });
-            }
-        };
-
-        runPendingAnalysis();
+        // Don't auto-trigger analysis - AgentAnalysis.jsx handles all analysis triggering now
+        // Analysis should only happen on /agent-analysis page after clicking "Proceed to Agent Analysis"
+        return;
     }, [
         selectedProject,
         selectedProjectKey,
@@ -1801,11 +1736,7 @@ const Dashboard = ({
         processing,
         result,
         analyzeWithAi,
-        aiConfig?.apiUrl,
-        aiConfig?.apiKey,
-        aiConfig?.model,
-        streamResponse,
-        handleLogout,
+        location.pathname,
     ]);
 
     const handleRefineAnalysis = async () => {

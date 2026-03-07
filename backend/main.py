@@ -1022,7 +1022,15 @@ async def get_oauth_plugin_launch_url(
 
     connection = _get_or_create_plugin_connection(db, organization_name, client.client_id)
     if client.client_id.lower() == settings.oauth_nxdune_client_id.lower():
-        await _ensure_nxdune_organization_connection(db, current_user, connection)
+        try:
+            await _ensure_nxdune_organization_connection(db, current_user, connection)
+        except HTTPException as exc:
+            # Log the error but allow OAuth flow to proceed
+            # Organization creation can be retried later
+            logger.warning(f"Nxdune organization creation failed: {exc.detail}. Proceeding with OAuth launch.")
+            connection.last_error = str(exc.detail)[:400]
+            db.add(connection)
+            db.commit()
     elif not connection.is_connected:
         _mark_plugin_connected(db, connection, "Connected via DSuite launch.")
 

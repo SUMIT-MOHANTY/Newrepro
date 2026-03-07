@@ -135,6 +135,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         if (!route) return;
         
         // Navigate to the route for the selected project
+        // Note: If navigating to Agent Analysis without flag set, the page will show appropriate message
         navigate(route);
     };
 

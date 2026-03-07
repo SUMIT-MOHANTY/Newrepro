@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck } from 'lucide-react';
+import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
 
@@ -175,19 +175,28 @@ onClick={() => {
                             SSO Configuration
                         </button>
                     )}
-                    <button
-                        onClick={() => {
-                            navigate('/agents');
-                        }}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents') ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
-                    >
-                        <Users className="w-4 h-4 mr-3" />
-                        Agents
-                    </button>
-                    <button
-                        onClick={() => setShowSettings(true)}
-                        className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2"
-                    >
+<button
+  onClick={() => {
+    navigate('/agents');
+  }}
+  className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents') ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
+>
+  <Users className="w-4 h-4 mr-3" />
+  Agents
+</button>
+<button
+  onClick={() => {
+    navigate('/plugins');
+  }}
+  className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins') ? 'bg-blue-900/40 text-blue-100 border border-blue-800' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
+>
+  <Globe className="w-4 h-4 mr-3" />
+  Plugins
+</button>
+<button
+  onClick={() => setShowSettings(true)}
+  className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2"
+>
                         <Settings className="w-4 h-4 mr-3" />
                         Settings
                     </button>
