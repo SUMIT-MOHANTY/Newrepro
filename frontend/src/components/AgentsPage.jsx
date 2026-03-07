@@ -577,28 +577,24 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   let useLogo = false;
                   let logoSrc = null;
                   
-                  // Check if agent has a logo property first (from defaultAgents)
-                  if (agent.logo) {
-                    useLogo = true;
-                    logoSrc = agent.logo;
-                  } else if (isGitManager) {
+                  if (isGitManager) {
                     accentColor = 'from-indigo-500 to-blue-500';
                     statusColor = 'indigo';
                   } else if (isMasterAgent) {
                     accentColor = 'from-fuchsia-500 to-rose-500';
                     statusColor = 'fuchsia';
                     useLogo = true;
-                    logoSrc = masterLogo;
+                    logoSrc = agent.logo || masterLogo;
                   } else if (isTestAgent) {
                     accentColor = 'from-amber-500 to-orange-500';
                     statusColor = 'amber';
                     useLogo = true;
-                    logoSrc = kaktoxLogo;
+                    logoSrc = agent.logo || kaktoxLogo;
                   } else if (isDeployAgent) {
                     accentColor = 'from-violet-500 to-purple-600';
                     statusColor = 'violet';
                     useLogo = true;
-                    logoSrc = cloudIcon;
+                    logoSrc = agent.logo || cloudIcon;
                   } else if (isShared || isDedicated) {
                     accentColor = isShared ? 'from-emerald-400 to-green-500' : 'from-blue-500 to-indigo-500';
                     statusColor = isShared ? 'emerald' : 'blue';
