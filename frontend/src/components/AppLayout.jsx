@@ -104,7 +104,8 @@ export default function AppLayout({ children }) {
                 : location.pathname === '/prerequisites' ? 'prerequisites'
                     : location.pathname === '/task-creation' ? 'taskCreation'
                         : location.pathname === '/resource-onboarding' ? 'resourceOnboarding'
-                            : 'main';
+                            : location.pathname === '/agent-analysis' ? 'agentAnalysis'
+                                : 'main';
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
@@ -745,7 +746,8 @@ export default function AppLayout({ children }) {
                                             currentView === 'prerequisites' ? 'Prerequisite Classification' :
                                                 currentView === 'taskCreation' ? 'Task Creation Planner' :
                                                     currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
-                                                        'Requirements Analyzer'}
+                                                        currentView === 'agentAnalysis' ? 'Agent Analysis' :
+                                                            'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
@@ -754,7 +756,8 @@ export default function AppLayout({ children }) {
                                             currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
                                                 currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
                                                     currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
-                                                        'Project Insight & AI Assessment'}
+                                                        currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
+                                                            'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 
