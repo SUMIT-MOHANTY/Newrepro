@@ -127,6 +127,34 @@ MASTER_FAILED_MESSAGE = "Master plan failed"
 NOTE_PAYLOAD_CACHE_TTL_SECONDS = 15.0
 WORKSPACE_CONTRACT_PROBE_TTL_SECONDS = 300.0
 
+TECH_SPEC_ARCHITECT_SYSTEM_PROMPT = (
+    "You are a Senior Software Architect. Produce precise, unambiguous technical specifications. "
+    "When defining file structure, output exactly one final canonical project tree. "
+    "Choose one production-ready structure and commit to it. "
+    "Never output alternative roots, conditional structures, migration options, fallback layouts, "
+    "or prose such as 'pick one', 'if X then Y', or 'the tree collapses to'. "
+    "If the current repository tree already establishes a root, preserve it unless the requirements "
+    "clearly force a migration. Resolve ambiguity yourself before responding."
+)
+
+MASTER_TREE_GENERATOR_SYSTEM_PROMPT = (
+    "You are a senior software architect generating the canonical project tree used by all worker agents. "
+    "Return exactly one final tree with one fixed canonical root. "
+    "Choose one solid structure and commit to it. "
+    "Never output alternate roots, conditional variants, migration notes, fallback layouts, "
+    "multiple diagrams, or prose like 'pick one'. "
+    "The tree must be production-ready, structurally complete for the tasks, and consistent with the "
+    "current repository tree, workspace contract, and stack decision."
+)
+
+MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
+    "You are a rigorous software architecture validator. Respond only with JSON. "
+    "Reject any project tree that contains ambiguity, multiple candidate roots, alternative layouts, "
+    "conditional wording, migration options, or more than one tree. "
+    "Approve only one complete replacement tree with one fixed root. "
+    "If rejected, corrected_tree must be one full replacement tree, not a diff or a set of options."
+)
+
 
 def _is_system_agent_id(agent_id: Optional[str]) -> bool:
     return agent_id in {GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID}
@@ -308,6 +336,108 @@ def _flatten_seed_checklists(raw_groups: Any) -> List[Dict[str, Any]]:
             if text:
                 flattened.append({"text": text, "completed": completed})
     return flattened
+
+
+def _extract_task_checklist_items(task: Dict[str, Any], limit: Optional[int] = None) -> List[str]:
+    collected: List[str] = []
+
+    def extend(raw_value: Any) -> None:
+        if isinstance(raw_value, dict):
+            if isinstance(raw_value.get("items"), list):
+                extend(raw_value.get("items"))
+                return
+            if isinstance(raw_value.get("checklistItems"), list):
+                extend(raw_value.get("checklistItems"))
+                return
+            text = str(
+                raw_value.get("text")
+                or raw_value.get("title")
+                or raw_value.get("name")
+                or ""
+            ).strip()
+            if text:
+                collected.append(text)
+            return
+        if isinstance(raw_value, list):
+            for item in raw_value:
+                extend(item)
+            return
+        text = str(raw_value or "").strip()
+        if text:
+            collected.append(text)
+
+    extend(task.get("checklist"))
+    extend(_flatten_seed_checklists(task.get("checklists")))
+
+    task_json = task.get("task_json") if isinstance(task.get("task_json"), dict) else {}
+    if task_json:
+        extend(task_json.get("checklist"))
+        extend(_flatten_seed_checklists(task_json.get("checklists")))
+
+    normalized: List[str] = []
+    seen = set()
+    for item in collected:
+        text = " ".join(str(item or "").split())
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+        if isinstance(limit, int) and limit > 0 and len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 6000) -> str:
+    if isinstance(brd_analysis, str):
+        return str(brd_analysis).strip()[:max_chars]
+    if not isinstance(brd_analysis, dict):
+        return ""
+
+    def to_text(value: Any, limit: int) -> str:
+        if value in (None, "", [], {}):
+            return ""
+        if isinstance(value, str):
+            text = value.strip()
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=True, indent=2)
+            except Exception:
+                text = str(value).strip()
+        if len(text) > limit:
+            return text[: max(0, limit - 3)].rstrip() + "..."
+        return text
+
+    sections: List[str] = []
+    seen_values = set()
+    preferred_keys = [
+        ("summary", "Summary"),
+        ("analysis", "Detailed Analysis"),
+        ("projectMeta", "Project Metadata"),
+        ("businessGoals", "Business Goals"),
+        ("functionalRequirements", "Functional Requirements"),
+        ("nonFunctionalRequirements", "Non-Functional Requirements"),
+        ("technicalRecommendations", "Technical Recommendations"),
+        ("risks", "Risks"),
+        ("assumptions", "Assumptions"),
+        ("governanceContext", "Governance Context"),
+    ]
+
+    per_section_limit = max(240, max_chars // max(2, len(preferred_keys)))
+    for key, label in preferred_keys:
+        text = to_text(brd_analysis.get(key), per_section_limit)
+        if not text or text in seen_values:
+            continue
+        sections.append(f"{label}:\n{text}")
+        seen_values.add(text)
+
+    if not sections:
+        fallback_text = to_text(brd_analysis, max_chars)
+        return fallback_text[:max_chars]
+
+    combined = "\n\n".join(sections)
+    if len(combined) > max_chars:
+        combined = combined[: max(0, max_chars - 3)].rstrip() + "..."
+    return combined
 
 
 def _normalize_seed_task(task: Dict[str, Any], sequence_number: int, project_token: Optional[str] = None) -> Dict[str, Any]:
@@ -753,6 +883,8 @@ async def _generate_technical_spec(
     tasks: List[Dict[str, Any]],
     brd_summary: str = "",
     kg_context: str = "",
+    repo_tree_context: str = "",
+    workspace_contract: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     LAYER 1: Architect Agent — generates a canonical Technical Spec.
@@ -774,15 +906,19 @@ async def _generate_technical_spec(
     if not key or key == "your-api-key-here":
         return {"status": "skipped", "reason": "no_api_key", "spec": ""}
 
-    task_list_text = _build_task_context_block(
-        tasks,
-        max_total_chars=14000,
-        max_description_chars=220,
-    )
     stack_profile = _infer_project_stack(
         tasks=tasks,
-        tech_spec="\n".join(part for part in (brd_summary, kg_context) if part),
-        workspace_contract={},
+        tech_spec="\n".join(part for part in (brd_summary, repo_tree_context, kg_context) if part),
+        workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+    )
+    task_list_text = _build_task_context_block(
+        tasks,
+        max_total_chars=16000,
+        max_description_chars=220,
+        include_file_hints=True,
+        include_checklist_preview=True,
+        stack_profile=stack_profile,
+        workspace_contract=workspace_contract,
     )
     stack_text = (
         f"Frontend: {stack_profile.get('frontend') or 'unspecified'}\n"
@@ -794,13 +930,16 @@ async def _generate_technical_spec(
     architect_prompt = f"""You are a Senior Software Architect Agent. Your job is to produce a
 CANONICAL TECHNICAL SPECIFICATION that all coding agents will reference as the single source of truth.
 
-BUSINESS REQUIREMENTS (from BRD):
-{brd_summary[:3000] if brd_summary else "Not provided."}
+BUSINESS REQUIREMENTS (from BRD analysis report):
+{brd_summary[:4500] if brd_summary else "Not provided."}
 
 EXISTING CODEBASE KNOWLEDGE (from Knowledge Graph):
 {kg_context[:4000] if kg_context else "New project — no existing codebase."}
 
-TASKS TO BE IMPLEMENTED BY AGENTS:
+CURRENT GIT PROJECT TREE SNAPSHOT:
+{repo_tree_context[:4000] if repo_tree_context else "Not provided."}
+
+TASKS TO BE IMPLEMENTED BY AGENTS (titles, descriptions, checklists, and file hints):
 {task_list_text}
 
 STACK DECISION TO FOLLOW:
@@ -853,10 +992,13 @@ portfolio/
 For YOUR project, output the exact directory tree with:
 - Only the directories actually required by the tasks and stack decision
 - Every file with its purpose in comments
-- Backend files in `backend/` only if the project truly has backend work
-- Frontend files in `frontend/` only if the project truly has frontend work
+- Output exactly one final canonical tree. Do not output alternatives, migrations, conditional variants, or "pick one" instructions.
+- Extend the current repo tree when possible instead of inventing alternate roots
+- If the current repo tree already establishes an app root, preserve that root unless the BRD/tasks clearly require a migration
+- Backend files in `backend/` only if the project truly has backend work and no stronger existing root is already established
+- Frontend files should stay in the existing frontend/static root when one already exists
 - Configuration files only when the tasks/spec explicitly require them
-- For static HTML/CSS sites, prefer `frontend/index.html`, `frontend/styles.css`, and only the minimal supporting files
+- For static HTML/CSS sites, keep `index.html` and `styles.css` together in the existing canonical static root from the repo/task plan; if no root exists yet, choose one canonical root and keep both files there
 - Do not invent backend, database, Docker, CI, or package-manager files for a minimal static project
 - Do not duplicate the same file in multiple roots
 
@@ -881,7 +1023,7 @@ Do NOT use vague descriptions like "appropriate fields" — name every field exp
     payload = {
         "model": model_name,
         "messages": [
-            {"role": "system", "content": "You are a Senior Software Architect. Produce precise, unambiguous technical specifications."},
+            {"role": "system", "content": TECH_SPEC_ARCHITECT_SYSTEM_PROMPT},
             {"role": "user", "content": architect_prompt},
         ],
         "stream": False,
@@ -910,7 +1052,7 @@ Do NOT use vague descriptions like "appropriate fields" — name every field exp
             "status": "generated",
             "spec": spec_text,
             "generated_at": datetime.utcnow().isoformat(),
-            "task_signature": _master_task_signature(tasks),
+            "task_signature": _master_task_signature(tasks, brd_context=brd_summary),
             "task_count": len(tasks),
             "char_length": len(spec_text),
         }
@@ -5704,6 +5846,7 @@ def _collect_master_tree_required_paths(
     workspace_contract: Optional[Dict[str, Any]] = None,
     validation: Optional[Dict[str, Any]] = None,
     stack_profile: Optional[Dict[str, Any]] = None,
+    repo_file_paths: Optional[List[str]] = None,
 ) -> tuple[List[str], List[str]]:
     contract = workspace_contract if isinstance(workspace_contract, dict) else {}
     payload = validation if isinstance(validation, dict) else {}
@@ -5726,6 +5869,7 @@ def _collect_master_tree_required_paths(
         for item in (payload.get(key) or []):
             candidates.extend(_extract_task_paths_from_text(item))
 
+    candidates.extend(str(path or "") for path in (repo_file_paths or []))
     candidates.extend(_default_master_tree_paths(stack_profile, contract))
     candidates.extend(str(path or "") for path in (contract.get("root_files") or []))
     for module in (contract.get("modules") or []):
@@ -5837,6 +5981,7 @@ def _build_deterministic_master_tree(
     validation: Optional[Dict[str, Any]] = None,
     stack_profile: Optional[Dict[str, Any]] = None,
     fallback_root_label: str = "project",
+    repo_file_paths: Optional[List[str]] = None,
 ) -> str:
     file_paths, directory_paths = _collect_master_tree_required_paths(
         workspace_tree=workspace_tree,
@@ -5845,6 +5990,7 @@ def _build_deterministic_master_tree(
         workspace_contract=workspace_contract,
         validation=validation,
         stack_profile=stack_profile,
+        repo_file_paths=repo_file_paths,
     )
     if not file_paths and not directory_paths:
         return ""
@@ -5870,7 +6016,11 @@ def _sanitize_master_planned_files(
         if not candidate:
             continue
         if "/" not in candidate:
-            candidate = _infer_repo_path_from_filename(candidate, stack_profile) or candidate
+            candidate = _infer_repo_path_from_filename(
+                candidate,
+                stack_profile,
+                workspace_contract=contract,
+            ) or candidate
         if not _is_valid_master_tree_path_candidate(
             candidate,
             stack_profile=stack_profile,
@@ -5917,6 +6067,7 @@ def _build_master_task_plan(
             "status": task.get("status") or "",
             "wallet": task.get("wallet") or task.get("task_wallet") or 0,
             "dependencies": task_dependencies,
+            "checklist": _extract_task_checklist_items(task, limit=12),
             "assignee": task.get("assigned_agent") or "",
             "task_json": {
                 "project_id": task.get("project_id"),
@@ -6310,7 +6461,7 @@ def _log_master_assignment_plan(
         _log_master_agent(message, project_token=project_token)
 
 
-def _master_task_signature(tasks: List[Dict[str, Any]]) -> str:
+def _master_task_signature(tasks: List[Dict[str, Any]], brd_context: str = "") -> str:
     digest = hashlib.sha256()
     for task in _sort_tasks_for_execution(tasks or []):
         payload = {
@@ -6326,9 +6477,14 @@ def _master_task_signature(tasks: List[Dict[str, Any]]) -> str:
                 for dep in (task.get("dependencies") or [])
                 if str(dep).strip()
             ],
+            "checklist": _extract_task_checklist_items(task, limit=20),
             "wallet": task.get("wallet") or task.get("task_wallet") or 0,
         }
         digest.update(json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8"))
+        digest.update(b"\n")
+    brd_digest_text = _truncate_task_text(brd_context, 4000)
+    if brd_digest_text:
+        digest.update(brd_digest_text.encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
 
@@ -6346,6 +6502,8 @@ def _build_task_context_block(
     max_total_chars: Optional[int] = None,
     max_description_chars: int = 220,
     include_file_hints: bool = False,
+    include_checklist_preview: bool = False,
+    checklist_item_limit: int = 4,
     stack_profile: Optional[Dict[str, Any]] = None,
     workspace_contract: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -6400,9 +6558,22 @@ def _build_task_context_block(
                 if available >= 24:
                     line += _truncate_task_text(hint_text, available)
 
-        lines.append(line)
+        entry_lines = [line]
+        if include_checklist_preview:
+            checklist_items = _extract_task_checklist_items(task, limit=checklist_item_limit)
+            if checklist_items:
+                checklist_line = f"   Checklist: {'; '.join(checklist_items)}"
+                if remaining_budget is None:
+                    entry_lines.append(_truncate_task_text(checklist_line, 420))
+                else:
+                    consumed = sum(len(item) + 1 for item in entry_lines)
+                    available = remaining_budget - min_reserved - consumed
+                    if available >= 32:
+                        entry_lines.append(_truncate_task_text(checklist_line, available))
+
+        lines.extend(entry_lines)
         if remaining_budget is not None:
-            remaining_budget -= len(line) + 1
+            remaining_budget -= sum(len(item) + 1 for item in entry_lines)
 
     return "\n".join(lines)
 
@@ -6599,6 +6770,9 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     project_token = str(payload.get("project_token") or "").strip()
     author_agent_id = str(payload.get("author_agent_id") or "").strip()
     summary = str(payload.get("summary") or "").strip()
+    brd_analysis_context = str(payload.get("brd_analysis_context") or "").strip()
+    current_repo_tree = str(payload.get("current_repo_tree") or "").rstrip()
+    current_repo_tree_source = str(payload.get("current_repo_tree_source") or "").strip()
     workspace_tree = str(payload.get("workspace_tree") or "").rstrip()
     architecture_overview = str(payload.get("architecture_overview") or "").strip()
     dependencies = str(payload.get("dependencies") or "").strip()
@@ -6616,6 +6790,11 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     if summary:
         lines.append("")
         lines.append(summary)
+
+    if brd_analysis_context:
+        lines.append("")
+        lines.append("## BRD Analysis Context")
+        lines.append(brd_analysis_context[:4000])
 
     if stack_profile:
         lines.append("")
@@ -6677,6 +6856,13 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             ]
             if dependencies:
                 lines.append(f"  Depends on: {', '.join(dependencies[:10])}")
+            checklist_items = [
+                str(item).strip()
+                for item in (task.get("checklist") or [])
+                if str(item).strip()
+            ]
+            if checklist_items:
+                lines.append(f"  Checklist: {_truncate_task_text('; '.join(checklist_items[:8]), 320)}")
             planned_files = [
                 str(path or "").strip()
                 for path in (task.get("planned_files") or [])
@@ -6690,6 +6876,15 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
         lines.append("## Canonical Project Tree")
         lines.append("```text")
         lines.append(workspace_tree)
+        lines.append("```")
+
+    if current_repo_tree:
+        lines.append("")
+        lines.append("## Current Repository Tree")
+        if current_repo_tree_source:
+            lines.append(f"Source: `{current_repo_tree_source}`")
+        lines.append("```text")
+        lines.append(current_repo_tree)
         lines.append("```")
 
     if workspace_contract:
@@ -6747,6 +6942,8 @@ async def _generate_detailed_project_tree_plan(
     kg_context: str = "",
     tech_spec: str = "",
     stack_profile: Optional[Dict[str, Any]] = None,
+    workspace_contract: Optional[Dict[str, Any]] = None,
+    repo_tree_context: str = "",
 ) -> str:
     url = settings.ai_api_url
     key = settings.ai_api_key
@@ -6760,7 +6957,9 @@ async def _generate_detailed_project_tree_plan(
         max_total_chars=16000,
         max_description_chars=220,
         include_file_hints=True,
+        include_checklist_preview=True,
         stack_profile=stack_profile,
+        workspace_contract=workspace_contract,
     )
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     stack_text = (
@@ -6774,15 +6973,18 @@ async def _generate_detailed_project_tree_plan(
 Create the SINGLE CANONICAL PROJECT TREE that all coding agents must follow.
 
 BUSINESS REQUIREMENTS:
-{brd_summary[:2500] if brd_summary else "Not provided."}
+{brd_summary[:4000] if brd_summary else "Not provided."}
 
 EXISTING CODEBASE CONTEXT:
 {kg_context[:3000] if kg_context else "New project or minimal context."}
 
+CURRENT GIT PROJECT TREE SNAPSHOT:
+{repo_tree_context[:4000] if repo_tree_context else "Not provided."}
+
 EXISTING TECHNICAL SPEC:
 {tech_spec[:3500] if tech_spec else "Not provided."}
 
-ALL TASKS TO COVER IN THE PROJECT STRUCTURE:
+ALL TASKS TO COVER IN THE PROJECT STRUCTURE (titles, descriptions, checklists, file hints):
 {task_list_text}
 
 STACK DECISION TO FOLLOW:
@@ -6790,15 +6992,19 @@ STACK DECISION TO FOLLOW:
 
 Output rules:
 - Output ONLY one project tree diagram.
+- The tree must declare exactly one fixed canonical root.
+- Never output multiple alternatives, fallback layouts, conditional notes, or instructions like "pick only one".
 - Include directories and specific file names, not placeholders like "etc" or "other files".
 - Every listed task must have an obvious home in the tree.
 - Include configuration files, tests, shared types/contracts, and integration points when appropriate.
 - Keep the tree consistent with the stack decision above.
 - Use only directories that are justified by the tasks or existing codebase context.
+- Prefer extending the current git repo tree over inventing alternate roots when the repo already establishes a clear structure.
+- If the current repo tree already establishes an application root, keep that root unless the BRD/tasks clearly require a migration.
 - For static/frontend-only projects, do not invent backend/, database, Docker, or API files.
 - Do not duplicate files across roots (for example both `index.html` and `frontend/index.html`).
 - Prefer `.github/workflows/deploy.yml` over a duplicate root-level `deploy.yml` when the task is a GitHub Actions workflow.
-- For static HTML/CSS projects, prefer `frontend/index.html` and `frontend/styles.css` instead of `frontend/src/*`.
+- For static HTML/CSS projects, keep `index.html` and `styles.css` together in the repo's canonical static root; do not invent `frontend/` if a different root already exists.
 - Use inline comments to briefly explain key files.
 - Choose the best production-ready structure for the tasks, not the easiest structure.
 - Do not include prose before or after the tree.
@@ -6807,10 +7013,7 @@ Output rules:
     payload = {
         "model": model_name,
         "messages": [
-            {
-                "role": "system",
-                "content": "You are a senior software architect. Output precise canonical file trees.",
-            },
+            {"role": "system", "content": MASTER_TREE_GENERATOR_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         "stream": False,
@@ -6865,6 +7068,57 @@ def _coerce_bool(value: Any) -> bool:
     return text in {"1", "true", "yes", "approved"}
 
 
+def _detect_ambiguous_master_tree_issues(workspace_tree: str) -> List[str]:
+    text = str(workspace_tree or "")
+    lower = text.lower()
+    issues: List[str] = []
+
+    if any(
+        marker in lower
+        for marker in (
+            "pick only one",
+            "collapses to",
+            "becomes the repository root",
+            "preserving whichever directory root is in use",
+        )
+    ):
+        issues.append(
+            "The canonical tree contains conditional or alternate structures. It must declare exactly one fixed root."
+        )
+
+    root_candidates: List[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("```"):
+            continue
+        if stripped.startswith(("├──", "└──", "│")):
+            continue
+        cleaned = _re.sub(r"^[\s│├└─]+", "", stripped).strip()
+        if cleaned.endswith("/") and "/" not in cleaned[:-1]:
+            root_label = cleaned[:-1].strip()
+            if root_label:
+                root_candidates.append(root_label)
+
+    unique_roots = []
+    seen_roots = set()
+    for root in root_candidates:
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
+        unique_roots.append(root)
+
+    if len(unique_roots) > 1:
+        issues.append(
+            "The canonical tree declares multiple candidate roots "
+            + f"({', '.join(unique_roots[:3])}). Only one canonical root is allowed."
+        )
+
+    if text.count("```") >= 4:
+        issues.append("The canonical tree contains multiple code blocks/diagrams instead of one single tree.")
+
+    return issues
+
+
 def _heuristic_master_tree_validation(
     *,
     tasks: List[Dict[str, Any]],
@@ -6897,6 +7151,7 @@ def _heuristic_master_tree_validation(
 
     issues = []
     recommendations = []
+    issues.extend(_detect_ambiguous_master_tree_issues(workspace_tree)[:3])
 
     if task_count > 0 and file_line_count < expected_file_lines:
         issues.append(
@@ -6981,6 +7236,7 @@ async def _validate_master_project_tree_plan(
     tech_spec: str = "",
     workspace_contract: Optional[Dict[str, Any]] = None,
     stack_profile: Optional[Dict[str, Any]] = None,
+    repo_tree_context: str = "",
 ) -> Dict[str, Any]:
     heuristic = _heuristic_master_tree_validation(
         tasks=tasks,
@@ -7000,6 +7256,10 @@ async def _validate_master_project_tree_plan(
         tasks,
         max_total_chars=14000,
         max_description_chars=200,
+        include_file_hints=True,
+        include_checklist_preview=True,
+        stack_profile=stack_profile,
+        workspace_contract=workspace_contract,
     )
     spec_file_structure = _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
     spec_reference = spec_file_structure[:3200] if spec_file_structure else tech_spec[:3200]
@@ -7015,12 +7275,15 @@ async def _validate_master_project_tree_plan(
 Validate whether the proposed canonical project tree is correct and complete enough for the provided task plan.
 
 BUSINESS REQUIREMENTS:
-{brd_summary[:2200] if brd_summary else "Not provided."}
+{brd_summary[:3200] if brd_summary else "Not provided."}
 
 TECHNICAL SPEC FILE STRUCTURE / MANDATORY FILES:
 {spec_reference if spec_reference else "Not provided."}
 
-TASKS:
+CURRENT GIT PROJECT TREE SNAPSHOT:
+{repo_tree_context[:3500] if repo_tree_context else "Not provided."}
+
+TASKS (titles, descriptions, checklists, file hints):
 {task_lines}
 
 WORKSPACE CONTRACT:
@@ -7046,16 +7309,15 @@ Rules:
 - Approve only if the tree has concrete filenames and clear homes for the tasks.
 - Reject if the tree is too shallow, creates parallel roots, or ignores workspace contract boundaries.
 - Reject if the tree contradicts the stack decision.
+- Reject if the tree contains alternatives, conditional wording, multiple diagrams, or more than one candidate root.
+- Reject if the tree invents a new top-level application root when the current repo tree already establishes a different canonical root.
 - If rejected, provide a corrected_tree as a full replacement tree, not a diff.
 """
 
     payload = {
         "model": model_name,
         "messages": [
-            {
-                "role": "system",
-                "content": "You are a rigorous software architecture validator. Respond only with JSON.",
-            },
+            {"role": "system", "content": MASTER_TREE_VALIDATOR_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         "stream": False,
@@ -7499,7 +7761,18 @@ async def ensure_master_workspace_note(
             logger.warning("[%s] Failed to prepare workspace contract for master note: %s", effective_project, exc)
             workspace_contract = {}
             workspace_contract_signature = ""
-        task_signature = _master_task_signature(tasks)
+        brd_analysis = state.get("brd_analysis")
+        brd_summary = _build_brd_analysis_context(brd_analysis)
+        if not brd_summary:
+            if isinstance(brd_analysis, dict):
+                brd_summary = str(
+                    brd_analysis.get("summary")
+                    or brd_analysis.get("analysis")
+                    or ""
+                ).strip()
+            else:
+                brd_summary = str(brd_analysis or "").strip()
+        task_signature = _master_task_signature(tasks, brd_context=brd_summary)
         worker_signature = _master_worker_signature(project_token)
         cached_master_note = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
         if (
@@ -7565,12 +7838,10 @@ async def ensure_master_workspace_note(
         tech_spec_record = _project_tech_specs.get(effective_project, {}) if effective_project else {}
         tech_spec = str((tech_spec_record or {}).get("spec") or "").strip()
         tech_spec_signature = str((tech_spec_record or {}).get("task_signature") or "").strip()
-        brd_analysis = state.get("brd_analysis") if isinstance(state.get("brd_analysis"), dict) else {}
-        brd_summary = str(
-            brd_analysis.get("summary")
-            or brd_analysis.get("analysis")
-            or ""
-        ).strip()
+
+        current_repo_tree = ""
+        current_repo_tree_source = ""
+        current_repo_file_paths: List[str] = []
 
         kg_context = ""
         try:
@@ -7583,6 +7854,25 @@ async def ensure_master_workspace_note(
                 )
             if ctx_mgr and effective_project:
                 workspace_contract = ctx_mgr.get_workspace_contract(effective_project)
+                repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(effective_project)
+                if isinstance(repo_snapshot, dict):
+                    current_repo_tree = str(repo_snapshot.get("tree") or "").strip()
+                    current_repo_tree_source = str(repo_snapshot.get("source") or "").strip()
+                    current_repo_file_paths = [
+                        str(path).strip()
+                        for path in (repo_snapshot.get("all_file_paths") or [])
+                        if str(path).strip()
+                    ]
+                    if current_repo_file_paths:
+                        refreshed_contract = ctx_mgr.update_workspace_contract_from_file_paths(
+                            effective_project,
+                            current_repo_file_paths,
+                            source=f"{current_repo_tree_source or 'git_repo'}_snapshot",
+                            merge_ready=True,
+                            force_refresh=True,
+                        )
+                        if isinstance(refreshed_contract, dict) and refreshed_contract.get("status") == "ready":
+                            workspace_contract = refreshed_contract
                 workspace_contract_signature = _workspace_contract_signature(workspace_contract)
         except Exception as exc:
             logger.warning("[%s] Failed to build context for master note: %s", effective_project, exc)
@@ -7595,6 +7885,8 @@ async def ensure_master_workspace_note(
                 tasks=tasks,
                 brd_summary=brd_summary,
                 kg_context=kg_context,
+                repo_tree_context=current_repo_tree,
+                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
             )
             refreshed_spec = str(spec_result.get("spec") or "").strip()
             if refreshed_spec:
@@ -7602,7 +7894,7 @@ async def ensure_master_workspace_note(
 
         stack_profile = _infer_project_stack(
             tasks=tasks,
-            tech_spec=tech_spec,
+            tech_spec="\n".join(part for part in (tech_spec, current_repo_tree) if part),
             workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
         )
 
@@ -7617,6 +7909,8 @@ async def ensure_master_workspace_note(
                 kg_context=kg_context,
                 tech_spec=tech_spec,
                 stack_profile=stack_profile,
+                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                repo_tree_context=current_repo_tree,
             )
             if _count_tree_file_lines(generated_tree) >= _count_tree_file_lines(workspace_tree):
                 workspace_tree = generated_tree
@@ -7654,6 +7948,7 @@ async def ensure_master_workspace_note(
             workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
             stack_profile=stack_profile,
             fallback_root_label=effective_project or "project",
+            repo_file_paths=current_repo_file_paths,
         )
         if _count_tree_file_lines(deterministic_tree) > _count_tree_file_lines(workspace_tree):
             workspace_tree = deterministic_tree
@@ -7665,6 +7960,7 @@ async def ensure_master_workspace_note(
             tech_spec=tech_spec,
             workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
             stack_profile=stack_profile,
+            repo_tree_context=current_repo_tree,
         )
         corrected_tree = _strip_markdown_fences(str(validation.get("corrected_tree") or ""))
         if not validation.get("approved") and corrected_tree:
@@ -7675,6 +7971,7 @@ async def ensure_master_workspace_note(
                 tech_spec=tech_spec,
                 workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
                 stack_profile=stack_profile,
+                repo_tree_context=current_repo_tree,
             )
             if revised_validation.get("approved"):
                 workspace_tree = corrected_tree
@@ -7694,6 +7991,7 @@ async def ensure_master_workspace_note(
                 validation=validation,
                 stack_profile=stack_profile,
                 fallback_root_label=effective_project or "project",
+                repo_file_paths=current_repo_file_paths,
             )
             if deterministic_tree and deterministic_tree != workspace_tree:
                 revised_validation = await _validate_master_project_tree_plan(
@@ -7703,6 +8001,7 @@ async def ensure_master_workspace_note(
                     tech_spec=tech_spec,
                     workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
                     stack_profile=stack_profile,
+                    repo_tree_context=current_repo_tree,
                 )
                 if revised_validation.get("approved") or _count_tree_file_lines(deterministic_tree) > _count_tree_file_lines(workspace_tree):
                     workspace_tree = deterministic_tree
@@ -7755,10 +8054,14 @@ async def ensure_master_workspace_note(
             "worker_signature": worker_signature,
             "workspace_contract_signature": workspace_contract_signature,
             "summary": (
-                "Canonical project tree and implementation plan created by the master agent. "
+                "Canonical project tree and implementation plan created by the master agent from the BRD analysis, "
+                "task details, checklist context, and current repository tree. "
                 "All worker agents must follow this tree, implement inside these boundaries, "
                 "and align their work with the task plan below."
             ),
+            "brd_analysis_context": brd_summary[:4000],
+            "current_repo_tree": current_repo_tree,
+            "current_repo_tree_source": current_repo_tree_source,
             "workspace_tree": workspace_tree,
             "workspace_tree_source": workspace_tree_source,
             "architecture_overview": architecture_overview[:3000],
@@ -7824,6 +8127,9 @@ async def ensure_master_workspace_note(
             "workspace_tree": workspace_tree,
             "stack_profile": stack_profile,
             "workspace_contract": public_payload["workspace_contract"],
+            "brd_analysis_context": public_payload.get("brd_analysis_context"),
+            "current_repo_tree": public_payload.get("current_repo_tree"),
+            "current_repo_tree_source": public_payload.get("current_repo_tree_source"),
             "instructions": list(public_payload.get("instructions") or [])[:12],
         }
         state["master_note_cache"] = dict(final_result)
@@ -9450,11 +9756,19 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "message": "🏗️ Architect Agent: generating canonical Technical Spec..."
                     })
                     # Get BRD summary from project state if available
-                    brd_summary = state.get("brd_analysis", {}).get("summary", "")
+                    brd_payload = state.get("brd_analysis")
+                    brd_summary = _build_brd_analysis_context(brd_payload)
+                    if not brd_summary:
+                        if isinstance(brd_payload, dict):
+                            brd_summary = str(brd_payload.get("summary") or brd_payload.get("analysis") or "").strip()
+                        else:
+                            brd_summary = str(brd_payload or "").strip()
                     # Get all tasks for architecture planning
                     all_tasks = state.get("tasks", [])
                     # Get KG context for architecture decisions
                     arch_kg_context = ""
+                    workspace_contract = {}
+                    repo_tree_context = ""
                     try:
                         import context_manager as ctx_mgr
                         if ctx_mgr.is_project_indexed(project_token or ""):
@@ -9464,6 +9778,25 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 agent_id="architect_agent",
                                 task_token=task_token,
                             )
+                        workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
+                        repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
+                        if isinstance(repo_snapshot, dict):
+                            repo_tree_context = str(repo_snapshot.get("tree") or "").strip()
+                            repo_file_paths = [
+                                str(path).strip()
+                                for path in (repo_snapshot.get("all_file_paths") or [])
+                                if str(path).strip()
+                            ]
+                            if repo_file_paths and project_token:
+                                refreshed_contract = ctx_mgr.update_workspace_contract_from_file_paths(
+                                    project_token,
+                                    repo_file_paths,
+                                    source=f"{repo_snapshot.get('source') or 'git_repo'}_snapshot",
+                                    merge_ready=True,
+                                    force_refresh=True,
+                                )
+                                if isinstance(refreshed_contract, dict) and refreshed_contract.get("status") == "ready":
+                                    workspace_contract = refreshed_contract
                     except Exception:
                         pass
 
@@ -9472,6 +9805,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         tasks=all_tasks if all_tasks else [task],
                         brd_summary=brd_summary,
                         kg_context=arch_kg_context,
+                        repo_tree_context=repo_tree_context,
+                        workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
                     )
                     tech_spec = spec_result.get("spec", "")
                     agent["output_log"].append({
