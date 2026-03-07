@@ -208,8 +208,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [agentQuota, setAgentQuota] = useState(null);
     const [agentQuotaLoading, setAgentQuotaLoading] = useState(false);
     const [agentQuotaError, setAgentQuotaError] = useState('');
-    const [sharedAgentsToAdd, setSharedAgentsToAdd] = useState(0);
-    const [dedicatedAgentsToAdd, setDedicatedAgentsToAdd] = useState(0);
+    const [sharedAgentsToAdd, setSharedAgentsToAdd] = useState('');
+    const [dedicatedAgentsToAdd, setDedicatedAgentsToAdd] = useState('');
     const [isAddingAgents, setIsAddingAgents] = useState(false);
     const [addAgentModalError, setAddAgentModalError] = useState('');
 
@@ -778,8 +778,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Add/Remove Agent ─────────────────────────────────────────────
     const handleAddAgent = () => {
-        setSharedAgentsToAdd(0);
-        setDedicatedAgentsToAdd(0);
+        setSharedAgentsToAdd('');
+        setDedicatedAgentsToAdd('');
         setAddAgentModalError('');
         setAgentQuotaError('');
         setShowAddAgentModal(true);
@@ -804,8 +804,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const submitAddAgent = async () => {
         const sharedAvailable = Number(agentQuota?.shared_available ?? 0);
         const dedicatedAvailable = Number(agentQuota?.dedicated_available ?? 0);
-        const sharedCount = clampAgentCount(sharedAgentsToAdd, sharedAvailable);
-        const dedicatedCount = clampAgentCount(dedicatedAgentsToAdd, dedicatedAvailable);
+        const sharedInput = String(sharedAgentsToAdd).trim() || '0';
+        const dedicatedInput = String(dedicatedAgentsToAdd).trim() || '0';
+        const sharedCount = clampAgentCount(Number(sharedInput), sharedAvailable);
+        const dedicatedCount = clampAgentCount(Number(dedicatedInput), dedicatedAvailable);
 
         if (!selectedProjectKey) {
             setAddAgentModalError('Select a project before adding agents.');
@@ -876,8 +878,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             }
 
             setShowAddAgentModal(false);
-            setSharedAgentsToAdd(0);
-            setDedicatedAgentsToAdd(0);
+            setSharedAgentsToAdd('');
+            setDedicatedAgentsToAdd('');
             fetchAgents();
             fetchTasks(false, 1, true);
             refreshRoadmap();
@@ -2783,8 +2785,14 @@ const renderAgentCard = (agent) => {
             {/* Add Agent Modal */}
             {
                 showAddAgentModal && (
-                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-                        <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
+                    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+                        {/* Backdrop with blur */}
+                        <div 
+                            className="absolute inset-0 bg-black/70 backdrop-blur-md"
+                            onClick={() => setShowAddAgentModal(false)}
+                        />
+                        {/* Modal Content */}
+                        <div className="relative z-[301] bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
                                     <PlusCircle className="w-5 h-5 text-indigo-500" /> Add Dev Agents
@@ -2813,7 +2821,23 @@ const renderAgentCard = (agent) => {
                                             min="0"
                                             max={Number(agentQuota?.shared_available ?? 0)}
                                             value={sharedAgentsToAdd}
-                                            onChange={(e) => setSharedAgentsToAdd(clampAgentCount(e.target.value, Number(agentQuota?.shared_available ?? 0)))}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                // Allow empty string or valid numbers
+                                                if (val === '' || /^\d+$/.test(val)) {
+                                                    setSharedAgentsToAdd(val);
+                                                }
+                                            }}
+                                            onBlur={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '') {
+                                                    setSharedAgentsToAdd('');
+                                                } else {
+                                                    const num = clampAgentCount(Number(val), Number(agentQuota?.shared_available ?? 0));
+                                                    setSharedAgentsToAdd(num.toString());
+                                                }
+                                            }}
+                                            placeholder="0"
                                             className="w-full px-4 py-3 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400 text-sm bg-white text-app-text-main font-bold"
                                         />
                                     </div>
@@ -2832,7 +2856,23 @@ const renderAgentCard = (agent) => {
                                             min="0"
                                             max={Number(agentQuota?.dedicated_available ?? 0)}
                                             value={dedicatedAgentsToAdd}
-                                            onChange={(e) => setDedicatedAgentsToAdd(clampAgentCount(e.target.value, Number(agentQuota?.dedicated_available ?? 0)))}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                // Allow empty string or valid numbers
+                                                if (val === '' || /^\d+$/.test(val)) {
+                                                    setDedicatedAgentsToAdd(val);
+                                                }
+                                            }}
+                                            onBlur={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '') {
+                                                    setDedicatedAgentsToAdd('');
+                                                } else {
+                                                    const num = clampAgentCount(Number(val), Number(agentQuota?.dedicated_available ?? 0));
+                                                    setDedicatedAgentsToAdd(num.toString());
+                                                }
+                                            }}
+                                            placeholder="0"
                                             className="w-full px-4 py-3 border border-blue-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-app-text-main font-bold"
                                         />
                                     </div>

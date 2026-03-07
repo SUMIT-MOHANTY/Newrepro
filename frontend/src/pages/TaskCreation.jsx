@@ -858,7 +858,7 @@ export default function TaskCreation({
                 </div>
             </div>
             {isGenerating && (
-                <div className="fixed top-[120px] md:top-[180px] left-0 md:left-72 right-0 bottom-0 z-[200] flex items-start justify-center pt-8 px-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none' }}>
+                <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none', paddingTop: '15%' }}>
                     <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex items-center gap-3">
                             <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
