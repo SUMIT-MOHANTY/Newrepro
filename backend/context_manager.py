@@ -408,6 +408,8 @@ def _merge_workspace_contracts(existing: Dict[str, Any], incoming: Dict[str, Any
             ),
             None,
         )
+        current = current if isinstance(current, dict) else {}
+        candidate = candidate if isinstance(candidate, dict) else {}
         preferred = candidate if incoming_priority >= existing_priority else current
         fallback = current if preferred is candidate else candidate
         preferred = preferred or fallback or {}
