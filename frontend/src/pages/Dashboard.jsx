@@ -2564,7 +2564,13 @@ const Dashboard = ({
                                                 <div>
                                                     <p className="text-sm font-semibold text-emerald-900">Selected Project</p>
                                                     <p className="text-xs text-emerald-800 mt-1">
-                                                        {selectedProject.name} • {selectedProject.classification || 'N/A'} • Score {selectedProject.weightedScore ?? 'N/A'}/10
+                                                        {selectedProject.name}
+                                                        {selectedProject.classification && selectedProject.classification !== 'N/A' && (
+                                                            <> • {selectedProject.classification}</>
+                                                        )}
+                                                        {selectedProject.weightedScore != null && selectedProject.weightedScore !== 'N/A' && (
+                                                            <> • Score {selectedProject.weightedScore}/10</>
+                                                        )}
                                                     </p>
                                                     <p className="text-xs text-emerald-800 mt-1">
                                                         Status: {selectedProject.status === 'analysis_complete'
