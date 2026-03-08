@@ -27,29 +27,29 @@ export default function RoleDropdown({ roles = [], selectedRole, onSelect, class
                 className={`
                     w-full flex items-center justify-between gap-2.5
                     ${theme === 'dark'
-                        ? 'bg-transparent hover:bg-white/5 rounded-md px-3 py-1.5'
+                        ? 'bg-transparent hover:bg-app-bg-card/5 rounded-md px-3 py-1.5'
                         : 'bg-app-bg-card border-2 border-app-border hover:border-app-border rounded-xl px-4 py-2.5'
                     }
                     text-sm font-semibold
                     shadow-sm
                     transition-all duration-200 ease-in-out
-                    focus:outline-none focus:ring-2 focus:ring-white/30
-                    ${isOpen && theme === 'dark' ? 'bg-white/10' : ''}
-                    ${isOpen && theme !== 'dark' ? 'border-blue-400 ring-4 ring-blue-100 shadow-md' : ''}
+                    focus:outline-none focus:ring-2 focus:ring-app-bg-card/30
+                    ${isOpen && theme === 'dark' ? 'bg-app-bg-card/10' : ''}
+                    ${isOpen && theme !== 'dark' ? 'border-blue-400 ring-4 ring-app-primary-light shadow-md' : ''}
                 `}
             >
                 <div className="flex items-center gap-2 min-w-0">
-                    <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 shadow-sm ${theme === 'dark' ? 'bg-white/10' : 'bg-gradient-to-br from-blue-500 to-indigo-600'}`}>
-                        <Users className={`w-3 h-3 ${theme === 'dark' ? 'text-white' : 'text-white'}`} />
+                    <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 shadow-sm ${theme === 'dark' ? 'bg-app-bg-card/10' : 'bg-gradient-to-br from-app-primary to-app-primary'}`}>
+                        <Users className={`w-3 h-3 ${theme === 'dark' ? 'text-app-bg-card' : 'text-app-bg-card'}`} />
                     </div>
                     <div className="text-left min-w-0">
-                        <p className={`text-[10px] font-medium leading-none mb-0.5 ${theme === 'dark' ? 'text-white/70' : 'text-app-text-light'}`}>Role</p>
-                        <p className={`text-xs font-bold truncate leading-tight ${theme === 'dark' ? 'text-white' : 'text-gray-800'}`}>
+                        <p className={`text-[10px] font-medium leading-none mb-0.5 ${theme === 'dark' ? 'text-app-bg-card/70' : 'text-app-text-light'}`}>Role</p>
+                        <p className={`text-xs font-bold truncate leading-tight ${theme === 'dark' ? 'text-app-bg-card' : 'text-app-text-main'}`}>
                             {selectedRoleData?.label || 'Select Role'}
                         </p>
                     </div>
                 </div>
-                <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${theme === 'dark' ? 'text-white/70' : 'text-app-text-light'} ${isOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${theme === 'dark' ? 'text-app-bg-card/70' : 'text-app-text-light'} ${isOpen ? 'rotate-180' : ''}`} />
             </button>
 
             {/* Dropdown Panel */}

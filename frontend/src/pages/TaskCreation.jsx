@@ -1028,20 +1028,20 @@ export default function TaskCreation({
 
     if (showInitialProjectLoader) {
         return (
-            <div className="h-full min-h-[70vh] bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
-                <div className="fixed inset-0 z-[300] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 text-center" style={{ filter: 'none', backdropFilter: 'none' }}>
+            <div className="h-full min-h-[70vh] bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
+                <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-app-border bg-app-bg-card shadow-2xl p-6 text-center" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex justify-center">
-                            <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                            <Loader2 className="w-8 h-8 text-app-primary animate-spin" />
                         </div>
-                        <h3 className="mt-4 text-lg font-extrabold text-slate-900">Loading Task Creation</h3>
-                        <p className="mt-2 text-sm text-slate-600">
+                        <h3 className="mt-4 text-lg font-extrabold text-app-text-main">Loading Task Creation</h3>
+                        <p className="mt-2 text-sm text-app-text-label">
                             {isResolvingTaskToken || isLoadingProjectInfo 
-                                ? <>Fetching project information for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.</>
-                                : <>Loading the local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.</>
+                                ? <>Fetching project information for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
+                                : <>Loading the local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
                             }
                         </p>
-                        <p className="mt-1 text-xs text-slate-500">
+                        <p className="mt-1 text-xs text-app-text-muted">
                             {isResolvingTaskToken || isLoadingProjectInfo 
                                 ? 'Please wait while we fetch the project details...'
                                 : 'The page will open as soon as the saved preview is ready.'
@@ -1055,9 +1055,9 @@ export default function TaskCreation({
 
     return (
         <>
-            <div className={`h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30 ${isGenerating ? 'blur-sm' : ''}`}>
+            <div className={`h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30 ${isGenerating ? 'blur-sm' : ''}`}>
                 <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
                         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                             <div>
                                 <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">Master Agent Planner</p>
@@ -1066,7 +1066,7 @@ export default function TaskCreation({
                                     Project: <span className="font-semibold text-app-text-main">{selectedProject?.name || 'Not selected'}</span>
                                 </p>
                                 {processMode === 'ai_assist' && (
-                                    <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-xs font-semibold text-indigo-700">
+                                    <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-app-primary-light border border-app-primary-light rounded-lg text-xs font-semibold text-app-primary-hover">
                                         <Sparkles className="w-3.5 h-3.5" />
                                         <span>AI Assist Active: You will be redirected to VS Code's N-Mod Ext.</span>
                                     </div>
@@ -1074,7 +1074,7 @@ export default function TaskCreation({
                             </div>
                             <button
                                 onClick={handleStartProcess}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow hover:shadow-lg transition-all"
+                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all"
                             >
                                 Start the Process
                                 <ArrowRight className="w-4 h-4" />
@@ -1082,9 +1082,9 @@ export default function TaskCreation({
                         </div>
                     </div>
 
-                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5 space-y-4">
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5 space-y-4">
                         <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
-                            <FolderKanban className="w-4 h-4 text-blue-600" />
+                            <FolderKanban className="w-4 h-4 text-app-primary" />
                             AI Planning
                         </h3>
                         <p className="text-sm text-app-text-muted">
@@ -1097,41 +1097,41 @@ export default function TaskCreation({
                             onClick={handleMasterCreate}
                             disabled={!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true}
                             className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true)
-                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
+                                ? 'bg-app-border text-app-text-muted cursor-not-allowed'
+                                : 'bg-gradient-to-r from-app-primary to-app-primary text-app-bg-card hover:from-app-primary-hover hover:to-app-primary-hover'
                                 }`}
                         >
                             {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                             {isGenerating ? 'Creating Plan...' : projectInfo?.tasks_created === true ? 'Tasks Already Created' : 'Create Tasks (AI Auto Plan)'}
                         </button>
                         {!selectedProjectKey && (
-                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                            <p className="text-xs text-app-status-warning bg-app-status-warningBg border border-amber-200 rounded-lg px-3 py-2">
                                 No project selected. Select a project from the sidebar or top project dropdown.
                             </p>
                         )}
                         {selectedProjectKey && projectInfo?.tasks_created === true && (
-                            <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-start gap-2">
                                 <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
                                 <span>Tasks have already been created for this project. You can view them below or refresh to see the latest tasks.</span>
                             </p>
                         )}
                         {/* {selectedProjectKey && (
-                            <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2">
                                 The generated task JSON is uploaded to the batch task API, stored locally for this project, and shown below.
                             </p>
                         )} */}
                         {error && (
-                            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
+                            <p className="text-xs text-app-status-error bg-app-status-errorBg border border-red-200 rounded-lg px-3 py-2">{error}</p>
                         )}
                         {success && (
-                            <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                            <p className="text-xs text-app-status-success bg-app-status-successBg border border-emerald-200 rounded-lg px-3 py-2 flex items-start gap-2">
                                 <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
                                 <span>{success}</span>
                             </p>
                         )}
                     </div>
 
-                    {/* <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                    {/* <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-sm font-bold text-app-text-main">Generated JSON Preview</h3>
                             {generatedTaskPlan && (
@@ -1142,12 +1142,12 @@ export default function TaskCreation({
                         </div>
                         {generatedTaskPlan ? (
                             <div className="space-y-4">
-                                <pre className="max-h-[420px] overflow-auto rounded-xl bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-100">
+                                <pre className="max-h-[420px] overflow-auto rounded-xl bg-slate-900 px-4 py-4 text-xs leading-6 text-app-primary-light font-mono border border-slate-800">
                                     {JSON.stringify(previewJsonForDisplay, null, 2)}
                                 </pre>
                                 <div>
                                     <h4 className="mb-3 text-sm font-bold text-app-text-main">Generated CSV Preview</h4>
-                                    <pre className="max-h-[320px] overflow-auto rounded-xl bg-slate-950 px-4 py-4 text-xs leading-6 text-emerald-100">
+                                    <pre className="max-h-[320px] overflow-auto rounded-xl bg-slate-900 px-4 py-4 text-xs leading-6 text-emerald-400 font-mono border border-slate-800">
                                         {previewCsv}
                                     </pre>
                                 </div>
@@ -1160,7 +1160,7 @@ export default function TaskCreation({
                     </div> */}
 
 
-                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-sm font-bold text-app-text-main">Tasks Grouped by Sprint / Milestone</h3>
                             <button
@@ -1181,9 +1181,9 @@ export default function TaskCreation({
                             <div className="space-y-4">
                                 {groupedTasks.map((sprintGroup) => (
                                     <div key={`s-${sprintGroup.sprint.id}`} className="border border-app-border rounded-xl overflow-hidden">
-                                        <div className="px-4 py-3 bg-blue-50 border-b border-app-border-light flex items-center gap-3">
-                                            <FolderKanban className="w-4 h-4 text-blue-700" />
-                                            <p className="text-sm font-bold text-blue-900">{sprintGroup.sprint.name}</p>
+                                        <div className="px-4 py-3 bg-app-primary-light border-b border-app-border-light flex items-center gap-3">
+                                            <FolderKanban className="w-4 h-4 text-app-primary-hover" />
+                                            <p className="text-sm font-bold text-app-primary-dark">{sprintGroup.sprint.name}</p>
                                         </div>
                                         <div className="p-4 space-y-3">
                                             {Array.from(sprintGroup.milestones.values()).map((milestoneGroup) => (
@@ -1194,7 +1194,7 @@ export default function TaskCreation({
                                                     </div>
                                                     <div className="p-3 space-y-2">
                                                         {milestoneGroup.tasks.map((task) => (
-                                                            <div key={task.id || task.task_id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-white">
+                                                            <div key={task.id || task.task_id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-app-bg-card">
                                                                 <p className="text-sm font-semibold text-app-text-main">{task.title || task.taskName || 'Untitled Task'}</p>
                                                                 <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-app-text-muted">
                                                                     <span className="inline-flex items-center gap-1">
@@ -1205,7 +1205,7 @@ export default function TaskCreation({
                                                                         <CalendarDays className="w-3 h-3" />
                                                                         {task.planned_end || task.deadline || 'No deadline'}
                                                                     </span>
-                                                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold uppercase tracking-wide text-[10px] text-slate-700">
+                                                                    <span className="rounded-full bg-app-bg-muted px-2 py-0.5 font-semibold uppercase tracking-wide text-[10px] text-app-text-label">
                                                                         {task.type || task.task_type || 'task'}
                                                                     </span>
                                                                 </div>
@@ -1224,17 +1224,17 @@ export default function TaskCreation({
             </div>
             {isGenerating && (
                 <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none', paddingTop: '15%' }}>
-                    <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
+                    <div className="w-full max-w-xl rounded-2xl border border-app-border bg-app-bg-card shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex items-center gap-3">
-                            <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
-                            <h3 className="text-lg font-extrabold text-slate-900">AI Plan Generation In Progress</h3>
+                            <Loader2 className="w-6 h-6 text-app-primary animate-spin" />
+                            <h3 className="text-lg font-extrabold text-app-text-main">AI Plan Generation In Progress</h3>
                         </div>
-                        <p className="mt-2 text-sm text-slate-600">
-                            Generating a local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>. Please wait.
+                        <p className="mt-2 text-sm text-app-text-label">
+                            Generating a local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>. Please wait.
                         </p>
-                        <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 flex items-center justify-between">
-                            <span className="text-sm font-semibold text-indigo-900">Preview tasks generated</span>
-                            <span className="text-2xl font-extrabold text-indigo-700 tabular-nums">{liveCreatedTaskCount}</span>
+                        <div className="mt-4 rounded-xl border border-app-primary-light bg-app-primary-light px-4 py-3 flex items-center justify-between">
+                            <span className="text-sm font-semibold text-app-primary-dark">Preview tasks generated</span>
+                            <span className="text-2xl font-extrabold text-app-primary-hover tabular-nums">{liveCreatedTaskCount}</span>
                         </div>
                         <div className="mt-5 space-y-3">
                             {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
@@ -1244,27 +1244,27 @@ export default function TaskCreation({
                                     <div
                                         key={stepLabel}
                                         className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${isDone
-                                            ? 'border-emerald-200 bg-emerald-50'
+                                            ? 'border-emerald-200 bg-app-status-successBg'
                                             : isActive
-                                                ? 'border-indigo-200 bg-indigo-50'
-                                                : 'border-slate-200 bg-slate-50'
+                                                ? 'border-app-primary-ring bg-app-primary-light'
+                                                : 'border-app-border bg-app-bg-page'
                                             }`}
                                     >
                                         {isDone ? (
-                                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                            <CheckCircle2 className="w-4 h-4 text-app-status-success" />
                                         ) : isActive ? (
-                                            <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                                            <Loader2 className="w-4 h-4 text-app-primary animate-spin" />
                                         ) : (
-                                            <span className="inline-block w-3 h-3 rounded-full border border-slate-300 bg-white" />
+                                            <span className="inline-block w-3 h-3 rounded-full border border-app-border bg-app-bg-card" />
                                         )}
-                                        <span className={`text-sm font-semibold ${isDone ? 'text-emerald-700' : isActive ? 'text-indigo-700' : 'text-slate-500'}`}>
+                                        <span className={`text-sm font-semibold ${isDone ? 'text-app-status-success' : isActive ? 'text-app-primary-hover' : 'text-app-text-muted'}`}>
                                             {stepLabel}
                                         </span>
                                     </div>
                                 );
                             })}
                         </div>
-                        <p className="mt-4 text-xs text-slate-500">
+                        <p className="mt-4 text-xs text-app-text-muted">
                             Actions are temporarily locked until task plan creation completes.
                         </p>
                     </div>

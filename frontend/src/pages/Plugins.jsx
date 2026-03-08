@@ -45,19 +45,19 @@ const PLUGINS_META = [
       { label: 'Team collaboration', icon: Star },
     ],
     palette: {
-      grad: 'from-blue-500 to-indigo-600',
-      gradAccent: 'from-blue-400 via-indigo-500 to-purple-500',
-      bg: 'bg-blue-500',
+      grad: 'from-app-primary to-app-primary',
+      gradAccent: 'from-blue-400 via-app-primary to-purple-500',
+      bg: 'bg-app-primary',
       ring: 'ring-blue-300/40',
       border: 'border-blue-400',
-      badge: 'bg-blue-50 text-blue-700 border-blue-200',
-      badgeDark: 'bg-blue-500/20 text-blue-200 border-blue-400/30',
-      glow: 'shadow-blue-200/60',
-      text: 'text-blue-600',
-      featureBg: 'bg-blue-50',
-      featureText: 'text-blue-600',
+      badge: 'bg-app-primary-light text-app-primary-hover border-app-primary-ring',
+      badgeDark: 'bg-app-primary/20 text-app-primary-ring border-blue-400/30',
+      glow: 'shadow-app-primary-ring/60',
+      text: 'text-app-primary',
+      featureBg: 'bg-app-primary-light',
+      featureText: 'text-app-primary',
       accent: 'blue',
-      dot: 'bg-blue-500',
+      dot: 'bg-app-primary',
     },
   },
   {
@@ -77,19 +77,19 @@ const PLUGINS_META = [
       { label: 'Workflow automation', icon: Zap },
     ],
     palette: {
-      grad: 'from-blue-500 to-indigo-600',
-      gradAccent: 'from-blue-400 via-indigo-500 to-purple-500',
-      bg: 'bg-blue-500',
+      grad: 'from-app-primary to-app-primary',
+      gradAccent: 'from-blue-400 via-app-primary to-purple-500',
+      bg: 'bg-app-primary',
       ring: 'ring-blue-300/40',
       border: 'border-blue-400',
-      badge: 'bg-blue-50 text-blue-700 border-blue-200',
-      badgeDark: 'bg-blue-500/20 text-blue-200 border-blue-400/30',
-      glow: 'shadow-blue-200/60',
-      text: 'text-blue-600',
-      featureBg: 'bg-blue-50',
-      featureText: 'text-blue-600',
+      badge: 'bg-app-primary-light text-app-primary-hover border-app-primary-ring',
+      badgeDark: 'bg-app-primary/20 text-app-primary-ring border-blue-400/30',
+      glow: 'shadow-app-primary-ring/60',
+      text: 'text-app-primary',
+      featureBg: 'bg-app-primary-light',
+      featureText: 'text-app-primary',
       accent: 'blue',
-      dot: 'bg-blue-500',
+      dot: 'bg-app-primary',
     },
   },
   {
@@ -141,19 +141,19 @@ const PLUGINS_META = [
       { label: 'Monitoring & alerts', icon: Activity },
     ],
     palette: {
-      grad: 'from-emerald-500 to-teal-600',
+      grad: 'from-app-status-success to-teal-600',
       gradAccent: 'from-emerald-400 via-teal-500 to-cyan-500',
-      bg: 'bg-emerald-500',
+      bg: 'bg-app-status-success',
       ring: 'ring-emerald-300/40',
       border: 'border-emerald-400',
-      badge: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      badgeDark: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/30',
+      badge: 'bg-app-status-successBg text-app-status-success border-emerald-200',
+      badgeDark: 'bg-app-status-success/20 text-emerald-200 border-emerald-400/30',
       glow: 'shadow-emerald-200/60',
-      text: 'text-emerald-600',
-      featureBg: 'bg-emerald-50',
-      featureText: 'text-emerald-600',
+      text: 'text-app-status-success',
+      featureBg: 'bg-app-status-successBg',
+      featureText: 'text-app-status-success',
       accent: 'emerald',
-      dot: 'bg-emerald-500',
+      dot: 'bg-app-status-success',
     },
   },
 ];
@@ -186,8 +186,8 @@ function SelectorCard({ plugin, isSelected, liveData, onClick }) {
       type="button"
       onClick={handleClick}
       className={`w-full text-left group relative rounded-xl border transition-all duration-200 overflow-hidden focus:outline-none cursor-pointer z-10 ${isSelected
-          ? `bg-white border-2 ${p.border} ring-2 ${p.ring} shadow-lg ${p.glow}`
-          : 'bg-white/70 border-app-border hover:border-app-border-active hover:bg-white hover:shadow-md'
+          ? `bg-app-bg-card border-2 ${p.border} ring-2 ${p.ring} shadow-lg ${p.glow}`
+          : 'bg-app-bg-card/70 border-app-border hover:border-app-border-active hover:bg-app-bg-card hover:shadow-md'
         }`}
       style={{ position: 'relative', zIndex: 10 }}
     >
@@ -201,9 +201,9 @@ function SelectorCard({ plugin, isSelected, liveData, onClick }) {
         {/* logo bubble */}
         <div
           className={`flex-shrink-0 w-14 h-14 rounded-xl flex items-center justify-center shadow-sm border p-2.5 pointer-events-none ${
-            p.accent === 'blue' ? 'bg-gradient-to-br from-blue-100 to-indigo-100 border-blue-200/50' :
+            p.accent === 'blue' ? 'bg-gradient-to-br from-app-primary-light to-app-primary-light border-app-primary-ring/50' :
             p.accent === 'violet' ? 'bg-gradient-to-br from-violet-100 to-purple-100 border-violet-200/50' :
-            'bg-gradient-to-br from-emerald-100 to-teal-100 border-emerald-200/50'
+            'bg-gradient-to-br from-app-status-successBg to-teal-100 border-emerald-200/50'
           }`}
         >
           {plugin.logo ? (
@@ -222,7 +222,7 @@ function SelectorCard({ plugin, isSelected, liveData, onClick }) {
               {plugin.category}
             </span>
             {plugin.comingSoon && (
-              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border bg-amber-50 text-amber-700 border-amber-200">
+              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border bg-app-status-warningBg text-app-status-warning border-amber-200">
                 Coming Soon
               </span>
             )}
@@ -238,11 +238,11 @@ function SelectorCard({ plugin, isSelected, liveData, onClick }) {
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
               )}
               <div
-                className={`relative inline-flex rounded-full h-2.5 w-2.5 ${connected ? 'bg-emerald-500' : 'bg-slate-300'
+                className={`relative inline-flex rounded-full h-2.5 w-2.5 ${connected ? 'bg-app-status-success' : 'bg-app-border'
                   }`}
               />
             </div>
-            <span className={`text-[9px] font-semibold ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
+            <span className={`text-[9px] font-semibold ${connected ? 'text-app-status-success' : 'text-app-text-light'}`}>
               {connected ? 'Live' : 'Off'}
             </span>
           </div>
@@ -259,7 +259,7 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
   const isConnecting = connecting === plugin.id;
 
   return (
-    <div className="flex flex-col bg-white rounded-2xl border border-app-border overflow-hidden shadow-xl w-full">
+    <div className="flex flex-col bg-app-bg-card rounded-2xl border border-app-border overflow-hidden shadow-xl w-full">
       {/* ── Header gradient ── */}
       <div className={`relative bg-gradient-to-br ${p.grad} p-6 overflow-hidden flex-shrink-0`}>
         {/* dot-grid pattern */}
@@ -271,40 +271,40 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
           }}
         />
         {/* glow blob */}
-        <div className="absolute -top-8 -right-8 w-40 h-40 bg-white/10 rounded-full blur-2xl" />
+        <div className="absolute -top-8 -right-8 w-40 h-40 bg-app-bg-card/10 rounded-full blur-2xl" />
 
         <div className="relative flex items-center gap-4">
           <div className={`w-20 h-20 rounded-2xl backdrop-blur-md border flex items-center justify-center p-4 shadow-xl flex-shrink-0 ${
-            p.accent === 'blue' ? 'bg-blue-100/80 border-blue-200/50' :
+            p.accent === 'blue' ? 'bg-app-primary-light/80 border-app-primary-ring/50' :
             p.accent === 'violet' ? 'bg-violet-100/80 border-violet-200/50' :
-            'bg-emerald-100/80 border-emerald-200/50'
+            'bg-app-status-successBg/80 border-emerald-200/50'
           }`}>
             {plugin.logo ? (
               <img src={plugin.logo} alt={plugin.name} className="w-full h-full object-contain" />
             ) : (
-              <plugin.icon className="w-10 h-10 text-white" />
+              <plugin.icon className="w-10 h-10 text-app-bg-card" />
             )}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-lg bg-white/20 backdrop-blur-sm text-white border border-white/25">
+              <span className="text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-lg bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card border border-app-bg-card/25">
                 {plugin.category}
               </span>
               {plugin.comingSoon && (
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-amber-400/30 text-amber-100 border border-amber-300/30 flex items-center gap-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-amber-400/30 text-app-status-warningBg border border-amber-300/30 flex items-center gap-1">
                   <Clock className="w-2.5 h-2.5" />
                   Coming Soon
                 </span>
               )}
               {!plugin.comingSoon && connected && (
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-emerald-400/30 text-emerald-100 border border-emerald-300/30 flex items-center gap-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-emerald-400/30 text-app-status-successBg border border-emerald-300/30 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
                   Active
                 </span>
               )}
             </div>
-            <h2 className="text-2xl font-extrabold text-white tracking-tight">{plugin.name}</h2>
-            <p className="text-white/80 text-xs mt-0.5 leading-relaxed">{plugin.tagline}</p>
+            <h2 className="text-2xl font-extrabold text-app-bg-card tracking-tight">{plugin.name}</h2>
+            <p className="text-app-bg-card/80 text-xs mt-0.5 leading-relaxed">{plugin.tagline}</p>
           </div>
         </div>
       </div>
@@ -318,9 +318,9 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
         <div>
           <div className="flex items-center gap-2 mb-3">
             <div className={`w-9 h-9 rounded-lg flex items-center justify-center shadow-sm border ${
-              p.accent === 'blue' ? 'bg-blue-100 border-blue-200/50' :
+              p.accent === 'blue' ? 'bg-app-primary-light border-app-primary-ring/50' :
               p.accent === 'violet' ? 'bg-violet-100 border-violet-200/50' :
-              'bg-emerald-100 border-emerald-200/50'
+              'bg-app-status-successBg border-emerald-200/50'
             }`}>
               <Zap className={`w-5 h-5 ${p.text}`} />
             </div>
@@ -332,7 +332,7 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
                 key={idx}
                 className={`flex items-center gap-2 p-2.5 rounded-xl border border-app-border-light ${p.featureBg} group hover:shadow-sm transition-all duration-150`}
               >
-                <div className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 bg-white shadow-sm`}>
+                <div className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 bg-app-bg-card shadow-sm`}>
                   <CheckCircle className={`w-3.5 h-3.5 ${p.featureText}`} />
                 </div>
                 <span className="text-xs font-medium text-app-text-label leading-tight">{label}</span>
@@ -346,9 +346,9 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
           <div>
             <div className="flex items-center gap-2 mb-3">
               <div className={`w-9 h-9 rounded-lg flex items-center justify-center shadow-sm border ${
-                p.accent === 'blue' ? 'bg-blue-100 border-blue-200/50' :
+                p.accent === 'blue' ? 'bg-app-primary-light border-app-primary-ring/50' :
                 p.accent === 'violet' ? 'bg-violet-100 border-violet-200/50' :
-                'bg-emerald-100 border-emerald-200/50'
+                'bg-app-status-successBg border-emerald-200/50'
               }`}>
                 <Settings className={`w-5 h-5 ${p.text}`} />
               </div>
@@ -356,7 +356,7 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
             </div>
 
             <div
-              className={`flex items-center justify-between p-3.5 rounded-xl border-2 ${connected ? 'bg-emerald-50/60 border-emerald-200' : 'bg-slate-50 border-app-border-light'
+              className={`flex items-center justify-between p-3.5 rounded-xl border-2 ${connected ? 'bg-app-status-successBg/60 border-emerald-200' : 'bg-app-bg-page border-app-border-light'
                 }`}
             >
               <div className="flex items-center gap-2.5">
@@ -365,23 +365,23 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                   )}
                   <div
-                    className={`relative inline-flex rounded-full h-3 w-3 ${connected ? 'bg-emerald-500' : 'bg-slate-300'
+                    className={`relative inline-flex rounded-full h-3 w-3 ${connected ? 'bg-app-status-success' : 'bg-app-border'
                       }`}
                   />
                 </div>
-                <span className={`text-sm font-semibold ${connected ? 'text-emerald-700' : 'text-app-text-muted'}`}>
+                <span className={`text-sm font-semibold ${connected ? 'text-app-status-success' : 'text-app-text-muted'}`}>
                   {connected ? 'Connected' : 'Not Connected'}
                 </span>
               </div>
               <span
                 className={`text-xs font-bold px-2.5 py-1 rounded-lg border flex items-center gap-1.5 ${connected
-                    ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                    : 'bg-slate-100 text-slate-500 border-slate-200'
+                    ? 'bg-app-status-successBg text-app-status-success border-emerald-200'
+                    : 'bg-app-bg-muted text-app-text-muted border-app-border'
                   }`}
               >
                 {connected ? (
                   <>
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-app-status-success animate-pulse" />
                     Active
                   </>
                 ) : (
@@ -392,7 +392,7 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
 
           {/* connected since */}
           {liveData?.connected_at && (
-            <div className="flex items-center gap-2 mt-2 text-xs text-app-text-muted bg-slate-50 px-3 py-2 rounded-lg border border-app-border-light">
+            <div className="flex items-center gap-2 mt-2 text-xs text-app-text-muted bg-app-bg-page px-3 py-2 rounded-lg border border-app-border-light">
               <Clock className="w-3.5 h-3.5 flex-shrink-0" />
               <span>
                 Connected since{' '}
@@ -407,18 +407,18 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
           {liveData?.connection_message && (
             <div
               className={`mt-2 p-3 rounded-xl border ${liveData.connection_error
-                  ? 'bg-red-50 border-red-200'
-                  : 'bg-emerald-50 border-emerald-200'
+                  ? 'bg-app-status-errorBg border-red-200'
+                  : 'bg-app-status-successBg border-emerald-200'
                 }`}
             >
               <div className="flex items-start gap-2">
                 {liveData.connection_error ? (
-                  <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                  <AlertCircle className="w-4 h-4 text-app-status-error flex-shrink-0 mt-0.5" />
                 ) : (
-                  <CheckCircle className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                  <CheckCircle className="w-4 h-4 text-app-status-success flex-shrink-0 mt-0.5" />
                 )}
                 <span
-                  className={`text-xs ${liveData.connection_error ? 'text-red-700' : 'text-emerald-700'}`}
+                  className={`text-xs ${liveData.connection_error ? 'text-app-status-error' : 'text-app-status-success'}`}
                 >
                   {liveData.connection_message}
                 </span>
@@ -432,7 +432,7 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
       {/* ── CTA Button ── */}
       <div className="p-4 border-t border-app-border-light bg-app-bg-muted/50 flex-shrink-0">
         {plugin.comingSoon ? (
-          <div className="w-full flex items-center justify-center gap-2.5 py-3.5 px-5 rounded-xl font-bold text-sm bg-slate-100 text-slate-500 border-2 border-dashed border-slate-300 cursor-not-allowed">
+          <div className="w-full flex items-center justify-center gap-2.5 py-3.5 px-5 rounded-xl font-bold text-sm bg-app-bg-muted text-app-text-muted border-2 border-dashed border-app-border cursor-not-allowed">
             <Clock className="w-4 h-4" />
             Coming Soon
           </div>
@@ -450,8 +450,8 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
               }
             }}
             disabled={isConnecting}
-            className={`w-full flex items-center justify-center gap-2.5 py-3.5 px-5 rounded-xl font-bold text-sm text-white transition-all duration-200 shadow-md ${isConnecting
-                ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+            className={`w-full flex items-center justify-center gap-2.5 py-3.5 px-5 rounded-xl font-bold text-sm text-app-bg-card transition-all duration-200 shadow-md ${isConnecting
+                ? 'bg-app-border text-app-text-muted cursor-not-allowed'
                 : `bg-gradient-to-r ${p.grad} hover:shadow-lg ${p.glow} hover:-translate-y-0.5 active:translate-y-0`
               }`}
           >
@@ -477,8 +477,8 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
 /* ─── Empty State ────────────────────────────────────────────── */
 function EmptyDetailState() {
   return (
-    <div className="flex flex-col h-full items-center justify-center bg-white rounded-2xl border-2 border-dashed border-app-border-light min-h-[400px] p-8">
-      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center mb-4 border border-app-border-light shadow-sm">
+    <div className="flex flex-col h-full items-center justify-center bg-app-bg-card rounded-2xl border-2 border-dashed border-app-border-light min-h-[400px] p-8">
+      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-app-primary-light to-app-primary-light flex items-center justify-center mb-4 border border-app-border-light shadow-sm">
         <Sparkles className="w-8 h-8 text-blue-400" />
       </div>
       <h3 className="text-base font-bold text-app-text-main mb-1.5">Select a Plugin</h3>
@@ -494,7 +494,7 @@ function LoadingState() {
   return (
     <div className="flex items-center justify-center h-72">
       <div className="flex flex-col items-center gap-3">
-        <div className="w-10 h-10 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+        <div className="w-10 h-10 rounded-full border-2 border-app-primary border-t-transparent animate-spin" />
         <span className="text-sm text-app-text-muted font-medium">Loading plugins…</span>
       </div>
     </div>
@@ -511,8 +511,8 @@ function StatsBar({ pluginsData }) {
   }).length;
 
   const stats = [
-    { label: 'Total Integrations', value: PLUGINS_META.length, icon: Plug, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { label: 'Connected', value: totalConnected, icon: CheckCircle, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+    { label: 'Total Integrations', value: PLUGINS_META.length, icon: Plug, color: 'text-app-primary', bg: 'bg-app-primary-light' },
+    { label: 'Connected', value: totalConnected, icon: CheckCircle, color: 'text-app-status-success', bg: 'bg-app-status-successBg' },
     { label: 'Available', value: PLUGINS_META.length - totalConnected, icon: Zap, color: 'text-violet-600', bg: 'bg-violet-50' },
   ];
 
@@ -521,11 +521,11 @@ function StatsBar({ pluginsData }) {
       {stats.map(({ label, value, icon: Icon, color, bg }) => (
         <div
           key={label}
-          className="flex items-center gap-3 bg-white rounded-xl border border-app-border-light px-4 py-3 shadow-sm hover:shadow-md transition-shadow duration-150"
+          className="flex items-center gap-3 bg-app-bg-card rounded-xl border border-app-border-light px-4 py-3 shadow-sm hover:shadow-md transition-shadow duration-150"
         >
           <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center flex-shrink-0 border ${
-            bg === 'bg-blue-50' ? 'border-blue-200/50' :
-            bg === 'bg-emerald-50' ? 'border-emerald-200/50' :
+            bg === 'bg-app-primary-light' ? 'border-app-primary-ring/50' :
+            bg === 'bg-app-status-successBg' ? 'border-emerald-200/50' :
             'border-violet-200/50'
           }`}>
             <Icon className={`w-5 h-5 ${color}`} />
@@ -657,8 +657,8 @@ export default function Plugins() {
         {/* ── Page Header ── */}
         <div className="mb-6">
           <div className="flex items-center gap-3 mb-1.5">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md shadow-blue-200">
-              <Plug className="w-5 h-5 text-white" />
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-app-primary to-app-primary flex items-center justify-center shadow-md shadow-app-primary-ring">
+              <Plug className="w-5 h-5 text-app-bg-card" />
             </div>
             <div>
               <h1 className="text-2xl font-extrabold text-app-text-main tracking-tight leading-none">
@@ -710,14 +710,14 @@ export default function Plugins() {
                 })}
 
                 {/* Integration hint */}
-                <div className="rounded-xl border border-app-border-light bg-gradient-to-br from-blue-50 to-indigo-50 p-4">
+                <div className="rounded-xl border border-app-border-light bg-gradient-to-br from-app-primary-light to-app-primary-light p-4">
                   <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <Sparkles className="w-4 h-4 text-blue-600" />
+                    <div className="w-8 h-8 rounded-lg bg-app-primary-light flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Sparkles className="w-4 h-4 text-app-primary" />
                     </div>
                     <div>
-                      <p className="text-xs font-bold text-blue-800 mb-0.5">DSuite Ecosystem</p>
-                      <p className="text-[11px] text-blue-700/80 leading-relaxed">
+                      <p className="text-xs font-bold text-app-primary-dark mb-0.5">DSuite Ecosystem</p>
+                      <p className="text-[11px] text-app-primary-hover/80 leading-relaxed">
                         All three plugins work together to form the complete DSuite pipeline — manage, test, and deploy from a single platform.
                       </p>
                     </div>

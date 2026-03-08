@@ -178,7 +178,7 @@ export default function OrganizationAdmin({ user }) {
             <main className="flex-1 h-full overflow-y-auto bg-app-bg-page p-3 sm:p-4 md:p-6 w-full">
                 <div className="max-w-3xl mx-auto">
                     <div className="bg-app-bg-card rounded-xl border border-app-border-light p-8 text-center">
-                        <AlertCircle className="w-10 h-10 mx-auto text-amber-500 mb-4" />
+                        <AlertCircle className="w-10 h-10 mx-auto text-app-status-warning mb-4" />
                         <h2 className="text-xl font-bold text-app-text-main mb-2">Organization Admin Access Required</h2>
                         <p className="text-sm text-app-text-muted">
                             Your account does not have organization admin privileges for configuring SSO settings.
@@ -192,17 +192,17 @@ export default function OrganizationAdmin({ user }) {
     return (
         <main className="flex-1 h-full overflow-y-auto bg-app-bg-page p-3 sm:p-4 md:p-6 w-full">
             <div className="max-w-5xl mx-auto space-y-4">
-                <section className="bg-gradient-to-r from-[#1f3763] to-[#2f548f] text-white rounded-2xl border border-blue-900/30 p-6 shadow-lg">
+                <section className="bg-gradient-to-r from-[#1f3763] to-[#2f548f] text-app-bg-card rounded-2xl border border-app-primary-dark/30 p-6 shadow-lg">
                     <div className="flex items-start justify-between gap-4 flex-wrap">
                         <div>
-                            <p className="text-[11px] uppercase tracking-[0.18em] text-blue-200 font-bold mb-2">Organization Identity</p>
+                            <p className="text-[11px] uppercase tracking-[0.18em] text-app-primary-ring font-bold mb-2">Organization Identity</p>
                             <h2 className="text-2xl font-extrabold tracking-tight mb-1">SSO & Tenant Configuration</h2>
-                            <p className="text-sm text-blue-100">
+                            <p className="text-sm text-app-primary-light">
                                 Configure your identity provider once and keep auth settings centralized for your organization.
                             </p>
                         </div>
-                        <div className="px-4 py-2 rounded-xl bg-white/10 border border-white/20">
-                            <p className="text-[10px] uppercase tracking-wider text-blue-100 font-bold mb-1">Organization</p>
+                        <div className="px-4 py-2 rounded-xl bg-app-bg-card/10 border border-app-bg-card/20">
+                            <p className="text-[10px] uppercase tracking-wider text-app-primary-light font-bold mb-1">Organization</p>
                             <p className="text-sm font-bold">{user?.organization_name || 'Unassigned Organization'}</p>
                         </div>
                     </div>
@@ -229,7 +229,7 @@ export default function OrganizationAdmin({ user }) {
                             </div>
                         )}
                         {success && (
-                            <div className="rounded-lg border border-green-200 bg-app-status-successBg px-3 py-2 text-sm text-green-700 flex items-center gap-2">
+                            <div className="rounded-lg border border-green-200 bg-app-status-successBg px-3 py-2 text-sm text-app-status-success flex items-center gap-2">
                                 <CheckCircle2 className="w-4 h-4" />
                                 <span>{success}</span>
                             </div>
@@ -241,7 +241,7 @@ export default function OrganizationAdmin({ user }) {
                                 <select
                                     value={form.sso_provider || ''}
                                     onChange={(e) => handleChange('sso_provider', e.target.value)}
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
+                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
                                 >
                                     {PROVIDERS.map((option) => (
                                         <option key={option.value} value={option.value}>{option.label}</option>
@@ -255,7 +255,7 @@ export default function OrganizationAdmin({ user }) {
                                     value={form.tenant_id || ''}
                                     onChange={(e) => handleChange('tenant_id', e.target.value)}
                                     placeholder="e.g. 8f3b...."
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
+                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
                                 />
                             </label>
                             <label className="block">
@@ -265,7 +265,7 @@ export default function OrganizationAdmin({ user }) {
                                     value={form.client_id || ''}
                                     onChange={(e) => handleChange('client_id', e.target.value)}
                                     placeholder="Application client id"
-                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
+                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
                                 />
                             </label>
                             <label className="block">
@@ -276,7 +276,7 @@ export default function OrganizationAdmin({ user }) {
                                         value={form.client_secret || ''}
                                         onChange={(e) => handleChange('client_secret', e.target.value)}
                                         placeholder="Application secret"
-                                        className="w-full px-3 py-2.5 pr-11 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-sm"
+                                        className="w-full px-3 py-2.5 pr-11 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
                                     />
                                     <button
                                         type="button"
@@ -305,7 +305,7 @@ export default function OrganizationAdmin({ user }) {
                                 disabled={isSaving}
                                 className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold transition-colors ${
                                     form.sso_enabled
-                                        ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                        ? 'bg-app-status-successBg text-app-status-success border border-emerald-200'
                                         : 'bg-app-bg-card text-app-text-muted border border-app-border'
                                 } ${isSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
                             >
@@ -321,7 +321,7 @@ export default function OrganizationAdmin({ user }) {
                             <button
                                 type="submit"
                                 disabled={isSaving}
-                                className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                                className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover disabled:opacity-60 disabled:cursor-not-allowed"
                             >
                                 {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                                 {isSaving ? 'Saving...' : 'Save Organization Settings'}

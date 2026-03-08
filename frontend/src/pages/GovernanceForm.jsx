@@ -19,19 +19,19 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
         return (
             <div className="flex flex-col w-full relative">
                 {/* Vertical connecting line */}
-                <div className="absolute left-[15px] top-4 bottom-4 w-[2px] bg-gradient-to-b from-blue-200 via-gray-200 to-gray-100 rounded-full" />
+                <div className="absolute left-[15px] top-4 bottom-4 w-[2px] bg-gradient-to-b from-app-primary-ring via-app-bg-hover to-app-bg-muted rounded-full" />
                 <div className="space-y-0.5">
                     {steps.map((step, idx) => {
                         const done = idx < currentStep;
                         const active = idx === currentStep;
                         return (
                             <div key={step} className={`flex items-center gap-3.5 py-2.5 px-2 rounded-xl cursor-default transition-all duration-300 group
-                                ${active ? 'bg-gradient-to-r from-blue-50 to-indigo-50/60' : 'hover:bg-app-bg-page/60'}`}
+                                ${active ? 'bg-gradient-to-r from-app-primary-light to-app-primary-light/60' : 'hover:bg-app-bg-page/60'}`}
                             >
                                 {/* Indicator Circle */}
                                 <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-300 flex-shrink-0
-                                    ${done ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
-                                        : active ? 'bg-app-bg-card border-2 border-app-primary text-app-primary shadow-lg shadow-blue-100 ring-4 ring-blue-50'
+                                    ${done ? 'bg-gradient-to-br from-app-primary to-app-primary text-app-bg-card shadow-md shadow-app-primary-ring'
+                                        : active ? 'bg-app-bg-card border-2 border-app-primary text-app-primary shadow-lg shadow-app-primary-light ring-4 ring-app-primary-light'
                                             : 'bg-app-bg-muted border border-app-border text-app-text-light group-hover:border-app-border group-hover:text-app-text-muted'}`}
                                 >
                                     {done ? <Check className="w-3.5 h-3.5" /> : startStepNumber + idx}
@@ -40,7 +40,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
                                 {/* Label */}
                                 <div className="flex flex-col min-w-0">
                                     <span className={`text-[10px] font-bold uppercase tracking-widest transition-colors duration-200
-                                        ${active ? 'text-app-primary' : done ? 'text-blue-500/70' : 'text-app-text-light'}`}
+                                        ${active ? 'text-app-primary' : done ? 'text-app-primary/70' : 'text-app-text-light'}`}
                                     >
                                         Step {startStepNumber + idx}
                                     </span>
@@ -50,7 +50,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
                                         {step}
                                     </span>
                                 </div>
-                                {done && <Check className="w-3.5 h-3.5 text-blue-500/60 ml-auto flex-shrink-0" />}
+                                {done && <Check className="w-3.5 h-3.5 text-app-primary/60 ml-auto flex-shrink-0" />}
                             </div>
                         );
                     })}
@@ -63,17 +63,17 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
     return (
         <div className="w-full mb-6">
             <div className="flex items-center justify-between text-xs mb-2.5">
-                <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
+                <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-app-primary to-app-primary">
                     Step {startStepNumber + currentStep} of {totalSteps || steps.length}
                 </span>
                 <span className="text-app-text-label font-semibold truncate ml-2">{steps[currentStep]}</span>
             </div>
             <div className="w-full bg-app-bg-muted rounded-full h-2.5 overflow-hidden shadow-inner">
                 <div
-                    className="bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-600 h-full rounded-full transition-all duration-500 ease-out relative overflow-hidden"
+                    className="bg-gradient-to-r from-app-primary via-app-primary to-app-primary h-full rounded-full transition-all duration-500 ease-out relative overflow-hidden"
                     style={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
                 >
-                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-pulse" />
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-app-bg-card/30 to-transparent animate-pulse" />
                 </div>
             </div>
         </div>
@@ -396,7 +396,7 @@ const GovernanceForm = ({
     /* ── loading / result screens ── */
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="flex flex-col items-center gap-5">
                     <div className="relative">
                         <div className="w-14 h-14 border-4 border-app-primary-light border-t-blue-600 rounded-full animate-spin" />
@@ -646,7 +646,7 @@ const GovernanceForm = ({
         : 'flex-1 min-w-0 w-full';
 
     return (
-        <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+        <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
 
             {/* ── MAIN AREA ── */}
             <div className="px-3 sm:px-4 lg:px-6 py-4 lg:py-6 max-w-[1440px] mx-auto">
@@ -655,8 +655,8 @@ const GovernanceForm = ({
                 {/* <div className="flex items-start justify-between gap-3 mb-5"> */}
                 <div>
                     {/* <div className="flex items-center gap-3 mb-1">
-                            <div className="w-1 h-8 rounded-full bg-gradient-to-b from-blue-500 to-indigo-600" />
-                            <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-gray-900 via-gray-800 to-gray-700 tracking-tight">
+                            <div className="w-1 h-8 rounded-full bg-gradient-to-b from-app-primary to-app-primary" />
+                            <h1 className="text-xl sm:text-2xl lg:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-app-text-main via-app-text-main to-app-text-label tracking-tight">
                                 Governance Questionnaire
                             </h1>
                         </div> */}
@@ -676,9 +676,9 @@ const GovernanceForm = ({
                     {/* ── DESKTOP SIDEBAR (≥1024px) ── */}
                     {isGovernanceQuestionsPage && (
                         <aside className="hidden lg:block w-64 xl:w-72 flex-shrink-0 sticky top-6 self-start">
-                            <div className="bg-app-bg-card/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/50 border border-white/60 p-5 relative overflow-hidden">
+                            <div className="bg-app-bg-card/80 backdrop-blur-xl rounded-2xl shadow-lg shadow-app-bg-hover/50 border border-app-bg-card/60 p-5 relative overflow-hidden">
                                 {/* Decorative gradient accent */}
-                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-t-2xl" />
+                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-app-primary via-app-primary to-purple-500 rounded-t-2xl" />
                                 <h2 className="text-[10px] font-bold uppercase tracking-[0.15em] text-app-text-light mb-5 mt-1 flex items-center gap-2">
                                     <span className="w-4 h-[2px] bg-gradient-to-r from-blue-400 to-indigo-400 rounded-full" />
                                     Progress
@@ -698,8 +698,8 @@ const GovernanceForm = ({
                     <div className={mainContentClass}>
                         {/* Error banner */}
                         {error && (
-                            <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
-                                <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center flex-shrink-0">
+                            <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-app-status-error mb-5 flex items-start gap-3 shadow-sm">
+                                <div className="w-8 h-8 rounded-lg bg-app-status-errorBg flex items-center justify-center flex-shrink-0">
                                     <AlertCircle className="w-4 h-4 text-app-status-error" />
                                 </div>
                                 <div className="text-sm font-medium pt-1">{error}</div>
@@ -721,9 +721,9 @@ const GovernanceForm = ({
                         {/* Wrapper: fixed min-height so nav buttons stay at a consistent position */}
                         <div className="flex flex-col min-h-[calc(100vh-14rem)]">
                             {/* Step card */}
-                            <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-lg shadow-gray-200/40 border border-white/60 overflow-hidden relative">
+                            <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-lg shadow-app-bg-hover/40 border border-app-bg-card/60 overflow-hidden relative">
                                 {/* Top gradient accent line */}
-                                <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500" />
+                                <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-app-primary via-app-primary to-purple-500" />
 
                                 {/* ── STEP 0: Project Name ── */}
                                 {!isGovernanceQuestionsPage && (
@@ -742,7 +742,7 @@ const GovernanceForm = ({
                                                 onChange={(e) => setProjectName(e.target.value)}
                                                 onKeyDown={(e) => e.key === 'Enter' && goNext()}
                                                 placeholder="e.g. Customer Analytics Platform"
-                                                className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border hover:border-app-border font-medium"
+                                                className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border hover:border-app-border font-medium"
                                             />
                                             <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none opacity-0 group-focus-within:opacity-100 transition-opacity">
                                                 <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
@@ -766,7 +766,7 @@ const GovernanceForm = ({
                                             {/* mini progress bar */}
                                             <div className="w-full bg-app-bg-muted rounded-full h-1.5 mt-2 overflow-hidden">
                                                 <div
-                                                    className="bg-gradient-to-r from-blue-500 to-indigo-500 h-1.5 rounded-full transition-all duration-500 ease-out"
+                                                    className="bg-gradient-to-r from-app-primary to-app-primary h-1.5 rounded-full transition-all duration-500 ease-out"
                                                     style={{ width: `${(activeQuestions.filter((q) => answers[q.id] !== undefined).length / activeQuestions.length) * 100}%` }}
                                                 />
                                             </div>
@@ -785,18 +785,18 @@ const GovernanceForm = ({
                                                     <div
                                                         key={question.id}
                                                         className={`rounded-xl border-2 p-5 transition-all duration-300 hover:shadow-md ${answered
-                                                            ? 'border-app-primary-ring/80 bg-gradient-to-br from-blue-50/40 to-indigo-50/30 shadow-sm'
+                                                            ? 'border-app-primary-ring/80 bg-gradient-to-br from-app-primary-light/40 to-app-primary-light/30 shadow-sm'
                                                             : 'border-app-border/80 bg-app-bg-card hover:border-app-border'}`}
                                                     >
                                                         <div className="flex items-start justify-between gap-3 mb-4">
                                                             <div className="flex items-start gap-3">
                                                                 <span className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold transition-all duration-300 ${answered
-                                                                    ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-200'
+                                                                    ? 'bg-gradient-to-br from-app-primary to-app-primary text-app-bg-card shadow-md shadow-app-primary-ring'
                                                                     : 'bg-app-bg-muted text-app-text-muted border border-app-border'}`}
                                                                 >
                                                                     {answered ? <Check className="w-3.5 h-3.5" /> : qIdx + 1}
                                                                 </span>
-                                                                <h3 className="text-gray-800 font-semibold text-sm leading-relaxed pt-0.5 max-w-xl">
+                                                                <h3 className="text-app-text-main font-semibold text-sm leading-relaxed pt-0.5 max-w-xl">
                                                                     {question.question}
                                                                 </h3>
                                                             </div>
@@ -805,7 +805,7 @@ const GovernanceForm = ({
                                                                     type="button"
                                                                     onClick={() => handleAnswer(question.id, skip)}
                                                                     className={`text-[11px] font-semibold rounded-full px-3 py-1 border transition-colors duration-200 whitespace-nowrap ${isSkipped
-                                                                        ? 'border-blue-400 bg-app-primary-light text-blue-800'
+                                                                        ? 'border-blue-400 bg-app-primary-light text-app-primary-dark'
                                                                         : 'border-transparent text-app-text-light hover:text-app-primary hover:border-app-primary-light hover:bg-app-primary-light/20'
                                                                         }`}
                                                                 >
@@ -822,8 +822,8 @@ const GovernanceForm = ({
                                                                     <label
                                                                         key={option.label}
                                                                         className={`flex items-center gap-2.5 cursor-pointer rounded-xl px-3.5 py-2.5 border-2 text-sm transition-all duration-200 group ${selected
-                                                                            ? 'border-blue-400 bg-app-primary-light/70 text-blue-900 font-semibold shadow-sm shadow-blue-100'
-                                                                            : 'border-gray-150 bg-app-bg-page/50 text-app-text-label hover:border-app-primary-ring hover:bg-app-primary-light/30 hover:text-gray-800'}`}
+                                                                            ? 'border-blue-400 bg-app-primary-light/70 text-app-primary-dark font-semibold shadow-sm shadow-app-primary-light'
+                                                                            : 'border-gray-150 bg-app-bg-page/50 text-app-text-label hover:border-app-primary-ring hover:bg-app-primary-light/30 hover:text-app-text-main'}`}
                                                                     >
                                                                         <input
                                                                             type="radio"
@@ -835,7 +835,7 @@ const GovernanceForm = ({
                                                                         />
                                                                         {/* Custom radio indicator */}
                                                                         <span className={`flex-shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all duration-200 ${selected
-                                                                            ? 'border-app-primary bg-blue-500' : 'border-app-border bg-app-bg-card group-hover:border-blue-300'}`}
+                                                                            ? 'border-app-primary bg-app-primary' : 'border-app-border bg-app-bg-card group-hover:border-blue-300'}`}
                                                                         >
                                                                             {selected && <span className="w-1.5 h-1.5 rounded-full bg-app-bg-card" />}
                                                                         </span>
@@ -861,7 +861,7 @@ const GovernanceForm = ({
 
                                         {/* Summary grid */}
                                         <div className="space-y-2 mb-6">
-                                            <div className="rounded-xl border-2 border-app-border/60 bg-gradient-to-r from-gray-50 to-slate-50 px-5 py-3.5">
+                                            <div className="rounded-xl border-2 border-app-border/60 bg-gradient-to-r from-app-bg-page to-app-bg-page px-5 py-3.5">
                                                 <p className="text-[10px] font-bold uppercase tracking-widest text-app-text-light mb-0.5">Project</p>
                                                 <p className="text-app-text-main font-bold text-sm">{projectName}</p>
                                             </div>
@@ -874,17 +874,17 @@ const GovernanceForm = ({
                                                     <div
                                                         key={dim}
                                                         className={`rounded-xl border-2 px-5 py-3.5 flex items-center gap-3 transition-all duration-200 ${allDone
-                                                            ? 'border-emerald-200/60 bg-gradient-to-r from-emerald-50/40 to-green-50/30'
-                                                            : 'border-red-200/60 bg-gradient-to-r from-red-50/40 to-rose-50/30'}`}
+                                                            ? 'border-emerald-200/60 bg-gradient-to-r from-app-status-successBg/40 to-app-status-successBg/30'
+                                                            : 'border-red-200/60 bg-gradient-to-r from-app-status-errorBg/40 to-app-status-errorBg/30'}`}
                                                     >
                                                         <div className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 ${allDone
-                                                            ? 'bg-gradient-to-br from-emerald-400 to-green-500 text-white shadow-sm shadow-emerald-200'
-                                                            : 'bg-gradient-to-br from-red-400 to-rose-500 text-white shadow-sm shadow-red-200'}`}
+                                                            ? 'bg-gradient-to-br from-emerald-400 to-app-status-success text-app-bg-card shadow-sm shadow-emerald-200'
+                                                            : 'bg-gradient-to-br from-red-400 to-app-status-error text-app-bg-card shadow-sm shadow-red-200'}`}
                                                         >
                                                             {allDone ? <Check className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
                                                         </div>
                                                         <div className="flex-1 min-w-0">
-                                                            <p className="text-sm font-semibold text-gray-800 truncate">{dim}</p>
+                                                            <p className="text-sm font-semibold text-app-text-main truncate">{dim}</p>
                                                             <p className="text-[11px] text-app-text-muted font-medium">{answered}/{qs.length} answered</p>
                                                         </div>
                                                         {!allDone && (
@@ -901,7 +901,7 @@ const GovernanceForm = ({
                                             type="button"
                                             onClick={handleSubmit}
                                             disabled={submitting || Object.keys(answers).length !== questions.length}
-                                            className="w-full inline-flex items-center justify-center py-3.5 px-6 text-sm font-bold rounded-xl text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:via-indigo-700 hover:to-blue-800 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-lg shadow-blue-200/50 gap-2"
+                                            className="w-full inline-flex items-center justify-center py-3.5 px-6 text-sm font-bold rounded-xl text-app-bg-card bg-gradient-to-r from-app-primary via-app-primary to-app-primary-hover hover:from-app-primary-hover hover:via-app-primary-hover hover:to-app-primary-dark disabled:from-app-border disabled:to-app-text-light disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-lg shadow-app-primary-ring/50 gap-2"
                                         >
                                             <Send className="w-4 h-4" />
                                             {submitting ? 'Submitting…' : 'Submit & Score'}
@@ -933,9 +933,9 @@ const GovernanceForm = ({
                 type="button"
                 onClick={goNext}
                 disabled={!canProceed() || isCreatingProject}
-                className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${canProceed() && !isCreatingProject
-                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-[0.97] shadow-blue-200/50'
-                    : 'bg-gray-300 cursor-not-allowed shadow-none'
+                className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-app-bg-card transition-all shadow-md ${canProceed() && !isCreatingProject
+                    ? 'bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover active:scale-[0.97] shadow-app-primary-ring/50'
+                    : 'bg-app-border cursor-not-allowed shadow-none'
                     }`}
             >
                 {isCreatingProject ? (
@@ -980,15 +980,15 @@ const CLASSIFICATION_THEME = {
         label: 'Sandbox Approved', emoji: '✅',
     },
     CONTROLLED_SANDBOX: {
-        gradient: 'from-slate-500 to-indigo-600',
+        gradient: 'from-app-text-muted to-app-primary',
         bg: 'bg-app-bg-page', border: 'border-app-border', text: 'text-app-text-label',
-        badge: 'bg-app-bg-muted text-slate-800',
+        badge: 'bg-app-bg-muted text-app-text-main',
         label: 'Controlled Sandbox', emoji: '⚠️',
     },
     ENTERPRISE: {
-        gradient: 'from-rose-600 to-rose-800',
-        bg: 'bg-app-status-errorBg', border: 'border-rose-200', text: 'text-rose-700',
-        badge: 'bg-rose-100 text-rose-800',
+        gradient: 'from-app-status-error to-rose-800',
+        bg: 'bg-app-status-errorBg', border: 'border-rose-200', text: 'text-app-status-error',
+        badge: 'bg-app-status-errorBg text-rose-800',
         label: 'Enterprise Build', emoji: '🔴',
     },
 };
@@ -1017,7 +1017,7 @@ const ScoreRing = ({ score, max = 10, size = 120, stroke = 10 }) => {
 
 const GovernanceResult = ({ result, onBack }) => {
     if (!result) {
-        return <div className="text-red-700 p-6">Error: No result data available.</div>;
+        return <div className="text-app-status-error p-6">Error: No result data available.</div>;
     }
 
     const {
@@ -1031,8 +1031,8 @@ const GovernanceResult = ({ result, onBack }) => {
     } = result;
 
     const theme = CLASSIFICATION_THEME[classification] || {
-        gradient: 'from-gray-400 to-gray-500', bg: 'bg-app-bg-page', border: 'border-app-border',
-        text: 'text-app-text-label', badge: 'bg-app-bg-muted text-gray-800', label: classification, emoji: '📋',
+        gradient: 'from-app-text-light to-app-text-muted', bg: 'bg-app-bg-page', border: 'border-app-border',
+        text: 'text-app-text-label', badge: 'bg-app-bg-muted text-app-text-main', label: classification, emoji: '📋',
     };
     const isSkipFollowUpCase =
         classification === 'ENTERPRISE' &&
@@ -1044,7 +1044,7 @@ const GovernanceResult = ({ result, onBack }) => {
             <div className="max-w-5xl mx-auto">
 
                 {/* ── Back link ── */}
-                <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm font-semibold text-app-text-muted hover:text-gray-800 mb-6 transition-colors group">
+                <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm font-semibold text-app-text-muted hover:text-app-text-main mb-6 transition-colors group">
                     <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back to Form
                 </button>
 
@@ -1053,7 +1053,7 @@ const GovernanceResult = ({ result, onBack }) => {
                 ══════════════════════════════════════════════ */}
                 <div className="flex flex-col lg:flex-row gap-4 mb-6">
                     {/* LEFT: Hero Banner */}
-                    <div className={`relative rounded-2xl overflow-hidden bg-gradient-to-br ${theme.gradient} text-white p-6 sm:p-8 shadow-lg flex-1`}>
+                    <div className={`relative rounded-2xl overflow-hidden bg-gradient-to-br ${theme.gradient} text-app-bg-card p-6 sm:p-8 shadow-lg flex-1`}>
                         <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center gap-5">
                             {/* Score ring */}
                             <div className="bg-app-bg-card/20 backdrop-blur-sm rounded-2xl p-3 flex-shrink-0">
@@ -1061,19 +1061,19 @@ const GovernanceResult = ({ result, onBack }) => {
                             </div>
 
                             <div className="flex-1 min-w-0">
-                                <p className="text-white/70 text-xs font-semibold uppercase tracking-widest mb-1">Governance Result</p>
+                                <p className="text-app-bg-card/70 text-xs font-semibold uppercase tracking-widest mb-1">Governance Result</p>
                                 <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-1 truncate">
                                     {theme.emoji} {theme.label}
                                 </h1>
-                                <p className="text-white/80 text-sm mb-3 line-clamp-2">{classification_description}</p>
+                                <p className="text-app-bg-card/80 text-sm mb-3 line-clamp-2">{classification_description}</p>
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-bold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card text-xs font-bold px-3 py-1 rounded-full">
                                         {project_name}
                                     </span>
-                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card text-xs font-semibold px-3 py-1 rounded-full">
                                         Score: {weighted_score}/10
                                     </span>
-                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card text-xs font-semibold px-3 py-1 rounded-full">
                                         {weighted_score <= 3.5 ? 'Low Governance' : weighted_score <= 6.5 ? 'Moderate Governance' : 'High Governance'}
                                     </span>
                                 </div>
@@ -1128,7 +1128,7 @@ const GovernanceResult = ({ result, onBack }) => {
                         <h3 className="text-red-800 font-bold text-sm mb-2 flex items-center gap-2">
                             <AlertCircle className="w-4 h-4" /> Hard Stops Triggered
                         </h3>
-                        <ul className="space-y-1 text-red-700 text-sm">
+                        <ul className="space-y-1 text-app-status-error text-sm">
                             {hard_stops.map((stop, idx) => <li key={idx} className="flex gap-2"><span className="text-red-400">•</span>{stop}</li>)}
                         </ul>
                     </div>
@@ -1157,7 +1157,7 @@ const GovernanceResult = ({ result, onBack }) => {
                                 if (line.trim().startsWith('-'))
                                     return (
                                         <div key={idx} className="ml-3 flex gap-2 items-start">
-                                            <span className="text-blue-500 mt-1 flex-shrink-0">›</span>
+                                            <span className="text-app-primary mt-1 flex-shrink-0">›</span>
                                             <span>{line.trim().substring(1).trim()}</span>
                                         </div>
                                     );
@@ -1191,10 +1191,10 @@ const GovernanceResult = ({ result, onBack }) => {
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
                                 <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Get credentials from email</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Clone your repository</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Start development immediately</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Submit review at 90 days</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Get credentials from email</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Clone your repository</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Start development immediately</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Submit review at 90 days</li>
                                 </ol>
                             </div>
                         </>
@@ -1217,10 +1217,10 @@ const GovernanceResult = ({ result, onBack }) => {
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
                                 <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Request Azure DevOps project</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Set up standard repository</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Submit for architecture review</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Proceed after approval</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Request Azure DevOps project</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Set up standard repository</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Submit for architecture review</li>
+                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Proceed after approval</li>
                                 </ol>
                             </div>
                         </>
@@ -1254,16 +1254,16 @@ const GovernanceResult = ({ result, onBack }) => {
                                 <ol className="text-app-text-label space-y-2 text-sm list-none">
                                     {isSkipFollowUpCase ? (
                                         <>
-                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Our IT team will reach out to you</li>
-                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Wait for IT guidance to continue</li>
-                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Thanks for connecting with us</li>
+                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Our IT team will reach out to you</li>
+                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Wait for IT guidance to continue</li>
+                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Thanks for connecting with us</li>
                                         </>
                                     ) : (
                                         <>
-                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
-                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
-                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
-                                            <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
+                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
+                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
+                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
+                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
                                         </>
                                     )}
                                 </ol>
@@ -1289,13 +1289,13 @@ const GovernanceResult = ({ result, onBack }) => {
                                 sessionStorage.setItem('shouldStartAnalysis', 'true');
                                 window.location.href = `/a/${result.project_token}`;
                             }}
-                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
+                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-app-bg-card bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
                         >
                             <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
                         </button>
                     )}
                     {isSkipFollowUpCase && (
-                        <div className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-semibold rounded-xl text-amber-800 bg-amber-50 border border-amber-200">
+                        <div className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-semibold rounded-xl text-amber-800 bg-app-status-warningBg border border-amber-200">
                             <AlertCircle className="w-4 h-4" /> Sandbox score: {weighted_score}/10 - IT team will reach out
                         </div>
                     )}

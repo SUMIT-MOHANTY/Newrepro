@@ -720,9 +720,9 @@ export default function AgentAnalysis({
 
     if (loading) {
         return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="text-center">
-                    <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mx-auto mb-4" />
+                    <Loader2 className="w-8 h-8 text-app-primary animate-spin mx-auto mb-4" />
                     <p className="text-app-text-muted font-semibold">Loading Agent Analysis...</p>
                 </div>
             </div>
@@ -731,12 +731,12 @@ export default function AgentAnalysis({
 
     if (error && !result) {
         return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="text-center max-w-md">
-                    <p className="text-red-600 font-semibold mb-4">{error}</p>
+                    <p className="text-app-status-error font-semibold mb-4">{error}</p>
                     <button
                         onClick={() => navigate('/dashboard')}
-                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                        className="px-4 py-2 bg-app-primary text-app-bg-card rounded-lg hover:bg-app-primary-hover transition-colors"
                     >
                         Go to Dashboard
                     </button>
@@ -747,12 +747,12 @@ export default function AgentAnalysis({
 
     if (!result) {
         return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="text-center max-w-md">
                     <p className="text-app-text-muted font-semibold mb-4">No analysis found for this project.</p>
                     <button
                         onClick={() => navigate('/dashboard')}
-                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                        className="px-4 py-2 bg-app-primary text-app-bg-card rounded-lg hover:bg-app-primary-hover transition-colors"
                     >
                         Go to Dashboard
                     </button>
@@ -762,7 +762,7 @@ export default function AgentAnalysis({
     }
 
     return (
-        <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+        <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
             <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
                 {result && (
                     <div className="space-y-6 animate-fade-in-up">
@@ -787,7 +787,7 @@ export default function AgentAnalysis({
                                 >
                                     <Download className="w-4 h-4 mr-1" /> Download PDF
                                 </button>
-                                <div className="hidden sm:block h-4 w-px bg-gray-300"></div>
+                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
                                 <button
                                     onClick={handleNewAnalysis}
                                     className="text-sm text-app-primary hover:text-app-primary-dark font-medium hover:underline flex items-center"
@@ -798,19 +798,19 @@ export default function AgentAnalysis({
                         </div>
 
                         {hasGovernanceAssessment && !processing && result?.analysis?.analysis && String(result.analysis.analysis).trim().length > 0 && (
-                            <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                            <div className="bg-gradient-to-r from-app-status-warningBg to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                                 <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 flex items-center justify-center shadow-lg shadow-amber-200">
-                                        <KeyRound className="w-5 h-5 text-white" />
+                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-app-status-warning flex items-center justify-center shadow-lg shadow-amber-200">
+                                        <KeyRound className="w-5 h-5 text-app-bg-card" />
                                     </div>
                                     <div>
                                         <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
-                                        <p className="text-xs text-amber-700">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
+                                        <p className="text-xs text-app-status-warning">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
                                     </div>
                                 </div>
                                 <button
                                     onClick={() => navigate('/prerequisites')}
-                                    className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                    className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
                                 >
                                     <KeyRound className="w-4 h-4" />
                                     Review Prerequisites
@@ -837,7 +837,7 @@ export default function AgentAnalysis({
 
                             {error && (
                                 <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
-                                    <p className="text-sm font-medium text-red-700">{error}</p>
+                                    <p className="text-sm font-medium text-app-status-error">{error}</p>
                                 </div>
                             )}
 
@@ -877,7 +877,7 @@ export default function AgentAnalysis({
                                 {/* Left Column: Report (8 cols) */}
                                 <div className="lg:col-span-8 space-y-6">
                                     <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                                        <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-app-border-light">
+                                        <h3 className="text-base font-bold text-app-text-main mb-4 pb-2 border-b border-app-border-light">
                                             Executive Summary & Agent Analysis
                                         </h3>
                                         <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
@@ -921,7 +921,7 @@ export default function AgentAnalysis({
                                                     <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
                                                 </span>
                                             </summary>
-                                            <div className="mt-4 pt-4 border-t border-gray-50">
+                                            <div className="mt-4 pt-4 border-t border-app-bg-page">
                                                 {result.extraction?.html ? (
                                                     <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
                                                         <iframe
@@ -945,7 +945,7 @@ export default function AgentAnalysis({
                                 <div className="lg:col-span-4 space-y-6">
                                     <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:sticky lg:top-6">
                                         <div className="flex items-center mb-4">
-                                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-2"></div>
+                                            <div className="w-1.5 h-1.5 rounded-full bg-app-status-warning mr-2"></div>
                                             <h3 className="text-sm font-bold text-app-text-main uppercase tracking-wide">
                                                 Clarification Needed
                                             </h3>
@@ -992,8 +992,8 @@ export default function AgentAnalysis({
                                             <button
                                                 onClick={handleRefineAnalysis}
                                                 disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
-                                                    ? 'bg-gray-400 cursor-not-allowed'
+                                                className={`w-full mt-4 py-2.5 text-xs font-bold text-app-bg-card rounded-lg shadow-sm transition-all ${processing
+                                                    ? 'bg-app-text-light cursor-not-allowed'
                                                     : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
                                                     }`}
                                             >

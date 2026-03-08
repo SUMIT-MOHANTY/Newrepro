@@ -182,12 +182,12 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
       case 'running':
         return <Activity className="w-4 h-4 text-cyan-500 animate-pulse" />;
       case 'idle':
-        return <CheckCircle className="w-4 h-4 text-blue-500" />;
+        return <CheckCircle className="w-4 h-4 text-app-primary" />;
       case 'error':
       case 'failed':
-        return <AlertCircle className="w-4 h-4 text-red-500" />;
+        return <AlertCircle className="w-4 h-4 text-app-status-error" />;
       default:
-        return <Clock className="w-4 h-4 text-gray-400" />;
+        return <Clock className="w-4 h-4 text-app-text-light" />;
     }
   };
 
@@ -196,22 +196,22 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
       case 'running':
         return 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400';
       case 'idle':
-        return 'bg-blue-500/10 border-blue-500/30 text-blue-400';
+        return 'bg-app-primary/10 border-app-primary/30 text-blue-400';
       case 'error':
       case 'failed':
-        return 'bg-red-500/10 border-red-500/30 text-red-400';
+        return 'bg-app-status-error/10 border-app-status-error/30 text-red-400';
       default:
-        return 'bg-gray-500/10 border-gray-500/30 text-gray-400';
+        return 'bg-app-text-muted/10 border-app-text-muted/30 text-app-text-light';
     }
   };
 
   const getTypeColor = (type) => {
     const colors = {
       validator: 'bg-purple-500/20 text-purple-400',
-      risk: 'bg-amber-500/20 text-amber-400',
+      risk: 'bg-app-status-warning/20 text-amber-400',
       estimator: 'bg-cyan-500/20 text-cyan-400',
     };
-    return colors[type] || 'bg-gray-500/20 text-gray-400';
+    return colors[type] || 'bg-app-text-muted/20 text-app-text-light';
   };
 
   // Default system agents that appear in all projects
@@ -333,7 +333,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             <span>Loading capacity…</span>
           </div>
         ) : quotaError ? (
-          <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30">
+          <div className="p-2 rounded-lg bg-app-status-error/10 border border-app-status-error/30">
             <p className="text-xs text-red-400 flex items-center gap-2">
               <AlertCircle className="w-3 h-3" />
               {quotaError}
@@ -375,9 +375,9 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
               </div>
 
               {/* Dedicated Capacity Card */}
-              <div className="relative overflow-hidden rounded-lg border border-indigo-500/20 bg-gradient-to-br from-indigo-500/5 to-indigo-500/10 p-2 shadow-sm hover:shadow-md transition-all">
+              <div className="relative overflow-hidden rounded-lg border border-app-primary/20 bg-gradient-to-br from-app-primary/5 to-app-primary/10 p-2 shadow-sm hover:shadow-md transition-all">
                 <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-indigo-500/20">
+                  <div className="p-0.5 rounded bg-app-primary/20">
                     <Database className="w-3 h-3 text-indigo-400" />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -395,7 +395,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   {/* Progress Bar */}
                   <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
                     <div
-                      className="absolute inset-y-0 left-0 bg-gradient-to-r from-indigo-500 to-indigo-400 rounded-full transition-all duration-500"
+                      className="absolute inset-y-0 left-0 bg-gradient-to-r from-app-primary to-indigo-400 rounded-full transition-all duration-500"
                       style={{ width: `${quotaSummary.dedicatedQuota > 0 ? Math.min(100, (quotaSummary.dedicatedUsed / quotaSummary.dedicatedQuota) * 100) : 0}%` }}
                     />
                   </div>
@@ -431,7 +431,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                     type="button"
                     onClick={() => increaseQuota('shared', clampPositiveInt(sharedToAdd))}
                     disabled={quotaUpdatingKind === 'shared' || quotaLoading}
-                    className="flex-1 h-7 rounded bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-[10px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
+                    className="flex-1 h-7 rounded bg-gradient-to-r from-cyan-600 to-cyan-500 text-app-bg-card text-[10px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
                   >
                     {quotaUpdatingKind === 'shared' ? (
                       <RefreshCw className="w-2.5 h-2.5 animate-spin" />
@@ -446,9 +446,9 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
               </div>
 
               {/* Add Dedicated Agents Card */}
-              <div className="relative overflow-hidden rounded-lg border border-indigo-500/30 bg-gradient-to-br from-indigo-500/10 to-indigo-500/5 p-2 shadow-sm hover:shadow-md transition-all">
+              <div className="relative overflow-hidden rounded-lg border border-app-primary/30 bg-gradient-to-br from-app-primary/10 to-app-primary/5 p-2 shadow-sm hover:shadow-md transition-all">
                 <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-indigo-500/20">
+                  <div className="p-0.5 rounded bg-app-primary/20">
                     <Database className="w-3 h-3 text-indigo-400" />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -460,7 +460,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   <input
                     value={dedicatedToAdd}
                     onChange={(e) => setDedicatedToAdd(clampPositiveInt(e.target.value))}
-                    className="w-12 h-7 rounded border border-indigo-500/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+                    className="w-12 h-7 rounded border border-app-primary/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-app-primary/50 focus:border-app-primary transition-all"
                     inputMode="numeric"
                     type="number"
                     min="1"
@@ -469,7 +469,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                     type="button"
                     onClick={() => increaseQuota('dedicated', clampPositiveInt(dedicatedToAdd))}
                     disabled={quotaUpdatingKind === 'dedicated' || quotaLoading}
-                    className="flex-1 h-7 rounded bg-gradient-to-r from-indigo-600 to-indigo-500 text-white text-[10px] font-bold hover:from-indigo-700 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
+                    className="flex-1 h-7 rounded bg-gradient-to-r from-app-primary to-app-primary text-app-bg-card text-[10px] font-bold hover:from-app-primary-hover hover:to-app-primary disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
                   >
                     {quotaUpdatingKind === 'dedicated' ? (
                       <RefreshCw className="w-2.5 h-2.5 animate-spin" />
@@ -499,7 +499,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             onClick={() => setFilter('all')}
             className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
               filter === 'all'
-                ? 'bg-blue-500 text-white'
+                ? 'bg-app-primary text-app-bg-card'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
             }`}
           >
@@ -509,7 +509,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             onClick={() => setFilter('shared')}
             className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
               filter === 'shared'
-                ? 'bg-blue-500 text-white'
+                ? 'bg-app-primary text-app-bg-card'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
             }`}
           >
@@ -519,7 +519,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             onClick={() => setFilter('dedicated')}
             className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
               filter === 'dedicated'
-                ? 'bg-blue-500 text-white'
+                ? 'bg-app-primary text-app-bg-card'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
             }`}
           >
@@ -544,7 +544,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
 
           {/* Error State */}
           {error && (
-            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <div className="mb-6 p-4 bg-app-status-error/10 border border-app-status-error/30 rounded-lg">
               <p className="text-red-400 flex items-center">
                 <AlertCircle className="w-5 h-5 mr-2" />
                 {error}
@@ -570,21 +570,21 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   const isIdle = agent.status === 'idle';
                   
                   // Determine agent config based on ID
-                  let accentColor = 'from-gray-400 to-gray-500';
+                  let accentColor = 'from-app-text-light to-app-text-muted';
                   let statusColor = 'gray';
                   let useLogo = false;
                   let logoSrc = null;
                   
                   if (isGitManager) {
-                    accentColor = 'from-indigo-500 to-blue-500';
+                    accentColor = 'from-app-primary to-app-primary';
                     statusColor = 'indigo';
                   } else if (isMasterAgent) {
-                    accentColor = 'from-fuchsia-500 to-rose-500';
+                    accentColor = 'from-fuchsia-500 to-app-status-error';
                     statusColor = 'fuchsia';
                     useLogo = true;
                     logoSrc = agent.logo || masterLogo;
                   } else if (isTestAgent) {
-                    accentColor = 'from-amber-500 to-orange-500';
+                    accentColor = 'from-app-status-warning to-orange-500';
                     statusColor = 'amber';
                     useLogo = true;
                     logoSrc = agent.logo || kaktoxLogo;
@@ -592,7 +592,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                     accentColor = 'from-violet-500 to-purple-600';
                     statusColor = 'violet';
                   } else if (isShared || isDedicated) {
-                    accentColor = isShared ? 'from-emerald-400 to-green-500' : 'from-blue-500 to-indigo-500';
+                    accentColor = isShared ? 'from-emerald-400 to-app-status-success' : 'from-app-primary to-app-primary';
                     statusColor = isShared ? 'emerald' : 'blue';
                     useLogo = true;
                     logoSrc = nModLogo;
@@ -611,31 +611,31 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                     <div className="flex items-start justify-between mb-4">
                       <div className="flex items-center gap-3">
                         {/* Agent Icon/Logo */}
-                        <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-gray-50 border border-gray-200' : `bg-gradient-to-br ${
-                          isGitManager ? 'from-indigo-500 to-blue-600' :
-                          isMasterAgent ? 'from-fuchsia-500 to-rose-500' :
-                          isTestAgent ? 'from-amber-500 to-orange-600' :
+                        <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-app-bg-page border border-app-border' : `bg-gradient-to-br ${
+                          isGitManager ? 'from-app-primary to-app-primary' :
+                          isMasterAgent ? 'from-fuchsia-500 to-app-status-error' :
+                          isTestAgent ? 'from-app-status-warning to-orange-600' :
                           isDeployAgent ? 'from-violet-500 to-purple-600' :
-                          isShared ? 'from-emerald-400 to-green-600' :
-                          'from-blue-500 to-indigo-600'
+                          isShared ? 'from-emerald-400 to-app-status-success' :
+                          'from-app-primary to-app-primary'
                         }`} flex items-center justify-center shadow-lg ${
-                          isGitManager ? 'shadow-indigo-200' :
-                          isMasterAgent ? 'shadow-gray-200' :
-                          isTestAgent ? 'shadow-gray-200' :
-                          isDeployAgent ? 'shadow-gray-200' :
+                          isGitManager ? 'shadow-app-primary-ring' :
+                          isMasterAgent ? 'shadow-app-bg-hover' :
+                          isTestAgent ? 'shadow-app-bg-hover' :
+                          isDeployAgent ? 'shadow-app-bg-hover' :
                           isShared ? 'shadow-emerald-200' :
-                          'shadow-blue-200'
+                          'shadow-app-primary-ring'
                         } ${useLogo ? 'p-1.5' : ''}`}>
                           {useLogo && logoSrc ? (
                             <img src={logoSrc} alt={agent.name || getNeutralAgentName(agent)} className="w-full h-full object-contain" />
                           ) : isGitManager ? (
-                            <GitBranch className="w-5 h-5 text-white" />
+                            <GitBranch className="w-5 h-5 text-app-bg-card" />
                           ) : isMasterAgent ? (
-                            <Bot className="w-5 h-5 text-white" />
+                            <Bot className="w-5 h-5 text-app-bg-card" />
                           ) : isTestAgent ? (
-                            <Activity className="w-5 h-5 text-white" />
+                            <Activity className="w-5 h-5 text-app-bg-card" />
                           ) : isDeployAgent ? (
-                            <Globe className="w-5 h-5 text-white" />
+                            <Globe className="w-5 h-5 text-app-bg-card" />
                           ) : (
                             getStatusIcon(agent.status)
                           )}
@@ -648,8 +648,8 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                             {(isShared || isDedicated) && (
                               <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${
                                 isShared
-                                  ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
-                                  : 'bg-blue-100 text-blue-700 border border-blue-200'
+                                  ? 'bg-app-status-successBg text-app-status-success border border-emerald-200'
+                                  : 'bg-app-primary-light text-app-primary-hover border border-app-primary-ring'
                               }`}>
                                 {isShared ? 'Shared' : 'Dedicated'}
                               </span>
@@ -675,7 +675,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                           <button
                             onClick={() => handleDeleteAgent(agent.id)}
                             disabled={deletingId === agent.id}
-                            className="p-1.5 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="p-1.5 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-app-status-error/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                             title="Delete dedicated agent"
                           >
                             {deletingId === agent.id ? (
@@ -753,13 +753,13 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                 </p>
                 <p className="text-xs text-cyan-400/70">Running</p>
               </div>
-              <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30">
+              <div className="p-3 bg-app-primary/10 rounded-lg border border-app-primary/30">
                 <p className="text-2xl font-bold text-blue-400">
                   {filteredAgents.filter((a) => a.status === 'idle').length}
                 </p>
                 <p className="text-xs text-blue-400/70">Idle</p>
               </div>
-              <div className="p-3 bg-red-500/10 rounded-lg border border-red-500/30">
+              <div className="p-3 bg-app-status-error/10 rounded-lg border border-app-status-error/30">
                 <p className="text-2xl font-bold text-red-400">
                   {filteredAgents.filter((a) => a.status === 'error' || a.status === 'failed').length}
                 </p>

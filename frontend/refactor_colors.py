@@ -1,61 +1,75 @@
 import os
 import re
 
-mapping = {
-    # Text
-    r'text-(gray|slate)-900': 'text-app-text-main',
-    r'text-(gray|slate)-[67]00': 'text-app-text-label',
-    r'text-(gray|slate)-500': 'text-app-text-muted',
-    r'text-(gray|slate)-400': 'text-app-text-light',
-    r'text-(gray|slate)-300': 'text-app-border',
-    r'text-(blue|indigo)-600': 'text-app-primary',
-    r'text-(blue|indigo)-700': 'text-app-primary-hover',
-    r'text-blue-50': 'text-app-primary-light',
-    r'text-blue-200': 'text-app-primary-ring',
-    r'text-blue-800': 'text-app-primary-dark',
-    r'text-(red|rose)-[56]00': 'text-app-status-error',
-    r'text-(green|emerald)-[56]00': 'text-app-status-success',
-    r'text-(amber|yellow)-[56]00': 'text-app-status-warning',
-
-    # Backgrounds
-    r'bg-(gray|slate)-50': 'bg-app-bg-page',
-    r'bg-(gray|slate)-100': 'bg-app-bg-muted',
-    r'bg-(gray|slate)-200': 'bg-app-bg-hover',
-    r'bg-(gray|slate)-800': 'bg-app-text-label',
-    r'bg-(gray|slate)-900': 'bg-app-text-main',
-    r'bg-white': 'bg-app-bg-card',
-    r'bg-(blue|indigo)-600': 'bg-app-primary',
-    r'bg-(blue|indigo)-700': 'bg-app-primary-hover',
-    r'bg-(blue|indigo)-50': 'bg-app-primary-light',
-    r'bg-blue-100': 'bg-app-primary-light',
-    r'bg-(red|rose)-50': 'bg-app-status-errorBg',
-    r'bg-(green|emerald)-50': 'bg-app-status-successBg',
-    r'bg-(amber|yellow)-50': 'bg-app-status-warningBg',
+# Comprehensive mapping of Tailwind colors to App Design System variables
+# This will try to match colors with optional prefixes (text-, bg-, border-, from-, via-, to-, ring-, divide-)
+# and optional opacities (e.g. /10, /20)
+color_map = {
+    # Main backgrounds and surfaces
+    r'(?:gray|slate|zinc)-50': 'app-bg-page',
+    r'(?:gray|slate|zinc)-100': 'app-bg-muted',
+    r'(?:gray|slate|zinc)-200': 'app-bg-hover',
+    r'(?:gray|slate|zinc)-300': 'app-bg-hover', # Collapsing 300 into hover for better dark mode consistency
+    r'white': 'app-bg-card',
     
-    # Borders
-    r'border-(gray|slate)-100': 'border-app-border-light',
-    r'border-(gray|slate)-200': 'border-app-border',
-    r'border-(gray|slate)-300': 'border-app-border',
-    r'border-(gray|slate)-400': 'border-app-border-active',
-    r'border-(blue|indigo)-500': 'border-app-primary',
-    r'border-(blue|indigo)-600': 'border-app-primary',
-    r'border-blue-200': 'border-app-primary-ring',
-    r'border-blue-100': 'border-app-primary-light',
-
-    # Rings
-    r'ring-(blue|indigo)-500': 'ring-app-primary',
-    r'ring-(blue|indigo)-200': 'ring-app-primary-ring',
+    # Text colors
+    r'(?:gray|slate|zinc)-9[05]0': 'app-text-main',
+    r'(?:gray|slate|zinc)-[8]00': 'app-text-main',
+    r'(?:gray|slate|zinc)-[67]00': 'app-text-label',
+    r'(?:gray|slate|zinc)-500': 'app-text-muted',
+    r'(?:gray|slate|zinc)-400': 'app-text-light',
+    r'(?:gray|slate|zinc)-300': 'app-border', # Text 300 is usually used as a border-like text
+    
+    # Primary / Active / Indigo / Blue
+    r'(?:blue|indigo)-600': 'app-primary',
+    r'(?:blue|indigo)-700': 'app-primary-hover',
+    r'(?:blue|indigo)-500': 'app-primary', # indigo-500 usually maps to primary
+    r'(?:blue|indigo)-50': 'app-primary-light',
+    r'(?:blue|indigo)-100': 'app-primary-light',
+    r'(?:blue|indigo)-200': 'app-primary-ring',
+    r'(?:blue|indigo)-800': 'app-primary-dark',
+    r'(?:blue|indigo)-900': 'app-primary-dark',
+    
+    # Statuses
+    r'(?:red|rose)-[567]00': 'app-status-error',
+    r'(?:red|rose)-[5]0': 'app-status-errorBg',
+    r'(?:red|rose)-[1]00': 'app-status-errorBg',
+    r'(?:green|emerald)-[567]00': 'app-status-success',
+    r'(?:green|emerald)-[5]0': 'app-status-successBg',
+    r'(?:green|emerald)-[1]00': 'app-status-successBg',
+    r'(?:amber|yellow)-[567]00': 'app-status-warning',
+    r'(?:amber|yellow)-[5]0': 'app-status-warningBg',
+    r'(?:amber|yellow)-[1]00': 'app-status-warningBg',
 }
 
+prefixes = ['text-', 'bg-', 'border-', 'from-', 'via-', 'to-', 'ring-', 'divide-', 'shadow-']
+
 def process_file(filepath):
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
-        
-    for pattern, replacement in mapping.items():
-        # Match word boundaries to prevent partial matches like text-gray-50000
-        content = re.sub(r'\b' + pattern + r'\b', replacement, content)
-        
-    with open(filepath, 'w') as f:
+    
+    # Replace common patterns
+    for tailwind_color, app_var in color_map.items():
+        for prefix in prefixes:
+            # Match prefix + color + optional opacity (e.g. bg-white/90)
+            # Use regex to match \bprefix tailwind_color (?P<opacity>/\d+)? \b
+            pattern = r'\b' + prefix + tailwind_color + r'(?P<opacity>/\d+)?\b'
+            
+            def replace_func(match):
+                opacity = match.group('opacity') if match.group('opacity') else ""
+                return prefix + app_var + opacity
+            
+            content = re.sub(pattern, replace_func, content)
+
+    # Special case for some hardcoded styles in Sidebar and others
+    content = content.replace('bg-blue-900/40', 'bg-app-primary-dark/40')
+    content = content.replace('bg-indigo-900/40', 'bg-app-primary-dark/40')
+    content = content.replace('border-blue-800', 'border-app-border')
+    content = content.replace('border-indigo-800', 'border-app-border')
+    content = content.replace('text-blue-100', 'text-app-text-light')
+    content = content.replace('text-indigo-100', 'text-app-text-light')
+
+    with open(filepath, 'w', encoding='utf-8') as f:
         f.write(content)
 
 for root, dirs, files in os.walk('src'):
@@ -63,4 +77,5 @@ for root, dirs, files in os.walk('src'):
         if file.endswith('.jsx') or file.endswith('.js'):
             process_file(os.path.join(root, file))
 
-print("Done refactoring colors!")
+print("Done comprehensive color refactoring!")
+

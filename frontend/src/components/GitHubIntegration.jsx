@@ -170,11 +170,11 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                         <button
                             type="button"
                             onClick={() => { setSelectedRepo(null); if (onClearRepo) onClearRepo(); setShowRepoList(false); }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 bg-app-status-successBg rounded-lg border border-emerald-200 hover:bg-emerald-100 transition-all max-w-[200px]"
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-app-status-success bg-app-status-successBg rounded-lg border border-emerald-200 hover:bg-app-status-successBg transition-all max-w-[200px]"
                             title={`${selectedRepo.full_name} — click to change`}
                         >
                             {fetchingContext ? (
-                                <span className="animate-spin inline-block w-3 h-3 border-2 border-emerald-600 border-t-transparent rounded-full"></span>
+                                <span className="animate-spin inline-block w-3 h-3 border-2 border-app-status-success border-t-transparent rounded-full"></span>
                             ) : (
                                 <GitHubIcon className="w-3.5 h-3.5 text-app-status-success flex-shrink-0" />
                             )}
@@ -189,7 +189,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-app-text-label bg-app-bg-muted rounded-lg border border-app-border hover:bg-app-bg-hover transition-all disabled:opacity-50"
                         >
                             {loadingRepos ? (
-                                <span className="animate-spin inline-block w-3 h-3 border-2 border-gray-500 border-t-transparent rounded-full"></span>
+                                <span className="animate-spin inline-block w-3 h-3 border-2 border-app-text-muted border-t-transparent rounded-full"></span>
                             ) : (
                                 <GitHubIcon className="w-3.5 h-3.5 flex-shrink-0" />
                             )}
@@ -230,7 +230,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                                         key={repo.id}
                                         type="button"
                                         onClick={() => handleSelectRepo(repo)}
-                                        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-app-primary-light border-b border-gray-50 last:border-b-0 transition-colors"
+                                        className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-app-primary-light border-b border-app-bg-page last:border-b-0 transition-colors"
                                     >
                                         <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-app-text-light flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
                                         <div className="min-w-0 flex-1">
@@ -266,7 +266,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <div className="p-2 bg-app-text-main rounded-lg">
-                            <GitHubIcon className="w-5 h-5 text-white" />
+                            <GitHubIcon className="w-5 h-5 text-app-bg-card" />
                         </div>
                         <div>
                             <p className="text-sm font-semibold text-app-text-main">GitHub Repository</p>
@@ -275,7 +275,7 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                     </div>
                     <button
                         onClick={handleConnect}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-app-text-main rounded-lg hover:bg-app-text-label transition-all active:scale-95 shadow-sm"
+                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-app-bg-card bg-app-text-main rounded-lg hover:bg-app-text-label transition-all active:scale-95 shadow-sm"
                     >
                         <GitHubIcon className="w-4 h-4" />
                         Connect GitHub
@@ -292,8 +292,8 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
             <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                     <div className="p-2 bg-app-text-main rounded-lg relative">
-                        <GitHubIcon className="w-5 h-5 text-white" />
-                        <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white"></div>
+                        <GitHubIcon className="w-5 h-5 text-app-bg-card" />
+                        <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-app-status-success rounded-full border-2 border-app-bg-card"></div>
                     </div>
                     <div>
                         <p className="text-sm font-semibold text-app-text-main">GitHub Connected</p>
@@ -329,10 +329,10 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
             {selectedRepo && !showRepoList && (
                 <div className="flex items-center justify-between bg-app-status-successBg border border-emerald-200 rounded-lg p-3 mt-2">
                     <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></div>
+                        <div className="w-2 h-2 rounded-full bg-app-status-success flex-shrink-0"></div>
                         <div className="min-w-0">
                             <p className="text-xs font-semibold text-emerald-900 truncate">{selectedRepo.full_name}</p>
-                            <p className="text-[11px] text-emerald-700">
+                            <p className="text-[11px] text-app-status-success">
                                 {selectedRepo.language && `${selectedRepo.language} • `}
                                 {selectedRepo.default_branch}
                                 {repoContext ? ' • Context loaded ✓' : ''}
@@ -341,11 +341,11 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                         {fetchingContext && (
-                            <span className="animate-spin inline-block w-4 h-4 border-2 border-emerald-600 border-t-transparent rounded-full"></span>
+                            <span className="animate-spin inline-block w-4 h-4 border-2 border-app-status-success border-t-transparent rounded-full"></span>
                         )}
                         <button
                             onClick={() => { setSelectedRepo(null); if (onClearRepo) onClearRepo(); setShowRepoList(false); }}
-                            className="text-xs text-emerald-700 hover:text-emerald-900 font-medium"
+                            className="text-xs text-app-status-success hover:text-emerald-900 font-medium"
                         >
                             Change
                         </button>

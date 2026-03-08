@@ -288,9 +288,9 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+    <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
       <div className="max-w-3xl mx-auto px-4 py-10">
-        <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-6 sm:p-8 space-y-6">
+        <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-6 sm:p-8 space-y-6">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">AI Resource Setup</p>
@@ -300,7 +300,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
               </p>
             </div>
             <div className="hidden sm:flex flex-col items-end gap-1 text-xs text-app-text-muted">
-              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-semibold">
+              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-app-status-successBg border border-emerald-200 text-app-status-success font-semibold">
                 <Bot className="w-3 h-3" />
                 {processMode === 'ai_assist' ? 'AI Assist Mode' : 'AI First Mode'}
               </span>
@@ -320,14 +320,14 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
               }}
               className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-2 transition-all cursor-pointer ${
                 agentType === 'shared'
-                  ? 'border-emerald-500 bg-emerald-50/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
-                  : 'border-app-border-light bg-app-bg-muted hover:border-emerald-400 hover:bg-emerald-50/40'
+                  ? 'border-app-status-success bg-app-status-successBg/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
+                  : 'border-app-border-light bg-app-bg-muted hover:border-emerald-400 hover:bg-app-status-successBg/40'
               }`}
             >
               <div className="flex items-center gap-2">
-                <Users className={`w-5 h-5 ${agentType === 'shared' ? 'text-emerald-600' : 'text-app-text-muted'}`} />
+                <Users className={`w-5 h-5 ${agentType === 'shared' ? 'text-app-status-success' : 'text-app-text-muted'}`} />
                 <p className="font-semibold text-app-text-main">Shared Agent</p>
-                <span className="ml-auto text-[11px] font-bold px-2 py-1 rounded-full border border-app-border-light bg-white text-app-text-muted">
+                <span className="ml-auto text-[11px] font-bold px-2 py-1 rounded-full border border-app-border-light bg-app-bg-card text-app-text-muted">
                   Available: {quotaLoading ? '…' : sharedAvailableCount}
                 </span>
               </div>
@@ -335,7 +335,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 Uses shared organization capacity to add dev agents that can be reused across projects.
               </p>
               {existingSharedCount > 0 && (
-                <p className="text-[11px] font-semibold text-emerald-700 mt-1">
+                <p className="text-[11px] font-semibold text-app-status-success mt-1">
                   {existingSharedCount} already added for this project
                 </p>
               )}
@@ -349,7 +349,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                       e.stopPropagation();
                       setSharedRequested((v) => clampCount(v - 1));
                     }}
-                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-white hover:bg-app-bg-hover text-app-text-main"
+                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover text-app-text-main"
                     aria-label="Decrease shared agent count"
                   >
                     <Minus className="w-4 h-4" />
@@ -361,7 +361,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                       e.preventDefault();
                       e.stopPropagation();
                     }}
-                    className="w-16 h-8 text-center rounded-lg border border-app-border-light bg-white text-sm font-bold text-app-text-main"
+                    className="w-16 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold text-app-text-main"
                     inputMode="numeric"
                   />
                   <button
@@ -371,7 +371,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                       e.stopPropagation();
                       setSharedRequested((v) => clampCount(v + 1));
                     }}
-                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-white hover:bg-app-bg-hover text-app-text-main"
+                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover text-app-text-main"
                     aria-label="Increase shared agent count"
                   >
                     <Plus className="w-4 h-4" />
@@ -392,14 +392,14 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
               }}
               className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-2 transition-all cursor-pointer ${
                 agentType === 'dedicated'
-                  ? 'border-emerald-500 bg-emerald-50/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
-                  : 'border-app-border-light bg-app-bg-muted hover:border-emerald-400 hover:bg-emerald-50/40'
+                  ? 'border-app-status-success bg-app-status-successBg/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
+                  : 'border-app-border-light bg-app-bg-muted hover:border-emerald-400 hover:bg-app-status-successBg/40'
               }`}
             >
               <div className="flex items-center gap-2">
-                <Bot className={`w-5 h-5 ${agentType === 'dedicated' ? 'text-emerald-600' : 'text-app-text-muted'}`} />
+                <Bot className={`w-5 h-5 ${agentType === 'dedicated' ? 'text-app-status-success' : 'text-app-text-muted'}`} />
                 <p className="font-semibold text-app-text-main">Dedicated Agent</p>
-                <span className="ml-auto text-[11px] font-bold px-2 py-1 rounded-full border border-app-border-light bg-white text-app-text-muted">
+                <span className="ml-auto text-[11px] font-bold px-2 py-1 rounded-full border border-app-border-light bg-app-bg-card text-app-text-muted">
                   Available: {quotaLoading ? '…' : dedicatedAvailableCount}
                 </span>
               </div>
@@ -407,7 +407,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 Uses dedicated organization capacity to add dev agents only for this project.
               </p>
               {existingDedicatedCount > 0 && (
-                <p className="text-[11px] font-semibold text-blue-700 mt-1">
+                <p className="text-[11px] font-semibold text-app-primary-hover mt-1">
                   {existingDedicatedCount} already added for this project
                 </p>
               )}
@@ -421,7 +421,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                       e.stopPropagation();
                       setDedicatedRequested((v) => clampCount(v - 1));
                     }}
-                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-white hover:bg-app-bg-hover text-app-text-main"
+                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover text-app-text-main"
                     aria-label="Decrease dedicated agent count"
                   >
                     <Minus className="w-4 h-4" />
@@ -433,7 +433,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                       e.preventDefault();
                       e.stopPropagation();
                     }}
-                    className="w-16 h-8 text-center rounded-lg border border-app-border-light bg-white text-sm font-bold text-app-text-main"
+                    className="w-16 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold text-app-text-main"
                     inputMode="numeric"
                   />
                   <button
@@ -443,7 +443,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                       e.stopPropagation();
                       setDedicatedRequested((v) => clampCount(v + 1));
                     }}
-                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-white hover:bg-app-bg-hover text-app-text-main"
+                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover text-app-text-main"
                     aria-label="Increase dedicated agent count"
                   >
                     <Plus className="w-4 h-4" />
@@ -454,7 +454,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
           </div>
 
           {existingError && (
-            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
+            <div className="text-xs text-amber-800 bg-app-status-warningBg border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
               <span>{existingError}</span>
             </div>
@@ -467,7 +467,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <p className="text-[11px] text-app-text-muted mt-1">Loading capacity…</p>
               )}
               {quotaError && !quotaLoading && (
-                <p className="text-[11px] text-amber-700 mt-1">{quotaError}</p>
+                <p className="text-[11px] text-app-status-warning mt-1">{quotaError}</p>
               )}
               {quota && !quotaLoading && (
                 <p className="text-[11px] text-app-text-muted mt-1">
@@ -497,14 +497,14 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 {existingSharedAgents.slice(0, 12).map((agent) => (
                   <span
                     key={agent.id}
-                    className="text-[11px] font-semibold px-2 py-1 rounded-full border border-app-border-light bg-white text-app-text-main"
+                    className="text-[11px] font-semibold px-2 py-1 rounded-full border border-app-border-light bg-app-bg-card text-app-text-main"
                     title={agent.status ? `Status: ${agent.status}` : undefined}
                   >
                     {agent.name || agent.id}
                   </span>
                 ))}
                 {existingSharedAgents.length > 12 && (
-                  <span className="text-[11px] font-semibold px-2 py-1 rounded-full border border-app-border-light bg-white text-app-text-muted">
+                  <span className="text-[11px] font-semibold px-2 py-1 rounded-full border border-app-border-light bg-app-bg-card text-app-text-muted">
                     +{existingSharedAgents.length - 12} more
                   </span>
                 )}
@@ -523,7 +523,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             <button
               onClick={handleSubmit}
               disabled={isSubmitting}
-              className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow hover:shadow-lg transition-all ${
+              className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all ${
                 isSubmitting ? 'opacity-50 cursor-not-allowed' : ''
               }`}
             >
@@ -534,12 +534,12 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
           </div>
 
           {submitError && (
-            <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <div className="text-xs text-app-status-error bg-app-status-errorBg border border-red-200 rounded-lg px-3 py-2">
               {submitError}
             </div>
           )}
           {submitWarning && (
-            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
+            <div className="text-xs text-amber-800 bg-app-status-warningBg border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
               <span>{submitWarning}</span>
             </div>

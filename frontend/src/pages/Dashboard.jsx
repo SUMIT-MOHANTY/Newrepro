@@ -2528,9 +2528,9 @@ const Dashboard = ({
                             <div className="rounded-lg bg-app-status-errorBg p-4 border border-red-200 flex items-start animate-fade-in-down">
                                 <div className="ml-3">
                                     <h3 className="text-sm font-medium text-red-800">Error</h3>
-                                    <div className="mt-1 text-sm text-red-700">{error}</div>
+                                    <div className="mt-1 text-sm text-app-status-error">{error}</div>
                                 </div>
-                                <button onClick={() => setError('')} className="ml-auto text-app-status-error hover:text-red-700">✕</button>
+                                <button onClick={() => setError('')} className="ml-auto text-app-status-error hover:text-app-status-error">✕</button>
                             </div>
                         )}
 
@@ -2580,7 +2580,7 @@ const Dashboard = ({
                                                                 : 'Ready for Initial Upload'}
                                                     </p>
                                                     {isEnterpriseUploadBlocked && (
-                                                        <p className="text-xs text-red-700 mt-1">
+                                                        <p className="text-xs text-app-status-error mt-1">
                                                             Upload blocked: {getEnterpriseUploadBlockMessage()}
                                                         </p>
                                                     )}
@@ -2594,7 +2594,7 @@ const Dashboard = ({
                                                     <button
                                                         type="button"
                                                         onClick={goToGovernanceAssessment}
-                                                        className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
+                                                        className="text-xs font-semibold text-emerald-900 hover:text-app-status-success"
                                                     >
                                                         Change Governance
                                                     </button>
@@ -2602,7 +2602,7 @@ const Dashboard = ({
                                                         <button
                                                             type="button"
                                                             onClick={handleViewLatestProjectAnalysis}
-                                                            className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
+                                                            className="text-xs font-semibold text-emerald-900 hover:text-app-status-success"
                                                         >
                                                             View Latest Analysis
                                                         </button>
@@ -2612,7 +2612,7 @@ const Dashboard = ({
                                                             type="button"
                                                             onClick={handleCreateRevision}
                                                             disabled={isEnterpriseUploadBlocked}
-                                                            className="text-xs font-semibold text-app-primary-hover hover:text-blue-900 disabled:text-app-text-light disabled:cursor-not-allowed"
+                                                            className="text-xs font-semibold text-app-primary-hover hover:text-app-primary-dark disabled:text-app-text-light disabled:cursor-not-allowed"
                                                         >
                                                             Create New Revision
                                                         </button>
@@ -2621,7 +2621,7 @@ const Dashboard = ({
                                             </div>
                                             {revisionUnlocked && (
                                                 <div className="mt-3 rounded-lg border border-app-primary-ring bg-app-primary-light p-3">
-                                                    <p className="text-xs font-semibold text-blue-900">Revision unlocked for this upload</p>
+                                                    <p className="text-xs font-semibold text-app-primary-dark">Revision unlocked for this upload</p>
                                                     <p className="text-xs text-app-primary-dark mt-1">Reason: {revisionReason}</p>
                                                 </div>
                                             )}
@@ -2687,7 +2687,7 @@ const Dashboard = ({
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
-                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
+                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
                                                 <FileText className="w-12 h-12" />
                                             </div>
                                             <span className="mt-2 block text-sm font-medium text-app-text-main">
@@ -2717,7 +2717,7 @@ const Dashboard = ({
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
-                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-blue-500 transition-colors">
+                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
                                                 <FileText className="w-12 h-12" />
                                             </div>
                                             <span className="mt-2 block text-sm font-medium text-app-text-main">
@@ -2763,7 +2763,7 @@ const Dashboard = ({
                                                         type="button"
                                                         onClick={handleFetchUrlRequirements}
                                                         disabled={!urlInput.trim() || !selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
-                                                        className="px-4 py-2.5 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
+                                                        className="px-4 py-2.5 bg-app-text-main text-app-bg-card text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
                                                     >
                                                         {urlFetching ? 'Fetching...' : 'Fetch URL'}
                                                     </button>
@@ -2908,7 +2908,7 @@ const Dashboard = ({
                                                     <button
                                                         type="button"
                                                         onClick={() => { setRepoLinkProvider('github'); setAzureLinkError(''); }}
-                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                     >
                                                         <span className="flex items-center gap-1">
                                                             <GitHubIcon className="w-4 h-4" />
@@ -2918,7 +2918,7 @@ const Dashboard = ({
                                                     <button
                                                         type="button"
                                                         onClick={() => { setRepoLinkProvider('azure-devops'); setGithubLinkError(''); setIsOAuthRepoSelected(false); }}
-                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                     >
                                                         <span className="flex items-center gap-1">
                                                             <AzureDevOpsIcon className="w-4 h-4" />
@@ -2931,14 +2931,14 @@ const Dashboard = ({
                                                         <button
                                                             type="button"
                                                             onClick={() => { setGithubAuthMode('pat'); setGithubLinkError(''); }}
-                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                         >
                                                             Use PAT
                                                         </button>
                                                         <button
                                                             type="button"
                                                             onClick={() => { setGithubAuthMode('basic'); setGithubLinkError(''); }}
-                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                         >
                                                             Username + Password
                                                         </button>
@@ -3015,10 +3015,10 @@ const Dashboard = ({
                                                             type="button"
                                                             onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
                                                             disabled={repoLinkProvider === 'azure-devops' ? (!azureLinkUrl || azureLinkParsing || azureProjectReposLoading) : (!githubLinkUrl || githubLinkParsing)}
-                                                            className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
+                                                            className="flex-1 px-4 py-2 bg-app-text-main text-app-bg-card text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
                                                         >
                                                             {(repoLinkProvider === 'azure-devops' ? (azureLinkParsing || azureProjectReposLoading) : githubLinkParsing) ? (
-                                                                <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full mr-2"></span> Loading...</>
+                                                                <><span className="animate-spin w-3.5 h-3.5 border-2 border-app-bg-card border-t-transparent rounded-full mr-2"></span> Loading...</>
                                                             ) : 'Load Repository'}
                                                         </button>
                                                         {repoContext && repoContext.fromLink && (
@@ -3036,7 +3036,7 @@ const Dashboard = ({
                                                                     setAzureLinkBranch('');
                                                                     setAzureLinkError('');
                                                                 }}
-                                                                className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-red-100 text-sm font-semibold h-10 transition-colors"
+                                                                className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-app-status-errorBg text-sm font-semibold h-10 transition-colors"
                                                                 title="Clear repository"
                                                             >
                                                                 Clear
@@ -3046,8 +3046,8 @@ const Dashboard = ({
                                                 </div>
 
                                                 {repoLinkProvider === 'azure-devops'
-                                                    ? (azureLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{azureLinkError}</p>)
-                                                    : (githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-red-100">{githubLinkError}</p>)}
+                                                    ? (azureLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-app-status-errorBg">{azureLinkError}</p>)
+                                                    : (githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-app-status-errorBg">{githubLinkError}</p>)}
                                                 {showAzureRepoSelector && azureProjectRepos.length > 0 && (
                                                     <div className="mt-3 border border-app-border rounded-lg bg-app-bg-page/50 p-3 max-h-64 overflow-y-auto">
                                                         <p className="text-xs font-semibold text-app-text-main mb-2">Select a repository:</p>
@@ -3111,7 +3111,7 @@ const Dashboard = ({
 
                                     {error && (
                                         <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
-                                            <p className="text-sm font-medium text-red-700">{error}</p>
+                                            <p className="text-sm font-medium text-app-status-error">{error}</p>
                                         </div>
                                     )}
 
@@ -3127,8 +3127,8 @@ const Dashboard = ({
                                         <button
                                             type="submit"
                                             disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
-                                                ? 'bg-gray-300 cursor-not-allowed shadow-none'
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-app-bg-card transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
+                                                ? 'bg-app-border cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
                                         >
@@ -3167,7 +3167,7 @@ const Dashboard = ({
                                         >
                                             <Download className="w-4 h-4 mr-1" /> Download PDF
                                         </button>
-                                        <div className="hidden sm:block h-4 w-px bg-gray-300"></div>
+                                        <div className="hidden sm:block h-4 w-px bg-app-border"></div>
                                         <button
                                             onClick={handleNewAnalysis}
                                             className="text-sm text-app-primary hover:text-app-primary-dark font-medium hover:underline flex items-center"
@@ -3178,29 +3178,29 @@ const Dashboard = ({
                                 </div>
 
                                 {hasGovernanceAssessment ? (
-                                    <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                    <div className="bg-gradient-to-r from-app-status-warningBg to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-yellow-500 flex items-center justify-center shadow-lg shadow-amber-200">
-                                                <KeyRound className="w-5 h-5 text-white" />
+                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-app-status-warning flex items-center justify-center shadow-lg shadow-amber-200">
+                                                <KeyRound className="w-5 h-5 text-app-bg-card" />
                                             </div>
                                             <div>
                                                 <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
-                                                <p className="text-xs text-amber-700">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
+                                                <p className="text-xs text-app-status-warning">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
                                             </div>
                                         </div>
                                         <button
                                             onClick={() => navigate('/prerequisites')}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-amber-500 to-orange-500 rounded-lg shadow-lg shadow-amber-500/30 hover:shadow-amber-500/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
                                         >
                                             <KeyRound className="w-4 h-4" />
                                             Review Prerequisites
                                         </button>
                                     </div>
                                 ) : (
-                                    <div className="bg-gradient-to-r from-sky-50 to-indigo-50 rounded-xl shadow-sm border border-sky-200/70 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                    <div className="bg-gradient-to-r from-sky-50 to-app-primary-light rounded-xl shadow-sm border border-sky-200/70 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-sky-200">
-                                                <CheckCircle2 className="w-5 h-5 text-white" />
+                                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-sky-500 to-app-primary flex items-center justify-center shadow-lg shadow-sky-200">
+                                                <CheckCircle2 className="w-5 h-5 text-app-bg-card" />
                                             </div>
                                             <div>
                                                 <h3 className="text-sm font-bold text-sky-950">Governance Assessment</h3>
@@ -3209,7 +3209,7 @@ const Dashboard = ({
                                         </div>
                                         <button
                                             onClick={goToGovernanceAssessment}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-sky-600 to-indigo-600 rounded-lg shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-sky-600 to-app-primary rounded-lg shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
                                         >
                                             <CheckCircle2 className="w-4 h-4" />
                                             Complete Governance
@@ -3256,7 +3256,7 @@ const Dashboard = ({
                                         {/* Left Column: Report (8 cols) */}
                                         <div className="lg:col-span-8 space-y-6">
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                                                <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-app-border-light">
+                                                <h3 className="text-base font-bold text-app-text-main mb-4 pb-2 border-b border-app-border-light">
                                                     Executive Summary & Agent Analysis
                                                 </h3>
                                                 <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
@@ -3300,7 +3300,7 @@ const Dashboard = ({
                                                             <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
                                                         </span>
                                                     </summary>
-                                                    <div className="mt-4 pt-4 border-t border-gray-50">
+                                                    <div className="mt-4 pt-4 border-t border-app-bg-page">
                                                         {result.extraction?.html ? (
                                                             <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
                                                                 <iframe
@@ -3324,7 +3324,7 @@ const Dashboard = ({
                                         <div className="lg:col-span-4 space-y-6">
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:sticky lg:top-6">
                                                 <div className="flex items-center mb-4">
-                                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-2"></div>
+                                                    <div className="w-1.5 h-1.5 rounded-full bg-app-status-warning mr-2"></div>
                                                     <h3 className="text-sm font-bold text-app-text-main uppercase tracking-wide">
                                                         Clarification Needed
                                                     </h3>
@@ -3366,8 +3366,8 @@ const Dashboard = ({
                                                     <button
                                                         onClick={handleRefineAnalysis}
                                                         disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                                        className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
-                                                            ? 'bg-gray-400 cursor-not-allowed'
+                                                        className={`w-full mt-4 py-2.5 text-xs font-bold text-app-bg-card rounded-lg shadow-sm transition-all ${processing
+                                                            ? 'bg-app-text-light cursor-not-allowed'
                                                             : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
                                                             }`}
                                                     >
@@ -3412,7 +3412,7 @@ const Dashboard = ({
                         <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
                             <button
                                 onClick={() => setShowSettings(false)}
-                                className="px-5 py-2 bg-app-text-main text-white rounded-lg hover:bg-app-text-label font-medium text-sm transition-colors"
+                                className="px-5 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover font-medium text-sm transition-colors shadow-md active:scale-95"
                             >
                                 Done
                             </button>

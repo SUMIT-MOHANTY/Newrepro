@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
-import { Menu, Settings } from 'lucide-react';
+import { Menu, Settings, Moon, Sun } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -62,6 +62,20 @@ export default function AppLayout({ children }) {
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
     const [pluginClients, setPluginClients] = useState([]);
     const [launchingPluginId, setLaunchingPluginId] = useState('');
+
+    const [isDarkMode, setIsDarkMode] = useState(() => {
+        return localStorage.getItem('theme') === 'dark';
+    });
+
+    useEffect(() => {
+        if (isDarkMode) {
+            document.documentElement.classList.add('dark');
+            localStorage.setItem('theme', 'dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+            localStorage.setItem('theme', 'light');
+        }
+    }, [isDarkMode]);
 
     const [selectedRole, setSelectedRole] = useState(() => {
         try {
@@ -786,13 +800,13 @@ export default function AppLayout({ children }) {
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
                 {/* Global Top Navbar */}
-                <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-[250] shrink-0">
+                <header className="bg-[#1c355e] text-app-bg-card px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-[250] shrink-0">
                     <div className="flex items-center gap-3 md:gap-4 w-full">
                         {!isSidebarOpen && (
                             <button
                                 type="button"
                                 onClick={() => setIsSidebarOpen(true)}
-                                className="p-1.5 md:p-2 bg-app-bg-card/10 hover:bg-app-bg-card/20 rounded-md shadow-sm text-gray-100 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
+                                className="p-1.5 md:p-2 bg-app-bg-card/10 hover:bg-app-bg-card/20 rounded-md shadow-sm text-app-bg-muted hover:text-app-bg-card transition-colors border border-app-bg-card/20 cursor-pointer flex-shrink-0"
                                 aria-label="Open menu"
                             >
                                 <Menu className="w-4 h-4 md:w-5 md:h-5" />
@@ -823,7 +837,7 @@ export default function AppLayout({ children }) {
                             </div>
 
                             {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
-                                <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
+                                <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-app-bg-card/10 p-1.5 rounded-lg border border-app-bg-card/20">
                                     {currentView === 'statusDashboard' && (
                                         <>
                                             <div className="w-48">
@@ -834,7 +848,7 @@ export default function AppLayout({ children }) {
                                                     theme="dark"
                                                 />
                                             </div>
-                                            <div className="w-px h-5 bg-white/20"></div>
+                                            <div className="w-px h-5 bg-app-bg-card/20"></div>
                                         </>
                                     )}
                                     <div className="w-48 sm:w-56">
@@ -854,19 +868,29 @@ export default function AppLayout({ children }) {
                             {/* Status Pipeline graphic top right - ONLY shown on statusDashboard */}
                             {/* {currentView === 'statusDashboard' && (
                                 <div className="text-[9px] md:text-xs font-bold text-app-text-label flex items-center space-x-1.5 bg-app-bg-card px-2 md:px-3 py-1.5 rounded-full shadow-md border border-app-border-light whitespace-nowrap ml-4 shrink-0 hidden sm:flex">
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-gray-400 rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
+                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-text-light rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-orange-200 rounded-full mr-1"></span><span className="hidden md:inline">PREPARE</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-yellow-400 rounded-full mr-1"></span><span className="hidden md:inline">INTERVIEW</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-blue-500 rounded-full mr-1"></span><span className="hidden md:inline">APPRAISED</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-green-500 rounded-full"></span></div>
+                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-primary rounded-full mr-1"></span><span className="hidden md:inline">APPRAISED</span></div>
+                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-status-success rounded-full"></span></div>
                                 </div>
                             )} */}
 
+                            {/* Theme Toggle Button */}
+                            <button
+                                type="button"
+                                onClick={() => setIsDarkMode(!isDarkMode)}
+                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-app-bg-card hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-app-bg-card/20 flex-shrink-0 cursor-pointer"
+                                aria-label="Toggle Dark Mode"
+                            >
+                                {isDarkMode ? <Sun className="w-4 h-4 md:w-5 md:h-5" /> : <Moon className="w-4 h-4 md:w-5 md:h-5" />}
+                            </button>
+                            
                             {/* Settings Button (Global) */}
                             {/* <button
                                 type="button"
                                 onClick={() => setShowSettings(true)}
-                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-white hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0"
+                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-app-bg-card hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-app-bg-card/20 flex-shrink-0"
                                 aria-label="Open settings"
                             >
                                 <Settings className="w-4 h-4 md:w-5 md:h-5" />

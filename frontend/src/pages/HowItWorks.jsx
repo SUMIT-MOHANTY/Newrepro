@@ -238,32 +238,32 @@ const AnimatedWorkflowDiagram = () => {
           }
         `}} />
         <div className="flex flex-col items-center gap-2">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Execution Mode</span>
-          <div className="flex items-center gap-1 bg-slate-800/80 p-1.5 rounded-full border border-slate-700 shadow-xl backdrop-blur-md">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-app-text-muted">Execution Mode</span>
+          <div className="flex items-center gap-1 bg-app-text-label/80 p-1.5 rounded-full border border-app-text-label shadow-xl backdrop-blur-md">
             <button
               onClick={() => setExecutionMode('agentic')}
-              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'agentic' ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
-              <Sparkles className={`inline h-4 w-4 mr-1.5 ${executionMode === 'agentic' ? 'text-white' : 'text-slate-400'}`} />AI First
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'agentic' ? 'bg-app-primary text-app-bg-card shadow-lg shadow-app-primary/30' : 'text-app-text-light hover:text-app-bg-card hover:bg-app-text-label/50'}`}>
+              <Sparkles className={`inline h-4 w-4 mr-1.5 ${executionMode === 'agentic' ? 'text-app-bg-card' : 'text-app-text-light'}`} />AI First
             </button>
             <button
               onClick={() => setExecutionMode('coexistence')}
-              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'coexistence' ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${executionMode === 'coexistence' ? 'bg-app-primary text-app-bg-card shadow-lg shadow-app-primary/30' : 'text-app-text-light hover:text-app-bg-card hover:bg-app-text-label/50'}`}>
               Coexistence
             </button>
           </div>
         </div>
 
         <div className="flex flex-col items-center gap-2">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Agent Autonomy</span>
-          <div className="flex items-center gap-1 bg-slate-800/80 p-1.5 rounded-full border border-slate-700 shadow-xl backdrop-blur-md">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-app-text-muted">Agent Autonomy</span>
+          <div className="flex items-center gap-1 bg-app-text-label/80 p-1.5 rounded-full border border-app-text-label shadow-xl backdrop-blur-md">
             <button
               onClick={() => setAutonomyMode('decisive')}
-              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${autonomyMode === 'decisive' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${autonomyMode === 'decisive' ? 'bg-app-status-success text-app-bg-card shadow-lg shadow-app-status-success/30' : 'text-app-text-light hover:text-app-bg-card hover:bg-app-text-label/50'}`}>
               Decisive
             </button>
             <button
               onClick={() => setAutonomyMode('ask_first')}
-              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${autonomyMode === 'ask_first' ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}>
+              className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${autonomyMode === 'ask_first' ? 'bg-app-status-warning text-app-bg-card shadow-lg shadow-app-status-warning/30' : 'text-app-text-light hover:text-app-bg-card hover:bg-app-text-label/50'}`}>
               Ask First
             </button>
           </div>
@@ -281,10 +281,10 @@ const AnimatedWorkflowDiagram = () => {
           </div>
 
           {/* Dynamic Video-like Status Indicator */}
-          <div className="bg-slate-900/90 backdrop-blur border border-slate-700 p-4 rounded-xl shadow-2xl w-80">
-            <p className="text-[10px] text-slate-400 font-mono uppercase tracking-widest mb-2 flex items-center justify-between">
+          <div className="bg-app-text-main/90 backdrop-blur border border-app-text-label p-4 rounded-xl shadow-2xl w-80">
+            <p className="text-[10px] text-app-text-light font-mono uppercase tracking-widest mb-2 flex items-center justify-between">
               Live Flow Status
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span className="w-2 h-2 rounded-full bg-app-status-success animate-pulse"></span>
             </p>
             <p className="text-sm font-semibold text-emerald-400 h-5 transition-all">{currentStepText}</p>
           </div>
@@ -363,47 +363,47 @@ const AnimatedWorkflowDiagram = () => {
         <div className="absolute inset-0 z-10 w-full h-full max-w-[1200px] mx-auto pointer-events-none">
           {/* Start Point */}
           <div className="absolute top-[350px] left-[50px] -translate-x-1/2 -translate-y-1/2 text-center">
-            <div className="w-12 h-16 bg-white border-2 border-slate-200 rounded-md shadow-md mx-auto mb-2 flex items-center justify-center">
-              <FileText className="w-6 h-6 text-slate-400" />
+            <div className="w-12 h-16 bg-app-bg-card border-2 border-app-border rounded-md shadow-md mx-auto mb-2 flex items-center justify-center">
+              <FileText className="w-6 h-6 text-app-text-light" />
             </div>
             <p className="text-xs font-bold text-app-text-main">Raw BRD</p>
           </div>
 
           {/* DSuite */}
           <div className="absolute top-[350px] left-[300px] -translate-x-1/2 -translate-y-1/2">
-            <div className="dsuite-pulse absolute inset-0 bg-blue-500 rounded-3xl blur-xl opacity-0"></div>
-            <div className="dsuite-ring absolute inset-0 rounded-3xl border-2 border-blue-500/50"></div>
-            <div className="relative w-28 h-28 bg-app-bg-card border border-blue-500/30 rounded-3xl shadow-[0_0_30px_rgba(59,130,246,0.2)] flex flex-col items-center justify-center gap-2">
+            <div className="dsuite-pulse absolute inset-0 bg-app-primary rounded-3xl blur-xl opacity-0"></div>
+            <div className="dsuite-ring absolute inset-0 rounded-3xl border-2 border-app-primary/50"></div>
+            <div className="relative w-28 h-28 bg-app-bg-card border border-app-primary/30 rounded-3xl shadow-[0_0_30px_rgba(59,130,246,0.2)] flex flex-col items-center justify-center gap-2">
               <img src={Logo} alt="DSuite" className="w-10 h-10 object-contain" />
-              <span className="text-xs font-bold text-blue-500">DSuite Master</span>
+              <span className="text-xs font-bold text-app-primary">DSuite Master</span>
             </div>
           </div>
 
           {/* Nxdune */}
           <div className="absolute top-[350px] left-[600px] -translate-x-1/2 -translate-y-1/2">
-            <div className="nxdune-pulse absolute inset-0 bg-indigo-500 rounded-2xl blur-xl opacity-0"></div>
-            <div className="nxdune-ring absolute inset-0 rounded-2xl border-2 border-indigo-500/50"></div>
-            <div className="relative w-32 h-24 bg-white border border-indigo-500/30 rounded-2xl shadow-[0_0_30px_rgba(99,102,241,0.2)] flex flex-col items-center justify-center p-3">
-              <div className="absolute -top-3 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[9px] font-bold rounded-full border border-indigo-200 uppercase tracking-wider">Information Hub</div>
+            <div className="nxdune-pulse absolute inset-0 bg-app-primary rounded-2xl blur-xl opacity-0"></div>
+            <div className="nxdune-ring absolute inset-0 rounded-2xl border-2 border-app-primary/50"></div>
+            <div className="relative w-32 h-24 bg-app-bg-card border border-app-primary/30 rounded-2xl shadow-[0_0_30px_rgba(99,102,241,0.2)] flex flex-col items-center justify-center p-3">
+              <div className="absolute -top-3 px-2 py-0.5 bg-app-primary-light text-app-primary-hover text-[9px] font-bold rounded-full border border-app-primary-ring uppercase tracking-wider">Information Hub</div>
               <img src={Logo1} alt="Nxdune" className="w-10 h-10 object-contain mb-1" />
-              <span className="text-xs font-bold text-slate-800">Nxdune</span>
-              <span className="text-[9px] text-slate-500">Task Router</span>
+              <span className="text-xs font-bold text-app-text-main">Nxdune</span>
+              <span className="text-[9px] text-app-text-muted">Task Router</span>
             </div>
           </div>
 
           {/* Human Dev Node */}
           <div className={`absolute top-[80px] left-[720px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
-            <div className="human-pulse absolute inset-0 bg-amber-500 rounded-2xl blur-xl opacity-0"></div>
-            <div className="human-ring absolute inset-0 rounded-2xl border-2 border-amber-500/50"></div>
-            <div className="relative w-28 h-20 bg-white border border-amber-500/30 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.15)] flex flex-col items-center justify-center p-2">
-              <div className="absolute -top-3 px-2 py-0.5 bg-amber-100 text-amber-700 text-[9px] font-bold rounded-full border border-amber-200 uppercase tracking-wider">Human</div>
-              <div className="w-8 h-8 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center mb-1">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-600">
+            <div className="human-pulse absolute inset-0 bg-app-status-warning rounded-2xl blur-xl opacity-0"></div>
+            <div className="human-ring absolute inset-0 rounded-2xl border-2 border-app-status-warning/50"></div>
+            <div className="relative w-28 h-20 bg-app-bg-card border border-app-status-warning/30 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.15)] flex flex-col items-center justify-center p-2">
+              <div className="absolute -top-3 px-2 py-0.5 bg-app-status-warningBg text-app-status-warning text-[9px] font-bold rounded-full border border-amber-200 uppercase tracking-wider">Human</div>
+              <div className="w-8 h-8 rounded-full bg-app-status-warningBg border border-amber-200 flex items-center justify-center mb-1">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-app-status-warning">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                   <circle cx="12" cy="7" r="4"></circle>
                 </svg>
               </div>
-              <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">Developer / Approver</span>
+              <span className="text-[10px] font-bold text-app-text-main text-center leading-tight">Developer / Approver</span>
             </div>
           </div>
 
@@ -411,7 +411,7 @@ const AnimatedWorkflowDiagram = () => {
           <div className={`absolute top-[350px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
             <div className="human-qa-pulse absolute inset-0 bg-pink-500 rounded-2xl blur-xl opacity-0"></div>
             <div className="human-qa-ring absolute inset-0 rounded-2xl border-2 border-pink-500/50"></div>
-            <div className="relative w-28 h-20 bg-white border border-pink-500/30 rounded-2xl shadow-[0_0_20px_rgba(236,72,153,0.15)] flex flex-col items-center justify-center p-2">
+            <div className="relative w-28 h-20 bg-app-bg-card border border-pink-500/30 rounded-2xl shadow-[0_0_20px_rgba(236,72,153,0.15)] flex flex-col items-center justify-center p-2">
               <div className="absolute -top-3 px-2 py-0.5 bg-pink-100 text-pink-700 text-[9px] font-bold rounded-full border border-pink-200 uppercase tracking-wider">Human</div>
               <div className="w-8 h-8 rounded-full bg-pink-50 border border-pink-200 flex items-center justify-center mb-1">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-pink-600">
@@ -419,23 +419,23 @@ const AnimatedWorkflowDiagram = () => {
                   <circle cx="12" cy="7" r="4"></circle>
                 </svg>
               </div>
-              <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">QA / Approver</span>
+              <span className="text-[10px] font-bold text-app-text-main text-center leading-tight">QA / Approver</span>
             </div>
           </div>
 
           {/* Human DevOps Node */}
           <div className={`absolute top-[650px] left-[800px] -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ${(executionMode === 'coexistence' || autonomyMode === 'ask_first') ? 'opacity-100 scale-100' : 'opacity-0 scale-50 pointer-events-none'}`}>
-            <div className="human-deploy-pulse absolute inset-0 bg-emerald-500 rounded-2xl blur-xl opacity-0"></div>
-            <div className="human-deploy-ring absolute inset-0 rounded-2xl border-2 border-emerald-500/50"></div>
-            <div className="relative w-28 h-20 bg-white border border-emerald-500/30 rounded-2xl shadow-[0_0_20px_rgba(16,185,129,0.15)] flex flex-col items-center justify-center p-2">
-              <div className="absolute -top-3 px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-bold rounded-full border border-emerald-200 uppercase tracking-wider">Human</div>
-              <div className="w-8 h-8 rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center mb-1">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-600">
+            <div className="human-deploy-pulse absolute inset-0 bg-app-status-success rounded-2xl blur-xl opacity-0"></div>
+            <div className="human-deploy-ring absolute inset-0 rounded-2xl border-2 border-app-status-success/50"></div>
+            <div className="relative w-28 h-20 bg-app-bg-card border border-app-status-success/30 rounded-2xl shadow-[0_0_20px_rgba(16,185,129,0.15)] flex flex-col items-center justify-center p-2">
+              <div className="absolute -top-3 px-2 py-0.5 bg-app-status-successBg text-app-status-success text-[9px] font-bold rounded-full border border-emerald-200 uppercase tracking-wider">Human</div>
+              <div className="w-8 h-8 rounded-full bg-app-status-successBg border border-emerald-200 flex items-center justify-center mb-1">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-app-status-success">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                   <circle cx="12" cy="7" r="4"></circle>
                 </svg>
               </div>
-              <span className="text-[10px] font-bold text-slate-800 text-center leading-tight">DevOps / Approver</span>
+              <span className="text-[10px] font-bold text-app-text-main text-center leading-tight">DevOps / Approver</span>
             </div>
           </div>
 
@@ -443,13 +443,13 @@ const AnimatedWorkflowDiagram = () => {
           <div className="absolute top-[150px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
             <div className="agent-pulse-dev absolute inset-0 bg-purple-500 rounded-2xl blur-xl opacity-0"></div>
             <div className="agent-ring-dev absolute inset-0 rounded-2xl border-2 border-purple-500/50"></div>
-            <div className="relative flex items-center gap-3 bg-white border border-purple-200 rounded-2xl p-3 shadow-lg w-52">
-              <div className="w-12 h-12 bg-slate-50 rounded-xl p-1.5 shrink-0 border border-slate-100 flex items-center justify-center">
+            <div className="relative flex items-center gap-3 bg-app-bg-card border border-purple-200 rounded-2xl p-3 shadow-lg w-52">
+              <div className="w-12 h-12 bg-app-bg-page rounded-xl p-1.5 shrink-0 border border-app-border-light flex items-center justify-center">
                 <img src={NModLogo} alt="N-Mod" className="w-full h-full object-contain" />
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-800 leading-tight">Dev Agent <span className="text-[10px] text-purple-500 ml-1">uses NMod-EXT</span></p>
-                <p className="text-[10px] text-slate-500 mt-0.5">Builds code iterative workflow.</p>
+                <p className="text-xs font-bold text-app-text-main leading-tight">Dev Agent <span className="text-[10px] text-purple-500 ml-1">uses NMod-EXT</span></p>
+                <p className="text-[10px] text-app-text-muted mt-0.5">Builds code iterative workflow.</p>
               </div>
             </div>
           </div>
@@ -458,28 +458,28 @@ const AnimatedWorkflowDiagram = () => {
           <div className="absolute top-[350px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
             <div className="agent-pulse-test absolute inset-0 bg-pink-500 rounded-2xl blur-xl opacity-0"></div>
             <div className="agent-ring-test absolute inset-0 rounded-2xl border-2 border-pink-500/50"></div>
-            <div className="relative flex items-center gap-3 bg-white border border-pink-200 rounded-2xl p-3 shadow-lg w-52">
-              <div className="w-12 h-12 bg-slate-50 rounded-xl p-1 shrink-0 border border-slate-100 flex items-center justify-center">
+            <div className="relative flex items-center gap-3 bg-app-bg-card border border-pink-200 rounded-2xl p-3 shadow-lg w-52">
+              <div className="w-12 h-12 bg-app-bg-page rounded-xl p-1 shrink-0 border border-app-border-light flex items-center justify-center">
                 <img src={KaktoxLogo} alt="Kaktox" className="w-full h-full object-contain" />
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-800 leading-tight">Test Agent <span className="text-[10px] text-pink-500 ml-1">uses Kaktox</span></p>
-                <p className="text-[10px] text-slate-500 mt-0.5">Executes rigorous automated tests.</p>
+                <p className="text-xs font-bold text-app-text-main leading-tight">Test Agent <span className="text-[10px] text-pink-500 ml-1">uses Kaktox</span></p>
+                <p className="text-[10px] text-app-text-muted mt-0.5">Executes rigorous automated tests.</p>
               </div>
             </div>
           </div>
 
           {/* Deploy Agent (CloudSPX) */}
           <div className="absolute top-[550px] left-[1000px] -translate-x-1/2 -translate-y-1/2">
-            <div className="agent-pulse-deploy absolute inset-0 bg-emerald-500 rounded-2xl blur-xl opacity-0"></div>
-            <div className="agent-ring-deploy absolute inset-0 rounded-2xl border-2 border-emerald-500/50"></div>
-            <div className="relative flex items-center gap-3 bg-white border border-emerald-200 rounded-2xl p-3 shadow-lg w-52">
-              <div className="w-12 h-12 bg-slate-50 rounded-xl p-1 shrink-0 border border-slate-100 flex items-center justify-center">
+            <div className="agent-pulse-deploy absolute inset-0 bg-app-status-success rounded-2xl blur-xl opacity-0"></div>
+            <div className="agent-ring-deploy absolute inset-0 rounded-2xl border-2 border-app-status-success/50"></div>
+            <div className="relative flex items-center gap-3 bg-app-bg-card border border-emerald-200 rounded-2xl p-3 shadow-lg w-52">
+              <div className="w-12 h-12 bg-app-bg-page rounded-xl p-1 shrink-0 border border-app-border-light flex items-center justify-center">
                 <img src={CloudSpxLogo} alt="CloudSpx" className="w-full h-full object-contain" />
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-800 leading-tight">Deploy Agent <span className="text-[10px] text-emerald-500 ml-1">uses CloudSPX</span></p>
-                <p className="text-[10px] text-slate-500 mt-0.5">Pushes verified builds to prod.</p>
+                <p className="text-xs font-bold text-app-text-main leading-tight">Deploy Agent <span className="text-[10px] text-app-status-success ml-1">uses CloudSPX</span></p>
+                <p className="text-[10px] text-app-text-muted mt-0.5">Pushes verified builds to prod.</p>
               </div>
             </div>
           </div>
@@ -797,7 +797,7 @@ const VideoExplainer = () => {
     <div ref={container} className="w-full max-w-5xl mx-auto my-8 bg-app-bg-card rounded-[2rem] border border-app-border-light shadow-2xl overflow-hidden relative aspect-video font-sans">
 
       {/* Fake Header */}
-      <div className="absolute top-0 left-0 right-0 z-40 flex items-center px-4 py-3 bg-gradient-to-b from-slate-100/80 to-transparent border-b border-app-border-light/50">
+      <div className="absolute top-0 left-0 right-0 z-40 flex items-center px-4 py-3 bg-gradient-to-b from-app-bg-muted/80 to-transparent border-b border-app-border-light/50">
         <div className="flex gap-2">
           <div className="w-3 h-3 rounded-full bg-red-400"></div>
           <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
@@ -814,13 +814,13 @@ const VideoExplainer = () => {
         {/* --- SCENE TEXT OVERLAYS --- */}
         <div className="absolute top-16 md:top-20 z-30 w-full text-center scene-text pointer-events-none px-4">
           <h2 className="text-overlay opacity-0 text-s1 text-2xl md:text-4xl font-bold text-app-text-main absolute w-full left-0">1. Document is Uploaded</h2>
-          <h2 className="text-overlay opacity-0 text-s2 text-2xl md:text-4xl font-bold text-blue-600 absolute w-full left-0">2. DSuite Analyzes & Approves Architecture</h2>
-          <h2 className="text-overlay opacity-0 text-s3 text-2xl md:text-4xl font-bold text-indigo-600 absolute w-full left-0">3. Nxdune Creates Tasks & Routes to Agents</h2>
-          <h2 className="text-overlay opacity-0 text-s4 text-2xl md:text-4xl font-bold text-slate-800 absolute w-full left-0">4. Agents Execute in Sequence...</h2>
+          <h2 className="text-overlay opacity-0 text-s2 text-2xl md:text-4xl font-bold text-app-primary absolute w-full left-0">2. DSuite Analyzes & Approves Architecture</h2>
+          <h2 className="text-overlay opacity-0 text-s3 text-2xl md:text-4xl font-bold text-app-primary absolute w-full left-0">3. Nxdune Creates Tasks & Routes to Agents</h2>
+          <h2 className="text-overlay opacity-0 text-s4 text-2xl md:text-4xl font-bold text-app-text-main absolute w-full left-0">4. Agents Execute in Sequence...</h2>
           <h2 className="text-overlay opacity-0 text-dev text-2xl md:text-4xl font-bold text-purple-600 absolute w-full left-0">Dev Agent (NMod-EXT) is coding... Done.</h2>
           <h2 className="text-overlay opacity-0 text-test text-2xl md:text-4xl font-bold text-pink-600 absolute w-full left-0">Test Agent (Kaktox) is testing... Passed 100%.</h2>
-          <h2 className="text-overlay opacity-0 text-deploy text-2xl md:text-4xl font-bold text-emerald-600 absolute w-full left-0">Deploy Agent (CloudSPX) is deploying...</h2>
-          <h2 className="text-overlay opacity-0 text-s5 text-3xl md:text-5xl font-extrabold text-emerald-600 absolute w-full left-0">Application is Live!</h2>
+          <h2 className="text-overlay opacity-0 text-deploy text-2xl md:text-4xl font-bold text-app-status-success absolute w-full left-0">Deploy Agent (CloudSPX) is deploying...</h2>
+          <h2 className="text-overlay opacity-0 text-s5 text-3xl md:text-5xl font-extrabold text-app-status-success absolute w-full left-0">Application is Live!</h2>
         </div>
 
         {/* --- MOTION GRAPHIC ELEMENTS --- */}
@@ -828,22 +828,22 @@ const VideoExplainer = () => {
 
           {/* S1: Document */}
           <div className="doc-icon opacity-0 scale-50 absolute flex flex-col items-center">
-            <div className="bg-white p-4 rounded-2xl shadow-xl border border-slate-200">
-              <FileText className="w-20 h-20 text-blue-500" />
+            <div className="bg-app-bg-card p-4 rounded-2xl shadow-xl border border-app-border">
+              <FileText className="w-20 h-20 text-app-primary" />
             </div>
-            <div className="w-16 h-2 bg-blue-500/20 rounded-full mt-4 blur-sm"></div>
+            <div className="w-16 h-2 bg-app-primary/20 rounded-full mt-4 blur-sm"></div>
           </div>
 
           {/* S2: DSuite */}
-          <div className="dsuite-node opacity-0 scale-50 absolute z-20 flex flex-col items-center justify-center w-32 h-32 bg-white border border-blue-200 rounded-3xl shadow-xl">
+          <div className="dsuite-node opacity-0 scale-50 absolute z-20 flex flex-col items-center justify-center w-32 h-32 bg-app-bg-card border border-app-primary-ring rounded-3xl shadow-xl">
             <div className="flex flex-col items-center leading-none">
-              <span className="text-xl font-extrabold tracking-tight text-blue-600">DSuite</span>
-              <span className="text-[9px] font-semibold tracking-[0.12em] uppercase text-blue-500/80 mt-1">Master</span>
+              <span className="text-xl font-extrabold tracking-tight text-app-primary">DSuite</span>
+              <span className="text-[9px] font-semibold tracking-[0.12em] uppercase text-app-primary/80 mt-1">Master</span>
             </div>
             <div className="dsuite-approved absolute -bottom-4 left-1/2 -translate-x-1/2 opacity-0 scale-75">
-              <div className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 shadow-sm">
-                <CheckCircle className="h-3 w-3 text-emerald-600" />
-                <span className="text-[9px] font-bold uppercase tracking-wide text-emerald-700">Approved</span>
+              <div className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-app-status-successBg px-2 py-0.5 shadow-sm">
+                <CheckCircle className="h-3 w-3 text-app-status-success" />
+                <span className="text-[9px] font-bold uppercase tracking-wide text-app-status-success">Approved</span>
               </div>
             </div>
             <div className="laser absolute top-1/2 left-0 w-full h-1 bg-blue-400 shadow-[0_0_10px_#60a5fa] origin-left"></div>
@@ -853,14 +853,14 @@ const VideoExplainer = () => {
           <div className="conn-beam absolute z-0 w-[172px] h-1.5 bg-gradient-to-r from-blue-400 to-indigo-400 origin-left opacity-0 rounded-full"></div>
 
           {/* S3: Nxdune */}
-          <div className="nxdune-node opacity-0 scale-50 absolute z-20 flex flex-col items-center justify-center w-32 h-32 bg-white border border-indigo-200 rounded-3xl shadow-xl">
+          <div className="nxdune-node opacity-0 scale-50 absolute z-20 flex flex-col items-center justify-center w-32 h-32 bg-app-bg-card border border-app-primary-ring rounded-3xl shadow-xl">
             <img src={Logo1} alt="Nxdune" className="w-16 h-16 object-contain" />
 
             {/* Task Cards */}
             <div className="absolute -right-24 top-0 flex flex-col gap-2">
               <div className="task-card opacity-0 w-20 h-8 bg-purple-100 rounded border border-purple-300 shadow-sm flex items-center px-2"><div className="w-full h-1 bg-purple-300 rounded"></div></div>
               <div className="task-card opacity-0 w-20 h-8 bg-pink-100 rounded border border-pink-300 shadow-sm flex items-center px-2"><div className="w-full h-1 bg-pink-300 rounded"></div></div>
-              <div className="task-card opacity-0 w-20 h-8 bg-emerald-100 rounded border border-emerald-300 shadow-sm flex items-center px-2"><div className="w-full h-1 bg-emerald-300 rounded"></div></div>
+              <div className="task-card opacity-0 w-20 h-8 bg-app-status-successBg rounded border border-emerald-300 shadow-sm flex items-center px-2"><div className="w-full h-1 bg-emerald-300 rounded"></div></div>
             </div>
           </div>
 
@@ -872,27 +872,27 @@ const VideoExplainer = () => {
             <div className="task-beam-test opacity-0 absolute left-[300px] -top-[100px] w-1.5 h-[80px] bg-gradient-to-b from-pink-300 to-pink-500 origin-top opacity-0 rounded-full"></div>
             <div className="task-beam-deploy opacity-0 absolute right-[80px] -top-[100px] w-1.5 h-[80px] bg-gradient-to-b from-indigo-400 to-emerald-400 origin-top opacity-0 rounded-full"></div>
 
-            <div className="nmod-node opacity-0 scale-50 relative flex flex-col items-center justify-center w-28 h-28 bg-white border border-purple-200 rounded-2xl shadow-lg">
+            <div className="nmod-node opacity-0 scale-50 relative flex flex-col items-center justify-center w-28 h-28 bg-app-bg-card border border-purple-200 rounded-2xl shadow-lg">
               <img src={NModLogo} alt="N-Mod" className="w-14 h-14 object-contain" />
               <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-purple-700">Dev Agent</p>
-              <div className="code-lines absolute -top-10 flex flex-col gap-1 w-full bg-slate-800 p-2 rounded-lg shadow-md">
+              <div className="code-lines absolute -top-10 flex flex-col gap-1 w-full bg-app-text-label p-2 rounded-lg shadow-md">
                 <div className="opacity-0 w-full h-1.5 bg-purple-400 rounded"></div>
                 <div className="opacity-0 w-3/4 h-1.5 bg-purple-400 rounded"></div>
                 <div className="opacity-0 w-1/2 h-1.5 bg-purple-400 rounded"></div>
               </div>
-              <CheckCircle className="nmod-check absolute -bottom-3 -right-3 w-8 h-8 text-purple-500 opacity-0 bg-white rounded-full shadow-md" />
+              <CheckCircle className="nmod-check absolute -bottom-3 -right-3 w-8 h-8 text-purple-500 opacity-0 bg-app-bg-card rounded-full shadow-md" />
             </div>
 
-            <div className="kaktox-node opacity-0 scale-50 relative flex flex-col items-center justify-center w-28 h-28 bg-white border border-pink-200 rounded-2xl shadow-lg">
+            <div className="kaktox-node opacity-0 scale-50 relative flex flex-col items-center justify-center w-28 h-28 bg-app-bg-card border border-pink-200 rounded-2xl shadow-lg">
               <img src={KaktoxLogo} alt="Kaktox" className="w-14 h-14 object-contain" />
               <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-pink-600">Test Agent</p>
-              <CheckCircle className="kaktox-check absolute -bottom-3 -right-3 w-8 h-8 text-pink-500 opacity-0 bg-white rounded-full shadow-md" />
+              <CheckCircle className="kaktox-check absolute -bottom-3 -right-3 w-8 h-8 text-pink-500 opacity-0 bg-app-bg-card rounded-full shadow-md" />
             </div>
 
-            <div className="cloudspx-node opacity-0 scale-50 relative flex flex-col items-center justify-center w-28 h-28 bg-white border border-emerald-200 rounded-2xl shadow-lg">
+            <div className="cloudspx-node opacity-0 scale-50 relative flex flex-col items-center justify-center w-28 h-28 bg-app-bg-card border border-emerald-200 rounded-2xl shadow-lg">
               <img src={CloudSpxLogo} alt="CloudSpx" className="w-14 h-14 object-contain" />
-              <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-emerald-600">Deploy Agent</p>
-              <CheckCircle className="cloudspx-check absolute -bottom-3 -right-3 w-8 h-8 text-emerald-500 opacity-0 bg-white rounded-full shadow-md" />
+              <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-app-status-success">Deploy Agent</p>
+              <CheckCircle className="cloudspx-check absolute -bottom-3 -right-3 w-8 h-8 text-app-status-success opacity-0 bg-app-bg-card rounded-full shadow-md" />
             </div>
           </div>
 
@@ -903,35 +903,35 @@ const VideoExplainer = () => {
       </div>
 
       {/* Fake Video Controls */}
-      <div className="absolute bottom-0 left-0 right-0 z-40 bg-white/95 border-t border-slate-200 p-4 pt-6 backdrop-blur-sm shadow-[0_-10px_30px_rgba(0,0,0,0.05)]">
+      <div className="absolute bottom-0 left-0 right-0 z-40 bg-app-bg-card/95 border-t border-app-border p-4 pt-6 backdrop-blur-sm shadow-[0_-10px_30px_rgba(0,0,0,0.05)]">
 
         {/* Progress Bar */}
-        <div className="absolute top-0 left-0 right-0 h-1 bg-slate-100 cursor-pointer overflow-hidden">
-          <div ref={progressBarRef} className="h-full bg-blue-500 transition-all duration-75" style={{ width: `0%` }}></div>
+        <div className="absolute top-0 left-0 right-0 h-1 bg-app-bg-muted cursor-pointer overflow-hidden">
+          <div ref={progressBarRef} className="h-full bg-app-primary transition-all duration-75" style={{ width: `0%` }}></div>
         </div>
 
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-6 text-slate-800">
+          <div className="flex items-center gap-6 text-app-text-main">
             {/* Play/Pause icon (mock) */}
             {isPlaying ?
               <div className="flex gap-1 items-center justify-center w-4 h-4 cursor-pointer hover:scale-110">
-                <div className="w-1.5 h-4 bg-slate-800 rounded-sm"></div>
-                <div className="w-1.5 h-4 bg-slate-800 rounded-sm"></div>
+                <div className="w-1.5 h-4 bg-app-text-label rounded-sm"></div>
+                <div className="w-1.5 h-4 bg-app-text-label rounded-sm"></div>
               </div>
               :
               <div className="w-0 h-0 border-t-[8px] border-b-[8px] border-l-[12px] border-t-transparent border-b-transparent border-l-slate-800 cursor-pointer hover:scale-110"></div>
             }
-            <span ref={timeTextRef} className="text-xs font-mono text-slate-500">00:00 / 01:25</span>
+            <span ref={timeTextRef} className="text-xs font-mono text-app-text-muted">00:00 / 01:25</span>
           </div>
 
-          <div className="flex items-center gap-4 text-slate-500">
-            <span className="text-[10px] uppercase tracking-widest border border-slate-200 bg-slate-50 px-2 py-1 rounded">Auto-Generated Visuals</span>
+          <div className="flex items-center gap-4 text-app-text-muted">
+            <span className="text-[10px] uppercase tracking-widest border border-app-border bg-app-bg-page px-2 py-1 rounded">Auto-Generated Visuals</span>
             <button
               type="button"
               onClick={toggleSound}
               className={`inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest border px-2 py-1 rounded transition-colors ${soundEnabled
-                ? 'text-emerald-700 border-emerald-200 bg-emerald-50'
-                : 'text-slate-600 border-slate-200 bg-slate-50'
+                ? 'text-app-status-success border-emerald-200 bg-app-status-successBg'
+                : 'text-app-text-label border-app-border bg-app-bg-page'
                 }`}
             >
               {soundEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
@@ -1013,25 +1013,25 @@ const ProcessCard = ({ number, title, text, image, imageBg, reverse = false }) =
 
       {/* Visual Context */}
       <div ref={imageRef} className={`flex-1 w-full flex justify-center ${reverse ? 'md:justify-start' : 'md:justify-end'} relative z-10`}>
-        <div className={`relative w-full max-w-md aspect-square ${imageBg} rounded-[3rem] p-1 shadow-2xl flex flex-col items-center justify-center overflow-hidden border border-white/50 backdrop-blur-xl group-hover:scale-[1.02] hover:shadow-blue-500/20 transition-all duration-700`}>
+        <div className={`relative w-full max-w-md aspect-square ${imageBg} rounded-[3rem] p-1 shadow-2xl flex flex-col items-center justify-center overflow-hidden border border-app-bg-card/50 backdrop-blur-xl group-hover:scale-[1.02] hover:shadow-app-primary/20 transition-all duration-700`}>
 
-          <div className="absolute inset-0 bg-white/40 group-hover:bg-white/60 transition-colors duration-700" />
-          <div className="absolute top-0 right-0 w-40 h-40 bg-white/40 rounded-full blur-3xl -mt-10 -mr-10 transition-transform group-hover:scale-150 duration-1000" />
+          <div className="absolute inset-0 bg-app-bg-card/40 group-hover:bg-app-bg-card/60 transition-colors duration-700" />
+          <div className="absolute top-0 right-0 w-40 h-40 bg-app-bg-card/40 rounded-full blur-3xl -mt-10 -mr-10 transition-transform group-hover:scale-150 duration-1000" />
           <div className="absolute bottom-0 left-0 w-40 h-40 bg-black/5 rounded-full blur-3xl -mb-10 -ml-10" />
 
           {/* Main Icon Box */}
-          <div className="relative z-10 w-40 h-40 bg-white rounded-[2rem] shadow-xl border border-slate-100/50 flex items-center justify-center p-6 transform group-hover:-translate-y-4 group-hover:shadow-2xl transition-all duration-700 group-hover:border-app-primary/20 bg-clip-padding backdrop-filter backdrop-blur-xl bg-opacity-90">
+          <div className="relative z-10 w-40 h-40 bg-app-bg-card rounded-[2rem] shadow-xl border border-app-border-light/50 flex items-center justify-center p-6 transform group-hover:-translate-y-4 group-hover:shadow-2xl transition-all duration-700 group-hover:border-app-primary/20 bg-clip-padding backdrop-filter backdrop-blur-xl bg-opacity-90">
             {image ? (
               <img src={image} className="w-full h-full object-contain drop-shadow-lg group-hover:scale-110 transition-transform duration-700" alt={title} />
             ) : (
-              <FileText className="w-20 h-20 text-slate-800" />
+              <FileText className="w-20 h-20 text-app-text-main" />
             )}
           </div>
 
           {/* Status Label */}
-          <div className="relative z-10 mt-8 bg-white/95 backdrop-blur-xl px-6 py-3 rounded-full border border-slate-200 shadow-lg opacity-90 group-hover:opacity-100 group-hover:translate-y-0 translate-y-2 transition-all duration-700 flex items-center gap-3">
+          <div className="relative z-10 mt-8 bg-app-bg-card/95 backdrop-blur-xl px-6 py-3 rounded-full border border-app-border shadow-lg opacity-90 group-hover:opacity-100 group-hover:translate-y-0 translate-y-2 transition-all duration-700 flex items-center gap-3">
             <div className="w-2 h-2 rounded-full bg-app-status-success shadow-[0_0_10px_rgba(16,185,129,0.5)] animate-pulse" />
-            <p className="text-sm font-bold tracking-widest text-slate-800 uppercase">{title.split('â†’')[0].trim()}</p>
+            <p className="text-sm font-bold tracking-widest text-app-text-main uppercase">{title.split('â†’')[0].trim()}</p>
           </div>
 
         </div>
@@ -1061,7 +1061,7 @@ const HowItWorks = () => {
               <Link to="/login" className="hidden sm:inline-flex text-sm font-semibold text-app-text-label px-3 py-1.5 rounded-lg hover:bg-app-bg-page border border-app-border transition-colors">
                 Log in
               </Link>
-              <Link to="/signup" className="inline-flex items-center text-sm font-semibold text-white bg-app-primary hover:bg-app-primary-hover px-4 py-2 rounded-lg shadow-sm shadow-blue-500/30 transition-colors">
+              <Link to="/signup" className="inline-flex items-center text-sm font-semibold text-app-bg-card bg-app-primary hover:bg-app-primary-hover px-4 py-2 rounded-lg shadow-sm shadow-app-primary/30 transition-colors">
                 Get started
                 <ArrowRight className="ml-1.5 h-4 w-4" />
               </Link>
@@ -1074,10 +1074,10 @@ const HowItWorks = () => {
       <section className="pt-20 pb-16 px-4 bg-app-bg-card relative overflow-hidden border-b border-app-border-light">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.1)_0%,_transparent_60%)] pointer-events-none" />
         <div className="max-w-4xl mx-auto text-center relative z-10">
-          <div className="inline-flex items-center justify-center p-3 sm:p-4 bg-blue-50 rounded-2xl mb-8 border border-blue-100 shadow-inner">
+          <div className="inline-flex items-center justify-center p-3 sm:p-4 bg-app-primary-light rounded-2xl mb-8 border border-app-primary-light shadow-inner">
             <div className="flex items-center justify-center gap-3">
               <img src={Logo} alt="DSuite" className="h-9 w-auto" />
-              <div className="h-6 w-px bg-blue-200" />
+              <div className="h-6 w-px bg-app-primary-ring" />
               <span className="text-xl font-bold tracking-tight text-app-text-main">
                 DSuite
               </span>
@@ -1087,7 +1087,7 @@ const HowItWorks = () => {
             One Document. <br /> Autonomous Engineering.
           </h1>
           <p className="text-xl sm:text-2xl text-app-text-label leading-relaxed max-w-2xl mx-auto">
-            Discover how DSuite orchestrates a highly-specialized swarm of <Sparkles className="inline h-4 w-4 mx-1 text-blue-600" />AI agents to instantly build, test, and deploy software from a single requirements document.
+            Discover how DSuite orchestrates a highly-specialized swarm of <Sparkles className="inline h-4 w-4 mx-1 text-app-primary" />AI agents to instantly build, test, and deploy software from a single requirements document.
           </p>
         </div>
       </section>
@@ -1106,7 +1106,7 @@ const HowItWorks = () => {
       */}
 
       {/* Structured Narrative Story */}
-      <section className="py-10 bg-white">
+      <section className="py-10 bg-app-bg-card">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
 
           <ProcessCard
@@ -1114,7 +1114,7 @@ const HowItWorks = () => {
             title="DSuite Master Analysis"
             text="You drop your BRD into DSuite. The DSuite Master Agent parses everythingâ€”business rules, architecture, data schemas, and non-functional requirements. It evaluates if the project is 'Sandbox Ready' and extracts a complete blueprint."
             image={Logo}
-            imageBg="bg-blue-50 border-blue-200"
+            imageBg="bg-app-primary-light border-app-primary-ring"
             reverse={false}
           />
 
@@ -1123,7 +1123,7 @@ const HowItWorks = () => {
             title="Nxdune Orchestration"
             text="The DSuite blueprint is instantly piped to Nxdune. Nxdune creates your organizational workspace and breaks the blueprint down into granular sub-tasks, organizing them dynamically into test, dev, and deploy tickets on an automated Kanban."
             image={Logo1}
-            imageBg="bg-indigo-50 border-indigo-200"
+            imageBg="bg-app-primary-light border-app-primary-ring"
             reverse={true}
           />
 
@@ -1150,7 +1150,7 @@ const HowItWorks = () => {
             title="Deploy Tasks â†' CloudSPX"
             text="Green across the board? The Deploy Agent handles the final stage. It takes the repository that cleared Kaktox and pushes it through secure pipelines into CloudSPX. Your application is now live, all tracked directly back inside Nxdune."
             image={CloudSpxLogo}
-            imageBg="bg-emerald-50 border-emerald-200"
+            imageBg="bg-app-status-successBg border-emerald-200"
             reverse={false}
           />
 
@@ -1158,7 +1158,7 @@ const HowItWorks = () => {
       </section>
 
       {/* The Animated Chart */}
-      <section className="py-24 bg-slate-50 border-t border-app-border-light relative overflow-hidden">
+      <section className="py-24 bg-app-bg-page border-t border-app-border-light relative overflow-hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
           <div className="text-center max-w-3xl mx-auto">
             <h2 className="text-4xl font-extrabold text-app-text-main mb-4">The Complete Logic Flow</h2>
@@ -1171,17 +1171,17 @@ const HowItWorks = () => {
       </section>
 
       {/* Summary CTA */}
-      <section className="py-20 sm:py-24 bg-app-text-main text-white relative overflow-hidden text-center z-10 border-t border-app-border-light">
+      <section className="py-20 sm:py-24 bg-app-text-main text-app-bg-card relative overflow-hidden text-center z-10 border-t border-app-border-light">
         <div className="absolute inset-0 opacity-20 mix-blend-overlay bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.2),_transparent_60%),radial-gradient(circle_at_bottom,_rgba(129,140,248,0.25),_transparent_55%)]" />
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
           <h2 className="text-3xl sm:text-5xl font-bold mb-6 tracking-tight">
             Watch the agents work.
           </h2>
-          <p className="text-lg sm:text-xl text-slate-300 max-w-2xl mx-auto mb-10">
+          <p className="text-lg sm:text-xl text-app-border max-w-2xl mx-auto mb-10">
             Upload a document into DSuite today and let the ecosystem plan, code, test, and deploy for you.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link to="/signup" className="inline-flex items-center justify-center px-8 py-4 text-base font-bold text-app-text-main bg-white hover:bg-slate-50 rounded-xl shadow-xl transition-transform hover:scale-105 active:scale-95">
+            <Link to="/signup" className="inline-flex items-center justify-center px-8 py-4 text-base font-bold text-app-text-main bg-app-bg-card hover:bg-app-bg-page rounded-xl shadow-xl transition-transform hover:scale-105 active:scale-95">
               Start your first project
               <ArrowRight className="ml-2 h-5 w-5" />
             </Link>

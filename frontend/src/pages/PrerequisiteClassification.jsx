@@ -66,29 +66,29 @@ const CATEGORY_CONFIG = {
     credentials: {
         icon: Lock,
         label: 'Credentials & Access Keys',
-        gradient: 'from-amber-500 to-orange-600',
-        bg: 'bg-amber-50',
+        gradient: 'from-app-status-warning to-orange-600',
+        bg: 'bg-app-status-warningBg',
         border: 'border-amber-200',
-        text: 'text-amber-700',
-        badge: 'bg-amber-100 text-amber-800',
+        text: 'text-app-status-warning',
+        badge: 'bg-app-status-warningBg text-amber-800',
     },
     apis: {
         icon: Globe,
         label: 'APIs & Integrations',
-        gradient: 'from-blue-500 to-indigo-600',
-        bg: 'bg-blue-50',
-        border: 'border-blue-200',
-        text: 'text-blue-700',
-        badge: 'bg-blue-100 text-blue-800',
+        gradient: 'from-app-primary to-app-primary',
+        bg: 'bg-app-primary-light',
+        border: 'border-app-primary-ring',
+        text: 'text-app-primary-hover',
+        badge: 'bg-app-primary-light text-app-primary-dark',
     },
     infrastructure: {
         icon: Server,
         label: 'Infrastructure & Services',
-        gradient: 'from-emerald-500 to-teal-600',
-        bg: 'bg-emerald-50',
+        gradient: 'from-app-status-success to-teal-600',
+        bg: 'bg-app-status-successBg',
         border: 'border-emerald-200',
-        text: 'text-emerald-700',
-        badge: 'bg-emerald-100 text-emerald-800',
+        text: 'text-app-status-success',
+        badge: 'bg-app-status-successBg text-emerald-800',
     },
     databases: {
         icon: Database,
@@ -111,20 +111,20 @@ const CATEGORY_CONFIG = {
     dependencies: {
         icon: Package,
         label: 'Dependencies & Libraries',
-        gradient: 'from-rose-500 to-pink-600',
-        bg: 'bg-rose-50',
+        gradient: 'from-app-status-error to-pink-600',
+        bg: 'bg-app-status-errorBg',
         border: 'border-rose-200',
-        text: 'text-rose-700',
-        badge: 'bg-rose-100 text-rose-800',
+        text: 'text-app-status-error',
+        badge: 'bg-app-status-errorBg text-rose-800',
     },
     other: {
         icon: FileKey,
         label: 'Other Prerequisites',
-        gradient: 'from-slate-500 to-gray-600',
-        bg: 'bg-gray-50',
-        border: 'border-gray-200',
-        text: 'text-gray-700',
-        badge: 'bg-gray-100 text-gray-800',
+        gradient: 'from-app-text-muted to-app-text-label',
+        bg: 'bg-app-bg-page',
+        border: 'border-app-border',
+        text: 'text-app-text-label',
+        badge: 'bg-app-bg-muted text-app-text-main',
     },
 };
 
@@ -514,9 +514,9 @@ const extractRepoSuggestionFromStoredMeta = (storedMeta) => {
 ───────────────────────────────────────────────────────── */
 const PriorityBadge = ({ priority }) => {
     const config = {
-        high: { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200', label: 'High' },
-        medium: { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-200', label: 'Medium' },
-        low: { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200', label: 'Low' },
+        high: { bg: 'bg-app-status-errorBg', text: 'text-app-status-error', border: 'border-red-200', label: 'High' },
+        medium: { bg: 'bg-app-status-warningBg', text: 'text-app-status-warning', border: 'border-amber-200', label: 'Medium' },
+        low: { bg: 'bg-app-status-successBg', text: 'text-app-status-success', border: 'border-green-200', label: 'Low' },
     };
     const c = config[priority] || config.medium;
     return (
@@ -1034,15 +1034,15 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     /* ── Loading State ── */
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="flex flex-col items-center gap-5">
                     <div className="relative">
-                        <div className="w-14 h-14 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+                        <div className="w-14 h-14 border-4 border-app-primary-ring border-t-blue-600 rounded-full animate-spin" />
                         <div className="absolute inset-0 w-14 h-14 border-4 border-transparent border-b-indigo-400 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
                     </div>
                     <div className="text-center">
-                        <p className="text-gray-600 font-semibold text-sm tracking-wide">Analyzing prerequisites…</p>
-                        <p className="text-gray-400 text-xs mt-1">Extracting requirements from AI analysis</p>
+                        <p className="text-app-text-label font-semibold text-sm tracking-wide">Analyzing prerequisites…</p>
+                        <p className="text-app-text-light text-xs mt-1">Extracting requirements from AI analysis</p>
                     </div>
                 </div>
             </div>
@@ -1052,22 +1052,22 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     /* ── Submitted Success State ── */
     if (submitted) {
         return (
-            <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="max-w-2xl mx-auto px-4 py-16">
-                    <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg border border-white/60 p-10 text-center relative overflow-hidden">
-                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-teal-500 to-green-500 rounded-t-2xl" />
+                    <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-lg border border-app-bg-card/60 p-10 text-center relative overflow-hidden">
+                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-app-status-success via-teal-500 to-app-status-success rounded-t-2xl" />
 
                         <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-full flex items-center justify-center shadow-lg shadow-emerald-200">
-                            <CheckCircle2 className="w-10 h-10 text-white" />
+                            <CheckCircle2 className="w-10 h-10 text-app-bg-card" />
                         </div>
 
-                        <h2 className="text-2xl font-extrabold text-gray-900 mb-2 tracking-tight">Prerequisites Acknowledged</h2>
-                        <p className="text-gray-500 text-sm mb-6 leading-relaxed max-w-md mx-auto">
+                        <h2 className="text-2xl font-extrabold text-app-text-main mb-2 tracking-tight">Prerequisites Acknowledged</h2>
+                        <p className="text-app-text-muted text-sm mb-6 leading-relaxed max-w-md mx-auto">
                             {providedCount} of {totalItems} prerequisite items have been confirmed for <strong>{projectName || 'this project'}</strong>.
                         </p>
 
-                        <div className="flex items-center justify-center gap-2 text-sm text-gray-400">
-                            <div className="w-4 h-4 border-2 border-gray-300 border-t-emerald-500 rounded-full animate-spin" />
+                        <div className="flex items-center justify-center gap-2 text-sm text-app-text-light">
+                            <div className="w-4 h-4 border-2 border-app-border border-t-emerald-500 rounded-full animate-spin" />
                             {processMode === 'developer_only' ? 'Redirecting to VS Code Extension…' : 'Redirecting to Task Creation…'}
                         </div>
                     </div>
@@ -1078,31 +1078,31 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
     /* ── Main View ── */
     return (
-        <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+        <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
             <div className="px-3 sm:px-4 lg:px-6 py-4 lg:py-6 max-w-[1200px] mx-auto">
 
                 {/* Back Link */}
                 <button
                     onClick={() => navigate('/dashboard')}
-                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-gray-500 hover:text-gray-800 mb-5 transition-colors group"
+                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-app-text-muted hover:text-app-text-main mb-5 transition-colors group"
                 >
                     <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back to Requirement Screening
                 </button>
 
                 {/* ── HERO HEADER ── */}
-                <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-slate-700 via-gray-800 to-slate-900 text-white p-6 sm:p-8 shadow-xl mb-6">
+                <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-app-hero-bg via-app-hero-bg to-app-sidebar-bg text-app-bg-card p-6 sm:p-8 shadow-xl mb-6">
                     <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center gap-5">
-                        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 flex-shrink-0">
+                        <div className="bg-app-bg-card/10 backdrop-blur-sm rounded-2xl p-4 flex-shrink-0">
                             <KeyRound className="w-12 h-12 text-amber-400" />
                         </div>
                         <div className="flex-1 min-w-0">
-                            <p className="text-white/60 text-xs font-semibold uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                            <p className="text-app-bg-card/60 text-xs font-semibold uppercase tracking-widest mb-1 flex items-center gap-1.5">
                                 <Sparkles className="w-3 h-3" /> AI-Generated Prerequisites
                             </p>
                             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-1">
                                 Prerequisite Classification
                             </h1>
-                            <p className="text-white/70 text-sm">
+                            <p className="text-app-bg-card/70 text-sm">
                                 {projectName ? `For "${projectName}" — ` : ''}
                                 Review and confirm the prerequisites identified from your BRD analysis.
                             </p>
@@ -1121,36 +1121,36 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     />
                                 </svg>
                                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                                    <span className="text-xl font-extrabold text-white">{progress}%</span>
-                                    <span className="text-[9px] font-semibold text-white/50 uppercase">Done</span>
+                                    <span className="text-xl font-extrabold text-app-bg-card">{progress}%</span>
+                                    <span className="text-[9px] font-semibold text-app-bg-card/50 uppercase">Done</span>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     {/* Decorative circles */}
-                    <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/5 rounded-full" />
-                    <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-white/5 rounded-full" />
+                    <div className="absolute -top-10 -right-10 w-40 h-40 bg-app-bg-card/5 rounded-full" />
+                    <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-app-bg-card/5 rounded-full" />
                 </div>
 
                 {/* ── PROGRESS BAR (mobile) ── */}
                 <div className="sm:hidden mb-4">
                     <div className="flex items-center justify-between text-xs mb-1.5">
-                        <span className="font-bold text-blue-600">{providedCount} of {totalItems} confirmed</span>
-                        <span className="text-gray-400 font-semibold">{progress}%</span>
+                        <span className="font-bold text-app-primary">{providedCount} of {totalItems} confirmed</span>
+                        <span className="text-app-text-light font-semibold">{progress}%</span>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                    <div className="w-full bg-app-bg-hover rounded-full h-2 overflow-hidden">
                         <div
-                            className="bg-gradient-to-r from-amber-400 to-amber-500 h-full rounded-full transition-all duration-500 ease-out"
+                            className="bg-gradient-to-r from-amber-400 to-app-status-warning h-full rounded-full transition-all duration-500 ease-out"
                             style={{ width: `${progress}%` }}
                         />
                     </div>
                 </div>
 
                 {/* ── EXECUTION MODE (Grid View) ── */}
-                <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-6 mb-6">
-                    <h3 className="text-base font-bold text-gray-900 mb-1">Choose Execution Mode</h3>
-                    <p className="text-sm text-gray-500 mb-4">Select how this project should run in Status Dashboard.</p>
+                <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6">
+                    <h3 className="text-base font-bold text-app-text-main mb-1">Choose Execution Mode</h3>
+                    <p className="text-sm text-app-text-muted mb-4">Select how this project should run in Status Dashboard.</p>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {PROCESS_MODE_OPTIONS.map(option => (
                             <button
@@ -1159,26 +1159,26 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 disabled={!option.enabled}
                                 onClick={() => setProcessMode(option.id)}
                                 className={`text-left rounded-xl border p-4 transition-all ${processMode === option.id && option.enabled
-                                    ? 'border-indigo-500 bg-indigo-50 shadow-sm ring-1 ring-indigo-500'
+                                    ? 'border-app-primary bg-app-primary-light shadow-sm ring-1 ring-app-primary'
                                     : option.enabled
-                                        ? 'border-gray-200 bg-white hover:bg-gray-50 hover:border-indigo-300'
-                                        : 'border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed'
+                                        ? 'border-app-border bg-app-bg-card hover:bg-app-bg-page hover:border-indigo-300'
+                                        : 'border-app-border bg-app-bg-page text-app-text-light cursor-not-allowed'
                                     }`}
                             >
                                 <div className="flex items-center justify-between gap-2 mb-1.5">
-                                    <p className={`text-sm font-bold ${option.enabled ? (processMode === option.id ? 'text-indigo-900' : 'text-gray-900') : 'text-gray-500'}`}>
+                                    <p className={`text-sm font-bold ${option.enabled ? (processMode === option.id ? 'text-app-primary-dark' : 'text-app-text-main') : 'text-app-text-muted'}`}>
                                         {option.title}
                                     </p>
                                     {!option.enabled && (
-                                        <span className="text-[9px] font-bold uppercase tracking-wide text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">
+                                        <span className="text-[9px] font-bold uppercase tracking-wide text-app-text-muted bg-app-bg-hover px-2 py-0.5 rounded-full">
                                             Disabled
                                         </span>
                                     )}
                                     {processMode === option.id && option.enabled && (
-                                        <CheckCircle2 className="w-4 h-4 text-indigo-600" />
+                                        <CheckCircle2 className="w-4 h-4 text-app-primary" />
                                     )}
                                 </div>
-                                <p className={`text-xs ${processMode === option.id && option.enabled ? 'text-indigo-700' : 'text-gray-500'}`}>
+                                <p className={`text-xs ${processMode === option.id && option.enabled ? 'text-app-primary-hover' : 'text-app-text-muted'}`}>
                                     {option.description}
                                 </p>
                             </button>
@@ -1188,20 +1188,20 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── ERROR ── */}
                 {error && (
-                    <div className="rounded-xl bg-red-50/80 backdrop-blur-sm p-4 border border-red-200/60 text-red-700 mb-5 flex items-start gap-3 shadow-sm">
-                        <div className="w-8 h-8 rounded-lg bg-red-100 flex items-center justify-center flex-shrink-0">
-                            <AlertCircle className="w-4 h-4 text-red-500" />
+                    <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-app-status-error mb-5 flex items-start gap-3 shadow-sm">
+                        <div className="w-8 h-8 rounded-lg bg-app-status-errorBg flex items-center justify-center flex-shrink-0">
+                            <AlertCircle className="w-4 h-4 text-app-status-error" />
                         </div>
                         <div className="text-sm font-medium pt-1">{error}</div>
                     </div>
                 )}
 
                 {/* ── INFO TIP ── */}
-                <div className="bg-blue-50/80 rounded-xl border border-blue-200/60 p-4 mb-6 flex items-start gap-3">
-                    <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                <div className="bg-app-primary-light/80 rounded-xl border border-app-primary-ring/60 p-4 mb-6 flex items-start gap-3">
+                    <Info className="w-5 h-5 text-app-primary flex-shrink-0 mt-0.5" />
                     <div>
-                        <p className="text-sm font-semibold text-blue-900 mb-0.5">How this works</p>
-                        <p className="text-xs text-blue-700 leading-relaxed">
+                        <p className="text-sm font-semibold text-app-primary-dark mb-0.5">How this works</p>
+                        <p className="text-xs text-app-primary-hover leading-relaxed">
                             {processMode === 'developer_only'
                                 ? 'In Developer Only mode, prerequisite classification is not required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
                                 : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Each prerequisite asks for the expected answer type (text, URL, or file upload).'
@@ -1212,12 +1212,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── PREREQUISITES SECTION ── */}
                 {processMode === 'developer_only' ? (
-                    <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-8 text-center mb-8 border-dashed border-blue-200">
-                        <div className="w-16 h-16 mx-auto mb-4 bg-blue-50 rounded-full flex items-center justify-center">
-                            <ArrowRight className="w-8 h-8 text-blue-500" />
+                    <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-8 text-center mb-8 border-dashed border-app-primary-ring">
+                        <div className="w-16 h-16 mx-auto mb-4 bg-app-primary-light rounded-full flex items-center justify-center">
+                            <ArrowRight className="w-8 h-8 text-app-primary" />
                         </div>
-                        <h3 className="text-lg font-bold text-gray-900 mb-2">Developer Workflow.</h3>
-                        <p className="text-sm text-gray-600 max-w-lg mx-auto leading-relaxed">
+                        <h3 className="text-lg font-bold text-app-text-main mb-2">Developer Workflow.</h3>
+                        <p className="text-sm text-app-text-label max-w-lg mx-auto leading-relaxed">
                             Prerequisite classification is bypassed for <strong>Developer Only</strong> mode.
                             You will be redirected to VS Code.
                         </p>
@@ -1231,16 +1231,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             const catProvided = items.filter(i => i.provided).length;
 
                             return (
-                                <div key={category} className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 overflow-hidden">
+                                <div key={category} className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 overflow-hidden">
                                     {/* Category Header */}
                                     <div className={`flex items-center justify-between px-5 py-3.5 ${config.bg} border-b ${config.border}`}>
                                         <div className="flex items-center gap-3">
                                             <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${config.gradient} flex items-center justify-center shadow-sm`}>
-                                                <CategoryIcon className="w-4 h-4 text-white" />
+                                                <CategoryIcon className="w-4 h-4 text-app-bg-card" />
                                             </div>
                                             <div>
                                                 <h3 className={`text-sm font-bold ${config.text}`}>{config.label}</h3>
-                                                <p className="text-[11px] text-gray-500">{catProvided}/{items.length} confirmed</p>
+                                                <p className="text-[11px] text-app-text-muted">{catProvided}/{items.length} confirmed</p>
                                             </div>
                                         </div>
                                         <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${config.badge}`}>
@@ -1249,11 +1249,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     </div>
 
                                     {/* Items */}
-                                    <div className="divide-y divide-gray-100">
+                                    <div className="divide-y divide-app-bg-muted">
                                         {items.map(item => (
                                             <div
                                                 key={item.id}
-                                                className={`px-5 py-4 flex items-start gap-4 transition-all duration-200 ${item.provided ? 'bg-emerald-50/40' : 'hover:bg-gray-50/50'
+                                                className={`px-5 py-4 flex items-start gap-4 transition-all duration-200 ${item.provided ? 'bg-app-status-successBg/40' : 'hover:bg-app-bg-page/50'
                                                     }`}
                                             >
                                                 {/* Checkbox */}
@@ -1263,52 +1263,52 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                     title={item.provided ? 'Mark as not provided' : 'Mark as provided'}
                                                 >
                                                     {item.provided ? (
-                                                        <CheckCircle2 className="w-6 h-6 text-emerald-500 drop-shadow-sm" />
+                                                        <CheckCircle2 className="w-6 h-6 text-app-status-success drop-shadow-sm" />
                                                     ) : (
-                                                        <Circle className="w-6 h-6 text-gray-300 hover:text-gray-400" />
+                                                        <Circle className="w-6 h-6 text-app-border hover:text-app-text-light" />
                                                     )}
                                                 </button>
 
                                                 {/* Content */}
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-gray-500' : 'text-gray-800'}`}>
+                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-app-text-muted' : 'text-app-text-main'}`}>
                                                             {item.name}
                                                         </span>
                                                         <PriorityBadge priority={item.priority} />
                                                     </div>
-                                                    <p className="text-xs text-gray-500 leading-relaxed mb-2.5 max-w-2xl">
+                                                    <p className="text-xs text-app-text-muted leading-relaxed mb-2.5 max-w-2xl">
                                                         {item.description}
                                                     </p>
 
                                                     {/* Field type specific input */}
                                                     {item.fieldType === 'text' && (
                                                         <div className="mt-2">
-                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: Text</p>
+                                                            <p className="text-[11px] uppercase tracking-wide text-app-text-muted mb-1.5">Expected input: Text</p>
                                                             <input
                                                                 type={item.containsSecret ? "password" : "text"}
                                                                 placeholder="Type your answer"
                                                                 value={item.userValue || ''}
                                                                 onChange={(e) => updateValue(item.id, e.target.value)}
-                                                                className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+                                                                className="w-full text-sm bg-app-bg-page border border-app-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-app-primary-light focus:border-blue-300 transition-all"
                                                             />
                                                         </div>
                                                     )}
                                                     {item.fieldType === 'url' && (
                                                         <div className="mt-2">
-                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: URL</p>
+                                                            <p className="text-[11px] uppercase tracking-wide text-app-text-muted mb-1.5">Expected input: URL</p>
                                                             <input
                                                                 type={item.containsSecret ? "password" : "url"}
                                                                 placeholder="https://example.com"
                                                                 value={item.userValue || ''}
                                                                 onChange={(e) => updateValue(item.id, e.target.value)}
-                                                                className="w-full text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-100 focus:border-blue-300 transition-all"
+                                                                className="w-full text-sm bg-app-bg-page border border-app-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-app-primary-light focus:border-blue-300 transition-all"
                                                             />
                                                         </div>
                                                     )}
                                                     {item.fieldType === 'file' && (
                                                         <div className="mt-2">
-                                                            <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1.5">Expected input: File upload</p>
+                                                            <p className="text-[11px] uppercase tracking-wide text-app-text-muted mb-1.5">Expected input: File upload</p>
                                                             <input
                                                                 type="file"
                                                                 onChange={(e) => updateFile(item.id, e.target.files[0])}
@@ -1316,11 +1316,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                             />
                                                             {item.userFileName && (
                                                                 <div className="mt-2 flex items-center gap-2">
-                                                                    <span className="text-xs text-gray-600">Selected: {item.userFileName}</span>
+                                                                    <span className="text-xs text-app-text-label">Selected: {item.userFileName}</span>
                                                                     <button
                                                                         type="button"
                                                                         onClick={() => updateFile(item.id, null)}
-                                                                        className="text-[11px] text-red-600 hover:text-red-700 font-medium"
+                                                                        className="text-[11px] text-app-status-error hover:text-app-status-error font-medium"
                                                                     >
                                                                         Remove
                                                                     </button>
@@ -1334,15 +1334,15 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                         type="button"
                                                         onClick={() => toggleSecret(item.id)}
                                                         className={`mt-2 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
-                                                            ? 'border-red-200 bg-red-50 text-red-700'
-                                                            : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'
+                                                            ? 'border-red-200 bg-app-status-errorBg text-app-status-error'
+                                                            : 'border-app-border bg-app-bg-page text-app-text-label hover:bg-app-bg-muted'
                                                             }`}
                                                         title="Mark as sensitive (will be excluded from AI payload)"
                                                     >
                                                         {item.containsSecret ? (
-                                                            <CheckCircle2 className="w-3.5 h-3.5 text-red-600" />
+                                                            <CheckCircle2 className="w-3.5 h-3.5 text-app-status-error" />
                                                         ) : (
-                                                            <Circle className="w-3.5 h-3.5 text-gray-400" />
+                                                            <Circle className="w-3.5 h-3.5 text-app-text-light" />
                                                         )}
                                                         Sensitive
                                                     </button>
@@ -1358,23 +1358,23 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── CUSTOM RULES SECTION ── */}
                 {processMode !== 'developer_only' && (
-                    <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-sm border border-gray-100/80 p-6 mb-6 space-y-4">
+                    <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6 space-y-4">
                         <div className="flex items-center gap-2 mb-1">
-                            <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
-                                <Sparkles className="w-4 h-4 text-indigo-600" />
+                            <div className="w-8 h-8 rounded-lg bg-app-primary-light flex items-center justify-center">
+                                <Sparkles className="w-4 h-4 text-app-primary" />
                             </div>
-                            <h3 className="text-base font-bold text-gray-900">A.I. Custom Rules</h3>
+                            <h3 className="text-base font-bold text-app-text-main">A.I. Custom Rules</h3>
                         </div>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-app-text-muted">
                             Define specific coding standards, architectural patterns, or task constraints. The AI will follow these instructions when generating the project plan and tasks.
                         </p>
                         <textarea
                             value={customRules}
                             onChange={(e) => setCustomRules(e.target.value)}
                             placeholder="e.g. Use functional components for React, follow SOLID principles, all API tasks must include error handling documentation..."
-                            className="w-full min-h-[120px] p-4 text-sm text-gray-900 bg-slate-50 border border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 transition-all outline-none resize-y"
+                            className="w-full min-h-[120px] p-4 text-sm text-app-text-main bg-app-bg-page border border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-indigo-400 transition-all outline-none resize-y"
                         />
-                        <div className="flex items-center gap-2 text-[11px] text-indigo-500 font-medium bg-indigo-50/50 px-3 py-2 rounded-lg italic">
+                        <div className="flex items-center gap-2 text-[11px] text-app-primary font-medium bg-app-primary-light/50 px-3 py-2 rounded-lg italic">
                             <AlertCircle className="w-3.5 h-3.5" />
                             Rules are saved automatically for this project.
                         </div>
@@ -1382,17 +1382,17 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 )}
 
                 {/* ── SUMMARY + SUBMIT ── */}
-                <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-100/80 p-6 mb-6">
+                <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-lg border border-app-border-light/80 p-6 mb-6">
                     {processMode !== 'developer_only' && (
-                        <div className="mb-6 pb-6 border-b border-gray-100">
-                            <h3 className="text-base font-bold text-gray-900 mb-1">Git Configuration</h3>
-                            <p className="text-sm text-gray-500 mb-4">
+                        <div className="mb-6 pb-6 border-b border-app-border-light">
+                            <h3 className="text-base font-bold text-app-text-main mb-1">Git Configuration</h3>
+                            <p className="text-sm text-app-text-muted mb-4">
                                 Provide one global repository and PAT here. All agents in this project will use these credentials.
                             </p>
                             {shouldShowRepoSuggestion && (
-                                <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/80 p-4">
-                                    <p className="text-sm font-semibold text-indigo-900">Repository detected from analysis</p>
-                                    <p className="text-xs text-indigo-700 mt-1">
+                                <div className="mb-4 rounded-xl border border-app-primary-ring bg-app-primary-light/80 p-4">
+                                    <p className="text-sm font-semibold text-app-primary-dark">Repository detected from analysis</p>
+                                    <p className="text-xs text-app-primary-hover mt-1">
                                         Using <span className="font-semibold">{analysisRepoSuggestion.repo}</span>
                                         {analysisRepoSuggestion.branch ? ` (${analysisRepoSuggestion.branch})` : ''} from BRD section for this project.
                                         You can change it below if needed.
@@ -1401,19 +1401,19 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             )}
                             <div className="grid grid-cols-1 gap-4">
                                 <div>
-                                    <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
-                                        Git Repository URL <span className="text-red-500">*</span>
+                                    <label className="block text-[11px] font-bold text-app-text-label mb-2 uppercase tracking-widest">
+                                        Git Repository URL <span className="text-app-status-error">*</span>
                                     </label>
                                     <input
                                         type="text"
                                         value={globalGitRepoUrl}
                                         onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
                                         placeholder="https://github.com/org/repo.git"
-                                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                        className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-widest">
+                                    <label className="block text-[11px] font-bold text-app-text-label mb-2 uppercase tracking-widest">
                                         Personal Access Token
                                     </label>
                                     <input
@@ -1421,16 +1421,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         value={globalGitToken}
                                         onChange={(e) => setGlobalGitToken(e.target.value)}
                                         placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'ghp_...'}
-                                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-400 text-sm bg-white text-gray-900 transition-all duration-200"
+                                        className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
-                                    <p className="text-xs text-gray-500 mt-2">
+                                    <p className="text-xs text-app-text-muted mt-2">
                                         {hasSavedGlobalGitToken
                                             ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
                                             : 'PAT is required the first time so agents can clone/push to the global repository.'}
                                     </p>
                                 </div>
                                 {isLoadingGitConfig && (
-                                    <p className="text-xs text-gray-500">Loading saved Git config...</p>
+                                    <p className="text-xs text-app-text-muted">Loading saved Git config...</p>
                                 )}
                             </div>
                         </div>
@@ -1438,8 +1438,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                     <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                         <div>
-                            <h3 className="text-base font-bold text-gray-900 mb-1">Ready to proceed?</h3>
-                            <p className="text-sm text-gray-500">
+                            <h3 className="text-base font-bold text-app-text-main mb-1">Ready to proceed?</h3>
+                            <p className="text-sm text-app-text-muted">
                                 {processMode === 'developer_only'
                                     ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
                                     : allProvided
@@ -1452,10 +1452,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <button
                             onClick={handleSubmit}
                             disabled={submitting || isLoadingGitConfig || !isGlobalGitConfigValid}
-                            className={`inline-flex items-center gap-2 py-3 px-7 text-sm font-bold rounded-xl text-white transition-all shadow-lg active:scale-[0.97] flex-shrink-0 ${allProvided
-                                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-emerald-200/50'
-                                : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-200/50'
-                                } disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed disabled:shadow-none`}
+                            className={`inline-flex items-center gap-2 py-3 px-7 text-sm font-bold rounded-xl text-app-bg-card transition-all shadow-lg active:scale-[0.97] flex-shrink-0 ${allProvided
+                                ? 'bg-gradient-to-r from-app-status-success to-teal-600 hover:from-app-status-success hover:to-teal-700 shadow-emerald-200/50'
+                                : 'bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover shadow-app-primary-ring/50'
+                                } disabled:from-app-border disabled:to-app-text-light disabled:cursor-not-allowed disabled:shadow-none`}
                         >
                             {submitting ? (
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
