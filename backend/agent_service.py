@@ -7330,13 +7330,13 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             task_description = _truncate_task_text(task.get("description") or "", 360)
             if task_description:
                 lines.append(f"  Description: {task_description}")
-            dependencies = [
+            task_dependencies = [
                 str(dep).strip()
                 for dep in (task.get("dependencies") or [])
                 if str(dep).strip()
             ]
-            if dependencies:
-                lines.append(f"  Depends on: {', '.join(dependencies[:10])}")
+            if task_dependencies:
+                lines.append(f"  Depends on: {', '.join(task_dependencies[:10])}")
             checklist_items = [
                 str(item).strip()
                 for item in (task.get("checklist") or [])
