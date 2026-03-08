@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { API_ENDPOINTS } from '../config';
 import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
@@ -92,26 +93,42 @@ const GovernanceForm = ({
 }) => {
     const navigate = useNavigate();
     const location = useLocation();
+    const queryClient = useQueryClient();
     const { data: questionsData, isLoading: loading, error: queryError } = useGovernanceQuestions();
     const { mutate: submitGovernance, isPending: submitting } = useSubmitGovernance();
     const isGovernanceQuestionsPage = location.pathname.endsWith('/governance');
     const initiationPath = '/new-project';
     const projectStorageKey = 'status_dashboard_selected_project_key';
+    // CRITICAL: Always get fresh draft project on every render to ensure we have latest credentials
     const persistedDraftProject = getDraftProject(selectedProjectKey);
-    const selectedProject = (() => {
+    const selectedProject = useMemo(() => {
         const projectFromList = projects.find((project) => project.key === selectedProjectKey) || null;
         if (!projectFromList) return persistedDraftProject || null;
         if (!persistedDraftProject) return projectFromList;
+        
+        // CRITICAL: Always check draft project FIRST for credentials (most reliable source before governance submission)
+        const draftClientId = persistedDraftProject?.client_id || null;
+        const draftClientSecret = persistedDraftProject?.client_secret || null;
+        const backendClientId = projectFromList.client_id || null;
+        const backendClientSecret = projectFromList.client_secret || null;
+        
+        // Prioritize backend credentials if they exist, otherwise use draft credentials
+        const finalClientId = (backendClientId && backendClientId.trim()) ? backendClientId : draftClientId;
+        const finalClientSecret = (backendClientSecret && backendClientSecret.trim()) ? backendClientSecret : draftClientSecret;
+        
         return {
             ...persistedDraftProject,
             ...projectFromList,
+            // CRITICAL: Explicitly preserve credentials - NEVER allow null to overwrite existing credentials
+            client_id: finalClientId,
+            client_secret: finalClientSecret,
             documents: projectFromList.documents?.length ? projectFromList.documents : persistedDraftProject.documents,
             latestRevision: projectFromList.latestRevision || persistedDraftProject.latestRevision,
             status: projectFromList.status === 'analysis_complete' || persistedDraftProject.status === 'analysis_complete'
                 ? 'analysis_complete'
                 : projectFromList.status,
         };
-    })();
+    }, [selectedProjectKey, projects, persistedDraftProject]);
     const hasExistingAnalysis = Boolean(
         selectedProject?.status === 'analysis_complete'
     );
@@ -338,11 +355,18 @@ const GovernanceForm = ({
                     // Clear edit mode flag when submitting (new submission)
                     sessionStorage.removeItem('governanceEditMode');
                     setResult(normalizedResultData);
+                    
+                    // Preserve existing credentials from draft project - don't overwrite with null
+                    const existingDraft = getDraftProject(resultData.project_token || selectedProjectKey);
+                    const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
+                    const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
+                    
                     upsertDraftProject({
                         key: resultData.project_token || selectedProjectKey,
                         name: projectName,
-                        client_id: resultData.client_id || submission.client_id || null,
-                        client_secret: resultData.client_secret || submission.client_secret || null,
+                        // Preserve existing credentials, only use new ones if they exist from backend
+                        client_id: resultData.client_id || existingClientId || null,
+                        client_secret: resultData.client_secret || existingClientSecret || null,
                     });
                     if (resultData.project_token) {
                         setSelectedProjectKey?.(String(resultData.project_token));
@@ -433,17 +457,121 @@ const GovernanceForm = ({
         return true;
     };
 
-    const continueToScreening = () => {
+    const continueToScreening = async () => {
+        // CRITICAL: Always check draft project FIRST to preserve credentials
+        const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
+        const existingDraft = getDraftProject(projectKeyToUse);
+        
+        // Preserve existing credentials from draft project (most reliable source)
+        const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
+        const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
+        
+        // First create/update draft project - PRESERVE existing credentials
         const draftProject = upsertDraftProject(createDraftProject(projectName, {
-            key: selectedProject?.projectToken || selectedProjectKey || undefined,
-            client_id: selectedProject?.client_id || null,
-            client_secret: selectedProject?.client_secret || null,
+            key: projectKeyToUse,
+            client_id: existingClientId || null,
+            client_secret: existingClientSecret || null,
         }));
 
         if (!draftProject?.projectToken) {
             setError('Unable to create the project. Please try again.');
             return;
         }
+
+        // Create project in external task management system via API
+        try {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                setError('Authentication required. Please login again.');
+                return;
+            }
+
+            // Get default task token for project creation
+            const defaultClientId = import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
+            const defaultClientSecret = import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
+            
+            const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    client_id: defaultClientId,
+                    client_secret: defaultClientSecret
+                }),
+            });
+
+            if (!tokenRes.ok) {
+                console.warn('Failed to fetch task token for project creation, continuing with draft project');
+                // Continue with draft project even if token fetch fails
+            } else {
+                const tokenData = await tokenRes.json();
+                const taskToken = tokenData?.access;
+
+                if (taskToken) {
+                    // Create project via API
+                    const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+                    const createProjectResponse = await fetch(projectCreationUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${token}`,
+                            'x-task-token': taskToken,
+                        },
+                        body: JSON.stringify({
+                            name: projectName,
+                            deadline: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 90 days from now
+                            project_wallet: 1000,
+                            team: [24],
+                            project_token: draftProject.key
+                        }),
+                    });
+
+                    if (createProjectResponse.ok) {
+                        const createdProject = await createProjectResponse.json().catch(() => ({}));
+                        
+                        const projectApplication = createdProject?.project_application || null;
+                        
+                        if (projectApplication?.client_id && projectApplication?.client_secret) {
+                            // Update draft project with credentials from API - CRITICAL: Must save before navigation
+                            upsertDraftProject({
+                                key: draftProject.key,
+                                name: projectName,
+                                client_id: projectApplication.client_id,
+                                client_secret: projectApplication.client_secret,
+                            });
+                            
+                            // Force refresh projects list to get credentials from backend
+                            queryClient.invalidateQueries({ queryKey: ['projects'] });
+                            fetchHistory?.();
+                        } else {
+                            console.warn('Project created but no credentials in response. Response structure:', {
+                                has_project_application: !!createdProject?.project_application,
+                                project_application: createdProject?.project_application,
+                                full_response: createdProject
+                            });
+                        }
+                    } else {
+                        const errorText = await createProjectResponse.text().catch(() => '');
+                        let errorData = {};
+                        try {
+                            errorData = JSON.parse(errorText);
+                        } catch {
+                            errorData = { detail: errorText };
+                        }
+                        console.error('Project creation API failed:', {
+                            status: createProjectResponse.status,
+                            statusText: createProjectResponse.statusText,
+                            error: errorData
+                        });
+                    }
+                }
+            }
+        } catch (err) {
+            // Log error but continue - project creation in external system is not critical for continuing
+            console.warn('Failed to create project in external system, continuing with draft project:', err);
+        }
+
+        // Wait a bit to ensure credentials are saved before navigation
+        await new Promise(resolve => setTimeout(resolve, 100));
 
         try {
             localStorage.setItem(projectStorageKey, draftProject.key);

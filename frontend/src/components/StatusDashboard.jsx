@@ -2413,7 +2413,7 @@ const renderAgentCard = (agent) => {
                     const logs = agent.output_log || [];
                     const result = agent.last_result;
                     return (
-                        <div className="fixed inset-0 bg-app-text-main/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                        <div className="fixed inset-0 bg-app-text-main/60 backdrop-blur-sm flex items-center justify-center p-4 z-[300] animate-in fade-in duration-200">
                             <div className="bg-app-text-main text-gray-100 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
                                 <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-app-text-label">
                                     <div className="flex items-center gap-3">
@@ -2700,7 +2700,7 @@ const renderAgentCard = (agent) => {
             {/* Add Project Modal */}
             {
                 showModal && (
-                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[300] animate-in fade-in duration-200">
                         <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
@@ -2729,7 +2729,7 @@ const renderAgentCard = (agent) => {
             {/* Edit Agent Modal */}
             {
                 editingAgentId && (
-                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[300] animate-in fade-in duration-200">
                         <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">
@@ -2917,7 +2917,7 @@ const renderAgentCard = (agent) => {
             {/* Git Configuration Modal */}
             {
                 gitModalAgent && (
-                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
+                    <div className="fixed inset-0 bg-app-text-main/50 backdrop-blur-sm flex items-center justify-center p-4 z-[300] animate-in fade-in duration-200">
                         <div className="bg-app-bg-card rounded-2xl shadow-xl border border-app-border-light w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
                             <div className="px-6 py-5 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                                 <h3 className="font-bold text-app-text-main text-lg flex items-center gap-2">

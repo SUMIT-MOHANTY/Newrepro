@@ -14,7 +14,7 @@ import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';
 import AzureDevOpsIntegration from '../components/AzureDevOpsIntegration';
-import { upsertDraftProject } from '../utils/draftProjects';
+import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
 
 const GitHubIcon = ({ className = 'w-4 h-4' }) => (
     <svg
@@ -715,12 +715,17 @@ const Dashboard = ({
 
             if (!savedDoc) return null;
 
+            // CRITICAL: Preserve existing credentials when updating draft project
+            const existingDraft = getDraftProject(taskKey);
             upsertDraftProject({
                 key: taskKey,
                 name: project?.name || 'Project',
                 status: 'screening_complete',
                 latestRevision: nextRevisionNumber,
                 submissionDate: new Date().toISOString(),
+                // Preserve credentials from existing draft
+                client_id: existingDraft?.client_id || project?.client_id || null,
+                client_secret: existingDraft?.client_secret || project?.client_secret || null,
             });
             fetchHistory();
             refreshProjects?.();
@@ -764,12 +769,17 @@ const Dashboard = ({
             }, newResult?.id || null);
 
             if (savedDoc) {
+                // CRITICAL: Preserve existing credentials when updating draft project
+                const existingDraft = getDraftProject(taskKey);
                 upsertDraftProject({
                     key: taskKey,
                     name: project?.name || governanceContext?.project_name || 'Project',
                     status: 'analysis_complete',
                     latestRevision: nextRevisionNumber,
                     submissionDate: new Date().toISOString(),
+                    // Preserve credentials from existing draft
+                    client_id: existingDraft?.client_id || project?.client_id || null,
+                    client_secret: existingDraft?.client_secret || project?.client_secret || null,
                 });
                 setProjectState(taskKey, prev => ({
                     result: { ...prev.result, id: savedDoc.id, revisionNumber: nextRevisionNumber },
@@ -1454,7 +1464,8 @@ const Dashboard = ({
             };
             setProjectState(taskKey, { result: finalResult, progress: 100, progressMessage: 'Analysis complete!' });
             await saveToHistory(finalResult, taskKey, effectiveRepoContext);
-            createProjectFromMetrics(finalResult, metrics);
+            // Project creation is now done in Project Initiation step, no need to create here
+            // createProjectFromMetrics(finalResult, metrics);
 
             // Auto-refresh roadmap stepper after analysis completes
             if (fetchRoadmapData && selectedProjectKey) {
@@ -1708,7 +1719,8 @@ const Dashboard = ({
                 aiQuestions: questions?.length ? questions : []
             });
             await saveToHistory(finalResult, taskKey, effectiveRepoContext);
-            createProjectFromMetrics(finalResult, metrics);
+            // Project creation is now done in Project Initiation step, no need to create here
+            // createProjectFromMetrics(finalResult, metrics);
 
             // Auto-refresh roadmap stepper after analysis completes
             if (fetchRoadmapData && selectedProjectKey) {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
     ArrowRight,
     CalendarDays,
@@ -13,7 +13,7 @@ import {
     Sparkles,
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
-import { upsertDraftProject } from '../utils/draftProjects';
+import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
 
 const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
@@ -311,6 +311,7 @@ export default function TaskCreation({
 }) {
     const navigate = useNavigate();
     const location = useLocation();
+    const queryClient = useQueryClient();
     const token = localStorage.getItem('token');
 
     const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(false);
@@ -436,8 +437,11 @@ export default function TaskCreation({
         const cachedToken = getCachedTaskToken(selectedProjectKey);
         if (cachedToken) return cachedToken;
 
-        const clientId = selectedProject?.client_id;
-        const clientSecret = selectedProject?.client_secret;
+        // Check both selectedProject and draftProject for credentials
+        const draftProject = getDraftProject(selectedProjectKey);
+        const clientId = selectedProject?.client_id || draftProject?.client_id;
+        const clientSecret = selectedProject?.client_secret || draftProject?.client_secret;
+        
         if (!clientId || !clientSecret) {
             return null;
         }
@@ -483,17 +487,49 @@ export default function TaskCreation({
             });
     }, [selectedProjectKey, resolveTaskToken]);
 
-    // Fetch project info whenever task token is available
+    // Fetch project info whenever task token is available OR if we have credentials
+    // This ensures project info is fetched even if token resolution is in progress
+    const draftProject = useMemo(() => getDraftProject(selectedProjectKey), [selectedProjectKey]);
+    const hasCredentials = useMemo(() => {
+        return !!(selectedProject?.client_id || draftProject?.client_id);
+    }, [selectedProject?.client_id, draftProject?.client_id]);
+    
     const { data: projectInfo = null, isFetching: isLoadingProjectInfo } = useQuery({
-        queryKey: ['projectInfo', selectedProjectKey, taskToken],
+        queryKey: ['projectInfo', selectedProjectKey, taskToken, hasCredentials],
         queryFn: async () => {
             const headers = { 'Authorization': `Bearer ${token}` };
-            if (taskToken) headers['x-task-token'] = taskToken;
+            // Use taskToken if available, otherwise try to get one
+            let tokenToUse = taskToken;
+            if (!tokenToUse && hasCredentials) {
+                // Try to resolve token if we have credentials but token not resolved yet
+                const clientId = selectedProject?.client_id || draftProject?.client_id;
+                const clientSecret = selectedProject?.client_secret || draftProject?.client_secret;
+                if (clientId && clientSecret) {
+                    try {
+                        const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+                        });
+                        if (tokenRes.ok) {
+                            const tokenData = await tokenRes.json();
+                            tokenToUse = tokenData?.access;
+                            if (tokenToUse) {
+                                cacheTaskToken(selectedProjectKey, tokenToUse);
+                                setTaskToken(tokenToUse);
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('Failed to get token for project info:', err);
+                    }
+                }
+            }
+            if (tokenToUse) headers['x-task-token'] = tokenToUse;
             const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
             if (!res.ok) throw new Error('Failed to fetch project info');
             return await res.json();
         },
-        enabled: !!token && !!taskToken && !!selectedProjectKey,
+        enabled: !!token && !!selectedProjectKey && (!!taskToken || hasCredentials),
     });
 
     // Update project deadline from project info when available
@@ -625,11 +661,32 @@ export default function TaskCreation({
         setLiveCreatedTaskCount(0);
 
         try {
-            // Check if project has credentials, if not try to create it first
+            // First, try to resolve task token from existing credentials
             let taskToken = await resolveTaskToken();
             
-            if (!taskToken) {
-                // If no credentials, try to create the project first to get credentials
+            // Check if project already exists by trying to fetch project info first
+            let projectExists = false;
+            if (taskToken) {
+                try {
+                    const headers = { 'Authorization': `Bearer ${token}` };
+                    headers['x-task-token'] = taskToken;
+                    const projectInfoCheck = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
+                    if (projectInfoCheck.ok) {
+                        projectExists = true;
+                        const fetchedProjectInfo = await projectInfoCheck.json();
+                        // Update project deadline from fetched info
+                        if (fetchedProjectInfo?.deadline) {
+                            setProjectDeadline(fetchedProjectInfo.deadline);
+                        }
+                    }
+                } catch (checkError) {
+                    // Project might not exist yet, continue to creation logic
+                    console.log('Project info check failed, will try to create if needed:', checkError);
+                }
+            }
+            
+            // Only create project if it doesn't exist and we don't have credentials
+            if (!projectExists && !taskToken) {
                 const clientId = selectedProject?.client_id;
                 const clientSecret = selectedProject?.client_secret;
                 
@@ -654,58 +711,79 @@ export default function TaskCreation({
                             const defaultTaskToken = defaultTokenData?.access;
                             
                             if (defaultTaskToken) {
-                                // Create the project
-                                const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
-                                const projName = selectedProject?.name || 'New AI Project';
+                                // Check if project already exists before creating
+                                const checkHeaders = { 'Authorization': `Bearer ${token}`, 'x-task-token': defaultTaskToken };
+                                const checkProjectRes = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers: checkHeaders });
                                 
-                                const createProjectResponse = await fetch(projectCreationUrl, {
-                                    method: 'POST',
-                                    headers: {
-                                        'Content-Type': 'application/json',
-                                        Authorization: `Bearer ${token}`,
-                                        'x-task-token': defaultTaskToken,
-                                    },
-                                    body: JSON.stringify({
-                                        name: projName,
-                                        deadline: projectDeadline || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-                                        project_wallet: 1000,
-                                        team: [24],
-                                        project_token: selectedProjectKey
-                                    }),
-                                });
-                                
-                                if (createProjectResponse.ok) {
-                                    const createdProject = await createProjectResponse.json().catch(() => ({}));
-                                    const projectApplication = createdProject?.project_application || null;
+                                if (!checkProjectRes.ok) {
+                                    // Project doesn't exist, create it
+                                    const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+                                    const projName = selectedProject?.name || 'New AI Project';
                                     
-                                    if (projectApplication?.client_id && projectApplication?.client_secret) {
-                                        // Update the project with new credentials
-                                        upsertDraftProject({
-                                            key: selectedProjectKey,
+                                    const createProjectResponse = await fetch(projectCreationUrl, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${token}`,
+                                            'x-task-token': defaultTaskToken,
+                                        },
+                                        body: JSON.stringify({
                                             name: projName,
-                                            client_id: projectApplication.client_id,
-                                            client_secret: projectApplication.client_secret,
-                                        });
+                                            deadline: projectDeadline || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                                            project_wallet: 1000,
+                                            team: [24],
+                                            project_token: selectedProjectKey
+                                        }),
+                                    });
+                                    
+                                    if (createProjectResponse.ok) {
+                                        const createdProject = await createProjectResponse.json().catch(() => ({}));
+                                        const projectApplication = createdProject?.project_application || null;
                                         
-                                        // Use the new credentials to get the task token
-                                        const newTokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ 
-                                                client_id: projectApplication.client_id, 
-                                                client_secret: projectApplication.client_secret 
-                                            }),
-                                        });
-                                        
-                                        if (newTokenRes.ok) {
-                                            const newTokenData = await newTokenRes.json();
-                                            taskToken = newTokenData?.access;
-                                            if (taskToken) {
-                                                cacheTaskToken(selectedProjectKey, taskToken);
-                                                setTaskToken(taskToken);
+                                        if (projectApplication?.client_id && projectApplication?.client_secret) {
+                                            // Update the project with new credentials
+                                            upsertDraftProject({
+                                                key: selectedProjectKey,
+                                                name: projName,
+                                                client_id: projectApplication.client_id,
+                                                client_secret: projectApplication.client_secret,
+                                            });
+                                            
+                                            // Use the new credentials to get the task token
+                                            const newTokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ 
+                                                    client_id: projectApplication.client_id, 
+                                                    client_secret: projectApplication.client_secret 
+                                                }),
+                                            });
+                                            
+                                            if (newTokenRes.ok) {
+                                                const newTokenData = await newTokenRes.json();
+                                                taskToken = newTokenData?.access;
+                                                if (taskToken) {
+                                                    cacheTaskToken(selectedProjectKey, taskToken);
+                                                    setTaskToken(taskToken);
+                                                }
                                             }
                                         }
+                                    } else {
+                                        // Check if error is because project already exists
+                                        const errorData = await createProjectResponse.json().catch(() => ({}));
+                                        const errorMsg = errorData?.detail || errorData?.message || '';
+                                        if (errorMsg.toLowerCase().includes('already exists')) {
+                                            // Project exists, try to get credentials from backend
+                                            console.log('Project already exists, fetching credentials from backend');
+                                            // Force refresh projects to get credentials from backend
+                                            queryClient.invalidateQueries({ queryKey: ['projects'] });
+                                        }
                                     }
+                                } else {
+                                    // Project exists, but we don't have proper credentials yet
+                                    // Use default token temporarily and invalidate projects to fetch credentials
+                                    taskToken = defaultTaskToken;
+                                    queryClient.invalidateQueries({ queryKey: ['projects'] });
                                 }
                             }
                         }
@@ -719,8 +797,8 @@ export default function TaskCreation({
                 throw new Error('Task token is required. Please ensure the project has been created in the task management system with valid credentials.');
             }
 
-            // Fetch project info if not already available
-            if (!projectInfo) {
+            // Fetch project info if not already fetched
+            if (!projectExists) {
                 try {
                     const headers = { 'Authorization': `Bearer ${token}` };
                     if (taskToken) headers['x-task-token'] = taskToken;
