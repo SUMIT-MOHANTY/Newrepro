@@ -4918,6 +4918,32 @@ async def create_external_agent_task(
         raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
 
 
+class TaskAssignRequest(BaseModel):
+    task_id: int
+    username: str
+
+
+@app.post("/api/agent/task-assign-in/")
+async def assign_task_to_agent(
+    payload: TaskAssignRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
+):
+    """Assign a task to an agent via the external task management API."""
+    try:
+        # Use the task_service assign_task method
+        result = await task_service.assign_task(
+            task_id=payload.task_id,
+            assignees=[payload.username],
+            task_token=x_task_token
+        )
+        return {"success": True, "message": f"Task {payload.task_id} assigned to {payload.username}", "result": result}
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to assign task")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to assign task: {e}")
+
+
 @app.get("/api/agent/sprints/")
 async def get_agent_sprints(
     current_user: models.User = Depends(auth.get_current_user),

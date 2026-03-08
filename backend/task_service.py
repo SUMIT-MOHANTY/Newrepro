@@ -1,4 +1,4 @@
-﻿import httpx
+import httpx
 from typing import Optional, Dict, Any
 import logging
 import time
@@ -256,6 +256,15 @@ class TaskManagementService:
         payload = {"assignees": assignees}
         return await self.update_task(task_id, payload, task_token=task_token)
 
+    async def update_task_tags(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Update tags for a task (e.g., adding 'blocked')."""
+        return await self._make_request("POST", "/api/agent/task-update-tags/", task_token=task_token, json=payload)
+
+    async def unassign_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Unassign an agent/user from a task."""
+        return await self._make_request("POST", "/api/agent/task-unassign/", task_token=task_token, json=payload)
+
+
     async def get_tasks(self, page: int = None, task_token: Optional[str] = None) -> dict:
         """Fetch the list of generated tasks from the external task management API."""
         endpoint = "/api/agent/tasks-list"
@@ -290,7 +299,7 @@ class TaskManagementService:
         return await self._make_request("POST", "/api/agent/task-progress/", task_token=task_token, json=payload)
 
     async def complete_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
-        """Mark a task as complete."""
+        """Mark a task as completed."""
         return await self._make_request("POST", "/api/agent/task-complete/", task_token=task_token, json=payload)
 
     async def post_timer_log(self, payload: dict, task_token: Optional[str] = None) -> dict:
