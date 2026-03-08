@@ -22,7 +22,7 @@ export const useProjects = () => {
     return useQuery({
         queryKey: ['projects'],
         queryFn: fetchProjectsData,
-        staleTime: 60 * 1000,
+        staleTime: 0, // Always refetch to get fresh data from backend, especially for credentials
         select: (data) => {
             const { govPayload, historyPayload } = data;
             const submissions = Array.isArray(govPayload?.submissions) ? govPayload.submissions : [];
@@ -91,7 +91,10 @@ export const useProjects = () => {
                     }
                 }
                 const project = projectMap.get(targetKey);
-                if (client_id && !project.client_id) {
+                // Prioritize credentials from history documents (backend source) if they exist
+                // Only update if we have credentials and project doesn't have them, or if history has newer credentials
+                if (client_id && client_id.trim()) {
+                    // Always use backend credentials from history if available (they're more up-to-date)
                     project.client_id = client_id;
                     project.client_secret = client_secret;
                 }
@@ -109,12 +112,20 @@ export const useProjects = () => {
                         (a, b) => new Date(b.upload_date || 0).getTime() - new Date(a.upload_date || 0).getTime()
                     );
                     const hasCompletedAnalysis = docs.some((doc) => hasCompletedDocumentAnalysis(doc));
+                    
+                    // Prioritize backend credentials over draft - only use draft as fallback if backend has null/undefined/empty
+                    const backendClientId = project.client_id || null;
+                    const backendClientSecret = project.client_secret || null;
+                    const finalClientId = (backendClientId && backendClientId.trim()) ? backendClientId : (draft?.client_id || null);
+                    const finalClientSecret = (backendClientSecret && backendClientSecret.trim()) ? backendClientSecret : (draft?.client_secret || null);
+                    
                     return {
                         ...draft,
                         ...project,
                         projectToken: project.projectToken || draft?.projectToken || project.key,
-                        client_id: project.client_id || draft?.client_id || null,
-                        client_secret: project.client_secret || draft?.client_secret || null,
+                        // Use backend credentials first, fallback to draft only if backend is null/empty
+                        client_id: finalClientId,
+                        client_secret: finalClientSecret,
                         documents: docs,
                         latestDocument: docs[0] || null,
                         latestRevision: docs.length,

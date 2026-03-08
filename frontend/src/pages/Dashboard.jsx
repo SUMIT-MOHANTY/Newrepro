@@ -1568,12 +1568,14 @@ const Dashboard = ({
                 const createdProject = await createProjectResponse.json().catch(() => ({}));
                 const projectApplication = createdProject?.project_application || null;
                 if (projectApplication && (selectedProjectKey || pToken)) {
+                    // Save to draft as temporary cache, but backend is source of truth
                     upsertDraftProject({
                         key: selectedProjectKey || pToken,
                         name: projName,
                         client_id: projectApplication.client_id || null,
                         client_secret: projectApplication.client_secret || null,
                     });
+                    // Force refetch from backend to get fresh credentials from database
                     refreshProjects?.();
                 }
             }

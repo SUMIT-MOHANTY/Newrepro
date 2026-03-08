@@ -402,9 +402,19 @@ export default function AppLayout({ children }) {
         const persistedDraftProject = getDraftProject(selectedProjectKey);
         if (!projectFromList) return persistedDraftProject || null;
         if (!persistedDraftProject) return projectFromList;
+        
+        // Prioritize backend credentials over draft - backend is source of truth
+        const backendClientId = projectFromList.client_id || null;
+        const backendClientSecret = projectFromList.client_secret || null;
+        const finalClientId = (backendClientId && backendClientId.trim()) ? backendClientId : (persistedDraftProject?.client_id || null);
+        const finalClientSecret = (backendClientSecret && backendClientSecret.trim()) ? backendClientSecret : (persistedDraftProject?.client_secret || null);
+        
         return {
             ...persistedDraftProject,
             ...projectFromList,
+            // Explicitly use backend credentials first, fallback to draft only if backend is null/empty
+            client_id: finalClientId,
+            client_secret: finalClientSecret,
             status: projectFromList.status === 'analysis_complete' || persistedDraftProject.status === 'analysis_complete'
                 ? 'analysis_complete'
                 : projectFromList.status,
