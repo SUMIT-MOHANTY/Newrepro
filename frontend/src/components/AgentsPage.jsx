@@ -6,6 +6,7 @@ import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
+import cloudIcon from '../assets/cloud-icon.png';
 
 /**
  * AgentsPage – Full‑screen view of all agents for the current organization / project.
@@ -28,9 +29,9 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
   const fetchAgents = async () => {
     setLoading(true);
     setError(null);
-    
+
     const token = localStorage.getItem('token');
-    
+
     try {
       // Fetch shared agents (no project_token)
       const sharedUrl = new URL(API_ENDPOINTS.AGENTS);
@@ -50,10 +51,10 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
       if (selectedProjectKey) {
         dedicatedUrl.searchParams.set('project_token', selectedProjectKey);
       }
-      const dedicatedRes = selectedProjectKey 
+      const dedicatedRes = selectedProjectKey
         ? await fetch(dedicatedUrl.toString(), {
-            headers: { Authorization: `Bearer ${token}` },
-          })
+          headers: { Authorization: `Bearer ${token}` },
+        })
         : { ok: true, json: async () => ({ agents: [] }) };
 
       if (!sharedRes.ok) {
@@ -66,10 +67,10 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
       const sharedData = await sharedRes.json();
       const dedicatedData = await dedicatedRes.json();
 
-      const sharedList = Array.isArray(sharedData) 
-        ? sharedData 
+      const sharedList = Array.isArray(sharedData)
+        ? sharedData
         : (sharedData?.agents || sharedData?.results || sharedData?.data || []);
-      
+
       const dedicatedList = Array.isArray(dedicatedData)
         ? dedicatedData
         : (dedicatedData?.agents || dedicatedData?.results || dedicatedData?.data || []);
@@ -164,7 +165,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('Failed to delete agent');
-      
+
       // Remove from dedicated agents list and refetch
       setDedicatedAgents((prev) => prev.filter((a) => a.id !== agentId));
       // Refetch to ensure consistency
@@ -341,38 +342,38 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
           </div>
         ) : quotaSummary ? (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-              {/* Shared Capacity Card */}
-              <div className="relative overflow-hidden rounded-lg border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 to-cyan-500/10 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-cyan-500/20">
-                    <Users className="w-3 h-3 text-cyan-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Shared</h3>
-                  </div>
+            {/* Shared Capacity Card */}
+            <div className="relative overflow-hidden rounded-lg border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 to-cyan-500/10 p-2 shadow-sm hover:shadow-md transition-all">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <div className="p-0.5 rounded bg-cyan-500/20">
+                  <Users className="w-3 h-3 text-cyan-400" />
                 </div>
-                
-                <div className="space-y-1">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-bold text-cyan-400">{quotaSummary.sharedUsed}</span>
-                    <span className="text-[10px] text-app-text-muted">/</span>
-                    <span className="text-xs font-semibold text-app-text-main">{quotaSummary.sharedQuota}</span>
-                  </div>
-                  
-                  {/* Progress Bar */}
-                  <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
-                    <div
-                      className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-500"
-                      style={{ width: `${quotaSummary.sharedQuota > 0 ? Math.min(100, (quotaSummary.sharedUsed / quotaSummary.sharedQuota) * 100) : 0}%` }}
-                    />
-                  </div>
-                  
-                  <div className="flex items-center justify-between text-[9px]">
-                    <span className="text-app-text-muted">Avail</span>
-                    <span className="font-bold text-cyan-400">{quotaSummary.sharedAvailable}</span>
-                  </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-[10px] font-bold text-app-text-main truncate">Shared</h3>
                 </div>
               </div>
+
+              <div className="space-y-1">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-lg font-bold text-cyan-400">{quotaSummary.sharedUsed}</span>
+                  <span className="text-[10px] text-app-text-muted">/</span>
+                  <span className="text-xs font-semibold text-app-text-main">{quotaSummary.sharedQuota}</span>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-500"
+                    style={{ width: `${quotaSummary.sharedQuota > 0 ? Math.min(100, (quotaSummary.sharedUsed / quotaSummary.sharedQuota) * 100) : 0}%` }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between text-[9px]">
+                  <span className="text-app-text-muted">Avail</span>
+                  <span className="font-bold text-cyan-400">{quotaSummary.sharedAvailable}</span>
+                </div>
+              </div>
+            </div>
 
               {/* Dedicated Capacity Card */}
               <div className="relative overflow-hidden rounded-lg border border-app-primary/20 bg-gradient-to-br from-app-primary/5 to-app-primary/10 p-2 shadow-sm hover:shadow-md transition-all">
@@ -568,13 +569,13 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   const isCompleted = agent.status === 'completed';
                   const isError = agent.status === 'error';
                   const isIdle = agent.status === 'idle';
-                  
+
                   // Determine agent config based on ID
                   let accentColor = 'from-app-text-light to-app-text-muted';
                   let statusColor = 'gray';
                   let useLogo = false;
                   let logoSrc = null;
-                  
+
                   if (isGitManager) {
                     accentColor = 'from-app-primary to-app-primary';
                     statusColor = 'indigo';
@@ -591,22 +592,24 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   } else if (isDeployAgent) {
                     accentColor = 'from-violet-500 to-purple-600';
                     statusColor = 'violet';
+                    useLogo = true;
+                    logoSrc = cloudIcon;
                   } else if (isShared || isDedicated) {
                     accentColor = isShared ? 'from-emerald-400 to-app-status-success' : 'from-app-primary to-app-primary';
                     statusColor = isShared ? 'emerald' : 'blue';
                     useLogo = true;
                     logoSrc = nModLogo;
                   }
-                  
+
                   const finalStatusColor = isRunning ? statusColor : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
-                  
+
                   return (
-                  <div
-                    key={agent.id}
-                    className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
-                  >
-                    {/* Top accent bar */}
-                    <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accentColor}`}></div>
+                    <div
+                      key={agent.id}
+                      className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
+                    >
+                      {/* Top accent bar */}
+                      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accentColor}`}></div>
 
                     <div className="flex items-start justify-between mb-4">
                       <div className="flex items-center gap-3">
@@ -688,37 +691,37 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                       </div>
                     </div>
 
-                    {/* Progress indicator if running */}
-                    {isRunning && agent.progress > 0 && (
-                      <div className="mb-3">
-                        <div className="flex justify-between text-[10px] text-app-text-light mb-1">
-                          <span className="truncate max-w-[180px]">{agent.progress_message || 'Processing...'}</span>
-                          <span className={`font-bold text-${statusColor}-600`}>{agent.progress}%</span>
+                      {/* Progress indicator if running */}
+                      {isRunning && agent.progress > 0 && (
+                        <div className="mb-3">
+                          <div className="flex justify-between text-[10px] text-app-text-light mb-1">
+                            <span className="truncate max-w-[180px]">{agent.progress_message || 'Processing...'}</span>
+                            <span className={`font-bold text-${statusColor}-600`}>{agent.progress}%</span>
+                          </div>
+                          <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
+                            <div className={`bg-gradient-to-r ${accentColor} h-1.5 rounded-full transition-all duration-1000 ease-out`} style={{ width: `${agent.progress}%` }}></div>
+                          </div>
                         </div>
-                        <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
-                          <div className={`bg-gradient-to-r ${accentColor} h-1.5 rounded-full transition-all duration-1000 ease-out`} style={{ width: `${agent.progress}%` }}></div>
+                      )}
+
+                      {/* Additional Details */}
+                      {agent.progress_message && !isRunning && (
+                        <div className="mt-3 pt-3 border-t border-app-border-light/30">
+                          <p className="text-sm text-app-text-muted flex items-center">
+                            <Activity className="w-3 h-3 mr-2" />
+                            {agent.progress_message}
+                          </p>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* Additional Details */}
-                    {agent.progress_message && !isRunning && (
-                      <div className="mt-3 pt-3 border-t border-app-border-light/30">
-                        <p className="text-sm text-app-text-muted flex items-center">
-                          <Activity className="w-3 h-3 mr-2" />
-                          {agent.progress_message}
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Last Run Info */}
-                    {agent.last_run && (
-                      <div className="mt-2 text-xs text-app-text-muted flex items-center">
-                        <Clock className="w-3 h-3 mr-1" />
-                        Last run: {new Date(agent.last_run).toLocaleString()}
-                      </div>
-                    )}
-                  </div>
+                      {/* Last Run Info */}
+                      {agent.last_run && (
+                        <div className="mt-2 text-xs text-app-text-muted flex items-center">
+                          <Clock className="w-3 h-3 mr-1" />
+                          Last run: {new Date(agent.last_run).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
                   );
                 })
               ) : (

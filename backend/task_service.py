@@ -270,7 +270,9 @@ class TaskManagementService:
         endpoint = "/api/agent/tasks-list"
         if page:
             endpoint += f"?page={page}"
-        return await self._make_request("GET", endpoint, task_token=task_token)
+        response = await self._make_request("GET", endpoint, task_token=task_token)
+        print("Tasks list API Response:", response)
+        return response
 
     async def get_project_info(self, task_token: Optional[str] = None) -> dict:
         """Fetch project info (deadline, wallet, team) from the external task management API."""

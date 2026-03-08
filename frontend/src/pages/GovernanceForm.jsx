@@ -105,17 +105,17 @@ const GovernanceForm = ({
         const projectFromList = projects.find((project) => project.key === selectedProjectKey) || null;
         if (!projectFromList) return persistedDraftProject || null;
         if (!persistedDraftProject) return projectFromList;
-        
+
         // CRITICAL: Always check draft project FIRST for credentials (most reliable source before governance submission)
         const draftClientId = persistedDraftProject?.client_id || null;
         const draftClientSecret = persistedDraftProject?.client_secret || null;
         const backendClientId = projectFromList.client_id || null;
         const backendClientSecret = projectFromList.client_secret || null;
-        
+
         // Prioritize backend credentials if they exist, otherwise use draft credentials
         const finalClientId = (backendClientId && backendClientId.trim()) ? backendClientId : draftClientId;
         const finalClientSecret = (backendClientSecret && backendClientSecret.trim()) ? backendClientSecret : draftClientSecret;
-        
+
         return {
             ...persistedDraftProject,
             ...projectFromList,
@@ -227,7 +227,7 @@ const GovernanceForm = ({
 
             // Check if user is in edit mode (went back from result page to edit)
             const isEditMode = sessionStorage.getItem('governanceEditMode') === 'true';
-            
+
             const savedResult = getStoredJson('governanceResult');
             // Don't restore result if user is in edit mode (they want to edit the form)
             if (savedResult && matchesCurrentProject(savedResult) && !isEditMode) {
@@ -356,12 +356,12 @@ const GovernanceForm = ({
                     // Clear edit mode flag when submitting (new submission)
                     sessionStorage.removeItem('governanceEditMode');
                     setResult(normalizedResultData);
-                    
+
                     // Preserve existing credentials from draft project - don't overwrite with null
                     const existingDraft = getDraftProject(resultData.project_token || selectedProjectKey);
                     const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
                     const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
-                    
+
                     upsertDraftProject({
                         key: resultData.project_token || selectedProjectKey,
                         name: projectName,
@@ -461,16 +461,16 @@ const GovernanceForm = ({
     const continueToScreening = async () => {
         setIsCreatingProject(true);
         setError('');
-        
+
         try {
             // CRITICAL: Always check draft project FIRST to preserve credentials
             const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
             const existingDraft = getDraftProject(projectKeyToUse);
-            
+
             // Preserve existing credentials from draft project (most reliable source)
             const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
             const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
-            
+
             // First create/update draft project - PRESERVE existing credentials
             const draftProject = upsertDraftProject(createDraftProject(projectName, {
                 key: projectKeyToUse,
@@ -493,89 +493,89 @@ const GovernanceForm = ({
                     return;
                 }
 
-            // Get default task token for project creation
-            const defaultClientId = import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
-            const defaultClientSecret = import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
-            
-            const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    client_id: defaultClientId,
-                    client_secret: defaultClientSecret
-                }),
-            });
+                // Get default task token for project creation
+                const defaultClientId = import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
+                const defaultClientSecret = import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
 
-            if (!tokenRes.ok) {
-                console.warn('Failed to fetch task token for project creation, continuing with draft project');
-                // Continue with draft project even if token fetch fails
-            } else {
-                const tokenData = await tokenRes.json();
-                const taskToken = tokenData?.access;
+                const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        client_id: defaultClientId,
+                        client_secret: defaultClientSecret
+                    }),
+                });
 
-                if (taskToken) {
-                    // Create project via API
-                    const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
-                    const createProjectResponse = await fetch(projectCreationUrl, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            Authorization: `Bearer ${token}`,
-                            'x-task-token': taskToken,
-                        },
-                        body: JSON.stringify({
-                            name: projectName,
-                            deadline: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 90 days from now
-                            project_wallet: 1000,
-                            team: [24],
-                            project_token: draftProject.key
-                        }),
-                    });
+                if (!tokenRes.ok) {
+                    console.warn('Failed to fetch task token for project creation, continuing with draft project');
+                    // Continue with draft project even if token fetch fails
+                } else {
+                    const tokenData = await tokenRes.json();
+                    const taskToken = tokenData?.access;
 
-                    if (createProjectResponse.ok) {
-                        const createdProject = await createProjectResponse.json().catch(() => ({}));
-                        
-                        const projectApplication = createdProject?.project_application || null;
-                        
-                        if (projectApplication?.client_id && projectApplication?.client_secret) {
-                            // Update draft project with credentials from API - CRITICAL: Must save before navigation
-                            upsertDraftProject({
-                                key: draftProject.key,
+                    if (taskToken) {
+                        // Create project via API
+                        const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+                        const createProjectResponse = await fetch(projectCreationUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                Authorization: `Bearer ${token}`,
+                                'x-task-token': taskToken,
+                            },
+                            body: JSON.stringify({
                                 name: projectName,
-                                client_id: projectApplication.client_id,
-                                client_secret: projectApplication.client_secret,
-                            });
-                            
-                            // Force refresh projects list to get credentials from backend
-                            queryClient.invalidateQueries({ queryKey: ['projects'] });
-                            fetchHistory?.();
-                        } else {
-                            console.warn('Project created but no credentials in response. Response structure:', {
-                                has_project_application: !!createdProject?.project_application,
-                                project_application: createdProject?.project_application,
-                                full_response: createdProject
-                            });
-                        }
-                    } else {
-                        const errorText = await createProjectResponse.text().catch(() => '');
-                        let errorData = {};
-                        try {
-                            errorData = JSON.parse(errorText);
-                        } catch {
-                            errorData = { detail: errorText };
-                        }
-                        console.error('Project creation API failed:', {
-                            status: createProjectResponse.status,
-                            statusText: createProjectResponse.statusText,
-                            error: errorData
+                                deadline: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 90 days from now
+                                project_wallet: 1000,
+                                team: [24],
+                                project_token: draftProject.key
+                            }),
                         });
+
+                        if (createProjectResponse.ok) {
+                            const createdProject = await createProjectResponse.json().catch(() => ({}));
+
+                            const projectApplication = createdProject?.project_application || null;
+
+                            if (projectApplication?.client_id && projectApplication?.client_secret) {
+                                // Update draft project with credentials from API - CRITICAL: Must save before navigation
+                                upsertDraftProject({
+                                    key: draftProject.key,
+                                    name: projectName,
+                                    client_id: projectApplication.client_id,
+                                    client_secret: projectApplication.client_secret,
+                                });
+
+                                // Force refresh projects list to get credentials from backend
+                                queryClient.invalidateQueries({ queryKey: ['projects'] });
+                                fetchHistory?.();
+                            } else {
+                                console.warn('Project created but no credentials in response. Response structure:', {
+                                    has_project_application: !!createdProject?.project_application,
+                                    project_application: createdProject?.project_application,
+                                    full_response: createdProject
+                                });
+                            }
+                        } else {
+                            const errorText = await createProjectResponse.text().catch(() => '');
+                            let errorData = {};
+                            try {
+                                errorData = JSON.parse(errorText);
+                            } catch {
+                                errorData = { detail: errorText };
+                            }
+                            console.error('Project creation API failed:', {
+                                status: createProjectResponse.status,
+                                statusText: createProjectResponse.statusText,
+                                error: errorData
+                            });
+                        }
                     }
                 }
+            } catch (err) {
+                // Log error but continue - project creation in external system is not critical for continuing
+                console.warn('Failed to create project in external system, continuing with draft project:', err);
             }
-        } catch (err) {
-            // Log error but continue - project creation in external system is not critical for continuing
-            console.warn('Failed to create project in external system, continuing with draft project:', err);
-        }
 
             // Wait a bit to ensure credentials are saved before navigation
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -919,13 +919,13 @@ const GovernanceForm = ({
                                     >
                                         <ChevronLeft className="w-4 h-4" /> Dashboard
                                     </button>
-) : (
-        <button type="button" onClick={goPrev}
-            className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
-        >
-            <ChevronLeft className="w-4 h-4" /> Back
-        </button>
-    )}
+                                ) : (
+                                    <button type="button" onClick={goPrev}
+                                        className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-text-muted bg-app-bg-card/80 backdrop-blur-sm border border-app-border/60 hover:bg-app-bg-card hover:border-app-border transition-all shadow-sm"
+                                    >
+                                        <ChevronLeft className="w-4 h-4" /> Back
+                                    </button>
+                                )}
 
     <div className="flex items-center gap-3">
         {!isReviewStep && (
@@ -933,9 +933,9 @@ const GovernanceForm = ({
                 type="button"
                 onClick={goNext}
                 disabled={!canProceed() || isCreatingProject}
-                className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-app-bg-card transition-all shadow-md ${canProceed() && !isCreatingProject
-                    ? 'bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover active:scale-[0.97] shadow-app-primary-ring/50'
-                    : 'bg-app-border cursor-not-allowed shadow-none'
+                className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${canProceed() && !isCreatingProject
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-[0.97] shadow-blue-200/50'
+                    : 'bg-gray-300 cursor-not-allowed shadow-none'
                     }`}
             >
                 {isCreatingProject ? (
@@ -1157,7 +1157,7 @@ const GovernanceResult = ({ result, onBack }) => {
                                 if (line.trim().startsWith('-'))
                                     return (
                                         <div key={idx} className="ml-3 flex gap-2 items-start">
-                                            <span className="text-app-primary mt-1 flex-shrink-0">›</span>
+                                            <span className="text-blue-500 mt-1 flex-shrink-0">›</span>
                                             <span>{line.trim().substring(1).trim()}</span>
                                         </div>
                                     );
@@ -1172,29 +1172,19 @@ const GovernanceResult = ({ result, onBack }) => {
                 {/* ══════════════════════════════════════════════
                    NEXT STEPS + RESOURCES (side-by-side cards)
                 ══════════════════════════════════════════════ */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div className="max-w-6xl mb-5">
                     {classification === 'SANDBOX' && (
                         <>
-                            <div className="bg-app-status-successBg rounded-2xl p-5 border border-green-200">
-                                <h3 className="text-green-800 font-bold text-sm mb-3 flex items-center gap-2">
-                                    <CheckCircle2 className="w-4 h-4" /> Auto-Provisioned Resources
-                                </h3>
-                                <ul className="text-app-text-label space-y-2 text-sm">
-                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> Azure Dev Subscription</li>
-                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> Git Repository (Ready)</li>
-                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> App Service Template</li>
-                                    <li className="flex gap-2"><span className="text-app-status-success">✓</span> 90-Day Auto-Review</li>
-                                </ul>
-                            </div>
                             <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
                                 <h3 className="text-app-primary-dark font-bold text-sm mb-3 flex items-center gap-2">
                                     <ArrowRight className="w-4 h-4" /> Next Steps
                                 </h3>
+
                                 <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Get credentials from email</li>
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Clone your repository</li>
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Start development immediately</li>
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Submit review at 90 days</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Get credentials from email</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Clone your repository</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Start development immediately</li>
+                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Submit review at 90 days</li>
                                 </ol>
                             </div>
                         </>

@@ -169,20 +169,20 @@ const PROCESS_MODE_OPTIONS = [
     {
         id: 'ai_assist',
         title: 'AI Assist',
-        description: 'Legacy mode (same behavior as AI-First).',
+        description: 'Redirect to VS Code and use N-Mod Extension with AI assistance.',
         enabled: true,
     },
     {
         id: 'vibe_coding',
         title: 'Vibe Coding',
-        description: 'Upcoming mode.',
-        enabled: false,
+        description: 'Redirect to VS Code and use N-Mod Extension with Vibe instructions.',
+        enabled: true,
     },
     {
         id: 'coexistence',
         title: 'Coexistence',
         description: 'Open Status Dashboard with agents available for manual run.',
-        enabled: false,
+        enabled: true,
     },
     {
         id: 'ai_first',
@@ -543,6 +543,22 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
+
+    // Determine recommended mode based on governance classification
+    const recommendedMode = useMemo(() => {
+        try {
+            const raw = sessionStorage.getItem('governanceContext') || localStorage.getItem('governanceContext');
+            if (raw) {
+                const ctx = JSON.parse(raw);
+                const classification = (ctx?.classification || '').toUpperCase();
+                if (classification === 'SANDBOX') {
+                    return 'ai_first';
+                }
+            }
+        } catch { }
+        return 'coexistence';
+    }, []);
+
     const selectedProject = useMemo(
         () => projects?.find((project) => project.key === selectedProjectKey) || null,
         [projects, selectedProjectKey]
@@ -704,7 +720,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         setGlobalGitRepoUrl((prev) => prev.trim() || storedSuggestion.url);
     }, [selectedProjectKey, loadStoredProjectRepoSuggestion]);
 
-  // Load analysis data for the selected project
+    // Load analysis data for the selected project
     useEffect(() => {
         const loadAnalysis = async () => {
             setLoading(true);
@@ -894,13 +910,13 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
     const progress = totalItems > 0 ? Math.round((providedCount / totalItems) * 100) : 0;
-    const allProvided = processMode === 'developer_only' ? true : (totalItems > 0 && providedCount === totalItems);
+    const allProvided = ['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? true : (totalItems > 0 && providedCount === totalItems);
     const shouldShowRepoSuggestion = Boolean(
         analysisRepoSuggestion &&
         !isLoadingGitConfig &&
-        processMode !== 'developer_only'
+        !['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
     );
-    const isGlobalGitConfigValid = processMode === 'developer_only' || Boolean(
+    const isGlobalGitConfigValid = ['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) || Boolean(
         globalGitRepoUrl.trim()
     );
 
@@ -916,7 +932,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 throw new Error('No project selected.');
             }
 
-            if (processMode !== 'developer_only') {
+            if (!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
                 const repo = globalGitRepoUrl.trim();
                 const pat = globalGitToken.trim();
                 if (!repo) {
@@ -1011,7 +1027,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 console.error('Task token prefetch failed', prefetchError);
             }
 
-            if (processMode === 'developer_only') {
+            if (['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
                 // Redirect immediately without showing the checkmark screen
                 window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
                 return; // Stop execution here so it doesn't clear the submitting state right away
@@ -1025,7 +1041,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         } catch (err) {
             setError('Failed to save prerequisites: ' + err.message);
         } finally {
-            if (processMode !== 'developer_only') {
+            if (!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
                 setSubmitting(false);
             }
         }
@@ -1068,7 +1084,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                         <div className="flex items-center justify-center gap-2 text-sm text-app-text-light">
                             <div className="w-4 h-4 border-2 border-app-border border-t-emerald-500 rounded-full animate-spin" />
-                            {processMode === 'developer_only' ? 'Redirecting to VS Code Extension…' : 'Redirecting to Task Creation…'}
+                            {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Redirecting to VS Code Extension…' : 'Redirecting to Task Creation…'}
                         </div>
                     </div>
                 </div>
@@ -1168,6 +1184,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 <div className="flex items-center justify-between gap-2 mb-1.5">
                                     <p className={`text-sm font-bold ${option.enabled ? (processMode === option.id ? 'text-app-primary-dark' : 'text-app-text-main') : 'text-app-text-muted'}`}>
                                         {option.title}
+                                        {option.id === recommendedMode && (
+                                            <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wide text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full">
+                                                Recommended
+                                            </span>
+                                        )}
                                     </p>
                                     {!option.enabled && (
                                         <span className="text-[9px] font-bold uppercase tracking-wide text-app-text-muted bg-app-bg-hover px-2 py-0.5 rounded-full">
@@ -1200,10 +1221,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 <div className="bg-app-primary-light/80 rounded-xl border border-app-primary-ring/60 p-4 mb-6 flex items-start gap-3">
                     <Info className="w-5 h-5 text-app-primary flex-shrink-0 mt-0.5" />
                     <div>
-                        <p className="text-sm font-semibold text-app-primary-dark mb-0.5">How this works</p>
-                        <p className="text-xs text-app-primary-hover leading-relaxed">
-                            {processMode === 'developer_only'
-                                ? 'In Developer Only mode, prerequisite classification is not required. You can proceed directly to the Status Dashboard where you will work in a developer-centric workflow without AI agents.'
+                        <p className="text-sm font-semibold text-blue-900 mb-0.5">How this works</p>
+                        <p className="text-xs text-blue-700 leading-relaxed">
+                            {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
+                                ? `In ${processMode === 'vibe_coding' ? 'Vibe Coding' : processMode === 'ai_assist' ? 'AI Assist' : 'Developer Only'} mode, prerequisite classification is not required. You can proceed directly to VS Code where you will work in the designated workflow.`
                                 : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Each prerequisite asks for the expected answer type (text, URL, or file upload).'
                             }
                         </p>
@@ -1211,15 +1232,21 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 </div>
 
                 {/* ── PREREQUISITES SECTION ── */}
-                {processMode === 'developer_only' ? (
+                {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? (
                     <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-8 text-center mb-8 border-dashed border-app-primary-ring">
                         <div className="w-16 h-16 mx-auto mb-4 bg-app-primary-light rounded-full flex items-center justify-center">
                             <ArrowRight className="w-8 h-8 text-app-primary" />
                         </div>
-                        <h3 className="text-lg font-bold text-app-text-main mb-2">Developer Workflow.</h3>
+                        <h3 className="text-lg font-bold text-app-text-main mb-2">
+                            {processMode === 'vibe_coding' ? 'Vibe Coding Workflow.' : processMode === 'ai_assist' ? 'AI Assist Workflow.' : 'Developer Workflow.'}
+                        </h3>
                         <p className="text-sm text-app-text-label max-w-lg mx-auto leading-relaxed">
-                            Prerequisite classification is bypassed for <strong>Developer Only</strong> mode.
-                            You will be redirected to VS Code.
+                            {processMode === 'vibe_coding'
+                                ? <>Prerequisite classification is bypassed for <strong>Vibe Coding</strong> mode. You will be redirected to VS Code. Note: This is an advanced workflow with different instructions unlike AI Assist.</>
+                                : processMode === 'ai_assist'
+                                    ? <>Prerequisite classification is bypassed for <strong>AI Assist</strong> mode. You will be redirected to VS Code with N-Mod Extension.</>
+                                    : <>Prerequisite classification is bypassed for <strong>Developer Only</strong> mode. You will be redirected to VS Code.</>
+                            }
                         </p>
                     </div>
                 ) : (
@@ -1357,7 +1384,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 )}
 
                 {/* ── CUSTOM RULES SECTION ── */}
-                {processMode !== 'developer_only' && (
+                {!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) && (
                     <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6 space-y-4">
                         <div className="flex items-center gap-2 mb-1">
                             <div className="w-8 h-8 rounded-lg bg-app-primary-light flex items-center justify-center">
@@ -1383,7 +1410,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── SUMMARY + SUBMIT ── */}
                 <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-lg border border-app-border-light/80 p-6 mb-6">
-                    {processMode !== 'developer_only' && (
+                    {!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) && (
                         <div className="mb-6 pb-6 border-b border-app-border-light">
                             <h3 className="text-base font-bold text-app-text-main mb-1">Git Configuration</h3>
                             <p className="text-sm text-app-text-muted mb-4">
@@ -1440,7 +1467,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div>
                             <h3 className="text-base font-bold text-app-text-main mb-1">Ready to proceed?</h3>
                             <p className="text-sm text-app-text-muted">
-                                {processMode === 'developer_only'
+                                {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
                                     ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
                                     : allProvided
                                         ? '✅ All prerequisites confirmed. You can proceed to task creation.'
@@ -1460,8 +1487,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             {submitting ? (
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                             ) : (
-                                <>{(allProvided || processMode === 'developer_only') ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-                                    {processMode === 'developer_only' ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
+                                <>{(allProvided || ['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
+                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
                             )}
                         </button>
                     </div>

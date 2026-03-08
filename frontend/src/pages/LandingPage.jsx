@@ -5,7 +5,7 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
     ArrowRight, Zap, CheckCircle, Shield, Workflow,
     FileText, FileCode, FileSpreadsheet, FileJson, File,
-    Database, Server, Layout, Code, Terminal, Cpu, Sparkles
+    Database, Server, Layout, Code, Terminal, Cpu, Sparkles, Bot
 } from 'lucide-react';
 import Logo from '../assets/logo.png';
 import masterLogo from '../assets/logo1.png';
@@ -628,7 +628,7 @@ const LandingPage = () => {
         },
         {
             key: 'sandbox',
-            title: <><Sparkles className="inline h-5 w-5 mr-1.5 text-sky-600" />AI First Mode</>,
+            title: <><Bot className="inline h-5 w-5 mr-1.5 text-sky-600" />AI First Mode</>,
             subtitle: 'Fully Autonomous AI Environment',
             icon: <Shield className="h-5 w-5 text-app-bg-card" />,
             color: 'from-sky-600 to-cyan-500',

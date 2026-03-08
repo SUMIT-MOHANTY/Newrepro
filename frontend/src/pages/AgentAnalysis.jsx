@@ -5,6 +5,7 @@ import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus } from 'lucide-react';
+import bourntecLogo from '../assets/bourntec_logo.png';
 
 const parseStoredDocumentAnalysis = (doc) => {
     try {
@@ -146,16 +147,16 @@ const sanitizeHtml = (html) => {
     });
 };
 
-export default function AgentAnalysis({ 
-    selectedProjectKey, 
-    projects = [], 
+export default function AgentAnalysis({
+    selectedProjectKey,
+    projects = [],
     projectsLoading = false,
     fetchHistory
 }) {
     const navigate = useNavigate();
     const location = useLocation();
     const token = localStorage.getItem('token');
-    
+
     const [result, setResult] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -177,7 +178,7 @@ export default function AgentAnalysis({
         if (storedContext) {
             try {
                 setGovernanceContext(JSON.parse(storedContext));
-            } catch {}
+            } catch { }
         }
     }, []);
 
@@ -443,7 +444,7 @@ export default function AgentAnalysis({
         try {
             const pendingRepoContext = pendingAnalysis?.repoContextState || null;
             const effectiveGovernanceContext = governanceContext || pendingAnalysis?.governanceContext || null;
-            
+
             setRepoContext(pendingRepoContext);
 
             const initialResult = {
@@ -466,7 +467,7 @@ export default function AgentAnalysis({
             if (aiConfigStr) {
                 try {
                     aiConfig = JSON.parse(aiConfigStr);
-                } catch {}
+                } catch { }
             }
 
             const aiPayload = {
@@ -507,7 +508,7 @@ export default function AgentAnalysis({
             setLoading(false);
             return;
         }
-        
+
         if (!selectedProjectKey || !selectedProject || projectsLoading) {
             if (!projectsLoading) {
                 setLoading(false);
@@ -518,7 +519,7 @@ export default function AgentAnalysis({
         const loadAnalysis = async () => {
             setLoading(true);
             setError('');
-            
+
             try {
                 const latestDocument = selectedProject.latestDocument;
                 if (!latestDocument) {
@@ -528,11 +529,11 @@ export default function AgentAnalysis({
                 }
 
                 const storedAnalysis = parseStoredDocumentAnalysis(latestDocument);
-                
+
                 // Check if analysis is pending - only trigger if user clicked "Proceed to Agent Analysis"
                 if (isPendingGovernanceAnalysis(storedAnalysis)) {
                     const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
-                    
+
                     if (shouldStartAnalysis && hasGovernanceAssessment) {
                         // Clear the flag so it doesn't trigger again on refresh
                         sessionStorage.removeItem('shouldStartAnalysis');
@@ -547,17 +548,17 @@ export default function AgentAnalysis({
                     }
                     return;
                 }
-                
+
                 if (hasCompletedDocumentAnalysis(latestDocument)) {
                     // Load questions and answers from stored analysis
                     const questions = storedAnalysis?.questions || [];
                     const savedAnswers = storedAnalysis?.userAnswers || {};
                     const savedFeedback = storedAnalysis?.userFeedback || '';
-                    
+
                     setAiQuestions(questions);
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
-                    
+
                     setResult({
                         id: latestDocument.id,
                         filename: latestDocument.filename,
@@ -576,7 +577,7 @@ export default function AgentAnalysis({
                 const allDocuments = selectedProject.documents || [];
                 let foundAnalysis = null;
                 let foundDoc = null;
-                
+
                 for (const doc of allDocuments) {
                     const docAnalysis = parseStoredDocumentAnalysis(doc);
                     if (hasCompletedStoredAnalysis(docAnalysis)) {
@@ -585,17 +586,17 @@ export default function AgentAnalysis({
                         break;
                     }
                 }
-                
+
                 if (foundAnalysis && foundDoc) {
                     // Load questions and answers from stored analysis
                     const questions = foundAnalysis?.questions || [];
                     const savedAnswers = foundAnalysis?.userAnswers || {};
                     const savedFeedback = foundAnalysis?.userFeedback || '';
-                    
+
                     setAiQuestions(questions);
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
-                    
+
                     setResult({
                         id: foundDoc.id,
                         filename: foundDoc.filename,
@@ -614,7 +615,7 @@ export default function AgentAnalysis({
                         if (isPendingGovernanceAnalysis(docAnalysis)) {
                             hasPendingAnalysis = true;
                             const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
-                            
+
                             if (shouldStartAnalysis && hasGovernanceAssessment) {
                                 sessionStorage.removeItem('shouldStartAnalysis');
                                 await triggerPendingAnalysis(doc, docAnalysis);
@@ -624,13 +625,13 @@ export default function AgentAnalysis({
                                 setLoading(false);
                                 return;
                             } else {
-                               
+
                                 setLoading(false);
                                 return;
                             }
                         }
                     }
-                    
+
                     if (!hasPendingAnalysis) {
                         setError('Analysis not yet completed. Please wait for the analysis to finish.');
                     }
@@ -667,14 +668,14 @@ export default function AgentAnalysis({
         setProgressMessage('Submitting feedback and refinements...');
 
         const token = localStorage.getItem('token');
-        
+
         // Get AI config from localStorage
         const aiConfigStr = localStorage.getItem('aiConfig');
         let aiConfig = { apiUrl: '', apiKey: '', model: '', stream: false };
         if (aiConfigStr) {
             try {
                 aiConfig = JSON.parse(aiConfigStr);
-            } catch {}
+            } catch { }
         }
 
         const aiPayload = {
@@ -710,8 +711,327 @@ export default function AgentAnalysis({
         }
     };
 
-    const handleDownloadPDF = () => {
-        navigate('/dashboard');
+    const handleDownloadPDF = async () => {
+        if (!result?.analysis) return;
+
+        const { jsPDF } = await import('jspdf');
+        const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const marginLeft = 20;
+        const marginRight = 20;
+
+        // Load logo as base64 for embedding in PDF
+        let logoBase64 = null;
+        try {
+            const logoResponse = await fetch(bourntecLogo);
+            const logoBlob = await logoResponse.blob();
+            logoBase64 = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.readAsDataURL(logoBlob);
+            });
+        } catch (e) {
+            console.warn('Could not load logo for PDF', e);
+        }
+        const contentWidth = pageWidth - marginLeft - marginRight;
+        let y = 0;
+
+        // ── Colors ──
+        const brandBlue = [30, 58, 138];       // deep indigo
+        const brandAccent = [59, 130, 246];     // blue-500
+        const darkText = [31, 41, 55];          // gray-800
+        const mutedText = [107, 114, 128];      // gray-500
+        const lightBg = [248, 250, 252];        // slate-50
+        const white = [255, 255, 255];
+
+        // ── Helper: add page with footer ──
+        const totalPagesPlaceholder = '{total_pages}';
+        const addFooter = (pageNum) => {
+            doc.setDrawColor(...brandBlue);
+            doc.setLineWidth(0.3);
+            doc.line(marginLeft, pageHeight - 15, pageWidth - marginRight, pageHeight - 15);
+            doc.setFontSize(7);
+            doc.setTextColor(...mutedText);
+            doc.text('Confidential — Generated by BRD Analyzer AI', marginLeft, pageHeight - 10);
+            doc.text(`Page ${pageNum} of ${totalPagesPlaceholder}`, pageWidth - marginRight, pageHeight - 10, { align: 'right' });
+            doc.text(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), pageWidth / 2, pageHeight - 10, { align: 'center' });
+        };
+
+        const checkPage = (needed = 12) => {
+            if (y + needed > pageHeight - 22) {
+                addFooter(doc.internal.getNumberOfPages());
+                doc.addPage();
+                y = 20;
+            }
+        };
+
+        // ══════════════════════════════════════════
+        //  PAGE 1: COVER / HEADER
+        // ══════════════════════════════════════════
+
+        // Top brand bar
+        doc.setFillColor(...brandBlue);
+        doc.rect(0, 0, pageWidth, 52, 'F');
+
+        // Bourntec logo + DSuite branding (right side of header)
+        // Bourntec logo + DSuite branding (top right corner)
+        // if (logoBase64) {
+        //     try {
+        //         doc.addImage(logoBase64, 'PNG', pageWidth - marginRight - 48, 6, 44, 13);
+        //     } catch (e) {
+        //         console.warn('Logo embed failed', e);
+        //     }
+        // }
+
+        // // Vertical divider line (like the sidebar separator)
+        // doc.setDrawColor(200, 210, 230);
+        // doc.setLineWidth(0.4);
+        // doc.line(pageWidth - marginRight - 48, 22, pageWidth - marginRight - 48, 29);
+
+        // // "Powered by" immediately left of divider
+        // doc.setTextColor(200, 210, 230);
+        // doc.setFontSize(7);
+        // doc.setFont('helvetica', 'normal');
+        // doc.text('Powered by', pageWidth - marginRight - 46, 27);
+
+        // // "DSuite" immediately right of divider — tight gap
+        // doc.setTextColor(255, 255, 255);
+        // doc.setFontSize(7);
+        // doc.setFont('helvetica', 'bold');
+        // doc.text('DSuite', pageWidth - marginRight - 18, 27);
+
+        if (logoBase64) {
+            try {
+                // Wider width to prevent squishing — maintain natural aspect ratio
+                doc.addImage(logoBase64, 'PNG', pageWidth - marginRight - 62, 8, 44, 10);
+            } catch (e) {
+                console.warn('Logo embed failed', e);
+            }
+        }
+
+        // Vertical divider — shift right to match wider logo
+        doc.setDrawColor(180, 190, 210);
+        doc.setLineWidth(0.5);
+        doc.line(pageWidth - marginRight - 14, 7, pageWidth - marginRight - 14, 19);
+
+        // DSuite text — stays same position
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.text('DSuite', pageWidth - marginRight - 11, 15);
+
+        // Title block (left side)
+        doc.setTextColor(...white);
+        doc.setFontSize(22);
+        doc.setFont('helvetica', 'bold');
+        doc.text('BRD Analysis Report', marginLeft, 20);
+
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'normal');
+        const projectLabel = selectedProject?.name || result.filename || 'Project Analysis';
+        doc.text(projectLabel, marginLeft, 31);
+
+        doc.setFontSize(8);
+        doc.setTextColor(200, 210, 230);
+        doc.text(`Generated: ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`, marginLeft, 41);
+        doc.text(`${selectedProject?.name ? selectedProject.name + ' • ' : ''}Confidential`, marginLeft, 48);
+
+        y = 62;
+
+        // ── Key Metrics Cards ──
+        const metrics = result.analysis.metrics || {};
+        const metricItems = [
+            { label: 'Deployment', value: metrics.deployment || 'TBD' },
+            { label: 'Resources', value: metrics.resources || 'TBD' },
+            { label: 'Complexity', value: metrics.complexity || 'TBD' },
+            { label: 'Timeline', value: metrics.timeline || 'TBD' },
+        ];
+
+        const cardW = (contentWidth - 9) / 4;
+        const cardH = 22;
+
+        metricItems.forEach((m, i) => {
+            const x = marginLeft + i * (cardW + 3);
+            // Card bg
+            doc.setFillColor(...lightBg);
+            doc.roundedRect(x, y, cardW, cardH, 2, 2, 'F');
+            // Left accent bar
+            doc.setFillColor(...brandAccent);
+            doc.rect(x, y, 1.5, cardH, 'F');
+            // Label
+            doc.setFontSize(7);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(...mutedText);
+            doc.text(m.label.toUpperCase(), x + 5, y + 7);
+            // Value
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(...darkText);
+            const valLines = doc.splitTextToSize(String(m.value), cardW - 8);
+            doc.text(valLines.slice(0, 2), x + 5, y + 14);
+        });
+
+        y += cardH + 10;
+
+        // ── Separator ──
+        doc.setDrawColor(220, 220, 230);
+        doc.setLineWidth(0.2);
+        doc.line(marginLeft, y, pageWidth - marginRight, y);
+        y += 8;
+
+        // ══════════════════════════════════════════
+        //  ANALYSIS CONTENT
+        // ══════════════════════════════════════════
+        const analysisContent = result.analysis?.analysis || '';
+
+        // Strip HTML tags for plain text if content is HTML
+        const stripHtml = (html) => {
+            if (!html) return '';
+            return html
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/(?:li|p|div|tr|h\d)>/gi, '\n')
+                .replace(/<li[^>]*>/gi, '• ')
+                .replace(/<[^>]*>/g, '')
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'")
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+        };
+
+        const rawText = isLikelyHtml(analysisContent) ? stripHtml(analysisContent) : analysisContent;
+        const lines = rawText.split('\n');
+
+        // Section title
+        doc.setFontSize(14);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...brandBlue);
+        doc.text('Executive Summary & Agent Analysis', marginLeft, y);
+        y += 8;
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                y += 1.5;
+                continue;
+            }
+
+            checkPage(14);
+
+            // ── Markdown heading (# / ## / ### / ####) ──
+            const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)/);
+            if (headingMatch) {
+                const level = headingMatch[1].length;
+                const headingText = headingMatch[2].replace(/\*\*/g, '').replace(/\*/g, '');
+                y += level === 1 ? 4 : level === 2 ? 3 : 2;
+
+                checkPage(14);
+
+                const fontSize = level === 1 ? 13 : level === 2 ? 11.5 : level === 3 ? 10 : 9.5;
+                doc.setFontSize(fontSize);
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(level <= 2 ? brandBlue[0] : darkText[0], level <= 2 ? brandBlue[1] : darkText[1], level <= 2 ? brandBlue[2] : darkText[2]);
+
+                const wrappedHeading = doc.splitTextToSize(headingText, contentWidth);
+                for (const hl of wrappedHeading) {
+                    checkPage(8);
+                    doc.text(hl, marginLeft, y);
+                    y += fontSize * 0.42 + 1;
+                }
+
+
+                y += 1;
+                continue;
+            }
+
+            // ── Bold line (**text**) ──
+            const isBoldLine = /^\*\*(.+)\*\*$/.test(trimmed);
+
+            // ── Bullet / list item ──
+            const bulletMatch = trimmed.match(/^[-*•]\s+(.+)/);
+            const numberedMatch = trimmed.match(/^(\d+)[.)]\s+(.+)/);
+
+            if (bulletMatch || numberedMatch) {
+                doc.setFontSize(9);
+                doc.setFont('helvetica', 'normal');
+                doc.setTextColor(...darkText);
+
+                const bulletText = bulletMatch ? bulletMatch[1] : numberedMatch[2];
+                const prefix = bulletMatch ? '•  ' : `${numberedMatch[1]}.  `;
+                const cleanText = bulletText.replace(/\*\*/g, '').replace(/\*/g, '');
+
+                const indentX = marginLeft + 6;
+                const bulletWidth = contentWidth - 6;
+                const wrapped = doc.splitTextToSize(`${prefix}${cleanText}`, bulletWidth);
+                for (const wl of wrapped) {
+                    checkPage(6);
+                    doc.text(wl, indentX, y);
+                    y += 4.5;
+                }
+                y += 1;
+                continue;
+            }
+
+            // ── Horizontal rule ──
+            if (/^[-_*]{3,}$/.test(trimmed)) {
+                y += 2;
+                doc.setDrawColor(220, 220, 230);
+                doc.setLineWidth(0.15);
+                doc.line(marginLeft, y, pageWidth - marginRight, y);
+                y += 4;
+                continue;
+            }
+
+            // ── Regular paragraph ──
+            doc.setFontSize(9);
+            doc.setFont('helvetica', isBoldLine ? 'bold' : 'normal');
+            doc.setTextColor(...darkText);
+
+            const cleanParagraph = trimmed.replace(/\*\*/g, '').replace(/\*/g, '');
+            const wrapped = doc.splitTextToSize(cleanParagraph, contentWidth);
+            for (const wl of wrapped) {
+                checkPage(6);
+                doc.text(wl, marginLeft, y);
+                y += 4.5;
+            }
+            y += 2;
+        }
+
+        // ── Add footer to last page ──
+        addFooter(doc.internal.getNumberOfPages());
+
+        // ── Replace total pages placeholder ──
+        const totalPages = doc.internal.getNumberOfPages();
+        for (let i = 1; i <= totalPages; i++) {
+            doc.setPage(i);
+            // Search and replace placeholder
+            // jsPDF doesn't have native find-replace, so we added footers with the placeholder.
+            // Re-draw footers with actual page count:
+        }
+
+        // Re-draw all footers with correct total
+        for (let i = 1; i <= totalPages; i++) {
+            doc.setPage(i);
+            // Clear footer area
+            doc.setFillColor(...white);
+            doc.rect(0, pageHeight - 18, pageWidth, 18, 'F');
+            // Draw final footer
+            doc.setDrawColor(...brandBlue);
+            doc.setLineWidth(0.3);
+            doc.line(marginLeft, pageHeight - 15, pageWidth - marginRight, pageHeight - 15);
+            doc.setFontSize(7);
+            doc.setTextColor(...mutedText);
+            doc.text('Confidential — DSuite by Bourntec Solutions', marginLeft, pageHeight - 10);
+            doc.text(`Page ${i} of ${totalPages}`, pageWidth - marginRight, pageHeight - 10, { align: 'right' });
+            doc.text(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), pageWidth / 2, pageHeight - 10, { align: 'center' });
+        }
+
+        // ── Save ──
+        const fileName = `${(selectedProject?.name || result.filename || 'BRD_Analysis').replace(/[^a-zA-Z0-9_-]/g, '_')}_Report.pdf`;
+        doc.save(fileName);
     };
 
     const handleNewAnalysis = () => {
@@ -957,10 +1277,10 @@ export default function AgentAnalysis({
 
                                         {(() => {
                                             // Get questions from state or from result analysis
-                                            const questions = aiQuestions?.length > 0 
-                                                ? aiQuestions 
+                                            const questions = aiQuestions?.length > 0
+                                                ? aiQuestions
                                                 : (result?.analysis?.questions || []);
-                                            
+
                                             return questions?.length > 0 ? (
                                                 <div className="space-y-4 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
                                                     {questions.map((q, i) => (

@@ -10,6 +10,7 @@ import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
+import cloudIcon from '../assets/cloud-icon.png';
 // import KnowledgeGraphCard from './KnowledgeGraphCard';
 // import PrStatusCard from './PrStatusCard';
 
@@ -298,7 +299,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             if (!res.ok) throw new Error('Failed to fetch agents');
             const data = await res.json();
             const fetchedAgents = data.agents || [];
-            
+
             // Ensure Test Agent (agent_05) exists by default in all projects
             const hasTestAgent = fetchedAgents.some(agent => agent.id === 'agent_05');
             if (!hasTestAgent) {
@@ -311,8 +312,36 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     stats: {},
                 });
             }
-            
-            return fetchedAgents;
+
+            // Fetch live status for each agent using AGENT_STATUS endpoint
+            const agentsWithLiveStatus = await Promise.all(fetchedAgents.map(async (agent) => {
+                if (agent.id === 'agent_03' || agent.id === 'agent_04' || agent.id === 'agent_05') {
+                    // System agents don't typically run as standalone tasks here, but we can still fetch status if needed
+                    // For now, let's keep it safe.
+                }
+                try {
+                    const statusUrl = new URL(API_ENDPOINTS.AGENT_STATUS(agent.id));
+                    if (selectedProjectKey) statusUrl.searchParams.set('project_token', selectedProjectKey);
+
+                    // We need to fetch from local storage since taskToken is in scope but might not be available or valid
+                    const headers = { Authorization: `Bearer ${token}` };
+                    const currentTaskToken = sessionStorage.getItem(`taskSessionToken_${selectedProjectKey}`) || localStorage.getItem(`taskSessionToken_${selectedProjectKey}`);
+                    if (currentTaskToken) headers['x-task-token'] = currentTaskToken;
+
+                    const statusRes = await fetch(statusUrl.toString(), { headers });
+                    if (statusRes.ok) {
+                        const statusData = await statusRes.json();
+                        if (statusData && statusData.agent) {
+                            return { ...agent, ...statusData.agent };
+                        }
+                    }
+                } catch (e) {
+                    console.error(`Failed to fetch status for agent ${agent.id}`, e);
+                }
+                return agent;
+            }));
+
+            return agentsWithLiveStatus;
         },
         enabled: !!token,
     });
@@ -1060,30 +1089,30 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
 
     // ── Render Agent Card ────────────────────────────────────────────
-const renderAgentCard = (agent) => {
-  const isGitManager = agent.id === 'agent_03';
-  const isMasterAgent = agent.id === 'agent_04';
-  const isTestAgent = agent.id === 'agent_05';
-  const isSystemAgent = isGitManager || isMasterAgent || isTestAgent;
-  const isShared = agent.id?.startsWith('shared_');
-  const isDedicated = agent.id?.startsWith('dedicated_');
-  const agentType = isShared ? 'Shared' : isDedicated ? 'Dedicated' : null;
-  const displayName = getAgentDisplayName(agent);
-  const cfg = agentConfig[agent.id] || agentConfig.agent_01;
-  const Icon = cfg.icon;
-  // Use logo for specific agents, or dev agents use N-Mod logo
-  const useLogo = cfg.logo || (isShared || isDedicated);
-  const logoSrc = cfg.logo || (useLogo ? nModLogo : null);
-  const isRunning = agent.status === 'running';
-  const isCompleted = agent.status === 'completed';
-  const isError = agent.status === 'error';
-  const isIdle = agent.status === 'idle';
-  const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
-  const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
+    const renderAgentCard = (agent) => {
+        const isGitManager = agent.id === 'agent_03';
+        const isMasterAgent = agent.id === 'agent_04';
+        const isTestAgent = agent.id === 'agent_05';
+        const isSystemAgent = isGitManager || isMasterAgent || isTestAgent;
+        const isShared = agent.id?.startsWith('shared_');
+        const isDedicated = agent.id?.startsWith('dedicated_');
+        const agentType = isShared ? 'Shared' : isDedicated ? 'Dedicated' : null;
+        const displayName = getAgentDisplayName(agent);
+        const cfg = agentConfig[agent.id] || agentConfig.agent_01;
+        const Icon = cfg.icon;
+        // Use logo for specific agents, or dev agents use N-Mod logo
+        const useLogo = cfg.logo || (isShared || isDedicated);
+        const logoSrc = cfg.logo || (useLogo ? nModLogo : null);
+        const isRunning = agent.status === 'running';
+        const isCompleted = agent.status === 'completed';
+        const isError = agent.status === 'error';
+        const isIdle = agent.status === 'idle';
+        const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
+        const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
 
-  return (
-    <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
-      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${cfg.accent}`}></div>
+        return (
+            <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
+                <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${cfg.accent}`}></div>
 
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
@@ -1126,7 +1155,7 @@ const renderAgentCard = (agent) => {
                                 </span>
                             )}
                             <span className={`text-[10px] font-bold text-${statusColor}-${isIdle ? '500' : '600'}`}>
-                                {agent.status?.toUpperCase() || 'IDLE'}
+                                {isRunning ? 'RUNNING' : (isIdle ? 'IDLE' : (isCompleted ? 'COMPLETED' : (isError ? 'ERROR' : 'NOT STARTED')))}
                             </span>
                         </div>
                         {/* Action buttons moved to header */}
@@ -2362,8 +2391,7 @@ const renderAgentCard = (agent) => {
                                                         </div>
                                                     ) : (
                                                         <div className="flex flex-col items-center justify-center py-4 bg-app-bg-muted rounded-xl">
-                                                            <Rocket className="w-6 h-6 text-app-text-light mb-2 opacity-50" />
-                                                            <p className="text-[11px] text-app-text-light text-center font-medium mb-3 px-4">
+                                                            <Rocket className="w-6 h-6 text-app-text-light mb-2 opacity-50" />                                                            <p className="text-[11px] text-app-text-light text-center font-medium mb-3 px-4">
                                                                 View a live version of the integration branch
                                                             </p>
                                                             <button
@@ -2786,7 +2814,7 @@ const renderAgentCard = (agent) => {
                 showAddAgentModal && (
                     <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
                         {/* Backdrop with blur */}
-                        <div 
+                        <div
                             className="absolute inset-0 bg-black/70 backdrop-blur-md"
                             onClick={() => setShowAddAgentModal(false)}
                         />
