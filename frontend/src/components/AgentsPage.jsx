@@ -6,6 +6,7 @@ import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
+import cloudIcon from '../assets/cloud-icon.png';
 
 /**
  * AgentsPage – Full‑screen view of all agents for the current organization / project.
@@ -28,9 +29,9 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
   const fetchAgents = async () => {
     setLoading(true);
     setError(null);
-    
+
     const token = localStorage.getItem('token');
-    
+
     try {
       // Fetch shared agents (no project_token)
       const sharedUrl = new URL(API_ENDPOINTS.AGENTS);
@@ -50,10 +51,10 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
       if (selectedProjectKey) {
         dedicatedUrl.searchParams.set('project_token', selectedProjectKey);
       }
-      const dedicatedRes = selectedProjectKey 
+      const dedicatedRes = selectedProjectKey
         ? await fetch(dedicatedUrl.toString(), {
-            headers: { Authorization: `Bearer ${token}` },
-          })
+          headers: { Authorization: `Bearer ${token}` },
+        })
         : { ok: true, json: async () => ({ agents: [] }) };
 
       if (!sharedRes.ok) {
@@ -66,10 +67,10 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
       const sharedData = await sharedRes.json();
       const dedicatedData = await dedicatedRes.json();
 
-      const sharedList = Array.isArray(sharedData) 
-        ? sharedData 
+      const sharedList = Array.isArray(sharedData)
+        ? sharedData
         : (sharedData?.agents || sharedData?.results || sharedData?.data || []);
-      
+
       const dedicatedList = Array.isArray(dedicatedData)
         ? dedicatedData
         : (dedicatedData?.agents || dedicatedData?.results || dedicatedData?.data || []);
@@ -164,7 +165,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('Failed to delete agent');
-      
+
       // Remove from dedicated agents list and refetch
       setDedicatedAgents((prev) => prev.filter((a) => a.id !== agentId));
       // Refetch to ensure consistency
@@ -341,153 +342,153 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
           </div>
         ) : quotaSummary ? (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-              {/* Shared Capacity Card */}
-              <div className="relative overflow-hidden rounded-lg border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 to-cyan-500/10 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-cyan-500/20">
-                    <Users className="w-3 h-3 text-cyan-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Shared</h3>
-                  </div>
+            {/* Shared Capacity Card */}
+            <div className="relative overflow-hidden rounded-lg border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 to-cyan-500/10 p-2 shadow-sm hover:shadow-md transition-all">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <div className="p-0.5 rounded bg-cyan-500/20">
+                  <Users className="w-3 h-3 text-cyan-400" />
                 </div>
-                
-                <div className="space-y-1">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-bold text-cyan-400">{quotaSummary.sharedUsed}</span>
-                    <span className="text-[10px] text-app-text-muted">/</span>
-                    <span className="text-xs font-semibold text-app-text-main">{quotaSummary.sharedQuota}</span>
-                  </div>
-                  
-                  {/* Progress Bar */}
-                  <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
-                    <div
-                      className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-500"
-                      style={{ width: `${quotaSummary.sharedQuota > 0 ? Math.min(100, (quotaSummary.sharedUsed / quotaSummary.sharedQuota) * 100) : 0}%` }}
-                    />
-                  </div>
-                  
-                  <div className="flex items-center justify-between text-[9px]">
-                    <span className="text-app-text-muted">Avail</span>
-                    <span className="font-bold text-cyan-400">{quotaSummary.sharedAvailable}</span>
-                  </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-[10px] font-bold text-app-text-main truncate">Shared</h3>
                 </div>
               </div>
 
-              {/* Dedicated Capacity Card */}
-              <div className="relative overflow-hidden rounded-lg border border-indigo-500/20 bg-gradient-to-br from-indigo-500/5 to-indigo-500/10 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-indigo-500/20">
-                    <Database className="w-3 h-3 text-indigo-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Dedicated</h3>
-                  </div>
+              <div className="space-y-1">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-lg font-bold text-cyan-400">{quotaSummary.sharedUsed}</span>
+                  <span className="text-[10px] text-app-text-muted">/</span>
+                  <span className="text-xs font-semibold text-app-text-main">{quotaSummary.sharedQuota}</span>
                 </div>
-                
-                <div className="space-y-1">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-bold text-indigo-400">{quotaSummary.dedicatedUsed}</span>
-                    <span className="text-[10px] text-app-text-muted">/</span>
-                    <span className="text-xs font-semibold text-app-text-main">{quotaSummary.dedicatedQuota}</span>
-                  </div>
-                  
-                  {/* Progress Bar */}
-                  <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
-                    <div
-                      className="absolute inset-y-0 left-0 bg-gradient-to-r from-indigo-500 to-indigo-400 rounded-full transition-all duration-500"
-                      style={{ width: `${quotaSummary.dedicatedQuota > 0 ? Math.min(100, (quotaSummary.dedicatedUsed / quotaSummary.dedicatedQuota) * 100) : 0}%` }}
-                    />
-                  </div>
-                  
-                  <div className="flex items-center justify-between text-[9px]">
-                    <span className="text-app-text-muted">Avail</span>
-                    <span className="font-bold text-indigo-400">{quotaSummary.dedicatedAvailable}</span>
-                  </div>
-                </div>
-              </div>
 
-              {/* Add Shared Agents Card */}
-              <div className="relative overflow-hidden rounded-lg border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-cyan-500/20">
-                    <Users className="w-3 h-3 text-cyan-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Add Shared</h3>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-1.5">
-                  <input
-                    value={sharedToAdd}
-                    onChange={(e) => setSharedToAdd(clampPositiveInt(e.target.value))}
-                    className="w-12 h-7 rounded border border-cyan-500/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
-                    inputMode="numeric"
-                    type="number"
-                    min="1"
+                {/* Progress Bar */}
+                <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-500"
+                    style={{ width: `${quotaSummary.sharedQuota > 0 ? Math.min(100, (quotaSummary.sharedUsed / quotaSummary.sharedQuota) * 100) : 0}%` }}
                   />
-                  <button
-                    type="button"
-                    onClick={() => increaseQuota('shared', clampPositiveInt(sharedToAdd))}
-                    disabled={quotaUpdatingKind === 'shared' || quotaLoading}
-                    className="flex-1 h-7 rounded bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-[10px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
-                  >
-                    {quotaUpdatingKind === 'shared' ? (
-                      <RefreshCw className="w-2.5 h-2.5 animate-spin" />
-                    ) : (
-                      <>
-                        <Users className="w-2.5 h-2.5" />
-                        <span>Add</span>
-                      </>
-                    )}
-                  </button>
                 </div>
-              </div>
 
-              {/* Add Dedicated Agents Card */}
-              <div className="relative overflow-hidden rounded-lg border border-indigo-500/30 bg-gradient-to-br from-indigo-500/10 to-indigo-500/5 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-indigo-500/20">
-                    <Database className="w-3 h-3 text-indigo-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Add Dedicated</h3>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-1.5">
-                  <input
-                    value={dedicatedToAdd}
-                    onChange={(e) => setDedicatedToAdd(clampPositiveInt(e.target.value))}
-                    className="w-12 h-7 rounded border border-indigo-500/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
-                    inputMode="numeric"
-                    type="number"
-                    min="1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => increaseQuota('dedicated', clampPositiveInt(dedicatedToAdd))}
-                    disabled={quotaUpdatingKind === 'dedicated' || quotaLoading}
-                    className="flex-1 h-7 rounded bg-gradient-to-r from-indigo-600 to-indigo-500 text-white text-[10px] font-bold hover:from-indigo-700 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
-                  >
-                    {quotaUpdatingKind === 'dedicated' ? (
-                      <RefreshCw className="w-2.5 h-2.5 animate-spin" />
-                    ) : (
-                      <>
-                        <Database className="w-2.5 h-2.5" />
-                        <span>Add</span>
-                      </>
-                    )}
-                  </button>
+                <div className="flex items-center justify-between text-[9px]">
+                  <span className="text-app-text-muted">Avail</span>
+                  <span className="font-bold text-cyan-400">{quotaSummary.sharedAvailable}</span>
                 </div>
               </div>
             </div>
-          ) : (
-            <div className="p-2 rounded-lg bg-app-bg-muted/50 border border-app-border-light">
-              <p className="text-xs text-app-text-muted">Capacity not available.</p>
+
+            {/* Dedicated Capacity Card */}
+            <div className="relative overflow-hidden rounded-lg border border-indigo-500/20 bg-gradient-to-br from-indigo-500/5 to-indigo-500/10 p-2 shadow-sm hover:shadow-md transition-all">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <div className="p-0.5 rounded bg-indigo-500/20">
+                  <Database className="w-3 h-3 text-indigo-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-[10px] font-bold text-app-text-main truncate">Dedicated</h3>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-lg font-bold text-indigo-400">{quotaSummary.dedicatedUsed}</span>
+                  <span className="text-[10px] text-app-text-muted">/</span>
+                  <span className="text-xs font-semibold text-app-text-main">{quotaSummary.dedicatedQuota}</span>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-gradient-to-r from-indigo-500 to-indigo-400 rounded-full transition-all duration-500"
+                    style={{ width: `${quotaSummary.dedicatedQuota > 0 ? Math.min(100, (quotaSummary.dedicatedUsed / quotaSummary.dedicatedQuota) * 100) : 0}%` }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between text-[9px]">
+                  <span className="text-app-text-muted">Avail</span>
+                  <span className="font-bold text-indigo-400">{quotaSummary.dedicatedAvailable}</span>
+                </div>
+              </div>
             </div>
-          )}
+
+            {/* Add Shared Agents Card */}
+            <div className="relative overflow-hidden rounded-lg border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 p-2 shadow-sm hover:shadow-md transition-all">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <div className="p-0.5 rounded bg-cyan-500/20">
+                  <Users className="w-3 h-3 text-cyan-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-[10px] font-bold text-app-text-main truncate">Add Shared</h3>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={sharedToAdd}
+                  onChange={(e) => setSharedToAdd(clampPositiveInt(e.target.value))}
+                  className="w-12 h-7 rounded border border-cyan-500/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
+                  inputMode="numeric"
+                  type="number"
+                  min="1"
+                />
+                <button
+                  type="button"
+                  onClick={() => increaseQuota('shared', clampPositiveInt(sharedToAdd))}
+                  disabled={quotaUpdatingKind === 'shared' || quotaLoading}
+                  className="flex-1 h-7 rounded bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-[10px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
+                >
+                  {quotaUpdatingKind === 'shared' ? (
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                  ) : (
+                    <>
+                      <Users className="w-2.5 h-2.5" />
+                      <span>Add</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Add Dedicated Agents Card */}
+            <div className="relative overflow-hidden rounded-lg border border-indigo-500/30 bg-gradient-to-br from-indigo-500/10 to-indigo-500/5 p-2 shadow-sm hover:shadow-md transition-all">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <div className="p-0.5 rounded bg-indigo-500/20">
+                  <Database className="w-3 h-3 text-indigo-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-[10px] font-bold text-app-text-main truncate">Add Dedicated</h3>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={dedicatedToAdd}
+                  onChange={(e) => setDedicatedToAdd(clampPositiveInt(e.target.value))}
+                  className="w-12 h-7 rounded border border-indigo-500/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+                  inputMode="numeric"
+                  type="number"
+                  min="1"
+                />
+                <button
+                  type="button"
+                  onClick={() => increaseQuota('dedicated', clampPositiveInt(dedicatedToAdd))}
+                  disabled={quotaUpdatingKind === 'dedicated' || quotaLoading}
+                  className="flex-1 h-7 rounded bg-gradient-to-r from-indigo-600 to-indigo-500 text-white text-[10px] font-bold hover:from-indigo-700 hover:to-indigo-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
+                >
+                  {quotaUpdatingKind === 'dedicated' ? (
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                  ) : (
+                    <>
+                      <Database className="w-2.5 h-2.5" />
+                      <span>Add</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-2 rounded-lg bg-app-bg-muted/50 border border-app-border-light">
+            <p className="text-xs text-app-text-muted">Capacity not available.</p>
+          </div>
+        )}
       </div>
 
       {/* Filter Buttons */}
@@ -497,31 +498,28 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
           <span className="text-sm font-medium text-app-text-muted mr-2">Filter:</span>
           <button
             onClick={() => setFilter('all')}
-            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
-              filter === 'all'
-                ? 'bg-blue-500 text-white'
-                : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
-            }`}
+            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'all'
+              ? 'bg-blue-500 text-white'
+              : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
+              }`}
           >
             All ({totalAgents})
           </button>
           <button
             onClick={() => setFilter('shared')}
-            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
-              filter === 'shared'
-                ? 'bg-blue-500 text-white'
-                : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
-            }`}
+            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'shared'
+              ? 'bg-blue-500 text-white'
+              : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
+              }`}
           >
             Shared ({sharedAgents.length})
           </button>
           <button
             onClick={() => setFilter('dedicated')}
-            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
-              filter === 'dedicated'
-                ? 'bg-blue-500 text-white'
-                : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
-            }`}
+            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'dedicated'
+              ? 'bg-blue-500 text-white'
+              : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
+              }`}
           >
             Dedicated ({dedicatedAgents.length})
           </button>
@@ -568,13 +566,13 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   const isCompleted = agent.status === 'completed';
                   const isError = agent.status === 'error';
                   const isIdle = agent.status === 'idle';
-                  
+
                   // Determine agent config based on ID
                   let accentColor = 'from-gray-400 to-gray-500';
                   let statusColor = 'gray';
                   let useLogo = false;
                   let logoSrc = null;
-                  
+
                   if (isGitManager) {
                     accentColor = 'from-indigo-500 to-blue-500';
                     statusColor = 'indigo';
@@ -591,134 +589,133 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   } else if (isDeployAgent) {
                     accentColor = 'from-violet-500 to-purple-600';
                     statusColor = 'violet';
+                    useLogo = true;
+                    logoSrc = cloudIcon;
                   } else if (isShared || isDedicated) {
                     accentColor = isShared ? 'from-emerald-400 to-green-500' : 'from-blue-500 to-indigo-500';
                     statusColor = isShared ? 'emerald' : 'blue';
                     useLogo = true;
                     logoSrc = nModLogo;
                   }
-                  
-                  const finalStatusColor = isRunning ? statusColor : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
-                  
-                  return (
-                  <div
-                    key={agent.id}
-                    className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
-                  >
-                    {/* Top accent bar */}
-                    <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accentColor}`}></div>
 
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        {/* Agent Icon/Logo */}
-                        <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-gray-50 border border-gray-200' : `bg-gradient-to-br ${
-                          isGitManager ? 'from-indigo-500 to-blue-600' :
-                          isMasterAgent ? 'from-fuchsia-500 to-rose-500' :
-                          isTestAgent ? 'from-amber-500 to-orange-600' :
-                          isDeployAgent ? 'from-violet-500 to-purple-600' :
-                          isShared ? 'from-emerald-400 to-green-600' :
-                          'from-blue-500 to-indigo-600'
-                        }`} flex items-center justify-center shadow-lg ${
-                          isGitManager ? 'shadow-indigo-200' :
-                          isMasterAgent ? 'shadow-gray-200' :
-                          isTestAgent ? 'shadow-gray-200' :
-                          isDeployAgent ? 'shadow-gray-200' :
-                          isShared ? 'shadow-emerald-200' :
-                          'shadow-blue-200'
-                        } ${useLogo ? 'p-1.5' : ''}`}>
-                          {useLogo && logoSrc ? (
-                            <img src={logoSrc} alt={agent.name || getNeutralAgentName(agent)} className="w-full h-full object-contain" />
-                          ) : isGitManager ? (
-                            <GitBranch className="w-5 h-5 text-white" />
-                          ) : isMasterAgent ? (
-                            <Bot className="w-5 h-5 text-white" />
-                          ) : isTestAgent ? (
-                            <Activity className="w-5 h-5 text-white" />
-                          ) : isDeployAgent ? (
-                            <Globe className="w-5 h-5 text-white" />
-                          ) : (
-                            getStatusIcon(agent.status)
-                          )}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-sm font-bold text-app-text-main">
-                              {agent.name || getNeutralAgentName(agent)}
-                            </h4>
-                            {(isShared || isDedicated) && (
-                              <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${
-                                isShared
-                                  ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
-                                  : 'bg-blue-100 text-blue-700 border border-blue-200'
-                              }`}>
-                                {isShared ? 'Shared' : 'Dedicated'}
-                              </span>
+                  const finalStatusColor = isRunning ? statusColor : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
+
+                  return (
+                    <div
+                      key={agent.id}
+                      className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
+                    >
+                      {/* Top accent bar */}
+                      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accentColor}`}></div>
+
+                      <div className="flex items-start justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                          {/* Agent Icon/Logo */}
+                          <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-gray-50 border border-gray-200' : `bg-gradient-to-br ${isGitManager ? 'from-indigo-500 to-blue-600' :
+                            isMasterAgent ? 'from-fuchsia-500 to-rose-500' :
+                              isTestAgent ? 'from-amber-500 to-orange-600' :
+                                isDeployAgent ? 'from-violet-500 to-purple-600' :
+                                  isShared ? 'from-emerald-400 to-green-600' :
+                                    'from-blue-500 to-indigo-600'
+                            }`} flex items-center justify-center shadow-lg ${isGitManager ? 'shadow-indigo-200' :
+                              isMasterAgent ? 'shadow-gray-200' :
+                                isTestAgent ? 'shadow-gray-200' :
+                                  isDeployAgent ? 'shadow-gray-200' :
+                                    isShared ? 'shadow-emerald-200' :
+                                      'shadow-blue-200'
+                            } ${useLogo ? 'p-1.5' : ''}`}>
+                            {useLogo && logoSrc ? (
+                              <img src={logoSrc} alt={agent.name || getNeutralAgentName(agent)} className="w-full h-full object-contain" />
+                            ) : isGitManager ? (
+                              <GitBranch className="w-5 h-5 text-white" />
+                            ) : isMasterAgent ? (
+                              <Bot className="w-5 h-5 text-white" />
+                            ) : isTestAgent ? (
+                              <Activity className="w-5 h-5 text-white" />
+                            ) : isDeployAgent ? (
+                              <Globe className="w-5 h-5 text-white" />
+                            ) : (
+                              getStatusIcon(agent.status)
                             )}
                           </div>
-                          <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-app-text-main">
+                                {agent.name || getNeutralAgentName(agent)}
+                              </h4>
+                              {(isShared || isDedicated) && (
+                                <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${isShared
+                                  ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                  : 'bg-blue-100 text-blue-700 border border-blue-200'
+                                  }`}>
+                                  {isShared ? 'Shared' : 'Dedicated'}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1.5">
-                          {isRunning && (
-                            <span className="relative flex h-2.5 w-2.5">
-                              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full bg-${finalStatusColor}-400 opacity-75`}></span>
-                              <span className={`relative inline-flex rounded-full h-2.5 w-2.5 bg-${finalStatusColor}-500`}></span>
-                            </span>
-                          )}
-                          <span className={`text-[10px] font-bold text-${finalStatusColor}-${isIdle ? '500' : '600'}`}>
-                            {agent.status?.toUpperCase() || 'IDLE'}
-                          </span>
-                        </div>
-                        {/* Delete Button - Only for dedicated agents */}
-                        {isDedicated && (
-                          <button
-                            onClick={() => handleDeleteAgent(agent.id)}
-                            disabled={deletingId === agent.id}
-                            className="p-1.5 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Delete dedicated agent"
-                          >
-                            {deletingId === agent.id ? (
-                              <RefreshCw className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-4 h-4" />
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5">
+                            {isRunning && (
+                              <span className="relative flex h-2.5 w-2.5">
+                                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full bg-${finalStatusColor}-400 opacity-75`}></span>
+                                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 bg-${finalStatusColor}-500`}></span>
+                              </span>
                             )}
-                          </button>
-                        )}
+                            <span className={`text-[10px] font-bold text-${finalStatusColor}-${isIdle ? '500' : '600'}`}>
+                              {agent.status?.toUpperCase() || 'IDLE'}
+                            </span>
+                          </div>
+                          {/* Delete Button - Only for dedicated agents */}
+                          {isDedicated && (
+                            <button
+                              onClick={() => handleDeleteAgent(agent.id)}
+                              disabled={deletingId === agent.id}
+                              className="p-1.5 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Delete dedicated agent"
+                            >
+                              {deletingId === agent.id ? (
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                        </div>
                       </div>
+
+                      {/* Progress indicator if running */}
+                      {isRunning && agent.progress > 0 && (
+                        <div className="mb-3">
+                          <div className="flex justify-between text-[10px] text-app-text-light mb-1">
+                            <span className="truncate max-w-[180px]">{agent.progress_message || 'Processing...'}</span>
+                            <span className={`font-bold text-${statusColor}-600`}>{agent.progress}%</span>
+                          </div>
+                          <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
+                            <div className={`bg-gradient-to-r ${accentColor} h-1.5 rounded-full transition-all duration-1000 ease-out`} style={{ width: `${agent.progress}%` }}></div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Additional Details */}
+                      {agent.progress_message && !isRunning && (
+                        <div className="mt-3 pt-3 border-t border-app-border-light/30">
+                          <p className="text-sm text-app-text-muted flex items-center">
+                            <Activity className="w-3 h-3 mr-2" />
+                            {agent.progress_message}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Last Run Info */}
+                      {agent.last_run && (
+                        <div className="mt-2 text-xs text-app-text-muted flex items-center">
+                          <Clock className="w-3 h-3 mr-1" />
+                          Last run: {new Date(agent.last_run).toLocaleString()}
+                        </div>
+                      )}
                     </div>
-
-                    {/* Progress indicator if running */}
-                    {isRunning && agent.progress > 0 && (
-                      <div className="mb-3">
-                        <div className="flex justify-between text-[10px] text-app-text-light mb-1">
-                          <span className="truncate max-w-[180px]">{agent.progress_message || 'Processing...'}</span>
-                          <span className={`font-bold text-${statusColor}-600`}>{agent.progress}%</span>
-                        </div>
-                        <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
-                          <div className={`bg-gradient-to-r ${accentColor} h-1.5 rounded-full transition-all duration-1000 ease-out`} style={{ width: `${agent.progress}%` }}></div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Additional Details */}
-                    {agent.progress_message && !isRunning && (
-                      <div className="mt-3 pt-3 border-t border-app-border-light/30">
-                        <p className="text-sm text-app-text-muted flex items-center">
-                          <Activity className="w-3 h-3 mr-2" />
-                          {agent.progress_message}
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Last Run Info */}
-                    {agent.last_run && (
-                      <div className="mt-2 text-xs text-app-text-muted flex items-center">
-                        <Clock className="w-3 h-3 mr-1" />
-                        Last run: {new Date(agent.last_run).toLocaleString()}
-                      </div>
-                    )}
-                  </div>
                   );
                 })
               ) : (
