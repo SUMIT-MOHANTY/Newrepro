@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
     ArrowRight,
     CalendarDays,
@@ -12,6 +13,7 @@ import {
     Sparkles,
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+import { upsertDraftProject } from '../utils/draftProjects';
 
 const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
@@ -312,6 +314,8 @@ export default function TaskCreation({
     const token = localStorage.getItem('token');
 
     const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(false);
+    const [taskToken, setTaskToken] = useState(null);
+    const [isResolvingTaskToken, setIsResolvingTaskToken] = useState(false);
 
     const [projectDeadline, setProjectDeadline] = useState('');
     const [sprints, setSprints] = useState([]);
@@ -406,6 +410,7 @@ export default function TaskCreation({
         setTaskTotalCount(0);
         setError('');
         setSuccess('');
+        setTaskToken(null);
     }, [selectedProjectKey]);
 
     useEffect(() => {
@@ -456,6 +461,48 @@ export default function TaskCreation({
         return fetchedToken;
     }, [selectedProjectKey, selectedProject]);
 
+    // Resolve task token on mount and when project changes
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setTaskToken(null);
+            setIsResolvingTaskToken(false);
+            return;
+        }
+
+        setIsResolvingTaskToken(true);
+        resolveTaskToken()
+            .then((token) => {
+                setTaskToken(token);
+            })
+            .catch((err) => {
+                console.error('Failed to resolve task token:', err);
+                setTaskToken(null);
+            })
+            .finally(() => {
+                setIsResolvingTaskToken(false);
+            });
+    }, [selectedProjectKey, resolveTaskToken]);
+
+    // Fetch project info whenever task token is available
+    const { data: projectInfo = null, isFetching: isLoadingProjectInfo } = useQuery({
+        queryKey: ['projectInfo', selectedProjectKey, taskToken],
+        queryFn: async () => {
+            const headers = { 'Authorization': `Bearer ${token}` };
+            if (taskToken) headers['x-task-token'] = taskToken;
+            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
+            if (!res.ok) throw new Error('Failed to fetch project info');
+            return await res.json();
+        },
+        enabled: !!token && !!taskToken && !!selectedProjectKey,
+    });
+
+    // Update project deadline from project info when available
+    useEffect(() => {
+        if (projectInfo?.deadline) {
+            setProjectDeadline(projectInfo.deadline);
+        }
+    }, [projectInfo]);
+
     const loadData = useCallback(async () => {
         if (!selectedProjectKey) {
             setHasCompletedInitialBootstrap(true);
@@ -478,13 +525,49 @@ export default function TaskCreation({
             return null;
         } finally {
             setIsLoading(false);
-            setHasCompletedInitialBootstrap(true);
         }
     }, [selectedProjectKey, hydrateGeneratedPlan]);
 
+    // Load data when project key changes
     useEffect(() => {
         loadData();
     }, [loadData]);
+
+    // Mark bootstrap as complete only when project info is loaded (or if no project selected)
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setHasCompletedInitialBootstrap(true);
+            return;
+        }
+        
+        const hasClientCredentials = selectedProject?.client_id && selectedProject?.client_secret;
+        
+        // Determine what we're waiting for:
+        const waitingForToken = hasClientCredentials && isResolvingTaskToken;
+        const waitingForProjectInfo = hasClientCredentials && taskToken && isLoadingProjectInfo;
+        const waitingForData = isLoading;
+        
+        // If we're not waiting for anything, check if we can complete bootstrap
+        if (!waitingForToken && !waitingForData) {
+            if (hasClientCredentials) {
+                // Need to wait for project info if we have a task token
+                if (taskToken) {
+                    // Project info query is enabled and has completed (either success or error)
+                    // isLoadingProjectInfo will be false when query completes (even on error)
+                    if (!isLoadingProjectInfo) {
+                        setHasCompletedInitialBootstrap(true);
+                    }
+                } else if (!isResolvingTaskToken) {
+                    // Token resolution failed or not available, but we tried
+                    // Allow to continue (project info will fail but that's okay)
+                    setHasCompletedInitialBootstrap(true);
+                }
+            } else {
+                // No client credentials, no need to fetch project info
+                setHasCompletedInitialBootstrap(true);
+            }
+        }
+    }, [selectedProjectKey, taskToken, projectInfo, isResolvingTaskToken, isLoadingProjectInfo, isLoading, selectedProject]);
 
     useEffect(() => {
         if (!isGenerating) {
@@ -542,9 +625,117 @@ export default function TaskCreation({
         setLiveCreatedTaskCount(0);
 
         try {
-            const taskToken = await resolveTaskToken();
+            // Check if project has credentials, if not try to create it first
+            let taskToken = await resolveTaskToken();
+            
             if (!taskToken) {
-                throw new Error('Task token is required before uploading generated tasks.');
+                // If no credentials, try to create the project first to get credentials
+                const clientId = selectedProject?.client_id;
+                const clientSecret = selectedProject?.client_secret;
+                
+                if (!clientId || !clientSecret) {
+                    // Try to create the project using a default/global task token
+                    try {
+                        // Use environment variables or default credentials to get a task token for project creation
+                        const defaultClientId = import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
+                        const defaultClientSecret = import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
+                        
+                        const defaultTokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                client_id: defaultClientId, 
+                                client_secret: defaultClientSecret 
+                            }),
+                        });
+                        
+                        if (defaultTokenRes.ok) {
+                            const defaultTokenData = await defaultTokenRes.json();
+                            const defaultTaskToken = defaultTokenData?.access;
+                            
+                            if (defaultTaskToken) {
+                                // Create the project
+                                const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+                                const projName = selectedProject?.name || 'New AI Project';
+                                
+                                const createProjectResponse = await fetch(projectCreationUrl, {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        Authorization: `Bearer ${token}`,
+                                        'x-task-token': defaultTaskToken,
+                                    },
+                                    body: JSON.stringify({
+                                        name: projName,
+                                        deadline: projectDeadline || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                                        project_wallet: 1000,
+                                        team: [24],
+                                        project_token: selectedProjectKey
+                                    }),
+                                });
+                                
+                                if (createProjectResponse.ok) {
+                                    const createdProject = await createProjectResponse.json().catch(() => ({}));
+                                    const projectApplication = createdProject?.project_application || null;
+                                    
+                                    if (projectApplication?.client_id && projectApplication?.client_secret) {
+                                        // Update the project with new credentials
+                                        upsertDraftProject({
+                                            key: selectedProjectKey,
+                                            name: projName,
+                                            client_id: projectApplication.client_id,
+                                            client_secret: projectApplication.client_secret,
+                                        });
+                                        
+                                        // Use the new credentials to get the task token
+                                        const newTokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ 
+                                                client_id: projectApplication.client_id, 
+                                                client_secret: projectApplication.client_secret 
+                                            }),
+                                        });
+                                        
+                                        if (newTokenRes.ok) {
+                                            const newTokenData = await newTokenRes.json();
+                                            taskToken = newTokenData?.access;
+                                            if (taskToken) {
+                                                cacheTaskToken(selectedProjectKey, taskToken);
+                                                setTaskToken(taskToken);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (createError) {
+                        console.error('Failed to create project:', createError);
+                    }
+                }
+            }
+            
+            if (!taskToken) {
+                throw new Error('Task token is required. Please ensure the project has been created in the task management system with valid credentials.');
+            }
+
+            // Fetch project info if not already available
+            if (!projectInfo) {
+                try {
+                    const headers = { 'Authorization': `Bearer ${token}` };
+                    if (taskToken) headers['x-task-token'] = taskToken;
+                    const projectInfoRes = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
+                    if (projectInfoRes.ok) {
+                        const fetchedProjectInfo = await projectInfoRes.json();
+                        // Update project deadline from fetched info
+                        if (fetchedProjectInfo?.deadline) {
+                            setProjectDeadline(fetchedProjectInfo.deadline);
+                        }
+                    }
+                } catch (projectInfoError) {
+                    // Log but don't fail - project info fetch is not critical for task creation
+                    console.warn('Failed to fetch project info, continuing with task creation:', projectInfoError);
+                }
             }
 
             const headers = {
@@ -615,7 +806,7 @@ export default function TaskCreation({
         } finally {
             setIsGenerating(false);
         }
-    }, [selectedProjectKey, buildHeaders, customRules, hydrateGeneratedPlan, resolveTaskToken]);
+    }, [selectedProjectKey, selectedProject, buildHeaders, customRules, hydrateGeneratedPlan, resolveTaskToken, projectInfo, token, projectDeadline]);
 
     useEffect(() => {
         const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
@@ -659,7 +850,12 @@ export default function TaskCreation({
         }
     };
 
-    const showInitialProjectLoader = Boolean(selectedProjectKey) && !hasCompletedInitialBootstrap && isLoading;
+    const showInitialProjectLoader = Boolean(selectedProjectKey) && (
+        !hasCompletedInitialBootstrap || 
+        isLoading || 
+        isResolvingTaskToken || 
+        isLoadingProjectInfo
+    );
 
     if (showInitialProjectLoader) {
         return (
@@ -671,10 +867,16 @@ export default function TaskCreation({
                         </div>
                         <h3 className="mt-4 text-lg font-extrabold text-slate-900">Loading Task Creation</h3>
                         <p className="mt-2 text-sm text-slate-600">
-                            Loading the local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.
+                            {isResolvingTaskToken || isLoadingProjectInfo 
+                                ? <>Fetching project information for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.</>
+                                : <>Loading the local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.</>
+                            }
                         </p>
                         <p className="mt-1 text-xs text-slate-500">
-                            The page will open as soon as the saved preview is ready.
+                            {isResolvingTaskToken || isLoadingProjectInfo 
+                                ? 'Please wait while we fetch the project details...'
+                                : 'The page will open as soon as the saved preview is ready.'
+                            }
                         </p>
                     </div>
                 </div>
