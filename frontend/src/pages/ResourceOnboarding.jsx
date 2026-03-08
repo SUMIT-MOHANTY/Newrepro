@@ -308,10 +308,17 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <button
-              type="button"
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => setAgentType('shared')}
-              className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-2 transition-all ${
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setAgentType('shared');
+                }
+              }}
+              className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-2 transition-all cursor-pointer ${
                 agentType === 'shared'
                   ? 'border-emerald-500 bg-emerald-50/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
                   : 'border-app-border-light bg-app-bg-muted hover:border-emerald-400 hover:bg-emerald-50/40'
@@ -371,12 +378,19 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                   </button>
                 </div>
               </div>
-            </button>
+            </div>
 
-            <button
-              type="button"
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => setAgentType('dedicated')}
-              className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-2 transition-all ${
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setAgentType('dedicated');
+                }
+              }}
+              className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-2 transition-all cursor-pointer ${
                 agentType === 'dedicated'
                   ? 'border-emerald-500 bg-emerald-50/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
                   : 'border-app-border-light bg-app-bg-muted hover:border-emerald-400 hover:bg-emerald-50/40'
@@ -436,7 +450,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                   </button>
                 </div>
               </div>
-            </button>
+            </div>
           </div>
 
           {existingError && (

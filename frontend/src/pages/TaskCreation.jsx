@@ -1095,18 +1095,24 @@ export default function TaskCreation({
                         </div>
                         <button
                             onClick={handleMasterCreate}
-                            disabled={!selectedProjectKey || isGenerating}
-                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating)
+                            disabled={!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true}
+                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true)
                                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                                 : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
                                 }`}
                         >
                             {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                            {isGenerating ? 'Creating Plan...' : 'Create Tasks (AI Auto Plan)'}
+                            {isGenerating ? 'Creating Plan...' : projectInfo?.tasks_created === true ? 'Tasks Already Created' : 'Create Tasks (AI Auto Plan)'}
                         </button>
                         {!selectedProjectKey && (
                             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                                 No project selected. Select a project from the sidebar or top project dropdown.
+                            </p>
+                        )}
+                        {selectedProjectKey && projectInfo?.tasks_created === true && (
+                            <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                                <span>Tasks have already been created for this project. You can view them below or refresh to see the latest tasks.</span>
                             </p>
                         )}
                         {/* {selectedProjectKey && (

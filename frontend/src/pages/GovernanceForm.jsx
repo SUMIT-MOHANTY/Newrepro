@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_ENDPOINTS } from '../config';
-import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check } from 'lucide-react';
+import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2 } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
 import colors from '../styles/colors';
 import { createDraftProject, getDraftProject, upsertDraftProject } from '../utils/draftProjects';
@@ -140,6 +140,7 @@ const GovernanceForm = ({
     const [error, setError] = useState('');
     const [result, setResult] = useState(null);
     const [isHydrated, setIsHydrated] = useState(false);
+    const [isCreatingProject, setIsCreatingProject] = useState(false);
     const skipOption = { label: 'Skip', score: 0 };
 
     // Step state: 0 = Project Name page, 1…N = dimension steps, N+1 = review
@@ -458,33 +459,39 @@ const GovernanceForm = ({
     };
 
     const continueToScreening = async () => {
-        // CRITICAL: Always check draft project FIRST to preserve credentials
-        const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
-        const existingDraft = getDraftProject(projectKeyToUse);
+        setIsCreatingProject(true);
+        setError('');
         
-        // Preserve existing credentials from draft project (most reliable source)
-        const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
-        const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
-        
-        // First create/update draft project - PRESERVE existing credentials
-        const draftProject = upsertDraftProject(createDraftProject(projectName, {
-            key: projectKeyToUse,
-            client_id: existingClientId || null,
-            client_secret: existingClientSecret || null,
-        }));
-
-        if (!draftProject?.projectToken) {
-            setError('Unable to create the project. Please try again.');
-            return;
-        }
-
-        // Create project in external task management system via API
         try {
-            const token = localStorage.getItem('token');
-            if (!token) {
-                setError('Authentication required. Please login again.');
+            // CRITICAL: Always check draft project FIRST to preserve credentials
+            const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
+            const existingDraft = getDraftProject(projectKeyToUse);
+            
+            // Preserve existing credentials from draft project (most reliable source)
+            const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
+            const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
+            
+            // First create/update draft project - PRESERVE existing credentials
+            const draftProject = upsertDraftProject(createDraftProject(projectName, {
+                key: projectKeyToUse,
+                client_id: existingClientId || null,
+                client_secret: existingClientSecret || null,
+            }));
+
+            if (!draftProject?.projectToken) {
+                setError('Unable to create the project. Please try again.');
+                setIsCreatingProject(false);
                 return;
             }
+
+            // Create project in external task management system via API
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) {
+                    setError('Authentication required. Please login again.');
+                    setIsCreatingProject(false);
+                    return;
+                }
 
             // Get default task token for project creation
             const defaultClientId = import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
@@ -570,26 +577,30 @@ const GovernanceForm = ({
             console.warn('Failed to create project in external system, continuing with draft project:', err);
         }
 
-        // Wait a bit to ensure credentials are saved before navigation
-        await new Promise(resolve => setTimeout(resolve, 100));
+            // Wait a bit to ensure credentials are saved before navigation
+            await new Promise(resolve => setTimeout(resolve, 100));
 
-        try {
-            localStorage.setItem(projectStorageKey, draftProject.key);
-        } catch {
-            // Ignore storage access errors in restricted browser contexts.
-        }
-
-        setSelectedProjectKey?.(draftProject.key);
-        setIsNewProjectMode?.(false);
-
-        const targetPath = `/a/${draftProject.projectToken}`;
-        navigate(targetPath, { replace: true });
-
-        window.setTimeout(() => {
-            if (window.location.pathname !== targetPath) {
-                window.location.assign(targetPath);
+            try {
+                localStorage.setItem(projectStorageKey, draftProject.key);
+            } catch {
+                // Ignore storage access errors in restricted browser contexts.
             }
-        }, 0);
+
+            setSelectedProjectKey?.(draftProject.key);
+            setIsNewProjectMode?.(false);
+
+            const targetPath = `/a/${draftProject.projectToken}`;
+            navigate(targetPath, { replace: true });
+
+            window.setTimeout(() => {
+                if (window.location.pathname !== targetPath) {
+                    window.location.assign(targetPath);
+                }
+            }, 0);
+        } catch (err) {
+            setError(err.message || 'Failed to create project. Please try again.');
+            setIsCreatingProject(false);
+        }
     };
 
     const goNext = () => {
@@ -921,14 +932,23 @@ const GovernanceForm = ({
             <button
                 type="button"
                 onClick={goNext}
-                disabled={!canProceed()}
-                className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${canProceed()
+                disabled={!canProceed() || isCreatingProject}
+                className={`inline-flex items-center gap-1.5 py-2.5 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${canProceed() && !isCreatingProject
                     ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-[0.97] shadow-blue-200/50'
                     : 'bg-gray-300 cursor-not-allowed shadow-none'
                     }`}
             >
-                {!isGovernanceQuestionsPage ? 'Continue to Screening' : currentStep === dimensions.length ? 'Review' : 'Next'}
-                <ChevronRight className="w-4 h-4" />
+                {isCreatingProject ? (
+                    <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Creating Project...</span>
+                    </>
+                ) : (
+                    <>
+                        {!isGovernanceQuestionsPage ? 'Continue to Screening' : currentStep === dimensions.length ? 'Review' : 'Next'}
+                        <ChevronRight className="w-4 h-4" />
+                    </>
+                )}
             </button>
         )}
         {isDimensionStep && (
