@@ -645,6 +645,71 @@ export default function AgentAnalysis({
         loadAnalysis();
     }, [selectedProjectKey, selectedProject, projectsLoading, token, hasGovernanceAssessment, triggerPendingAnalysis, location.pathname]);
 
+    const handleRefineAnalysis = async () => {
+        let feedbackToSend = userFeedback;
+
+        if (aiQuestions.length > 0) {
+            feedbackToSend = aiQuestions.map((q, i) => {
+                const ans = userAnswers[i] || 'No answer provided';
+                return `Q: ${q}\nA: ${ans}`;
+            }).join('\n\n');
+
+            if (userFeedback.trim()) {
+                feedbackToSend += `\n\nAdditional Comments:\n${userFeedback}`;
+            }
+        }
+
+        if (!result?.extraction?.markdown || !feedbackToSend.trim()) return;
+
+        setProcessing(true);
+        setError('');
+        setProgress(20);
+        setProgressMessage('Submitting feedback and refinements...');
+
+        const token = localStorage.getItem('token');
+        
+        // Get AI config from localStorage
+        const aiConfigStr = localStorage.getItem('aiConfig');
+        let aiConfig = { apiUrl: '', apiKey: '', model: '', stream: false };
+        if (aiConfigStr) {
+            try {
+                aiConfig = JSON.parse(aiConfigStr);
+            } catch {}
+        }
+
+        const aiPayload = {
+            document_content: repoContext
+                ? `${result.extraction.markdown}\n\n${repoContext.context}`
+                : result.extraction.markdown,
+            api_url: aiConfig?.apiUrl || undefined,
+            api_key: aiConfig?.apiKey || undefined,
+            model: aiConfig?.model || undefined,
+            stream: aiConfig?.stream || false,
+            user_feedback: feedbackToSend,
+            governance_context: governanceContext || undefined
+        };
+
+        try {
+            if (aiConfig?.stream || false) {
+                await streamAnalysisRef.current(aiPayload, token, result, {
+                    repoContext: repoContext,
+                    governanceContext: governanceContext,
+                });
+            } else {
+                setProgress(70);
+                setProgressMessage('Generating refined analysis report...');
+                await fetchAnalysisRef.current(aiPayload, token, result, {
+                    repoContext: repoContext,
+                    governanceContext: governanceContext,
+                });
+            }
+        } catch (err) {
+            setError(err.message || 'Failed to refine analysis');
+        } finally {
+            setProcessing(false);
+        }
+    };
+
     const handleDownloadPDF = () => {
         navigate('/dashboard');
     };
@@ -915,6 +980,26 @@ export default function AgentAnalysis({
                                                 <p className="text-xs text-app-text-muted italic">No clarification questions at this time.</p>
                                             );
                                         })()}
+
+                                        <div className="mt-6 pt-4 border-t border-app-border-light">
+                                            <label className="block text-xs font-medium text-app-text-label mb-2">Additional Context</label>
+                                            <textarea
+                                                value={userFeedback}
+                                                onChange={(e) => setUserFeedback(e.target.value)}
+                                                placeholder="Any other details..."
+                                                className="w-full p-3 border border-app-border rounded-lg focus:ring-app-primary focus:border-app-primary min-h-[80px] text-xs bg-app-bg-page resize-none"
+                                            />
+                                            <button
+                                                onClick={handleRefineAnalysis}
+                                                disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
+                                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
+                                                    ? 'bg-gray-400 cursor-not-allowed'
+                                                    : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
+                                                    }`}
+                                            >
+                                                {processing ? 'Refining...' : 'Update Analysis'}
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
