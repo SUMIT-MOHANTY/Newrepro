@@ -570,12 +570,8 @@ export default function AppLayout({ children }) {
 
     // Drive the active roadmap step from the frontend route (UI-only logic)
     // BUT: If we have server roadmap data, use the server's current_step instead
+    // EXCEPT: When on specific pages (governance, agent-analysis), always show that page's step
     const forcedRoadmapStepIndex = useMemo(() => {
-        // If we have server roadmap data, use it instead of computing from route
-        if (hasServerRoadmap && roadmapData?.current_step !== undefined && roadmapData?.current_step !== null) {
-            return roadmapData.current_step;
-        }
-
         const path = location.pathname;
 
         // Dummy reference to satisfy linter and ensure memo updates on storage event
@@ -590,6 +586,7 @@ export default function AppLayout({ children }) {
             return i === -1 ? null : i;
         };
 
+        // Priority 1: Check current route first - specific pages should always show their step
         if (path === '/new-project' || path.startsWith('/new-project/')) {
             if (path.startsWith('/new-project/governance')) {
                 return idx('Governance') ?? 2;
@@ -624,9 +621,15 @@ export default function AppLayout({ children }) {
             return hasSelectedProjectGovernance ? agentIdx : reqIdx;
         }
         
+        // Agent Analysis page should always show Agent Analysis as active
         if (path === '/agent-analysis') {
             const agentIdx = idx('Agent Analysis') ?? 3;
             return agentIdx;
+        }
+
+        // Priority 2: If we have server roadmap data and no specific route match, use server's current_step
+        if (hasServerRoadmap && roadmapData?.current_step !== undefined && roadmapData?.current_step !== null) {
+            return roadmapData.current_step;
         }
 
         return null;
