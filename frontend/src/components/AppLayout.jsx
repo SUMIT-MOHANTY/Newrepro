@@ -800,13 +800,13 @@ export default function AppLayout({ children }) {
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
                 {/* Global Top Navbar */}
-                <header className="bg-[#1c355e] text-app-bg-card px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-[250] shrink-0">
+                <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-[250] shrink-0">
                     <div className="flex items-center gap-3 md:gap-4 w-full">
                         {!isSidebarOpen && (
                             <button
                                 type="button"
                                 onClick={() => setIsSidebarOpen(true)}
-                                className="p-1.5 md:p-2 bg-app-bg-card/10 hover:bg-app-bg-card/20 rounded-md shadow-sm text-app-bg-muted hover:text-app-bg-card transition-colors border border-app-bg-card/20 cursor-pointer flex-shrink-0"
+                                className="p-1.5 md:p-2 bg-white/10 hover:bg-white/20 rounded-md shadow-sm text-white/80 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
                                 aria-label="Open menu"
                             >
                                 <Menu className="w-4 h-4 md:w-5 md:h-5" />
@@ -824,7 +824,7 @@ export default function AppLayout({ children }) {
                                                         currentView === 'agentAnalysis' ? 'Agent Analysis' :
                                                             'Requirements Analyzer'}
                                 </h1>
-                                <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
+                                <h2 className="text-[10px] md:text-sm italic text-white/60 mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
                                         currentView === 'governance' ? 'Project initiation and late-stage governance review' :
@@ -837,7 +837,7 @@ export default function AppLayout({ children }) {
                             </div>
 
                             {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
-                                <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-app-bg-card/10 p-1.5 rounded-lg border border-app-bg-card/20">
+                                <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                     {currentView === 'statusDashboard' && (
                                         <>
                                             <div className="w-48">
@@ -848,7 +848,7 @@ export default function AppLayout({ children }) {
                                                     theme="dark"
                                                 />
                                             </div>
-                                            <div className="w-px h-5 bg-app-bg-card/20"></div>
+                                            <div className="w-px h-5 bg-white/20"></div>
                                         </>
                                     )}
                                     <div className="w-48 sm:w-56">
@@ -880,7 +880,7 @@ export default function AppLayout({ children }) {
                             <button
                                 type="button"
                                 onClick={() => setIsDarkMode(!isDarkMode)}
-                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-app-bg-card hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-app-bg-card/20 flex-shrink-0 cursor-pointer"
+                                className="p-1.5 md:p-2 ml-4 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0 cursor-pointer"
                                 aria-label="Toggle Dark Mode"
                             >
                                 {isDarkMode ? <Sun className="w-4 h-4 md:w-5 md:h-5" /> : <Moon className="w-4 h-4 md:w-5 md:h-5" />}

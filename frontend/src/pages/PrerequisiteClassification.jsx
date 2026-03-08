@@ -1106,19 +1106,19 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 </button>
 
                 {/* ── HERO HEADER ── */}
-                <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-app-hero-bg via-app-hero-bg to-app-sidebar-bg text-app-bg-card p-6 sm:p-8 shadow-xl mb-6">
+                <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-app-hero-bg via-app-hero-bg to-app-sidebar-bg text-white p-6 sm:p-8 shadow-xl mb-6">
                     <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center gap-5">
-                        <div className="bg-app-bg-card/10 backdrop-blur-sm rounded-2xl p-4 flex-shrink-0">
+                        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 flex-shrink-0">
                             <KeyRound className="w-12 h-12 text-amber-400" />
                         </div>
                         <div className="flex-1 min-w-0">
-                            <p className="text-app-bg-card/60 text-xs font-semibold uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                            <p className="text-white/60 text-xs font-semibold uppercase tracking-widest mb-1 flex items-center gap-1.5">
                                 <Sparkles className="w-3 h-3" /> AI-Generated Prerequisites
                             </p>
                             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-1">
                                 Prerequisite Classification
                             </h1>
-                            <p className="text-app-bg-card/70 text-sm">
+                            <p className="text-white/70 text-sm">
                                 {projectName ? `For "${projectName}" — ` : ''}
                                 Review and confirm the prerequisites identified from your BRD analysis.
                             </p>
@@ -1137,16 +1137,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     />
                                 </svg>
                                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                                    <span className="text-xl font-extrabold text-app-bg-card">{progress}%</span>
-                                    <span className="text-[9px] font-semibold text-app-bg-card/50 uppercase">Done</span>
+                                    <span className="text-xl font-extrabold text-white">{progress}%</span>
+                                    <span className="text-[9px] font-semibold text-white/50 uppercase">Done</span>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     {/* Decorative circles */}
-                    <div className="absolute -top-10 -right-10 w-40 h-40 bg-app-bg-card/5 rounded-full" />
-                    <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-app-bg-card/5 rounded-full" />
+                    <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/5 rounded-full" />
+                    <div className="absolute -bottom-8 -left-8 w-32 h-32 bg-white/5 rounded-full" />
                 </div>
 
                 {/* ── PROGRESS BAR (mobile) ── */}
