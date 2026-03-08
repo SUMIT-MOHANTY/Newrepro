@@ -2178,7 +2178,7 @@ const renderAgentCard = (agent) => {
                                             </div>
                                             <div className="flex items-center flex-wrap gap-2 lg:justify-end">
                                                 <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
-                                                    {taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length} Available Tasks
+                                                    {totalTaskCount} Available Tasks
                                                 </span>
                                                 <button
                                                     onClick={() => handleRunAll()}
