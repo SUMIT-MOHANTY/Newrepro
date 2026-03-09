@@ -40,11 +40,11 @@ export default function ProjectDropdown({
 
     const getStatusColor = (status) => {
         switch (status) {
-            case 'analysis_complete': return 'bg-emerald-500';
+            case 'analysis_complete': return 'bg-app-status-success';
             case 'screening_complete': return 'bg-sky-500';
             case 'ready_for_upload': return 'bg-amber-400';
-            case 'processing': return 'bg-blue-500';
-            default: return 'bg-gray-400';
+            case 'processing': return 'bg-app-primary';
+            default: return 'bg-app-text-light';
         }
     };
 
@@ -72,18 +72,18 @@ export default function ProjectDropdown({
                     text-sm font-semibold
                     shadow-sm
                     transition-all duration-200 ease-in-out
-                    focus:outline-none focus:ring-2 focus:ring-white/30
+                    focus:outline-none focus:ring-2 focus:ring-white/20
                     ${isOpen && theme === 'dark' ? 'bg-white/10' : ''}
-                    ${isOpen && theme !== 'dark' ? 'border-blue-400 ring-4 ring-blue-100 shadow-md' : ''}
+                    ${isOpen && theme !== 'dark' ? 'border-blue-400 ring-4 ring-app-primary-light shadow-md' : ''}
                 `}
             >
                 <div className="flex items-center gap-2 min-w-0">
-                    <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 shadow-sm ${theme === 'dark' ? 'bg-white/10' : 'bg-gradient-to-br from-blue-500 to-indigo-600'}`}>
-                        <FolderOpen className="w-3 h-3 text-white" />
+                    <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 shadow-sm ${theme === 'dark' ? 'bg-white/10' : 'bg-gradient-to-br from-app-primary to-app-primary'}`}>
+                        <FolderOpen className={`w-3 h-3 ${theme === 'dark' ? 'text-white' : 'text-app-bg-card'}`} />
                     </div>
                     <div className="text-left min-w-0">
                         <p className={`text-[10px] font-medium leading-none mb-0.5 ${theme === 'dark' ? 'text-white/70' : 'text-app-text-light'}`}>Project</p>
-                        <p className={`text-xs font-bold truncate leading-tight ${theme === 'dark' ? 'text-white' : 'text-gray-800'}`}>
+                        <p className={`text-xs font-bold truncate leading-tight ${theme === 'dark' ? 'text-white' : 'text-app-text-main'}`}>
                             {selectedProject?.name || 'Select a project'}
                         </p>
                     </div>
@@ -97,7 +97,7 @@ export default function ProjectDropdown({
                     style={{ maxHeight: '340px' }}
                 >
                     {projects.length > 3 && (
-                        <div className="p-2.5 border-b border-app-border-light">
+                        <div className="p-2.5 border-b border-app-border">
                             <div className="relative">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-app-text-light" />
                                 <input
@@ -106,7 +106,7 @@ export default function ProjectDropdown({
                                     value={search}
                                     onChange={(e) => setSearch(e.target.value)}
                                     placeholder="Search projects..."
-                                    className="w-full pl-9 pr-3 py-2 text-sm bg-app-bg-page border border-app-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300 focus:bg-app-bg-card placeholder:text-app-text-light text-gray-800 font-medium transition-all"
+                                    className="w-full pl-9 pr-3 py-2 text-sm bg-app-bg-page border border-app-border rounded-lg focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-blue-300 focus:bg-app-bg-card placeholder:text-app-text-light text-app-text-main font-medium transition-all"
                                 />
                             </div>
                         </div>
@@ -122,7 +122,7 @@ export default function ProjectDropdown({
                                 const isSelected = project.key === selectedKey;
                                 const canDelete = Boolean(project.projectToken || project.governanceResultId);
                                 return (
-                                    <div key={project.key} className="flex items-stretch border-l-3 border-l-transparent hover:bg-app-bg-page">
+                                    <div key={project.key} className="flex items-stretch border-l-3 border-l-transparent hover:bg-app-bg-hover">
                                         <button
                                             type="button"
                                             onClick={() => {
@@ -139,11 +139,11 @@ export default function ProjectDropdown({
                                             `}
                                         >
                                             <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 shadow-sm ${isSelected
-                                                ? 'bg-gradient-to-br from-blue-500 to-indigo-600'
-                                                : 'bg-gradient-to-br from-gray-200 to-gray-300'
+                                                ? 'bg-gradient-to-br from-app-primary to-app-primary'
+                                                : 'bg-gradient-to-br from-app-bg-hover to-app-border'
                                                 }`}>
                                                 {isSelected
-                                                    ? <Check className="w-3.5 h-3.5 text-white" />
+                                                    ? <Check className="w-3.5 h-3.5 text-app-bg-card" />
                                                     : <FolderOpen className="w-3.5 h-3.5 text-app-text-muted" />
                                                 }
                                             </div>
@@ -170,10 +170,10 @@ export default function ProjectDropdown({
                                                     e.stopPropagation();
                                                     onDelete(project);
                                                 }}
-                                                className={`px-3 border-l border-app-border-light transition-colors ${
+                                                className={`px-3 border-l border-app-border transition-colors ${
                                                     deletingKey === project.key
                                                         ? 'text-app-text-muted cursor-not-allowed'
-                                                        : 'text-red-500 hover:bg-red-50 hover:text-red-600'
+                                                        : 'text-app-status-error hover:bg-app-status-errorBg hover:text-app-status-error'
                                                 }`}
                                                 title={deletingKey === project.key ? 'Deleting project...' : 'Delete project'}
                                                 aria-label={`Delete ${project.name || 'project'}`}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
     ArrowRight,
     CalendarDays,
@@ -12,6 +13,7 @@ import {
     Sparkles,
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
 
 const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
@@ -319,9 +321,12 @@ export default function TaskCreation({
 }) {
     const navigate = useNavigate();
     const location = useLocation();
+    const queryClient = useQueryClient();
     const token = localStorage.getItem('token');
 
     const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(false);
+    const [taskToken, setTaskToken] = useState(null);
+    const [isResolvingTaskToken, setIsResolvingTaskToken] = useState(false);
 
     const [projectDeadline, setProjectDeadline] = useState('');
     const [sprints, setSprints] = useState([]);
@@ -335,7 +340,9 @@ export default function TaskCreation({
     const [success, setSuccess] = useState('');
     const [creationStageIndex, setCreationStageIndex] = useState(0);
     const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
+    const [projectType, setProjectType] = useState('greenfield');
     const autoStartRunKeysRef = useRef(new Set());
+
     const [customRules, setCustomRules] = useState(() => {
         if (selectedProjectKey) {
             return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
@@ -416,6 +423,7 @@ export default function TaskCreation({
         setTaskTotalCount(0);
         setError('');
         setSuccess('');
+        setTaskToken(null);
     }, [selectedProjectKey]);
 
     useEffect(() => {
@@ -441,8 +449,11 @@ export default function TaskCreation({
         const cachedToken = getCachedTaskToken(selectedProjectKey);
         if (cachedToken) return cachedToken;
 
-        const clientId = selectedProject?.client_id;
-        const clientSecret = selectedProject?.client_secret;
+        // Check both selectedProject and draftProject for credentials
+        const draftProject = getDraftProject(selectedProjectKey);
+        const clientId = selectedProject?.client_id || draftProject?.client_id;
+        const clientSecret = selectedProject?.client_secret || draftProject?.client_secret;
+        
         if (!clientId || !clientSecret) {
             return null;
         }
@@ -465,6 +476,81 @@ export default function TaskCreation({
         cacheTaskToken(selectedProjectKey, fetchedToken);
         return fetchedToken;
     }, [selectedProjectKey, selectedProject]);
+
+    // Resolve task token on mount and when project changes
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setTaskToken(null);
+            setIsResolvingTaskToken(false);
+            return;
+        }
+
+        setIsResolvingTaskToken(true);
+        resolveTaskToken()
+            .then((token) => {
+                setTaskToken(token);
+            })
+            .catch((err) => {
+                console.error('Failed to resolve task token:', err);
+                setTaskToken(null);
+            })
+            .finally(() => {
+                setIsResolvingTaskToken(false);
+            });
+    }, [selectedProjectKey, resolveTaskToken]);
+
+    // Fetch project info whenever task token is available OR if we have credentials
+    // This ensures project info is fetched even if token resolution is in progress
+    const draftProject = useMemo(() => getDraftProject(selectedProjectKey), [selectedProjectKey]);
+    const hasCredentials = useMemo(() => {
+        return !!(selectedProject?.client_id || draftProject?.client_id);
+    }, [selectedProject?.client_id, draftProject?.client_id]);
+    
+    const { data: projectInfo = null, isFetching: isLoadingProjectInfo } = useQuery({
+        queryKey: ['projectInfo', selectedProjectKey, taskToken, hasCredentials],
+        queryFn: async () => {
+            const headers = { 'Authorization': `Bearer ${token}` };
+            // Use taskToken if available, otherwise try to get one
+            let tokenToUse = taskToken;
+            if (!tokenToUse && hasCredentials) {
+                // Try to resolve token if we have credentials but token not resolved yet
+                const clientId = selectedProject?.client_id || draftProject?.client_id;
+                const clientSecret = selectedProject?.client_secret || draftProject?.client_secret;
+                if (clientId && clientSecret) {
+                    try {
+                        const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+                        });
+                        if (tokenRes.ok) {
+                            const tokenData = await tokenRes.json();
+                            tokenToUse = tokenData?.access;
+                            if (tokenToUse) {
+                                cacheTaskToken(selectedProjectKey, tokenToUse);
+                                setTaskToken(tokenToUse);
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('Failed to get token for project info:', err);
+                    }
+                }
+            }
+            if (tokenToUse) headers['x-task-token'] = tokenToUse;
+            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
+            if (!res.ok) throw new Error('Failed to fetch project info');
+            return await res.json();
+        },
+        enabled: !!token && !!selectedProjectKey && (!!taskToken || hasCredentials),
+    });
+
+    // Update project deadline from project info when available
+    useEffect(() => {
+        const deadline = projectInfo?.project?.deadline || projectInfo?.deadline;
+        if (deadline) {
+            setProjectDeadline(deadline);
+        }
+    }, [projectInfo]);
 
     const loadData = useCallback(async () => {
         if (!selectedProjectKey) {
@@ -575,13 +661,52 @@ export default function TaskCreation({
             return null;
         } finally {
             setIsLoading(false);
-            setHasCompletedInitialBootstrap(true);
         }
-    }, [selectedProjectKey, hydrateGeneratedPlan]);
+    }, [selectedProjectKey, hydrateGeneratedPlan, taskToken, token, projectInfo, projectDeadline]);
 
+    // Load data when project key changes or when task token becomes available
     useEffect(() => {
-        loadData();
-    }, [loadData]);
+        // Only load if we have completed initial bootstrap (project info loaded)
+        if (hasCompletedInitialBootstrap) {
+            loadData();
+        }
+    }, [loadData, hasCompletedInitialBootstrap, taskToken]);
+
+    // Mark bootstrap as complete only when project info is loaded (or if no project selected)
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setHasCompletedInitialBootstrap(true);
+            return;
+        }
+        
+        const hasClientCredentials = selectedProject?.client_id && selectedProject?.client_secret;
+        
+        // Determine what we're waiting for:
+        const waitingForToken = hasClientCredentials && isResolvingTaskToken;
+        const waitingForProjectInfo = hasClientCredentials && taskToken && isLoadingProjectInfo;
+        const waitingForData = isLoading;
+        
+        // If we're not waiting for anything, check if we can complete bootstrap
+        if (!waitingForToken && !waitingForData) {
+            if (hasClientCredentials) {
+                // Need to wait for project info if we have a task token
+                if (taskToken) {
+                    // Project info query is enabled and has completed (either success or error)
+                    // isLoadingProjectInfo will be false when query completes (even on error)
+                    if (!isLoadingProjectInfo) {
+                        setHasCompletedInitialBootstrap(true);
+                    }
+                } else if (!isResolvingTaskToken) {
+                    // Token resolution failed or not available, but we tried
+                    // Allow to continue (project info will fail but that's okay)
+                    setHasCompletedInitialBootstrap(true);
+                }
+            } else {
+                // No client credentials, no need to fetch project info
+                setHasCompletedInitialBootstrap(true);
+            }
+        }
+    }, [selectedProjectKey, taskToken, projectInfo, isResolvingTaskToken, isLoadingProjectInfo, isLoading, selectedProject]);
 
     useEffect(() => {
         if (!isGenerating) {
@@ -641,9 +766,161 @@ export default function TaskCreation({
         setLiveCreatedTaskCount(0);
 
         try {
-            const taskToken = await resolveTaskToken();
+            // First, try to resolve task token from existing credentials
+            let taskToken = await resolveTaskToken();
+            
+            // Check if project already exists by trying to fetch project info first
+            let projectExists = false;
+            if (taskToken) {
+                try {
+                    const headers = { 'Authorization': `Bearer ${token}` };
+                    headers['x-task-token'] = taskToken;
+                    const projectInfoCheck = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
+                    if (projectInfoCheck.ok) {
+                        projectExists = true;
+                        const fetchedProjectInfo = await projectInfoCheck.json();
+                        // Update project deadline from fetched info
+                        const deadline = fetchedProjectInfo?.project?.deadline || fetchedProjectInfo?.deadline;
+                        if (deadline) {
+                            setProjectDeadline(deadline);
+                        }
+                    }
+                } catch (checkError) {
+                    // Project might not exist yet, continue to creation logic
+                    console.log('Project info check failed, will try to create if needed:', checkError);
+                }
+            }
+            
+            // Only create project if it doesn't exist and we don't have credentials
+            if (!projectExists && !taskToken) {
+                const clientId = selectedProject?.client_id;
+                const clientSecret = selectedProject?.client_secret;
+                
+                if (!clientId || !clientSecret) {
+                    // Try to create the project using a default/global task token
+                    try {
+                        // Use environment variables or default credentials to get a task token for project creation
+                        const defaultClientId = import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
+                        const defaultClientSecret = import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
+                        
+                        const defaultTokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                client_id: defaultClientId, 
+                                client_secret: defaultClientSecret 
+                            }),
+                        });
+                        
+                        if (defaultTokenRes.ok) {
+                            const defaultTokenData = await defaultTokenRes.json();
+                            const defaultTaskToken = defaultTokenData?.access;
+                            
+                            if (defaultTaskToken) {
+                                // Check if project already exists before creating
+                                const checkHeaders = { 'Authorization': `Bearer ${token}`, 'x-task-token': defaultTaskToken };
+                                const checkProjectRes = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers: checkHeaders });
+                                
+                                if (!checkProjectRes.ok) {
+                                    // Project doesn't exist, create it
+                                    const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
+                                    const projName = selectedProject?.name || 'New AI Project';
+                                    
+                                    const createProjectResponse = await fetch(projectCreationUrl, {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            Authorization: `Bearer ${token}`,
+                                            'x-task-token': defaultTaskToken,
+                                        },
+                                        body: JSON.stringify({
+                                            name: projName,
+                                            deadline: projectDeadline || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                                            project_wallet: 1000,
+                                            team: [24],
+                                            project_token: selectedProjectKey
+                                        }),
+                                    });
+                                    
+                                    if (createProjectResponse.ok) {
+                                        const createdProject = await createProjectResponse.json().catch(() => ({}));
+                                        const projectApplication = createdProject?.project_application || null;
+                                        
+                                        if (projectApplication?.client_id && projectApplication?.client_secret) {
+                                            // Update the project with new credentials
+                                            upsertDraftProject({
+                                                key: selectedProjectKey,
+                                                name: projName,
+                                                client_id: projectApplication.client_id,
+                                                client_secret: projectApplication.client_secret,
+                                            });
+                                            
+                                            // Use the new credentials to get the task token
+                                            const newTokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ 
+                                                    client_id: projectApplication.client_id, 
+                                                    client_secret: projectApplication.client_secret 
+                                                }),
+                                            });
+                                            
+                                            if (newTokenRes.ok) {
+                                                const newTokenData = await newTokenRes.json();
+                                                taskToken = newTokenData?.access;
+                                                if (taskToken) {
+                                                    cacheTaskToken(selectedProjectKey, taskToken);
+                                                    setTaskToken(taskToken);
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // Check if error is because project already exists
+                                        const errorData = await createProjectResponse.json().catch(() => ({}));
+                                        const errorMsg = errorData?.detail || errorData?.message || '';
+                                        if (errorMsg.toLowerCase().includes('already exists')) {
+                                            // Project exists, try to get credentials from backend
+                                            console.log('Project already exists, fetching credentials from backend');
+                                            // Force refresh projects to get credentials from backend
+                                            queryClient.invalidateQueries({ queryKey: ['projects'] });
+                                        }
+                                    }
+                                } else {
+                                    // Project exists, but we don't have proper credentials yet
+                                    // Use default token temporarily and invalidate projects to fetch credentials
+                                    taskToken = defaultTaskToken;
+                                    queryClient.invalidateQueries({ queryKey: ['projects'] });
+                                }
+                            }
+                        }
+                    } catch (createError) {
+                        console.error('Failed to create project:', createError);
+                    }
+                }
+            }
+            
             if (!taskToken) {
-                throw new Error('Task token is required before uploading generated tasks.');
+                throw new Error('Task token is required. Please ensure the project has been created in the task management system with valid credentials.');
+            }
+
+            // Fetch project info if not already fetched
+            if (!projectExists) {
+                try {
+                    const headers = { 'Authorization': `Bearer ${token}` };
+                    if (taskToken) headers['x-task-token'] = taskToken;
+                    const projectInfoRes = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
+                    if (projectInfoRes.ok) {
+                        const fetchedProjectInfo = await projectInfoRes.json();
+                        // Update project deadline from fetched info
+                        const deadline = fetchedProjectInfo?.project?.deadline || fetchedProjectInfo?.deadline;
+                        if (deadline) {
+                            setProjectDeadline(deadline);
+                        }
+                    }
+                } catch (projectInfoError) {
+                    // Log but don't fail - project info fetch is not critical for task creation
+                    console.warn('Failed to fetch project info, continuing with task creation:', projectInfoError);
+                }
             }
 
             const headers = {
@@ -671,7 +948,9 @@ export default function TaskCreation({
                 project_token: selectedProjectKey,
                 auto_create_plan: true,
                 custom_rules: customRules,
+                project_type: projectType,
             };
+
             if (prerequisites && prerequisites.length > 0) {
                 generatePayload.prerequisites = prerequisites;
             }
@@ -714,7 +993,7 @@ export default function TaskCreation({
         } finally {
             setIsGenerating(false);
         }
-    }, [selectedProjectKey, buildHeaders, customRules, hydrateGeneratedPlan, resolveTaskToken]);
+    }, [selectedProjectKey, selectedProject, buildHeaders, customRules, hydrateGeneratedPlan, resolveTaskToken, projectInfo, token, projectDeadline]);
 
     useEffect(() => {
         const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
@@ -758,22 +1037,33 @@ export default function TaskCreation({
         }
     };
 
-    const showInitialProjectLoader = Boolean(selectedProjectKey) && !hasCompletedInitialBootstrap && isLoading;
+    const showInitialProjectLoader = Boolean(selectedProjectKey) && (
+        !hasCompletedInitialBootstrap || 
+        isLoading || 
+        isResolvingTaskToken || 
+        isLoadingProjectInfo
+    );
 
     if (showInitialProjectLoader) {
         return (
-            <div className="h-full min-h-[70vh] bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
-                <div className="fixed inset-0 z-[300] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 text-center" style={{ filter: 'none', backdropFilter: 'none' }}>
+            <div className="h-full min-h-[70vh] bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
+                <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center px-4">
+                    <div className="w-full max-w-md rounded-2xl border border-app-border bg-app-bg-card shadow-2xl p-6 text-center" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex justify-center">
-                            <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                            <Loader2 className="w-8 h-8 text-app-primary animate-spin" />
                         </div>
-                        <h3 className="mt-4 text-lg font-extrabold text-slate-900">Loading Task Creation</h3>
-                        <p className="mt-2 text-sm text-slate-600">
-                            Loading the local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>.
+                        <h3 className="mt-4 text-lg font-extrabold text-app-text-main">Loading Task Creation</h3>
+                        <p className="mt-2 text-sm text-app-text-label">
+                            {isResolvingTaskToken || isLoadingProjectInfo 
+                                ? <>Fetching project information for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
+                                : <>Loading the local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
+                            }
                         </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                            The page will open as soon as the saved preview is ready.
+                        <p className="mt-1 text-xs text-app-text-muted">
+                            {isResolvingTaskToken || isLoadingProjectInfo 
+                                ? 'Please wait while we fetch the project details...'
+                                : 'The page will open as soon as the saved preview is ready.'
+                            }
                         </p>
                     </div>
                 </div>
@@ -783,9 +1073,9 @@ export default function TaskCreation({
 
     return (
         <>
-            <div className={`h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30 ${isGenerating ? 'blur-sm' : ''}`}>
+            <div className={`h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30 ${isGenerating ? 'blur-sm' : ''}`}>
                 <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
                         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                             <div>
                                 <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">Master Agent Planner</p>
@@ -794,7 +1084,7 @@ export default function TaskCreation({
                                     Project: <span className="font-semibold text-app-text-main">{selectedProject?.name || 'Not selected'}</span>
                                 </p>
                                 {processMode === 'ai_assist' && (
-                                    <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-100 rounded-lg text-xs font-semibold text-indigo-700">
+                                    <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-app-primary-light border border-app-primary-light rounded-lg text-xs font-semibold text-app-primary-hover">
                                         <Sparkles className="w-3.5 h-3.5" />
                                         <span>AI Assist Active: You will be redirected to VS Code's N-Mod Ext.</span>
                                     </div>
@@ -802,7 +1092,7 @@ export default function TaskCreation({
                             </div>
                             <button
                                 onClick={handleStartProcess}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-emerald-500 to-green-600 rounded-lg shadow hover:shadow-lg transition-all"
+                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all"
                             >
                                 Start the Process
                                 <ArrowRight className="w-4 h-4" />
@@ -810,50 +1100,69 @@ export default function TaskCreation({
                         </div>
                     </div>
 
-                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5 space-y-4">
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5 space-y-4">
                         <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
-                            <FolderKanban className="w-4 h-4 text-blue-600" />
+                            <FolderKanban className="w-4 h-4 text-app-primary" />
                             AI Planning
                         </h3>
                         <p className="text-sm text-app-text-muted">
                             Master Agent will generate the task JSON, upload it to the external batch task API, and show the same payload on this page.
                         </p>
-                        <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light">
-                            Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span>
+                        <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light flex items-center justify-between">
+                            <span>Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span></span>
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] uppercase font-bold text-app-text-muted">Strategy:</span>
+                                <select 
+                                    value={projectType}
+                                    onChange={(e) => setProjectType(e.target.value)}
+                                    className="bg-app-bg-card border border-app-border rounded px-2 py-0.5 text-xs font-semibold text-app-primary-hover focus:outline-none focus:ring-1 focus:ring-app-primary"
+                                >
+                                    <option value="greenfield">Greenfield (New Build)</option>
+                                    <option value="brownfield">Brownfield (Enhancement)</option>
+                                    <option value="modernization">Modernization (Migration)</option>
+                                </select>
+                            </div>
                         </div>
+
                         <button
                             onClick={handleMasterCreate}
-                            disabled={!selectedProjectKey || isGenerating}
-                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating)
-                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700'
+                            disabled={!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true}
+                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true)
+                                ? 'bg-app-border text-app-text-muted cursor-not-allowed'
+                                : 'bg-gradient-to-r from-app-primary to-app-primary text-app-bg-card hover:from-app-primary-hover hover:to-app-primary-hover'
                                 }`}
                         >
                             {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                            {isGenerating ? 'Creating Plan...' : 'Create Tasks (AI Auto Plan)'}
+                            {isGenerating ? 'Creating Plan...' : projectInfo?.tasks_created === true ? 'Tasks Already Created' : 'Create Tasks (AI Auto Plan)'}
                         </button>
                         {!selectedProjectKey && (
-                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                            <p className="text-xs text-app-status-warning bg-app-status-warningBg border border-amber-200 rounded-lg px-3 py-2">
                                 No project selected. Select a project from the sidebar or top project dropdown.
                             </p>
                         )}
+                        {selectedProjectKey && projectInfo?.tasks_created === true && (
+                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-start gap-2">
+                                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                                <span>Tasks have already been created for this project. You can view them below or refresh to see the latest tasks.</span>
+                            </p>
+                        )}
                         {/* {selectedProjectKey && (
-                            <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2">
                                 The generated task JSON is uploaded to the batch task API, stored locally for this project, and shown below.
                             </p>
                         )} */}
                         {error && (
-                            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
+                            <p className="text-xs text-app-status-error bg-app-status-errorBg border border-red-200 rounded-lg px-3 py-2">{error}</p>
                         )}
                         {success && (
-                            <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                            <p className="text-xs text-app-status-success bg-app-status-successBg border border-emerald-200 rounded-lg px-3 py-2 flex items-start gap-2">
                                 <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
                                 <span>{success}</span>
                             </p>
                         )}
                     </div>
 
-                    {/* <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                    {/* <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-sm font-bold text-app-text-main">Generated JSON Preview</h3>
                             {generatedTaskPlan && (
@@ -864,12 +1173,12 @@ export default function TaskCreation({
                         </div>
                         {generatedTaskPlan ? (
                             <div className="space-y-4">
-                                <pre className="max-h-[420px] overflow-auto rounded-xl bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-100">
+                                <pre className="max-h-[420px] overflow-auto rounded-xl bg-slate-900 px-4 py-4 text-xs leading-6 text-app-primary-light font-mono border border-slate-800">
                                     {JSON.stringify(previewJsonForDisplay, null, 2)}
                                 </pre>
                                 <div>
                                     <h4 className="mb-3 text-sm font-bold text-app-text-main">Generated CSV Preview</h4>
-                                    <pre className="max-h-[320px] overflow-auto rounded-xl bg-slate-950 px-4 py-4 text-xs leading-6 text-emerald-100">
+                                    <pre className="max-h-[320px] overflow-auto rounded-xl bg-slate-900 px-4 py-4 text-xs leading-6 text-emerald-400 font-mono border border-slate-800">
                                         {previewCsv}
                                     </pre>
                                 </div>
@@ -882,7 +1191,7 @@ export default function TaskCreation({
                     </div> */}
 
 
-                    <div className="bg-white rounded-2xl border border-app-border-light shadow-sm p-5">
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-sm font-bold text-app-text-main">Tasks Grouped by Sprint / Milestone</h3>
                             <button
@@ -903,9 +1212,9 @@ export default function TaskCreation({
                             <div className="space-y-4">
                                 {groupedTasks.map((sprintGroup) => (
                                     <div key={`s-${sprintGroup.sprint.id}`} className="border border-app-border rounded-xl overflow-hidden">
-                                        <div className="px-4 py-3 bg-blue-50 border-b border-app-border-light flex items-center gap-3">
-                                            <FolderKanban className="w-4 h-4 text-blue-700" />
-                                            <p className="text-sm font-bold text-blue-900">{sprintGroup.sprint.name}</p>
+                                        <div className="px-4 py-3 bg-app-primary-light border-b border-app-border-light flex items-center gap-3">
+                                            <FolderKanban className="w-4 h-4 text-app-primary-hover" />
+                                            <p className="text-sm font-bold text-app-primary-dark">{sprintGroup.sprint.name}</p>
                                         </div>
                                         <div className="p-4 space-y-3">
                                             {Array.from(sprintGroup.milestones.values()).map((milestoneGroup) => (
@@ -916,7 +1225,7 @@ export default function TaskCreation({
                                                     </div>
                                                     <div className="p-3 space-y-2">
                                                         {milestoneGroup.tasks.map((task) => (
-                                                            <div key={task.id || task.task_id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-white">
+                                                            <div key={task.id || task.task_id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-app-bg-card">
                                                                 <p className="text-sm font-semibold text-app-text-main">{task.title || task.taskName || 'Untitled Task'}</p>
                                                                 <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-app-text-muted">
                                                                     <span className="inline-flex items-center gap-1">
@@ -927,7 +1236,7 @@ export default function TaskCreation({
                                                                         <CalendarDays className="w-3 h-3" />
                                                                         {task.planned_end || task.deadline || 'No deadline'}
                                                                     </span>
-                                                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold uppercase tracking-wide text-[10px] text-slate-700">
+                                                                    <span className="rounded-full bg-app-bg-muted px-2 py-0.5 font-semibold uppercase tracking-wide text-[10px] text-app-text-label">
                                                                         {task.type || task.task_type || 'task'}
                                                                     </span>
                                                                 </div>
@@ -946,17 +1255,17 @@ export default function TaskCreation({
             </div>
             {isGenerating && (
                 <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none', paddingTop: '15%' }}>
-                    <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
+                    <div className="w-full max-w-xl rounded-2xl border border-app-border bg-app-bg-card shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
                         <div className="flex items-center gap-3">
-                            <Loader2 className="w-6 h-6 text-indigo-600 animate-spin" />
-                            <h3 className="text-lg font-extrabold text-slate-900">AI Plan Generation In Progress</h3>
+                            <Loader2 className="w-6 h-6 text-app-primary animate-spin" />
+                            <h3 className="text-lg font-extrabold text-app-text-main">AI Plan Generation In Progress</h3>
                         </div>
-                        <p className="mt-2 text-sm text-slate-600">
-                            Generating a local task preview for <span className="font-semibold text-slate-800">{selectedProject?.name || 'selected project'}</span>. Please wait.
+                        <p className="mt-2 text-sm text-app-text-label">
+                            Generating a local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>. Please wait.
                         </p>
-                        <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 flex items-center justify-between">
-                            <span className="text-sm font-semibold text-indigo-900">Preview tasks generated</span>
-                            <span className="text-2xl font-extrabold text-indigo-700 tabular-nums">{liveCreatedTaskCount}</span>
+                        <div className="mt-4 rounded-xl border border-app-primary-light bg-app-primary-light px-4 py-3 flex items-center justify-between">
+                            <span className="text-sm font-semibold text-app-primary-dark">Preview tasks generated</span>
+                            <span className="text-2xl font-extrabold text-app-primary-hover tabular-nums">{liveCreatedTaskCount}</span>
                         </div>
                         <div className="mt-5 space-y-3">
                             {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
@@ -966,27 +1275,27 @@ export default function TaskCreation({
                                     <div
                                         key={stepLabel}
                                         className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${isDone
-                                            ? 'border-emerald-200 bg-emerald-50'
+                                            ? 'border-emerald-200 bg-app-status-successBg'
                                             : isActive
-                                                ? 'border-indigo-200 bg-indigo-50'
-                                                : 'border-slate-200 bg-slate-50'
+                                                ? 'border-app-primary-ring bg-app-primary-light'
+                                                : 'border-app-border bg-app-bg-page'
                                             }`}
                                     >
                                         {isDone ? (
-                                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                            <CheckCircle2 className="w-4 h-4 text-app-status-success" />
                                         ) : isActive ? (
-                                            <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                                            <Loader2 className="w-4 h-4 text-app-primary animate-spin" />
                                         ) : (
-                                            <span className="inline-block w-3 h-3 rounded-full border border-slate-300 bg-white" />
+                                            <span className="inline-block w-3 h-3 rounded-full border border-app-border bg-app-bg-card" />
                                         )}
-                                        <span className={`text-sm font-semibold ${isDone ? 'text-emerald-700' : isActive ? 'text-indigo-700' : 'text-slate-500'}`}>
+                                        <span className={`text-sm font-semibold ${isDone ? 'text-app-status-success' : isActive ? 'text-app-primary-hover' : 'text-app-text-muted'}`}>
                                             {stepLabel}
                                         </span>
                                     </div>
                                 );
                             })}
                         </div>
-                        <p className="mt-4 text-xs text-slate-500">
+                        <p className="mt-4 text-xs text-app-text-muted">
                             Actions are temporarily locked until task plan creation completes.
                         </p>
                     </div>

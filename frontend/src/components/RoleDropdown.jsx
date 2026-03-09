@@ -33,18 +33,18 @@ export default function RoleDropdown({ roles = [], selectedRole, onSelect, class
                     text-sm font-semibold
                     shadow-sm
                     transition-all duration-200 ease-in-out
-                    focus:outline-none focus:ring-2 focus:ring-white/30
+                    focus:outline-none focus:ring-2 focus:ring-white/20
                     ${isOpen && theme === 'dark' ? 'bg-white/10' : ''}
-                    ${isOpen && theme !== 'dark' ? 'border-blue-400 ring-4 ring-blue-100 shadow-md' : ''}
+                    ${isOpen && theme !== 'dark' ? 'border-blue-400 ring-4 ring-app-primary-light shadow-md' : ''}
                 `}
             >
                 <div className="flex items-center gap-2 min-w-0">
-                    <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 shadow-sm ${theme === 'dark' ? 'bg-white/10' : 'bg-gradient-to-br from-blue-500 to-indigo-600'}`}>
-                        <Users className={`w-3 h-3 ${theme === 'dark' ? 'text-white' : 'text-white'}`} />
+                    <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 shadow-sm ${theme === 'dark' ? 'bg-white/10' : 'bg-gradient-to-br from-app-primary to-app-primary'}`}>
+                        <Users className={`w-3 h-3 ${theme === 'dark' ? 'text-white' : 'text-app-bg-card'}`} />
                     </div>
                     <div className="text-left min-w-0">
                         <p className={`text-[10px] font-medium leading-none mb-0.5 ${theme === 'dark' ? 'text-white/70' : 'text-app-text-light'}`}>Role</p>
-                        <p className={`text-xs font-bold truncate leading-tight ${theme === 'dark' ? 'text-white' : 'text-gray-800'}`}>
+                        <p className={`text-xs font-bold truncate leading-tight ${theme === 'dark' ? 'text-white' : 'text-app-text-main'}`}>
                             {selectedRoleData?.label || 'Select Role'}
                         </p>
                     </div>
@@ -76,7 +76,7 @@ export default function RoleDropdown({ roles = [], selectedRole, onSelect, class
                                         transition-colors duration-100
                                         ${isSelected
                                             ? 'bg-app-primary-light/50 border-l-3 border-l-blue-500'
-                                            : 'hover:bg-app-bg-page border-l-3 border-l-transparent'
+                                            : 'hover:bg-app-bg-hover border-l-3 border-l-transparent'
                                         }
                                     `}
                                 >

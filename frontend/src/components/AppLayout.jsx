@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
-import { Menu, Settings } from 'lucide-react';
+import { Menu, Settings, Moon, Sun } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -62,6 +62,20 @@ export default function AppLayout({ children }) {
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
     const [pluginClients, setPluginClients] = useState([]);
     const [launchingPluginId, setLaunchingPluginId] = useState('');
+
+    const [isDarkMode, setIsDarkMode] = useState(() => {
+        return localStorage.getItem('theme') === 'dark';
+    });
+
+    useEffect(() => {
+        if (isDarkMode) {
+            document.documentElement.classList.add('dark');
+            localStorage.setItem('theme', 'dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+            localStorage.setItem('theme', 'light');
+        }
+    }, [isDarkMode]);
 
     const [selectedRole, setSelectedRole] = useState(() => {
         try {
@@ -349,13 +363,39 @@ export default function AppLayout({ children }) {
         const targetRoute = stepLabelToRoute[stepLabel];
         if (!targetRoute) return;
         
+        // Special handling for Agent Analysis: Don't auto-navigate unless user clicked "Proceed to Agent Analysis"
+        // This prevents auto-redirect when viewing Governance score page
+        if (targetRoute === '/agent-analysis') {
+            const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
+            const isOnGovernancePage = location.pathname === '/new-project/governance' || location.pathname.startsWith('/new-project/governance');
+            
+            // Don't auto-navigate to Agent Analysis if:
+            // 1. User is on Governance page (viewing score)
+            // 2. Flag is not set (user hasn't clicked "Proceed to Agent Analysis")
+            if (isOnGovernancePage || !shouldStartAnalysis) {
+                return; // Stay on current page, don't navigate
+            }
+        }
+        
+        // Special handling for Prerequisites: Don't auto-navigate from Agent Analysis page
+        // User should manually click "Review Prerequisites" button to navigate
+        if (targetRoute === '/prerequisites') {
+            const isOnAgentAnalysisPage = location.pathname === '/agent-analysis' || location.pathname.startsWith('/agent-analysis');
+            
+            // Don't auto-navigate to Prerequisites if user is on Agent Analysis page
+            // Let them manually click the button to navigate
+            if (isOnAgentAnalysisPage) {
+                return; // Stay on Agent Analysis page, don't auto-navigate
+            }
+        }
+        
         // Navigate if:
         // 1. We're on a project URL (/a/{token}) - redirect to step page
         // 2. We're not on the correct step page already
         // 3. We're not on special pages like /agents
         const isOnProjectUrl = location.pathname.startsWith('/a/');
         const isOnTargetRoute = location.pathname.startsWith(targetRoute);
-        const isOnSpecialPage = ['/agents', '/organization-admin'].includes(location.pathname);
+        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins'].includes(location.pathname);
         
         if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage) {
             lastNavigatedProjectRef.current = selectedProjectKey;
@@ -376,9 +416,19 @@ export default function AppLayout({ children }) {
         const persistedDraftProject = getDraftProject(selectedProjectKey);
         if (!projectFromList) return persistedDraftProject || null;
         if (!persistedDraftProject) return projectFromList;
+        
+        // Prioritize backend credentials over draft - backend is source of truth
+        const backendClientId = projectFromList.client_id || null;
+        const backendClientSecret = projectFromList.client_secret || null;
+        const finalClientId = (backendClientId && backendClientId.trim()) ? backendClientId : (persistedDraftProject?.client_id || null);
+        const finalClientSecret = (backendClientSecret && backendClientSecret.trim()) ? backendClientSecret : (persistedDraftProject?.client_secret || null);
+        
         return {
             ...persistedDraftProject,
             ...projectFromList,
+            // Explicitly use backend credentials first, fallback to draft only if backend is null/empty
+            client_id: finalClientId,
+            client_secret: finalClientSecret,
             status: projectFromList.status === 'analysis_complete' || persistedDraftProject.status === 'analysis_complete'
                 ? 'analysis_complete'
                 : projectFromList.status,
@@ -534,12 +584,8 @@ export default function AppLayout({ children }) {
 
     // Drive the active roadmap step from the frontend route (UI-only logic)
     // BUT: If we have server roadmap data, use the server's current_step instead
+    // EXCEPT: When on specific pages (governance, agent-analysis), always show that page's step
     const forcedRoadmapStepIndex = useMemo(() => {
-        // If we have server roadmap data, use it instead of computing from route
-        if (hasServerRoadmap && roadmapData?.current_step !== undefined && roadmapData?.current_step !== null) {
-            return roadmapData.current_step;
-        }
-
         const path = location.pathname;
 
         // Dummy reference to satisfy linter and ensure memo updates on storage event
@@ -554,6 +600,7 @@ export default function AppLayout({ children }) {
             return i === -1 ? null : i;
         };
 
+        // Priority 1: Check current route first - specific pages should always show their step
         if (path === '/new-project' || path.startsWith('/new-project/')) {
             if (path.startsWith('/new-project/governance')) {
                 return idx('Governance') ?? 2;
@@ -588,9 +635,15 @@ export default function AppLayout({ children }) {
             return hasSelectedProjectGovernance ? agentIdx : reqIdx;
         }
         
+        // Agent Analysis page should always show Agent Analysis as active
         if (path === '/agent-analysis') {
             const agentIdx = idx('Agent Analysis') ?? 3;
             return agentIdx;
+        }
+
+        // Priority 2: If we have server roadmap data and no specific route match, use server's current_step
+        if (hasServerRoadmap && roadmapData?.current_step !== undefined && roadmapData?.current_step !== null) {
+            return roadmapData.current_step;
         }
 
         return null;
@@ -753,7 +806,7 @@ export default function AppLayout({ children }) {
                             <button
                                 type="button"
                                 onClick={() => setIsSidebarOpen(true)}
-                                className="p-1.5 md:p-2 bg-app-bg-card/10 hover:bg-app-bg-card/20 rounded-md shadow-sm text-gray-100 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
+                                className="p-1.5 md:p-2 bg-white/10 hover:bg-white/20 rounded-md shadow-sm text-white/80 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
                                 aria-label="Open menu"
                             >
                                 <Menu className="w-4 h-4 md:w-5 md:h-5" />
@@ -771,7 +824,7 @@ export default function AppLayout({ children }) {
                                                         currentView === 'agentAnalysis' ? 'Agent Analysis' :
                                                             'Requirements Analyzer'}
                                 </h1>
-                                <h2 className="text-[10px] md:text-sm italic text-app-border mt-0.5 md:mt-1 truncate">
+                                <h2 className="text-[10px] md:text-sm italic text-white/60 mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
                                         currentView === 'governance' ? 'Project initiation and late-stage governance review' :
@@ -783,7 +836,7 @@ export default function AppLayout({ children }) {
                                 </h2>
                             </div>
 
-                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && (
+                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
                                 <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                     {currentView === 'statusDashboard' && (
                                         <>
@@ -815,19 +868,29 @@ export default function AppLayout({ children }) {
                             {/* Status Pipeline graphic top right - ONLY shown on statusDashboard */}
                             {/* {currentView === 'statusDashboard' && (
                                 <div className="text-[9px] md:text-xs font-bold text-app-text-label flex items-center space-x-1.5 bg-app-bg-card px-2 md:px-3 py-1.5 rounded-full shadow-md border border-app-border-light whitespace-nowrap ml-4 shrink-0 hidden sm:flex">
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-gray-400 rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
+                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-text-light rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-orange-200 rounded-full mr-1"></span><span className="hidden md:inline">PREPARE</span></div>
                                     <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-yellow-400 rounded-full mr-1"></span><span className="hidden md:inline">INTERVIEW</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-blue-500 rounded-full mr-1"></span><span className="hidden md:inline">APPRAISED</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-green-500 rounded-full"></span></div>
+                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-primary rounded-full mr-1"></span><span className="hidden md:inline">APPRAISED</span></div>
+                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-status-success rounded-full"></span></div>
                                 </div>
                             )} */}
 
+                            {/* Theme Toggle Button */}
+                            <button
+                                type="button"
+                                onClick={() => setIsDarkMode(!isDarkMode)}
+                                className="p-1.5 md:p-2 ml-4 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0 cursor-pointer"
+                                aria-label="Toggle Dark Mode"
+                            >
+                                {isDarkMode ? <Sun className="w-4 h-4 md:w-5 md:h-5" /> : <Moon className="w-4 h-4 md:w-5 md:h-5" />}
+                            </button>
+                            
                             {/* Settings Button (Global) */}
                             {/* <button
                                 type="button"
                                 onClick={() => setShowSettings(true)}
-                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-white hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0"
+                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-app-bg-card hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-app-bg-card/20 flex-shrink-0"
                                 aria-label="Open settings"
                             >
                                 <Settings className="w-4 h-4 md:w-5 md:h-5" />
@@ -836,8 +899,8 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents ── */}
-                {roadmapDataForView && location.pathname !== '/agents' && (
+{/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
+{roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
                     <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                         <RoadmapHeader
                             steps={roadmapDataForView.steps || []}

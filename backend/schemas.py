@@ -84,10 +84,20 @@ class OrganizationAgentQuotaResponse(BaseModel):
     dedicated_used: int = 0
     shared_available: int = 0
     dedicated_available: int = 0
+    shared_dev_quota: int = 0
+    shared_test_quota: int = 0
+    dedicated_dev_quota: int = 0
+    dedicated_test_quota: int = 0
+    # Usage breakdown
+    shared_dev_used: int = 0
+    shared_test_used: int = 0
+    dedicated_dev_used: int = 0
+    dedicated_test_used: int = 0
     updated_at: Optional[datetime] = None
 
 class OrganizationAgentQuotaIncreaseRequest(BaseModel):
-    kind: str  # "shared" | "dedicated"
+    kind: str          # "shared" | "dedicated"
+    sub_type: Optional[str] = None  # "dev" | "test" — tracks sub_type quota
     amount: int = 1
 
 class DocumentBase(BaseModel):

@@ -174,10 +174,10 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                 </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow border border-gray-100 p-5">
+            <div className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-5">
                 {/* Status & Actions Row */}
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                    <div className="flex items-center gap-2 text-xs text-app-text-muted">
                         {ragStatus?.indexed_chunks > 0 && (
                             <span className="inline-flex items-center gap-1 px-2 py-1 bg-violet-50 text-violet-600 rounded-full font-semibold text-[10px]">
                                 <Database className="w-3 h-3" /> {ragStatus.indexed_chunks} chunks indexed
@@ -185,14 +185,14 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                         )}
                         {graphStats && (
                             <>
-                                <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-600 rounded-full font-semibold text-[10px]">
+                                <span className="inline-flex items-center gap-1 px-2 py-1 bg-app-primary-light text-app-primary rounded-full font-semibold text-[10px]">
                                     {graphStats.total_nodes} nodes
                                 </span>
                                 <span className="inline-flex items-center gap-1 px-2 py-1 bg-cyan-50 text-cyan-600 rounded-full font-semibold text-[10px]">
                                     {graphStats.total_edges} edges
                                 </span>
                                 {graphStats.languages?.length > 0 && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-50 text-green-600 rounded-full font-semibold text-[10px]">
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-app-status-successBg text-app-status-success rounded-full font-semibold text-[10px]">
                                         {graphStats.languages.join(', ')}
                                     </span>
                                 )}
@@ -206,10 +206,10 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                                 onClick={handleIndex}
                                 disabled={isIndexing || !repoUrl}
                                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${isIndexing
-                                    ? 'bg-amber-100 text-amber-700 cursor-wait'
+                                    ? 'bg-app-status-warningBg text-app-status-warning cursor-wait'
                                     : !repoUrl
-                                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                        : 'bg-gradient-to-r from-violet-500 to-purple-600 text-white shadow-md hover:shadow-lg hover:scale-105'
+                                        ? 'bg-app-bg-muted text-app-text-light cursor-not-allowed'
+                                        : 'bg-gradient-to-r from-violet-500 to-purple-600 text-app-bg-card shadow-md hover:shadow-lg hover:scale-105'
                                     }`}
                             >
                                 {isIndexing ? (
@@ -223,20 +223,20 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                             <>
                                 <button
                                     onClick={() => setShowQuery(!showQuery)}
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-lg shadow-md hover:shadow-lg hover:scale-105 transition-all"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-gradient-to-r from-violet-500 to-purple-600 text-app-bg-card rounded-lg shadow-md hover:shadow-lg hover:scale-105 transition-all"
                                 >
                                     <Search className="w-3 h-3" /> Query
                                 </button>
                                 <button
                                     onClick={fetchStatus}
                                     disabled={isLoading}
-                                    className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                                    className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-app-text-muted bg-app-bg-muted rounded-lg hover:bg-app-bg-hover transition-colors"
                                 >
                                     <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
                                 </button>
                                 <button
                                     onClick={handleDelete}
-                                    className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-red-500 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
+                                    className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-app-status-errorBg transition-colors"
                                     title="Delete index"
                                 >
                                     <Trash2 className="w-3 h-3" />
@@ -249,13 +249,13 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                 {/* Indexing progress */}
                 {isIndexing && ragStatus?.status === 'indexing' && (
                     <div className="mb-4">
-                        <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                        <div className="flex justify-between text-[10px] text-app-text-light mb-1">
                             <span>Indexing codebase...</span>
                             <span className="font-bold text-violet-600">
                                 {ragStatus.indexed_chunks} / {ragStatus.total_chunks || '?'} chunks
                             </span>
                         </div>
-                        <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                        <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
                             <div
                                 className="bg-gradient-to-r from-violet-400 to-purple-500 h-1.5 rounded-full transition-all duration-1000"
                                 style={{
@@ -272,9 +272,9 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                 {isReady && graphStats && (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
                         {Object.entries(graphStats.node_types || {}).map(([type, count]) => (
-                            <div key={type} className="text-center p-2 bg-gray-50 rounded-lg">
-                                <p className="text-lg font-bold text-gray-800">{count}</p>
-                                <p className="text-[9px] text-gray-400 uppercase font-semibold">{type}s</p>
+                            <div key={type} className="text-center p-2 bg-app-bg-page rounded-lg">
+                                <p className="text-lg font-bold text-app-text-main">{count}</p>
+                                <p className="text-[9px] text-app-text-light uppercase font-semibold">{type}s</p>
                             </div>
                         ))}
                     </div>
@@ -282,14 +282,14 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
 
                 {/* Error */}
                 {indexError && (
-                    <div className="mt-3 px-3 py-2 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
+                    <div className="mt-3 px-3 py-2 bg-app-status-errorBg border border-app-status-errorBg rounded-lg text-xs text-app-status-error">
                         <XCircle className="w-3 h-3 inline mr-1" /> {indexError}
                     </div>
                 )}
 
                 {/* Query interface */}
                 {showQuery && isReady && (
-                    <div className="mt-4 border-t border-gray-100 pt-4">
+                    <div className="mt-4 border-t border-app-border-light pt-4">
                         <div className="flex gap-2">
                             <input
                                 type="text"
@@ -297,7 +297,7 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                                 onChange={(e) => setQueryText(e.target.value)}
                                 onKeyDown={(e) => e.key === 'Enter' && handleQuery()}
                                 placeholder="Ask about your codebase... (e.g., 'How does authentication work?')"
-                                className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
+                                className="flex-1 px-3 py-2 text-sm border border-app-border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 focus:border-violet-400"
                             />
                             <button
                                 onClick={handleQuery}
@@ -305,8 +305,8 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                                 className={`inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg transition-all ${isQuerying
                                     ? 'bg-violet-100 text-violet-700 cursor-wait'
                                     : !queryText.trim()
-                                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                        : 'bg-gradient-to-r from-violet-500 to-purple-600 text-white shadow hover:shadow-lg'
+                                        ? 'bg-app-bg-muted text-app-text-light cursor-not-allowed'
+                                        : 'bg-gradient-to-r from-violet-500 to-purple-600 text-app-bg-card shadow hover:shadow-lg'
                                     }`}
                             >
                                 {isQuerying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
@@ -315,11 +315,11 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                         </div>
 
                         {queryResult && (
-                            <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-100 max-h-[300px] overflow-y-auto">
+                            <div className="mt-3 p-3 bg-app-bg-page rounded-lg border border-app-border-light max-h-[300px] overflow-y-auto">
                                 {queryResult.status === 'error' ? (
-                                    <p className="text-xs text-red-500">{queryResult.error}</p>
+                                    <p className="text-xs text-app-status-error">{queryResult.error}</p>
                                 ) : (
-                                    <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono leading-5">
+                                    <pre className="text-xs text-app-text-label whitespace-pre-wrap font-mono leading-5">
                                         {typeof queryResult.context === 'string'
                                             ? queryResult.context
                                             : JSON.stringify(queryResult, null, 2)}
@@ -333,9 +333,9 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
                 {/* Not indexed - show CTA */}
                 {!isReady && !isIndexing && (
                     <div className="text-center py-4">
-                        <Network className="w-8 h-8 mx-auto mb-2 text-gray-300" />
-                        <p className="text-xs text-gray-400 mb-1">No Knowledge Graph indexed for this project</p>
-                        <p className="text-[10px] text-gray-400">
+                        <Network className="w-8 h-8 mx-auto mb-2 text-app-border" />
+                        <p className="text-xs text-app-text-light mb-1">No Knowledge Graph indexed for this project</p>
+                        <p className="text-[10px] text-app-text-light">
                             Index your repo to enable AI agents with deep codebase context
                         </p>
                     </div>

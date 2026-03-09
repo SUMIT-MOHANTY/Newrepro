@@ -90,14 +90,14 @@ export default function AppPreview() {
     if (isFullscreen && previewStatus.status === 'running' && previewStatus.preview_url) {
         return (
             <div className="fixed inset-0 z-[200] bg-black">
-                <div className="absolute top-0 left-0 right-0 h-10 bg-gray-900/80 backdrop-blur flex items-center justify-between px-4 z-10">
+                <div className="absolute top-0 left-0 right-0 h-10 bg-app-text-main/80 backdrop-blur flex items-center justify-between px-4 z-10">
                     <div className="flex items-center gap-2">
                         <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <span className="text-xs text-gray-300 font-mono">{appUrl}</span>
+                        <span className="text-xs text-app-border font-mono">{appUrl}</span>
                     </div>
                     <button
                         onClick={() => setIsFullscreen(false)}
-                        className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-all"
+                        className="p-1.5 rounded-lg hover:bg-app-text-label text-app-text-light hover:text-app-bg-card transition-all"
                     >
                         <Minimize2 className="w-4 h-4" />
                     </button>
@@ -114,24 +114,24 @@ export default function AppPreview() {
     }
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 text-white">
+        <div className="min-h-screen bg-gradient-to-br from-app-text-main via-app-text-main to-app-text-main text-app-bg-card">
             {/* Top Bar */}
-            <div className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800/50">
+            <div className="sticky top-0 z-50 bg-app-text-main/80 backdrop-blur-xl border-b border-app-text-main/50">
                 <div className="max-w-[1800px] mx-auto px-6 h-14 flex items-center justify-between">
                     <div className="flex items-center gap-4">
                         <button
                             onClick={() => navigate(-1)}
-                            className="flex items-center gap-1.5 text-gray-400 hover:text-white text-sm transition-colors"
+                            className="flex items-center gap-1.5 text-app-text-light hover:text-app-bg-card text-sm transition-colors"
                         >
                             <ArrowLeft className="w-4 h-4" />
                             Back
                         </button>
-                        <div className="h-5 w-px bg-gray-700" />
+                        <div className="h-5 w-px bg-app-text-label" />
                         <div className="flex items-center gap-2">
                             <Globe className="w-4 h-4 text-violet-400" />
                             <span className="font-semibold text-sm">App Preview</span>
                             {previewStatus.status === 'running' && (
-                                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold">
+                                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-app-status-success/10 border border-app-status-success/30 text-emerald-400 text-[10px] font-bold">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                                     LIVE
                                 </span>
@@ -142,14 +142,14 @@ export default function AppPreview() {
                     {previewStatus.status === 'running' && (
                         <div className="flex items-center gap-3">
                             {/* Device Switcher */}
-                            <div className="flex items-center gap-1 bg-gray-800/50 rounded-xl p-1 border border-gray-700/50">
+                            <div className="flex items-center gap-1 bg-app-text-label/50 rounded-xl p-1 border border-app-text-label/50">
                                 {DEVICE_SIZES.map(device => (
                                     <button
                                         key={device.id}
                                         onClick={() => setSelectedDevice(device.id)}
                                         className={`p-1.5 rounded-lg transition-all ${selectedDevice === device.id
-                                            ? 'bg-violet-600 text-white shadow-lg shadow-violet-600/20'
-                                            : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700/50'
+                                            ? 'bg-violet-600 text-app-bg-card shadow-lg shadow-violet-600/20'
+                                            : 'text-app-text-muted hover:text-app-border hover:bg-app-text-label/50'
                                             }`}
                                         title={device.label}
                                     >
@@ -158,18 +158,18 @@ export default function AppPreview() {
                                 ))}
                             </div>
 
-                            <div className="h-5 w-px bg-gray-700" />
+                            <div className="h-5 w-px bg-app-text-label" />
 
                             <button
                                 onClick={() => setIframeKey(k => k + 1)}
-                                className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/50 text-gray-400 hover:text-white hover:bg-gray-700 transition-all"
+                                className="p-2 rounded-lg bg-app-text-label/50 border border-app-text-label/50 text-app-text-light hover:text-app-bg-card hover:bg-app-text-label transition-all"
                                 title="Refresh"
                             >
                                 <RefreshCw className="w-4 h-4" />
                             </button>
                             <button
                                 onClick={() => setIsFullscreen(true)}
-                                className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/50 text-gray-400 hover:text-white hover:bg-gray-700 transition-all"
+                                className="p-2 rounded-lg bg-app-text-label/50 border border-app-text-label/50 text-app-text-light hover:text-app-bg-card hover:bg-app-text-label transition-all"
                                 title="Fullscreen"
                             >
                                 <Maximize2 className="w-4 h-4" />
@@ -178,14 +178,14 @@ export default function AppPreview() {
                                 href={`/app/${projectId}`}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="p-2 rounded-lg bg-gray-800/50 border border-gray-700/50 text-gray-400 hover:text-white hover:bg-gray-700 transition-all"
+                                className="p-2 rounded-lg bg-app-text-label/50 border border-app-text-label/50 text-app-text-light hover:text-app-bg-card hover:bg-app-text-label transition-all"
                                 title="Open in new tab"
                             >
                                 <ExternalLink className="w-4 h-4" />
                             </a>
                             <button
                                 onClick={handleStop}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/10 border border-red-500/30 text-red-400 text-xs font-semibold hover:bg-red-600/20 transition-all"
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-app-status-error/10 border border-app-status-error/30 text-red-400 text-xs font-semibold hover:bg-app-status-error/20 transition-all"
                             >
                                 <StopCircle className="w-3.5 h-3.5" />
                                 Stop
@@ -199,7 +199,7 @@ export default function AppPreview() {
             {previewStatus.status === 'running' && previewStatus.preview_url ? (
                 <div className="flex-1 flex items-start justify-center p-6" style={{ height: 'calc(100vh - 56px)' }}>
                     <div
-                        className="bg-gray-900 rounded-2xl border border-gray-700/50 overflow-hidden shadow-2xl transition-all duration-300"
+                        className="bg-app-text-main rounded-2xl border border-app-text-label/50 overflow-hidden shadow-2xl transition-all duration-300"
                         style={{
                             width: deviceConfig.width,
                             height: deviceConfig.height,
@@ -226,14 +226,14 @@ export default function AppPreview() {
                             <div className="absolute inset-0 w-20 h-20 rounded-full border-2 border-violet-400/20 animate-ping mx-auto" />
                         </div>
                         <div>
-                            <p className="text-lg font-semibold text-white">Deploying your application...</p>
-                            <p className="text-sm text-gray-500 mt-1">Cloning, installing dependencies, and starting the server</p>
+                            <p className="text-lg font-semibold text-app-bg-card">Deploying your application...</p>
+                            <p className="text-sm text-app-text-muted mt-1">Cloning, installing dependencies, and starting the server</p>
                         </div>
                         {previewStatus.logs && previewStatus.logs.length > 0 && (
-                            <div className="mt-6 max-w-md mx-auto bg-gray-900 rounded-xl border border-gray-800 p-4">
+                            <div className="mt-6 max-w-md mx-auto bg-app-text-main rounded-xl border border-app-text-main p-4">
                                 <div className="space-y-1 font-mono text-[11px] text-left">
                                     {previewStatus.logs.slice(-5).map((log, i) => (
-                                        <div key={i} className="text-gray-400">
+                                        <div key={i} className="text-app-text-light">
                                             <span className="text-violet-400 mr-1">›</span>
                                             {log.message}
                                         </div>
@@ -250,16 +250,16 @@ export default function AppPreview() {
                             <Globe className="w-16 h-16 text-violet-400 mx-auto" />
                         </div>
                         <div>
-                            <h2 className="text-2xl font-bold text-white">Preview Your Application</h2>
-                            <p className="text-gray-400 text-sm mt-2 leading-relaxed">
-                                Deploy the <code className="px-1.5 py-0.5 bg-gray-800 rounded text-violet-300 text-xs">agent/integration</code> branch
+                            <h2 className="text-2xl font-bold text-app-bg-card">Preview Your Application</h2>
+                            <p className="text-app-text-light text-sm mt-2 leading-relaxed">
+                                Deploy the <code className="px-1.5 py-0.5 bg-app-text-label rounded text-violet-300 text-xs">agent/integration</code> branch
                                 and preview it right here.
                             </p>
                         </div>
                         <button
                             onClick={handleDeploy}
                             disabled={isDeploying}
-                            className="inline-flex items-center gap-2.5 px-8 py-3.5 rounded-2xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-bold text-sm shadow-xl shadow-violet-600/25 hover:shadow-violet-600/40 hover:scale-[1.03] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="inline-flex items-center gap-2.5 px-8 py-3.5 rounded-2xl bg-gradient-to-r from-violet-600 to-purple-600 text-app-bg-card font-bold text-sm shadow-xl shadow-violet-600/25 hover:shadow-violet-600/40 hover:scale-[1.03] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {isDeploying ? (
                                 <Loader2 className="w-5 h-5 animate-spin" />

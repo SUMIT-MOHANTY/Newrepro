@@ -118,7 +118,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                         </svg>
                     </button>
                 )}
-                <h2 className="text-2xl font-bold text-slate-800 tracking-tight mb-2">Welcome Back</h2>
+                <h2 className="text-2xl font-bold text-app-text-main tracking-tight mb-2">Welcome Back</h2>
                 <p className="text-app-text-muted text-sm">Sign in to continue to your dashboard</p>
             </div>
 
@@ -131,7 +131,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 )}
 
                 {error && (
-                    <div className="mb-6 p-4 bg-app-status-errorBg border border-red-100 text-app-status-error text-sm rounded-lg flex items-center">
+                    <div className="mb-6 p-4 bg-app-status-errorBg border border-app-status-errorBg text-app-status-error text-sm rounded-lg flex items-center">
                         <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
@@ -146,7 +146,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                         </label>
                         <div className="relative group">
                             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <Mail className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
+                                <Mail className="h-5 w-5 text-app-text-light group-focus-within:text-app-primary transition-colors" />
                             </div>
                             <input
                                 id="email"
@@ -168,7 +168,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                         </div>
                         <div className="relative group">
                             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <Lock className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
+                                <Lock className="h-5 w-5 text-app-text-light group-focus-within:text-app-primary transition-colors" />
                             </div>
                             <input
                                 id="password"
@@ -185,7 +185,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                     <button
                         type="submit"
                         disabled={isLoading || isSsoLoading}
-                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-white bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
+                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-app-bg-card bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
                     >
                         {isLoading ? (
                             <>
@@ -233,11 +233,11 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                     <p className="text-sm text-app-text-muted">
                         Don't have an account?{' '}
                         {isModal && onSwitch ? (
-                            <button onClick={onSwitch} className="font-semibold text-app-primary hover:text-blue-500 hover:underline transition-colors bg-transparent border-0 p-0 inline cursor-pointer">
+                            <button onClick={onSwitch} className="font-semibold text-app-primary hover:text-app-primary hover:underline transition-colors bg-transparent border-0 p-0 inline cursor-pointer">
                                 Create an account
                             </button>
                         ) : (
-                            <Link to="/signup" className="font-semibold text-app-primary hover:text-blue-500 hover:underline transition-colors">
+                            <Link to="/signup" className="font-semibold text-app-primary hover:text-app-primary hover:underline transition-colors">
                                 Create an account
                             </Link>
                         )}
@@ -252,12 +252,12 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     }
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 relative">
+        <div className="min-h-screen bg-gradient-to-br from-app-bg-page to-app-bg-muted relative">
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center space-x-4 z-10">
                 <img src={logo} alt="DSuite Logo" className="h-10 w-auto object-contain" />
-                <div className="h-8 w-px bg-slate-300"></div>
-                <span className="text-xl font-bold text-slate-800 tracking-tight">DSuite</span>
+                <div className="h-8 w-px bg-app-border"></div>
+                <span className="text-xl font-bold text-app-text-main tracking-tight">DSuite</span>
             </div>
 
             <div className="min-h-screen flex items-center justify-center p-4">

@@ -5,6 +5,15 @@ import './index.css'
 import App from './App.jsx'
 import { installUnauthorizedResponseInterceptor } from './utils/fetchInterceptor'
 
+const theme = localStorage.getItem('theme');
+if (theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+    document.documentElement.classList.add('dark');
+    localStorage.setItem('theme', 'dark');
+} else {
+    document.documentElement.classList.remove('dark');
+    localStorage.setItem('theme', 'light');
+}
+
 installUnauthorizedResponseInterceptor()
 
 const queryClient = new QueryClient({

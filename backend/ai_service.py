@@ -56,7 +56,7 @@ Output format rules for the main report body (everything before the final JSON b
 - Do NOT use Markdown syntax (no `#`, `**`, `*`, or pipe-table markdown).
 - Do NOT wrap the HTML content in code fences.
 
-Finally, output a SINGLE JSON block containing the key metrics, targeted questions, AND prerequisites.
+Finally, output a SINGLE JSON block containing the key metrics, targeted questions, prerequisites, AND a detailed application architecture diagram.
 All targeted questions must appear ONLY in the final JSON `questions` array.
 Do not include or repeat questions anywhere else in the response body.
 The `questions` array should include at least 5-7 specific technical questions, covering:
@@ -75,8 +75,10 @@ The JSON must follow this exact structure:
     "deployment": "Cloud / On-prem / Hybrid (extracted from requirements)",
     "resources": "Estimated team size (e.g., '3-5 Developers')",
     "complexity": "Low / Medium / High",
-    "timeline": "Estimated duration (e.g., '3-4 Months')"
+    "timeline": "Estimated duration (e.g., '3-4 Months')",
+    "project_type": "greenfield / brownfield / modernization (Identify based on whether it's a new build, extension of current app, or tech stack upgrade)"
   },
+
   "questions": [
     "How many concurrent users are expected?",
     "What is the total expected user base?",
@@ -89,7 +91,30 @@ The JSON must follow this exact structure:
       "category": "one of: credentials, apis, infrastructure, databases, cloud, dependencies",
       "priority": "high / medium / low"
     }
-  ]
+  ],
+
+  "user_flow": "A user journey diagram definition describing the end-to-end flow through the application for the primary user types (public users, internal operators, admins, etc.). Derive this ONLY from the business / functional requirements and roles described in the BRD. The flow MUST: (1) start from the primary actor(s), (2) include authentication if the system requires login, (3) include each major feature or workflow (such as performing a calculation, submitting a form, placing an order), (4) include viewing results/confirmation, and (5) include end-of-session actions such as logout/exit where applicable. Steps should align with the architecture modules (for example: Edge/WAF → Frontend → API Gateway → Auth Service → Domain Services → Databases/Ledger). If the BRD does not provide enough detail, fall back to a standard web flow and explicitly note this assumption in the HTML report.",
+
+  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree (for example: 'myproject/', '├── backend/', '│   ├── apps/', ...).",
+
+  "architecture": {
+    "nodes": [
+      {
+        "id": "string-unique-node-id",
+        "label": "Short name (e.g., 'API Gateway', 'XYZ Service', 'Ledger DB')",
+        "layer": "frontend | backend | service | data | integration | infra",
+        "type": "service | database | queue | cache | external | ui",
+        "cluster": "Logical module / bounded context for visual grouping (e.g., 'Edge', 'Frontend', 'Banking', 'Insurance', 'Ledger & Reporting')"
+      }
+    ],
+    "edges": [
+      {
+        "from": "source-node-id",
+        "to": "target-node-id",
+        "description": "short text describing the interaction (e.g., 'HTTPS JSON API', 'writes ledger events')"
+      }
+    ]
+  }
 }
 ```
 Ensure the JSON is valid and enclosed in a json code block at the very end of your response."""
@@ -462,8 +487,6 @@ async def get_ai_config() -> dict:
         "model": settings.brn_model if use_brn_llama else settings.ai_model
     }
 
-
-
 FULL_PROJECT_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
 You are generating the FULL, COMPREHENSIVE task list for a project all at once.
 
@@ -524,6 +547,388 @@ Do not include any other markdown, text, or explanations. Only output the JSON a
 """
 
 
+TASK_GENERATION_PROMPT = """system_role = "software_task_architect"
+
+mission:
+    generate real software development tasks that can be executed by engineering teams.
+
+objectives:
+    - reduce hallucination
+    - generate executable dev tasks
+    - support greenfield, brownfield, modernization projects
+    - maintain wallet scoring
+    - link task dependencies
+    - generate implementation checklists
+    - append new tasks without duplication
+    - operate safely within context window limits
+
+--------------------------------------------------
+
+inputs
+
+PROJECT_NAME
+PROJECT_TYPE
+PROJECT_DESCRIPTION
+
+TECH_STACK
+ARCHITECTURE
+REPOSITORY_STRUCTURE
+
+PRODUCT_REQUIREMENTS
+FEATURE_REQUESTS
+BUG_REPORTS
+
+EXISTING_TASK_SUMMARY
+
+TASK_GENERATION_MODE
+
+MAX_TASKS_TO_GENERATE
+
+--------------------------------------------------
+
+allowed project types
+
+project_type ∈ { greenfield, brownfield, modernization }
+
+--------------------------------------------------
+
+hallucination prevention rules
+
+rule_1:
+    tasks must only be derived from:
+        PROJECT_DESCRIPTION
+        PRODUCT_REQUIREMENTS
+        FEATURE_REQUESTS
+        BUG_REPORTS
+        TECH_STACK
+        ARCHITECTURE
+
+rule_2:
+    if required information is missing:
+        create investigation task instead of guessing
+
+rule_3:
+    never generate tasks already present in:
+        EXISTING_TASK_SUMMARY
+
+rule_4:
+    tasks must represent real engineering work
+
+    bad example:
+        "improve performance"
+
+    good example:
+        "implement redis caching for user profile api"
+
+rule_5:
+    tasks must be small enough to be executed independently
+
+--------------------------------------------------
+
+project strategy
+
+if PROJECT_TYPE == "greenfield":
+
+    generate tasks for:
+        architecture design
+        repository setup
+        database schema
+        api design
+        authentication
+        logging
+        monitoring
+        testing
+        ci_cd
+        deployment
+
+
+if PROJECT_TYPE == "brownfield":
+
+    analyze existing system context
+
+    generate tasks for:
+        bug fixes
+        feature additions
+        refactoring
+        performance improvements
+        test coverage
+
+
+if PROJECT_TYPE == "modernization":
+
+    identify legacy components
+
+    generate tasks for:
+        migration
+        refactoring
+        infrastructure modernization
+        api standardization
+        security upgrades
+
+--------------------------------------------------
+
+task creation logic
+
+for each work_area identified:
+
+    create task_object
+
+
+task_object fields
+
+TaskID = auto_increment
+
+Title =
+    short actionable engineering task
+
+Description =
+    implementation goal and scope
+
+TaskType =
+    feature
+    bug
+    refactor
+    infrastructure
+    investigation
+    migration
+
+Area =
+    backend
+    frontend
+    database
+    devops
+    security
+    architecture
+
+Priority =
+    P0 | P1 | P2 | P3
+
+Dependencies =
+    list of TaskID
+
+WalletScore =
+    numeric reward value
+
+Checklist =
+    ordered implementation steps
+
+--------------------------------------------------
+
+checklist generation rules
+
+each task must contain at least 4 checklist items
+
+checklist items must represent real development actions
+
+good checklist examples:
+
+    - analyze current module
+    - design interface
+    - implement service layer
+    - add database migration
+    - write unit tests
+    - update documentation
+
+--------------------------------------------------
+
+dependency linking
+
+if a task requires another task:
+
+    link using TaskID
+
+--------------------------------------------------
+
+context window control
+
+never load full historical task list
+
+only use:
+
+    EXISTING_TASK_SUMMARY
+
+format:
+
+    TASK_ID : SHORT_DESCRIPTION
+
+--------------------------------------------------
+
+append mode logic
+
+if TASK_GENERATION_MODE == "append":
+
+    generate tasks that:
+
+        - are not present in EXISTING_TASK_SUMMARY
+        - logically extend existing system
+        - add meaningful capabilities
+
+--------------------------------------------------
+
+wallet scoring logic
+
+wallet_score =
+
+    base_score
+    + complexity_weight
+    + business_value_weight
+    + system_impact_weight
+
+--------------------------------------------------
+
+output format
+
+return structured json only
+
+task_list = [
+
+{
+    "TaskID": integer,
+    "Title": "short actionable engineering task",
+    "Description": "implementation goal and scope",
+    "TaskType": "feature" | "bug" | "refactor" | "infrastructure" | "investigation" | "migration",
+    "Area": "backend" | "frontend" | "database" | "devops" | "security" | "architecture",
+    "Priority": "P0" | "P1" | "P2" | "P3",
+    "Dependencies": [TaskID],
+    "WalletScore": integer,
+    "Checklist": [
+        "step_1",
+        "step_2",
+        "step_3",
+        "step_4"
+    ]
+}
+
+]
+
+limit results to:
+
+MAX_TASKS_TO_GENERATE
+
+Output ONLY the JSON array for task_list. No markdown, no prose.
+"""
+
+
+BATCH_TASK_PROMPT = """system_role = "software_task_architect"
+
+mission:
+    Break down the project into executable dev tasks for engineering teams.
+    You generate tasks INCREMENTALLY in batches of up to 5.
+
+objectives:
+    - reduce hallucination
+    - generate executable dev tasks
+    - support greenfield, brownfield, modernization projects
+    - maintain wallet scoring
+    - link task dependencies
+    - generate implementation checklists
+    - append new tasks without duplication
+    - operate safely within context window limits
+
+--------------------------------------------------
+
+inputs
+
+PROJECT_NAME
+PROJECT_TYPE
+PROJECT_DESCRIPTION
+TECH_STACK
+PRODUCT_REQUIREMENTS
+EXISTING_TASK_SUMMARY
+TASK_GENERATION_MODE
+MAX_TASKS_TO_GENERATE
+BATCH_NUMBER
+
+--------------------------------------------------
+
+allowed project types
+
+project_type ∈ { greenfield, brownfield, modernization }
+
+--------------------------------------------------
+
+project strategy
+
+if PROJECT_TYPE == "greenfield":
+
+    generate tasks for:
+        architecture design
+        repository setup
+        database schema
+        api design
+        authentication
+        logging
+        monitoring
+        testing
+        ci_cd
+        deployment
+
+
+if PROJECT_TYPE == "brownfield":
+
+    analyze existing system context
+
+    generate tasks for:
+        bug fixes
+        feature additions
+        refactoring
+        performance improvements
+        test coverage
+
+
+if PROJECT_TYPE == "modernization":
+
+    identify legacy components
+
+    generate tasks for:
+        migration
+        refactoring
+        infrastructure modernization
+        api standardization
+        security upgrades
+
+--------------------------------------------------
+
+hallucination prevention rules
+
+rule_1:
+    tasks must only be derived from:
+        PROJECT_DESCRIPTION
+        PRODUCT_REQUIREMENTS
+        TECH_STACK
+
+rule_2:
+    if required information is missing:
+        create investigation task instead of guessing
+
+rule_3:
+    never generate tasks already present in:
+        EXISTING_TASK_SUMMARY
+
+rule_4:
+    tasks must represent real engineering work
+
+rule_5:
+    tasks must be small enough to be executed independently
+
+rule_6:
+    project bootstrap:
+        if PROJECT_TYPE == "greenfield" and BATCH_NUMBER == 1,
+        ensure the first task covers core project bootstrap (repo, basic architecture, pipelines).
+
+--------------------------------------------------
+
+task_object fields
+
+Use the same task_list object shape as in TASK_GENERATION_PROMPT.
+
+If the project is fully broken down, return an empty array: [].
+
+Output ONLY the JSON array for task_list. No markdown, no prose.
+"""
+
+
+
 def _normalize_task_wallets(tasks: list, project_wallet: int) -> list:
     """
     Normalize task wallets so the total never exceeds the project budget.
@@ -580,8 +985,24 @@ def _parse_llm_task_response(content: str) -> list:
     tasks = json.loads(content)
     if not isinstance(tasks, list):
         raise ValueError("LLM did not return a list")
-    # Clamp each task's wallet to 1-10
+
+    # Normalize alternate architect schemas into the internal shape
     for task in tasks:
+        # Support spec-style field names
+        if "Title" in task and "taskName" not in task:
+            task["taskName"] = task.pop("Title")
+        if "TaskType" in task and "task_type" not in task:
+            task["task_type"] = task.pop("TaskType")
+        if "Area" in task and "domain" not in task:
+            task["domain"] = task.pop("Area")
+        if "WalletScore" in task and "wallet" not in task:
+            task["wallet"] = task.pop("WalletScore")
+        if "Checklist" in task and "checklist" not in task:
+            task["checklist"] = task.pop("Checklist")
+        if "Dependencies" in task and "dependencies" not in task:
+            task["dependencies"] = task.pop("Dependencies")
+
+        # Clamp each task's wallet to 1-10
         w = task.get("wallet", 1)
         task["wallet"] = max(1, min(10, w))
     return tasks
@@ -611,6 +1032,30 @@ Output ONLY a JSON object where each key is the task ID (as a string) and the va
 
 Do not include any other markdown, text, or explanations. Only output the JSON object.
 """
+
+
+def _normalize_generated_task_checklist(task: Dict[str, Any]) -> None:
+    """Ensure generated task checklist items always follow the UI/API shape."""
+    raw_checklist = task.get("checklist", [])
+    if not isinstance(raw_checklist, list):
+        return
+
+    normalized_checklist = []
+    for item in raw_checklist:
+        if isinstance(item, str):
+            normalized_checklist.append({"text": item, "completed": False})
+        elif isinstance(item, dict):
+            text_val = item.get("text") or item.get("step") or str(item)
+            normalized_checklist.append({"text": text_val, "completed": False})
+
+    task["checklist"] = normalized_checklist
+
+
+def _normalize_generated_tasks(tasks: list, wallet_budget: int) -> list:
+    """Apply shared normalization for task outputs from any prompt variant."""
+    for task in tasks:
+        _normalize_generated_task_checklist(task)
+    return _normalize_task_wallets(tasks, wallet_budget)
 
 
 async def generate_checklists_for_tasks(
@@ -703,6 +1148,136 @@ async def generate_checklists_for_tasks(
         return {}
 
 
+async def generate_task_batch(
+    analysis_report: str,
+    agents: list,
+    project_deadline: str,
+    remaining_wallet: int,
+    total_project_wallet: int,
+    already_created_tasks: list,
+    batch_number: int,
+    custom_rules: Optional[str] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    project_type: str = "greenfield", # New param
+) -> list:
+    """
+    Generate the NEXT batch of up to 5 tasks using the LLM.
+    Provides context of previously created tasks so the LLM continues
+    without repeating or starting over.
+    
+    Checklists are generated synchronously within the task object.
+    """
+
+    url = api_url or settings.ai_api_url
+    key = api_key or settings.ai_api_key
+    model_name = model or settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        raise Exception("API key not configured.")
+
+    if remaining_wallet <= 0:
+        logger.info(f"[Batch {batch_number}] No remaining wallet. Stopping task generation.")
+        return []
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    max_tasks_to_generate = min(5, max(1, remaining_wallet))
+
+    # Derive TASK_GENERATION_MODE and EXISTING_TASK_SUMMARY per architect spec
+    if already_created_tasks:
+        task_lines = []
+        for idx, t in enumerate(already_created_tasks, start=1):
+            title = str(t.get("taskName") or t.get("title") or "Untitled Task").strip()
+            short = title[:80]
+            task_lines.append(f"T{idx} : {short}")
+        existing_task_summary = "\n".join(task_lines)
+        task_generation_mode = "append"
+    else:
+        existing_task_summary = ""
+        task_generation_mode = "fresh"
+
+    text_content = (
+        f"PROJECT_NAME: Project\n"
+        f"PROJECT_TYPE: {project_type}\n"
+        f"PROJECT_DESCRIPTION:\n{analysis_report}\n\n"
+        f"TECH_STACK: (embedded in analysis if available)\n"
+        f"ARCHITECTURE: (embedded in analysis if available)\n"
+        f"REPOSITORY_STRUCTURE: (embedded in analysis if available)\n\n"
+        f"PRODUCT_REQUIREMENTS: (embedded in analysis if available)\n"
+        f"FEATURE_REQUESTS: (embedded in analysis if available)\n"
+        f"BUG_REPORTS: (embedded in analysis if available)\n\n"
+        f"EXISTING_TASK_SUMMARY:\n{existing_task_summary or 'None'}\n\n"
+        f"TASK_GENERATION_MODE: {task_generation_mode}\n"
+        f"MAX_TASKS_TO_GENERATE: {max_tasks_to_generate}\n"
+        f"BATCH_NUMBER: {batch_number}\n"
+        f"CURRENT_DATE: {current_date}\n"
+        f"PROJECT_DEADLINE: {project_deadline}\n"
+        f"TOTAL_PROJECT_WALLET: {total_project_wallet}\n"
+        f"REMAINING_WALLET_BUDGET: {remaining_wallet}\n\n"
+        f"CUSTOM_RULES:\n{custom_rules or 'None'}\n"
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": BATCH_TASK_PROMPT},
+            {"role": "user", "content": text_content},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    logger.info(f"[Batch {batch_number}] Requesting next architectural batch. Remaining wallet: {remaining_wallet}")
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            logger.info(f"[Batch {batch_number}] LLM response status: {response.status_code}")
+            response.raise_for_status()
+
+            data = response.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0].get("message", {}).get("content", "")
+                tasks = _parse_llm_task_response(content)
+
+                if not tasks:
+                    logger.info(f"[Batch {batch_number}] LLM returned empty — task generation complete.")
+                    return []
+
+                tasks = _normalize_generated_tasks(tasks, remaining_wallet)
+                logger.info(
+                    f"[Batch {batch_number}] Generated {len(tasks)} tasks (with checklists), "
+                    f"batch wallet: {sum(t.get('wallet', 0) for t in tasks)}"
+                )
+                return tasks
+            else:
+                raise Exception("No response from AI model")
+
+
+    except httpx.HTTPStatusError as e:
+        import traceback
+        traceback.format_exc()
+        try:
+            error_body = e.response.json()
+        except Exception:
+            error_body = e.response.text
+        raise Exception(
+            f"[Batch {batch_number}] Task generation failed. HTTP {e.response.status_code}: {error_body}"
+        )
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        raise Exception(
+            f"[Batch {batch_number}] Task generation failed: {str(e)}\n\nTraceback:\n{error_details}"
+        )
+
+
 async def generate_all_tasks(
     analysis_report: str,
     agents: list,
@@ -712,9 +1287,10 @@ async def generate_all_tasks(
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
+    project_type: str = "greenfield",
 ) -> list:
     """
-    Generate all tasks for the project all at once using the LLM.
+    Generate all tasks for the project in a single LLM call.
     """
     url = api_url or settings.ai_api_url
     key = api_key or settings.ai_api_key
@@ -732,6 +1308,7 @@ async def generate_all_tasks(
     text_content = (
         f"PROJECT CONSTRAINTS:\n"
         f"- Current Date (Today): {current_date}\n"
+        f"- Project Type: {project_type}\n"
         f"- Project Deadline: {project_deadline}\n"
         f"- TOTAL Project Wallet: {project_wallet}\n"
         f"- Available Agents: {json.dumps(agents)}\n"
@@ -774,8 +1351,7 @@ async def generate_all_tasks(
                     logger.info("LLM returned empty — task generation failed or complete.")
                     return []
 
-                # Normalize this against the total wallet
-                tasks = _normalize_task_wallets(tasks, project_wallet)
+                tasks = _normalize_generated_tasks(tasks, project_wallet)
 
                 logger.info(
                     f"Generated {len(tasks)} tasks, "
@@ -969,4 +1545,101 @@ async def generate_sprint_milestone_plan(
         return default_plan
 
 
+# Keep the legacy single-shot function for backward compatibility
+async def generate_tasks_for_project(
+    analysis_report: str,
+    agents: list,
+    project_deadline: str,
+    project_wallet: int,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    project_type: str = "greenfield",
+) -> list:
+    """Legacy: generates all tasks in a single LLM call. Use generate_task_batch for incremental generation."""
+    url = api_url or settings.ai_api_url
+    key = api_key or settings.ai_api_key
+    model_name = model or settings.ai_model
 
+    if not key or key == "your-api-key-here":
+        raise Exception("API key not configured.")
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
+    text_content = (
+        f"INPUTS:\n"
+        f"- PROJECT_TYPE: {project_type}\n"
+        f"- CURRENT_DATE: {current_date}\n"
+        f"- PROJECT_DEADLINE: {project_deadline}\n"
+        f"- TOTAL_PROJECT_WALLET: {project_wallet}\n"
+        f"- AVAILABLE_AGENTS: {json.dumps(agents)}\n\n"
+        f"PROJECT_DESCRIPTION (BRD Analysis):\n"
+        f"{analysis_report}\n"
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": TASK_GENERATION_PROMPT},
+            {"role": "user", "content": text_content},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    logger.info(f"Starting Architectural Task Generation with model '{model_name}'")
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            logger.info(f"Received LLM response with status {response.status_code}")
+            response.raise_for_status()
+
+            data = response.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0].get("message", {}).get("content", "")
+                tasks = _parse_llm_task_response(content)
+                
+                # Normalize fields if LLM used alternate architect names
+                for t in tasks:
+                    if "Title" in t and "taskName" not in t:
+                        t["taskName"] = t.pop("Title")
+                    if "WalletScore" in t and "wallet" not in t:
+                        t["wallet"] = t.pop("WalletScore")
+                    
+                    # Ensure checklist is normalized
+                    raw_checklist = t.get("checklist", [])
+                    if isinstance(raw_checklist, list):
+                        normalized_checklist = []
+                        for item in raw_checklist:
+                            if isinstance(item, str):
+                                normalized_checklist.append({"text": item, "completed": False})
+                            elif isinstance(item, dict):
+                                text_val = item.get("text") or item.get("step") or str(item)
+                                normalized_checklist.append({"text": text_val, "completed": False})
+                        t["checklist"] = normalized_checklist
+
+                tasks = _normalize_task_wallets(tasks, project_wallet)
+                return tasks
+            else:
+                raise Exception("No response from AI model")
+
+    except httpx.HTTPStatusError as e:
+        import traceback
+        traceback.format_exc()
+        try:
+            error_body = e.response.json()
+        except Exception:
+            error_body = e.response.text
+        raise Exception(
+            f"Task generation failed. HTTP {e.response.status_code}: {error_body}"
+        )
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        raise Exception(f"Failed during task generation: {str(e)}\n\nTraceback:\n{error_details}")

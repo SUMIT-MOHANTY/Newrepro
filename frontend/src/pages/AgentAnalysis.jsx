@@ -1,10 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, Server, Users, Activity, Clock, Loader2 } from 'lucide-react';
+import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus } from 'lucide-react';
+import bourntecLogo from '../assets/bourntec_logo.png';
+import ReactFlow, { Background, Controls } from 'reactflow';
+import 'reactflow/dist/style.css';
+import dagre from 'dagre';
 
 const parseStoredDocumentAnalysis = (doc) => {
     try {
@@ -14,12 +18,176 @@ const parseStoredDocumentAnalysis = (doc) => {
     }
 };
 
+const isPendingGovernanceAnalysis = (analysis) =>
+    Boolean(analysis && analysis.screening_status === 'pending_governance_analysis');
+
 const hasCompletedStoredAnalysis = (analysis) => {
-    if (!analysis) return false;
+    if (!analysis || isPendingGovernanceAnalysis(analysis)) {
+        return false;
+    }
     return String(analysis.analysis || '').trim().length > 0;
 };
 
+// Utility: layout architecture graph with dagre so nodes don't overlap
+const layoutArchitectureGraph = (nodes, edges, direction = 'LR') => {
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: direction, nodesep: 80, ranksep: 120 });
+    g.setDefaultEdgeLabel(() => ({}));
+
+    const NODE_WIDTH = 200;
+    const NODE_HEIGHT = 60;
+
+    nodes.forEach((node) => {
+        const id = String(node.id || node.label);
+        g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    });
+
+    edges.forEach((edge) => {
+        if (!edge.from || !edge.to) return;
+        g.setEdge(String(edge.from), String(edge.to));
+    });
+
+    dagre.layout(g);
+
+    return nodes.map((node) => {
+        const id = String(node.id || node.label);
+        const dagreNode = g.node(id);
+        const position = dagreNode
+            ? { x: dagreNode.x - NODE_WIDTH / 2, y: dagreNode.y - NODE_HEIGHT / 2 }
+            : { x: 0, y: 0 };
+        return {
+            id,
+            data: { label: node.label || id },
+            position,
+        };
+    });
+};
+
 const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
+
+const parseAIResponse = (text) => {
+    let source = String(text || '').trim();
+    source = source.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    source = source.replace(/<think>[\s\S]*/gi, '').trim();
+
+    const hasExpectedShape = (obj) => obj && typeof obj === 'object' && !Array.isArray(obj)
+        && ('questions' in obj || 'metrics' in obj || 'title' in obj || 'architecture' in obj);
+
+    const tryParseObject = (value) => {
+        try {
+            const parsed = JSON.parse(value);
+            return hasExpectedShape(parsed) ? parsed : null;
+        } catch {
+            return null;
+        }
+    };
+
+    const fencedRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+    let fencedMatch;
+    let lastValidFenced = null;
+    let lastJsonLikeFence = null;
+    while ((fencedMatch = fencedRegex.exec(source)) !== null) {
+        const inner = fencedMatch[1].trim();
+        if (inner.startsWith('{') && inner.endsWith('}')) {
+            lastJsonLikeFence = { fullMatch: fencedMatch[0], index: fencedMatch.index };
+        }
+        const parsed = tryParseObject(inner);
+        if (parsed) {
+            lastValidFenced = { parsed, fullMatch: fencedMatch[0], index: fencedMatch.index };
+        }
+    }
+
+    if (lastValidFenced) {
+        const before = source.slice(0, lastValidFenced.index);
+        const after = source.slice(lastValidFenced.index + lastValidFenced.fullMatch.length);
+        const report = `${before}${after}`.trim();
+        return {
+            report,
+            questions: lastValidFenced.parsed.questions || [],
+            metrics: lastValidFenced.parsed.metrics || null,
+            title: lastValidFenced.parsed.title || null,
+            prerequisites: lastValidFenced.parsed.prerequisites || [],
+            architecture: lastValidFenced.parsed.architecture || null
+        };
+    }
+
+    if (lastJsonLikeFence) {
+        const before = source.slice(0, lastJsonLikeFence.index);
+        const after = source.slice(lastJsonLikeFence.index + lastJsonLikeFence.fullMatch.length);
+        return {
+            report: `${before}${after}`.trim(),
+            questions: [],
+            metrics: null,
+            title: null,
+            prerequisites: [],
+            architecture: null
+        };
+    }
+
+    const trimmed = source.trim().replace(/```+\s*$/g, '').trim();
+    for (let i = trimmed.lastIndexOf('{'); i >= 0; i = trimmed.lastIndexOf('{', i - 1)) {
+        const candidate = trimmed.slice(i).trim();
+        const parsed = tryParseObject(candidate);
+        if (parsed) {
+            const report = trimmed.slice(0, i).trim();
+            return {
+                report,
+                questions: parsed.questions || [],
+                metrics: parsed.metrics || null,
+                title: parsed.title || null,
+                prerequisites: parsed.prerequisites || [],
+                architecture: parsed.architecture || null
+            };
+        }
+    }
+
+    return {
+        report: source,
+        questions: [],
+        metrics: null,
+        title: null,
+        prerequisites: [],
+        architecture: null
+    };
+};
+
+const buildRepoContextMeta = (context) => {
+    if (!context) return null;
+    const provider = String(context?.provider || 'github').trim().toLowerCase();
+    const rawRepo = String(context?.repo || '').trim();
+    if (!rawRepo) return null;
+
+    if (provider === 'azure-devops') {
+        const normalizedRepo = rawRepo.replace(/^\/+|\/+$/g, '');
+        if (!normalizedRepo || normalizedRepo.split('/').filter(Boolean).length < 3) {
+            return null;
+        }
+        return {
+            repo: normalizedRepo,
+            branch: String(context?.branch || '').trim() || null,
+            source: 'link',
+            provider: 'azure-devops',
+            url: String(context?.url || '').trim() || null,
+        };
+    }
+
+    const normalizedRepo = rawRepo
+        .replace(/^https?:\/\/github\.com\//i, '')
+        .replace(/\.git$/i, '')
+        .replace(/^\/+|\/+$/g, '');
+
+    if (!normalizedRepo || !normalizedRepo.includes('/')) {
+        return null;
+    }
+
+    return {
+        repo: normalizedRepo,
+        branch: String(context?.branch || '').trim() || null,
+        source: context?.fromLink ? 'link' : 'oauth',
+        provider: 'github',
+        url: `https://github.com/${normalizedRepo}.git`,
+    };
+};
 
 const isLikelyHtml = (str) => {
     if (!str || typeof str !== 'string') return false;
@@ -33,18 +201,28 @@ const sanitizeHtml = (html) => {
     });
 };
 
-export default function AgentAnalysis({ 
-    selectedProjectKey, 
-    projects = [], 
-    projectsLoading = false 
+export default function AgentAnalysis({
+    selectedProjectKey,
+    projects = [],
+    projectsLoading = false,
+    fetchHistory
 }) {
     const navigate = useNavigate();
     const location = useLocation();
     const token = localStorage.getItem('token');
-    
+
     const [result, setResult] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [processing, setProcessing] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const [progressMessage, setProgressMessage] = useState('');
+    const [aiQuestions, setAiQuestions] = useState([]);
+    const [userAnswers, setUserAnswers] = useState({});
+    const [userFeedback, setUserFeedback] = useState('');
+    const [governanceContext, setGovernanceContext] = useState(null);
+    const [repoContext, setRepoContext] = useState(null);
+    const [isArchModalOpen, setIsArchModalOpen] = useState(false);
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
@@ -150,7 +328,7 @@ export default function AgentAnalysis({
             }
 
             const data = await response.json();
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(data.analysis || '');
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setAiQuestions(questions);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
@@ -166,6 +344,7 @@ export default function AgentAnalysis({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
@@ -244,7 +423,7 @@ export default function AgentAnalysis({
                                 aiText += delta.content;
                             }
 
-                            const { report, questions, metrics, prerequisites } = parseAIResponse(aiText);
+                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText);
                             if (questions.length > 0) setAiQuestions(questions);
 
                             setResult(prev => ({
@@ -255,7 +434,8 @@ export default function AgentAnalysis({
                                     reasoning: aiReasoning,
                                     model: payload.model || 'Streaming...',
                                     metrics: metrics,
-                                    prerequisites: prerequisites
+                                    prerequisites: prerequisites,
+                                    architecture: architecture
                                 }
                             }));
                         }
@@ -265,7 +445,7 @@ export default function AgentAnalysis({
                 }
             }
 
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(aiText);
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
             const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
@@ -279,6 +459,7 @@ export default function AgentAnalysis({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
@@ -396,7 +577,7 @@ export default function AgentAnalysis({
         const loadAnalysis = async () => {
             setLoading(true);
             setError('');
-            
+
             try {
                 const latestDocument = selectedProject.latestDocument;
                 if (!latestDocument) {
@@ -406,8 +587,36 @@ export default function AgentAnalysis({
                 }
 
                 const storedAnalysis = parseStoredDocumentAnalysis(latestDocument);
+
+                // Check if analysis is pending - only trigger if user clicked "Proceed to Agent Analysis"
+                if (isPendingGovernanceAnalysis(storedAnalysis)) {
+                    const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
+
+                    if (shouldStartAnalysis && hasGovernanceAssessment) {
+                        // Clear the flag so it doesn't trigger again on refresh
+                        sessionStorage.removeItem('shouldStartAnalysis');
+                        await triggerPendingAnalysis(latestDocument, storedAnalysis);
+                    } else if (!hasGovernanceAssessment) {
+                        setError('Governance assessment required before analysis.');
+                        setLoading(false);
+                    } else {
+                        // Analysis is pending but user hasn't clicked proceed yet - just show pending state
+                        setError('');
+                        setLoading(false);
+                    }
+                    return;
+                }
+
                 if (hasCompletedDocumentAnalysis(latestDocument)) {
-                    // Use stored analysis
+                    // Load questions and answers from stored analysis
+                    const questions = storedAnalysis?.questions || [];
+                    const savedAnswers = storedAnalysis?.userAnswers || {};
+                    const savedFeedback = storedAnalysis?.userFeedback || '';
+
+                    setAiQuestions(questions);
+                    setUserAnswers(savedAnswers);
+                    setUserFeedback(savedFeedback);
+
                     setResult({
                         id: latestDocument.id,
                         filename: latestDocument.filename,
@@ -423,12 +632,10 @@ export default function AgentAnalysis({
                     return;
                 }
 
-                // If no stored analysis in latestDocument, check other documents
                 const allDocuments = selectedProject.documents || [];
                 let foundAnalysis = null;
                 let foundDoc = null;
-                
-                // Check all documents for completed analysis
+
                 for (const doc of allDocuments) {
                     const docAnalysis = parseStoredDocumentAnalysis(doc);
                     if (hasCompletedStoredAnalysis(docAnalysis)) {
@@ -437,8 +644,17 @@ export default function AgentAnalysis({
                         break;
                     }
                 }
-                
+
                 if (foundAnalysis && foundDoc) {
+                    // Load questions and answers from stored analysis
+                    const questions = foundAnalysis?.questions || [];
+                    const savedAnswers = foundAnalysis?.userAnswers || {};
+                    const savedFeedback = foundAnalysis?.userFeedback || '';
+
+                    setAiQuestions(questions);
+                    setUserAnswers(savedAnswers);
+                    setUserFeedback(savedFeedback);
+
                     setResult({
                         id: foundDoc.id,
                         filename: foundDoc.filename,
@@ -451,7 +667,32 @@ export default function AgentAnalysis({
                         revisionNumber: selectedProject.documents?.length || 1,
                     });
                 } else {
-                    setError('Analysis not yet completed. Please wait for the analysis to finish.');
+                    let hasPendingAnalysis = false;
+                    for (const doc of allDocuments) {
+                        const docAnalysis = parseStoredDocumentAnalysis(doc);
+                        if (isPendingGovernanceAnalysis(docAnalysis)) {
+                            hasPendingAnalysis = true;
+                            const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
+
+                            if (shouldStartAnalysis && hasGovernanceAssessment) {
+                                sessionStorage.removeItem('shouldStartAnalysis');
+                                await triggerPendingAnalysis(doc, docAnalysis);
+                                break;
+                            } else if (!hasGovernanceAssessment) {
+                                setError('Governance assessment required before analysis.');
+                                setLoading(false);
+                                return;
+                            } else {
+
+                                setLoading(false);
+                                return;
+                            }
+                        }
+                    }
+
+                    if (!hasPendingAnalysis) {
+                        setError('Analysis not yet completed. Please wait for the analysis to finish.');
+                    }
                 }
             } catch (err) {
                 setError(err.message || 'Failed to load analysis');
@@ -477,6 +718,15 @@ export default function AgentAnalysis({
             }
         }
 
+        // Attach existing architecture so the model can refine instead of replacing it
+        if (result?.analysis?.architecture) {
+            try {
+                const archJson = JSON.stringify(result.analysis.architecture, null, 2);
+                feedbackToSend += `\n\nCURRENT_ARCHITECTURE_JSON (refine, do not radically change unless business requirements demand it):\n${archJson}`;
+            } catch {
+                // ignore serialization errors
+            }
+        }
         if (!result?.extraction?.markdown || !feedbackToSend.trim()) return;
 
         setProcessing(true);
@@ -658,14 +908,11 @@ export default function AgentAnalysis({
 
         // ── Key Metrics Cards ──
         const metrics = result.analysis.metrics || {};
-        const timelineDisplay = metrics.timeline
-            ? `${metrics.timeline} (For Developer Only Mode)`
-            : 'TBD';
         const metricItems = [
             { label: 'Deployment', value: metrics.deployment || 'TBD' },
             { label: 'Resources', value: metrics.resources || 'TBD' },
             { label: 'Complexity', value: metrics.complexity || 'TBD' },
-            { label: 'Timeline', value: timelineDisplay },
+            { label: 'Timeline', value: metrics.timeline || 'TBD' },
         ];
 
         const cardW = (contentWidth - 9) / 4;
@@ -860,23 +1107,23 @@ export default function AgentAnalysis({
 
     if (loading) {
         return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="text-center">
-                    <Loader2 className="w-8 h-8 text-indigo-600 animate-spin mx-auto mb-4" />
+                    <Loader2 className="w-8 h-8 text-app-primary animate-spin mx-auto mb-4" />
                     <p className="text-app-text-muted font-semibold">Loading Agent Analysis...</p>
                 </div>
             </div>
         );
     }
 
-    if (error) {
+    if (error && !result) {
         return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="text-center max-w-md">
-                    <p className="text-red-600 font-semibold mb-4">{error}</p>
+                    <p className="text-app-status-error font-semibold mb-4">{error}</p>
                     <button
                         onClick={() => navigate('/dashboard')}
-                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                        className="px-4 py-2 bg-app-primary text-app-bg-card rounded-lg hover:bg-app-primary-hover transition-colors"
                     >
                         Go to Dashboard
                     </button>
@@ -887,12 +1134,12 @@ export default function AgentAnalysis({
 
     if (!result) {
         return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="text-center max-w-md">
                     <p className="text-app-text-muted font-semibold mb-4">No analysis found for this project.</p>
                     <button
                         onClick={() => navigate('/dashboard')}
-                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                        className="px-4 py-2 bg-app-primary text-app-bg-card rounded-lg hover:bg-app-primary-hover transition-colors"
                     >
                         Go to Dashboard
                     </button>
@@ -901,99 +1148,147 @@ export default function AgentAnalysis({
         );
     }
 
-    const handleDownloadPDF = () => {
-        // Navigate to dashboard to use the PDF download functionality there
-        navigate('/dashboard');
-    };
-
     return (
-        <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30">
+        <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
             <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-                {/* Result Header */}
-                <div className="flex flex-col md:flex-row md:items-center justify-between bg-app-bg-card p-4 rounded-xl shadow-sm border border-app-border-light">
-                    <div className="flex items-center mb-4 md:mb-0">
-                        <div className="p-2 bg-app-status-successBg rounded-lg mr-3">
-                            <FileText className="w-5 h-5 text-app-status-success" />
+                {result && (
+                    <div className="space-y-6 animate-fade-in-up">
+                        {/* Result Header */}
+                        <div className="flex flex-col md:flex-row md:items-center justify-between bg-app-bg-card p-4 rounded-xl shadow-sm border border-app-border-light">
+                            <div className="flex items-center mb-4 md:mb-0">
+                                <div className="p-2 bg-app-status-successBg rounded-lg mr-3">
+                                    <FileText className="w-5 h-5 text-app-status-success" />
+                                </div>
+                                <div>
+                                    <h2 className="text-lg font-bold text-app-text-main break-all sm:break-normal">{result.filename}</h2>
+                                    <p className="text-xs text-app-text-muted">
+                                        {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
+                                <button
+                                    onClick={handleDownloadPDF}
+                                    className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
+                                    title="Download PDF Report"
+                                >
+                                    <Download className="w-4 h-4 mr-1" /> Download PDF
+                                </button>
+                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
+                                <button
+                                    onClick={handleNewAnalysis}
+                                    className="text-sm text-app-primary hover:text-app-primary-dark font-medium hover:underline flex items-center"
+                                >
+                                    <Plus className="w-4 h-4 mr-1" /> Analyze Another
+                                </button>
+                            </div>
                         </div>
-                        <div>
-                            <h2 className="text-lg font-bold text-app-text-main break-all sm:break-normal">{result.filename}</h2>
-                            <p className="text-xs text-app-text-muted">
-                                {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
-                            </p>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
-                        <button
-                            onClick={handleDownloadPDF}
-                            className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
-                            title="Download PDF Report"
-                        >
-                            <Download className="w-4 h-4 mr-1" /> Download PDF
-                        </button>
-                    </div>
-                </div>
+
+                        {hasGovernanceAssessment && !processing && result?.analysis?.analysis && String(result.analysis.analysis).trim().length > 0 && (
+                            <div className="bg-gradient-to-r from-app-status-warningBg to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-app-status-warning flex items-center justify-center shadow-lg shadow-amber-200">
+                                        <KeyRound className="w-5 h-5 text-app-bg-card" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
+                                        <p className="text-xs text-app-status-warning">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => navigate('/prerequisites')}
+                                    className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                >
+                                    <KeyRound className="w-4 h-4" />
+                                    Review Prerequisites
+                                </button>
+                            </div>
+                        )}
+
+                        <div id="analysis-content" className="bg-transparent space-y-6">
+                            {/* Progress Bar */}
+                            {processing && (
+                                <div className="space-y-3 animate-pulse">
+                                    <div className="flex justify-between items-center text-xs uppercase tracking-wider text-app-text-muted font-semibold">
+                                        <span>{progressMessage}</span>
+                                        <span>{progress}%</span>
+                                    </div>
+                                    <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
+                                        <div
+                                            className="bg-app-primary h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                            style={{ width: `${progress}%` }}
+                                        ></div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {error && (
+                                <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
+                                    <p className="text-sm font-medium text-app-status-error">{error}</p>
+                                </div>
+                            )}
 
                             {/* Key Metrics Row */}
                             {result.analysis && (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                                     {(() => {
                                         const metrics = result.analysis.metrics || {};
-                                        const timelineDisplay = metrics?.timeline
-                                            ? `${metrics.timeline} (For Developer Only Mode)`
-                                            : 'TBD';
                                         const metricItems = [
                                             { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-app-primary', bg: 'bg-app-primary-light' },
                                             { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
                                             { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
-                                            { label: 'Timeline', value: timelineDisplay, icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
+                                            { label: 'Timeline', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
                                         ];
 
-                            return metricItems.map((metric, idx) => (
-                                <div key={idx} className="bg-app-bg-card p-4 rounded-xl border border-app-border-light shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <div className={`p-2 ${metric.bg} rounded-lg`}>
-                                            <metric.icon className={`w-4 h-4 ${metric.color}`} />
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <p className="text-[10px] uppercase tracking-wider font-semibold text-app-text-light">{metric.label}</p>
-                                        <p className="text-sm font-bold text-app-text-main line-clamp-2 leading-tight" title={metric.value}>
-                                            {metric.value}
-                                        </p>
-                                    </div>
+                                        return metricItems.map((metric, idx) => (
+                                            <div key={idx} className="bg-app-bg-card p-4 rounded-xl border border-app-border-light shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <div className={`p-2 ${metric.bg} rounded-lg`}>
+                                                        <metric.icon className={`w-4 h-4 ${metric.color}`} />
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <p className="text-[10px] uppercase tracking-wider font-semibold text-app-text-light">{metric.label}</p>
+                                                    <p className="text-sm font-bold text-app-text-main line-clamp-2 leading-tight" title={metric.value}>
+                                                        {metric.value}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ));
+                                    })()}
                                 </div>
-                            ));
-                        })()}
-                    </div>
-                )}
+                            )}
 
-                {/* Main Analysis Content */}
-                <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                    <h3 className="text-base font-bold text-gray-800 mb-4 pb-2 border-b border-app-border-light">
-                        Executive Summary & Agent Analysis
-                    </h3>
-                    <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
-                        {(() => {
-                            const analysisContent = result.analysis?.analysis || '';
-                            const explicitHtml = result.analysis?.html;
-                            const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+                            {/* Main Content Grid */}
+                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                {/* Left Column: Report (8 cols) */}
+                                <div className="lg:col-span-8 space-y-6">
+                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
+                                        <h3 className="text-base font-bold text-app-text-main mb-4 pb-2 border-b border-app-border-light">
+                                            Executive Summary & Agent Analysis
+                                        </h3>
+                                        <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
+                                            {(() => {
+                                                const analysisContent = result.analysis?.analysis || '';
+                                                const explicitHtml = result.analysis?.html;
+                                                const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
 
-                            if (htmlToRender) {
-                                return (
-                                    <div
-                                        className="bg-app-bg-card rounded-lg border border-app-border p-4"
-                                        dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
-                                    />
-                                );
-                            }
+                                                if (htmlToRender) {
+                                                    return (
+                                                        <div
+                                                            className="bg-app-bg-card rounded-lg border border-app-border p-4"
+                                                            dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
+                                                        />
+                                                    );
+                                                }
 
-                            if (!analysisContent.trim()) {
-                                return (
-                                    <div className="text-sm text-app-text-muted italic">
-                                        No analysis content available.
-                                    </div>
-                                );
-                            }
+                                                if (processing && !analysisContent.trim()) {
+                                                    return (
+                                                        <div className="text-sm text-app-text-muted italic">
+                                                            Generating analysis...
+                                                        </div>
+                                                    );
+                                                }
 
                                                 return (
                                                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -1033,8 +1328,60 @@ export default function AgentAnalysis({
                                     </div>
                                 </div>
 
-                                {/* Right Column: Key Actions / Q&A (4 cols) */}
+                                {/* Right Column: Architecture + Key Actions / Q&A (4 cols) */}
                                 <div className="lg:col-span-4 space-y-6">
+                                    {/* Application Architecture (React Flow diagram from AI JSON) */}
+                                    {result.analysis?.architecture && (() => {
+                                        const arch = result.analysis.architecture || {};
+                                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
+                                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
+
+                                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
+                                        const rfEdges = edges.map((edge, idx) => ({
+                                            id: String(edge.id || `e-${idx}`),
+                                            source: String(edge.from),
+                                            target: String(edge.to),
+                                            label: edge.description || undefined,
+                                        }));
+
+                                        return (
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5">
+                                                <div className="flex items-center justify-between mb-3">
+                                                    <h3 className="text-sm font-bold text-app-text-main">
+                                                        Application Architecture
+                                                    </h3>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setIsArchModalOpen(true)}
+                                                        className="text-[11px] font-semibold text-app-primary hover:text-app-primary-dark border border-app-primary-light rounded-full px-2 py-0.5 bg-app-bg-page"
+                                                    >
+                                                        Expand
+                                                    </button>
+                                                </div>
+
+                                                {rfNodes.length > 0 ? (
+                                                    <div className="h-80 w-full rounded-lg border border-app-border-light bg-app-bg-page overflow-hidden">
+                                                        <ReactFlow
+                                                            nodes={rfNodes}
+                                                            edges={rfEdges}
+                                                            fitView
+                                                            nodesDraggable={false}
+                                                            nodesConnectable={false}
+                                                            elementsSelectable={false}
+                                                        >
+                                                            <Background gap={16} size={1} />
+                                                            <Controls showInteractive={false} />
+                                                        </ReactFlow>
+                                                    </div>
+                                                ) : (
+                                                    <p className="text-xs text-app-text-muted italic">
+                                                        Architecture details are not available for this analysis.
+                                                    </p>
+                                                )}
+                                            </div>
+                                        );
+                                    })()}
+
                                     <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:sticky lg:top-6">
                                         <div className="flex items-center mb-4">
                                             <div className="w-1.5 h-1.5 rounded-full bg-app-status-warning mr-2"></div>
@@ -1099,6 +1446,61 @@ export default function AgentAnalysis({
                     </div>
                 )}
             </div>
+
+            {/* Architecture Fullscreen Modal */}
+            {isArchModalOpen && result?.analysis?.architecture && (() => {
+                const arch = result.analysis.architecture || {};
+                const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
+                const edges = Array.isArray(arch.edges) ? arch.edges : [];
+                const layerOrder = ['frontend', 'backend', 'service', 'data', 'integration', 'infra'];
+
+                const rfNodes = layoutArchitectureGraph(nodes, edges, 'LR');
+
+                const rfEdges = edges.map((edge, idx) => ({
+                    id: String(edge.id || `e-${idx}`),
+                    source: String(edge.from),
+                    target: String(edge.to),
+                    label: edge.description || undefined,
+                }));
+
+                return (
+                    <div className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="relative w-full max-w-6xl h-[80vh] rounded-2xl bg-app-bg-card border border-app-border-light shadow-2xl flex flex-col">
+                            <div className="flex items-center justify-between px-4 py-3 border-b border-app-border-light">
+                                <h2 className="text-sm font-bold text-app-text-main">
+                                    Application Architecture (Expanded)
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={() => setIsArchModalOpen(false)}
+                                    className="text-xs font-semibold text-app-text-muted hover:text-app-text-main px-2 py-1 rounded-md"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                            <div className="flex-1 bg-app-bg-page">
+                                {rfNodes.length > 0 ? (
+                                    <ReactFlow
+                                        nodes={rfNodes}
+                                        edges={rfEdges}
+                                        fitView
+                                        nodesDraggable={false}
+                                        nodesConnectable={false}
+                                        elementsSelectable={false}
+                                    >
+                                        <Background gap={16} size={1} />
+                                        <Controls showInteractive={false} />
+                                    </ReactFlow>
+                                ) : (
+                                    <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
+                                        Architecture details are not available for this analysis.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }

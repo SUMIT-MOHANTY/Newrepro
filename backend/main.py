@@ -69,7 +69,15 @@ def _generate_registration_password() -> str:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
+    allow_origins=[
+        settings.frontend_url,
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1028,7 +1036,15 @@ async def get_oauth_plugin_launch_url(
 
     connection = _get_or_create_plugin_connection(db, organization_name, client.client_id)
     if client.client_id.lower() == settings.oauth_nxdune_client_id.lower():
-        await _ensure_nxdune_organization_connection(db, current_user, connection)
+        try:
+            await _ensure_nxdune_organization_connection(db, current_user, connection)
+        except HTTPException as exc:
+            # Log the error but allow OAuth flow to proceed
+            # Organization creation can be retried later
+            logger.warning(f"Nxdune organization creation failed: {exc.detail}. Proceeding with OAuth launch.")
+            connection.last_error = str(exc.detail)[:400]
+            db.add(connection)
+            db.commit()
     elif not connection.is_connected:
         _mark_plugin_connected(db, connection, "Connected via DSuite launch.")
 
@@ -1351,6 +1367,7 @@ def _ensure_org_agent_mapping(
     project_token: Optional[str],
     *,
     agent_kind: Optional[str] = None,
+    agent_sub_type: Optional[str] = None,
     is_default: bool,
 ) -> None:
     organization_name = _normalized_text(organization_name)
@@ -1358,6 +1375,7 @@ def _ensure_org_agent_mapping(
         return
     project_token = _normalize_project_token(project_token)
     normalized_kind = _normalize_agent_kind(agent_kind, project_token, is_default=is_default)
+    normalized_sub_type = (_normalized_text(agent_sub_type) or '').lower() or None
     existing = db.query(models.OrganizationAgentMapping).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
         models.OrganizationAgentMapping.agent_id == agent_id,
@@ -1367,6 +1385,8 @@ def _ensure_org_agent_mapping(
         existing.project_token = project_token
         existing.agent_kind = normalized_kind
         existing.is_default = bool(is_default)
+        if normalized_sub_type:  # only update sub_type if explicitly provided
+            existing.agent_sub_type = normalized_sub_type
         db.add(existing)
         db.commit()
         return
@@ -1376,6 +1396,7 @@ def _ensure_org_agent_mapping(
             agent_id=agent_id,
             project_token=project_token,
             agent_kind=normalized_kind,
+            agent_sub_type=normalized_sub_type,
             is_default=bool(is_default),
         )
     )
@@ -1384,36 +1405,53 @@ def _ensure_org_agent_mapping(
 def _count_org_agent_usage(
     db: Session,
     organization_name: str,
-) -> tuple[int, int]:
-    """Returns (shared_used, dedicated_used) excluding built-in defaults."""
+) -> dict[str, int]:
+    """Returns a dict with shared_used, dedicated_used, and subtype breakdowns."""
     org = _normalized_text(organization_name)
     if not org:
-        return 0, 0
+        return {
+            "shared": 0, "dedicated": 0,
+            "shared_dev": 0, "shared_test": 0,
+            "dedicated_dev": 0, "dedicated_test": 0
+        }
     rows = db.query(models.OrganizationAgentMapping).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == org.lower(),
         models.OrganizationAgentMapping.is_default.is_(False),
     ).all()
-    shared_used = 0
-    dedicated_used = 0
+    stats = {
+        "shared": 0, "dedicated": 0,
+        "shared_dev": 0, "shared_test": 0,
+        "dedicated_dev": 0, "dedicated_test": 0
+    }
     for row in rows:
         kind = _normalize_agent_kind(row.agent_kind, row.project_token, is_default=bool(row.is_default))
+        sub_type = (_normalized_text(row.agent_sub_type) or "dev").lower()
+        
         if kind == "shared":
-            shared_used += 1
+            stats["shared"] += 1
+            if sub_type == "test": stats["shared_test"] += 1
+            else: stats["shared_dev"] += 1
         elif kind == "dedicated":
-            dedicated_used += 1
-    return shared_used, dedicated_used
+            stats["dedicated"] += 1
+            if sub_type == "test": stats["dedicated_test"] += 1
+            else: stats["dedicated_dev"] += 1
+    return stats
 
 
-def _count_org_dedicated_usage_for_project(
+def _count_org_agent_usage_for_project(
     db: Session,
     organization_name: str,
     project_token: Optional[str],
-) -> int:
-    """Return dedicated usage for a single project, excluding built-in defaults."""
+) -> dict[str, int]:
+    """Return usage for a single project, excluding built-in defaults."""
     org = _normalized_text(organization_name)
     normalized_project_token = _normalize_project_token(project_token)
     if not org or not normalized_project_token:
-        return 0
+        return {
+            "shared": 0, "dedicated": 0,
+            "shared_dev": 0, "shared_test": 0,
+            "dedicated_dev": 0, "dedicated_test": 0
+        }
 
     rows = db.query(models.OrganizationAgentMapping).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == org.lower(),
@@ -1421,12 +1459,23 @@ def _count_org_dedicated_usage_for_project(
         models.OrganizationAgentMapping.project_token == normalized_project_token,
     ).all()
 
-    dedicated_used = 0
+    stats = {
+        "shared": 0, "dedicated": 0,
+        "shared_dev": 0, "shared_test": 0,
+        "dedicated_dev": 0, "dedicated_test": 0
+    }
     for row in rows:
         kind = _normalize_agent_kind(row.agent_kind, row.project_token, is_default=bool(row.is_default))
-        if kind == "dedicated":
-            dedicated_used += 1
-    return dedicated_used
+        sub_type = (_normalized_text(row.agent_sub_type) or "dev").lower()
+        if kind == "shared":
+            stats["shared"] += 1
+            if sub_type == "test": stats["shared_test"] += 1
+            else: stats["shared_dev"] += 1
+        elif kind == "dedicated":
+            stats["dedicated"] += 1
+            if sub_type == "test": stats["dedicated_test"] += 1
+            else: stats["dedicated_dev"] += 1
+    return stats
 
 
 def _get_or_init_org_agent_quota(
@@ -1529,17 +1578,25 @@ def get_organization_agent_quota(
 ):
     organization_name = _require_organization(current_user)
     quota = _get_or_init_org_agent_quota(db, organization_name)
-    shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
+    usage = _count_org_agent_usage(db, organization_name)
     shared_quota = int(quota.shared_quota or 0)
     dedicated_quota = int(quota.dedicated_quota or 0)
     return schemas.OrganizationAgentQuotaResponse(
         organization_name=organization_name,
         shared_quota=shared_quota,
         dedicated_quota=dedicated_quota,
-        shared_used=shared_used,
-        dedicated_used=dedicated_used,
-        shared_available=max(0, shared_quota - shared_used),
-        dedicated_available=max(0, dedicated_quota - dedicated_used),
+        shared_used=usage["shared"],
+        dedicated_used=usage["dedicated"],
+        shared_available=max(0, shared_quota - usage["shared"]),
+        dedicated_available=max(0, dedicated_quota - usage["dedicated"]),
+        shared_dev_quota=int(quota.shared_dev_quota or 0),
+        shared_test_quota=int(quota.shared_test_quota or 0),
+        dedicated_dev_quota=int(quota.dedicated_dev_quota or 0),
+        dedicated_test_quota=int(quota.dedicated_test_quota or 0),
+        shared_dev_used=usage["shared_dev"],
+        shared_test_used=usage["shared_test"],
+        dedicated_dev_used=usage["dedicated_dev"],
+        dedicated_test_used=usage["dedicated_test"],
         updated_at=quota.updated_at,
     )
 
@@ -1552,6 +1609,7 @@ def increase_organization_agent_quota(
 ):
     organization_name = _require_org_admin(current_user)
     kind = _normalized_text(payload.kind).lower()
+    sub_type = _normalized_text(getattr(payload, 'sub_type', None) or '').lower()
     amount = int(payload.amount or 0)
     if kind not in ("shared", "dedicated"):
         raise HTTPException(status_code=400, detail="kind must be 'shared' or 'dedicated'")
@@ -1561,23 +1619,39 @@ def increase_organization_agent_quota(
     quota = _get_or_init_org_agent_quota(db, organization_name)
     if kind == "shared":
         quota.shared_quota = int(quota.shared_quota or 0) + amount
+        if sub_type == "dev":
+            quota.shared_dev_quota = int(quota.shared_dev_quota or 0) + amount
+        elif sub_type == "test":
+            quota.shared_test_quota = int(quota.shared_test_quota or 0) + amount
     else:
         quota.dedicated_quota = int(quota.dedicated_quota or 0) + amount
+        if sub_type == "dev":
+            quota.dedicated_dev_quota = int(quota.dedicated_dev_quota or 0) + amount
+        elif sub_type == "test":
+            quota.dedicated_test_quota = int(quota.dedicated_test_quota or 0) + amount
     db.add(quota)
     db.commit()
     db.refresh(quota)
 
-    shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
+    usage = _count_org_agent_usage(db, organization_name)
     shared_quota = int(quota.shared_quota or 0)
     dedicated_quota = int(quota.dedicated_quota or 0)
     return schemas.OrganizationAgentQuotaResponse(
         organization_name=organization_name,
         shared_quota=shared_quota,
         dedicated_quota=dedicated_quota,
-        shared_used=shared_used,
-        dedicated_used=dedicated_used,
-        shared_available=max(0, shared_quota - shared_used),
-        dedicated_available=max(0, dedicated_quota - dedicated_used),
+        shared_used=usage["shared"],
+        dedicated_used=usage["dedicated"],
+        shared_available=max(0, shared_quota - usage["shared"]),
+        dedicated_available=max(0, dedicated_quota - usage["dedicated"]),
+        shared_dev_quota=int(quota.shared_dev_quota or 0),
+        shared_test_quota=int(quota.shared_test_quota or 0),
+        dedicated_dev_quota=int(quota.dedicated_dev_quota or 0),
+        dedicated_test_quota=int(quota.dedicated_test_quota or 0),
+        shared_dev_used=usage["shared_dev"],
+        shared_test_used=usage["shared_test"],
+        dedicated_dev_used=usage["dedicated_dev"],
+        dedicated_test_used=usage["dedicated_test"],
         updated_at=quota.updated_at,
     )
 
@@ -4112,6 +4186,7 @@ async def list_agents(
         models.OrganizationAgentMapping.is_default,
         models.OrganizationAgentMapping.project_token,
         models.OrganizationAgentMapping.agent_kind,
+        models.OrganizationAgentMapping.agent_sub_type,
     ).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
     )
@@ -4134,22 +4209,25 @@ async def list_agents(
         task_token=x_task_token,
     )
 
-    visible_runtime_ids: Dict[str, str] = {}
+    # Build lookup: public_agent_id -> (kind, sub_type)
+    visible_runtime_ids: Dict[str, tuple] = {}
     for row in mapping_rows:
         row_is_default = bool(row[1])
         row_project_token = row[2]
         row_kind = _normalize_agent_kind(row[3], row_project_token, is_default=row_is_default)
+        row_sub_type = row[4] or 'dev'
         if not include_defaults and row_is_default:
             continue
         if requested_kind and row_kind != requested_kind:
             continue
-        visible_runtime_ids[_public_agent_id(row[0], project_token)] = row_kind
+        visible_runtime_ids[_public_agent_id(row[0], project_token)] = (row_kind, row_sub_type)
 
     global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
     agents = [
         {
             **_sanitize_agent_for_user(agent, global_cred),
-            "agent_kind": visible_runtime_ids[agent.get("id")],
+            "agent_kind": visible_runtime_ids[agent.get("id")][0],
+            "sub_type": visible_runtime_ids[agent.get("id")][1],
         }
         for agent in agent_service.get_all_agents(project_token)
         if agent.get("id") in visible_runtime_ids
@@ -4529,6 +4607,7 @@ class AddAgentRequest(BaseModel):
     git_repo_url: Optional[str] = None
     git_token: Optional[str] = None
     kind: Optional[str] = None
+    sub_type: Optional[str] = None  # 'dev' or 'test'
 
 
 class UpdateAgentRequest(BaseModel):
@@ -4560,26 +4639,25 @@ async def add_agent(
     _ensure_default_agents_for_org(db, organization_name, project_token)
     _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
 
-    # Enforce org quota by requested agent kind.
+    # Enforce org quota by requested agent kind and sub_type for the project.
     quota = _get_or_init_org_agent_quota(db, organization_name)
-    shared_used, dedicated_used = _count_org_agent_usage(db, organization_name)
+    project_usage = _count_org_agent_usage_for_project(db, organization_name, project_token)
+    agent_sub_type = (_normalized_text(getattr(request, 'sub_type', None) or '').lower()) or 'dev'
+    
     if agent_kind == "dedicated":
-        dedicated_used_for_project = _count_org_dedicated_usage_for_project(
-            db,
-            organization_name,
-            project_token,
-        )
-        if dedicated_used_for_project >= int(quota.dedicated_quota or 0):
-            raise HTTPException(
-                status_code=400,
-                detail="Dedicated agent capacity exceeded. Add more dedicated agents in Organization before creating new ones.",
-            )
+        if agent_sub_type == "dev":
+            if project_usage["dedicated_dev"] >= int(quota.dedicated_dev_quota or 0):
+                raise HTTPException(status_code=400, detail="Dedicated Dev agent capacity exceeded for this project.")
+        elif agent_sub_type == "test":
+            if project_usage["dedicated_test"] >= int(quota.dedicated_test_quota or 0):
+                raise HTTPException(status_code=400, detail="Dedicated Test agent capacity exceeded for this project.")
     else:
-        if shared_used >= int(quota.shared_quota or 0):
-            raise HTTPException(
-                status_code=400,
-                detail="Shared agent capacity exceeded. Add more shared agents in Organization before creating new ones.",
-            )
+        if agent_sub_type == "dev":
+            if project_usage["shared_dev"] >= int(quota.shared_dev_quota or 0):
+                raise HTTPException(status_code=400, detail="Shared Dev agent capacity exceeded for this project.")
+        elif agent_sub_type == "test":
+            if project_usage["shared_test"] >= int(quota.shared_test_quota or 0):
+                raise HTTPException(status_code=400, detail="Shared Test agent capacity exceeded for this project.")
 
     query = db.query(models.Agent)
     if project_token:
@@ -4601,6 +4679,7 @@ async def add_agent(
         record.id,
         project_token,
         agent_kind=agent_kind,
+        agent_sub_type=agent_sub_type,
         is_default=False,
     )
     if git_repo_url or git_token:
@@ -4935,6 +5014,32 @@ class AgentNoteUpsertRequest(BaseModel):
 
 
 
+class TaskAssignRequest(BaseModel):
+    task_id: int
+    username: str
+
+
+@app.post("/api/agent/task-assign-in/")
+async def assign_task_to_agent(
+    payload: TaskAssignRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
+):
+    """Assign a task to an agent via the external task management API."""
+    try:
+        # Use the task_service assign_task method
+        result = await task_service.assign_task(
+            task_id=payload.task_id,
+            assignees=[payload.username],
+            task_token=x_task_token
+        )
+        return {"success": True, "message": f"Task {payload.task_id} assigned to {payload.username}", "result": result}
+    except TaskServiceError as e:
+        _raise_task_service_http_exception(e, "Failed to assign task")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to assign task: {e}")
+
+
 @app.get("/api/agent/sprints/")
 async def get_agent_sprints(
     current_user: models.User = Depends(auth.get_current_user),
@@ -5222,6 +5327,8 @@ class AutoGenerateRequest(BaseModel):
     milestone_id: Optional[int] = None
     auto_create_plan: Optional[bool] = False
     custom_rules: Optional[str] = None
+    project_type: Optional[str] = "greenfield"
+
 
 
 def _to_optional_int(value: Any) -> Optional[int]:
@@ -5720,7 +5827,9 @@ async def auto_generate_project_tasks(
             prerequisites=request.prerequisites or analysis_payload.get("prerequisites") or [],
             reporter_name=reporter_name,
             custom_rules=request.custom_rules,
+            project_type=request.project_type or "greenfield",
         )
+
 
         created_sprints_list = (
             preview_payload.get("created_sprints")

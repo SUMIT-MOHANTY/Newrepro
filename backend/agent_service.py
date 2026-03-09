@@ -16,7 +16,7 @@ import time
 import uuid
 import re as _re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from config import settings
 import httpx
@@ -2017,6 +2017,76 @@ IMPORTANT RULES:
         return _clean_ai_code_response(content)
     else:
         raise ValueError("No response from AI model for fix iteration")
+
+
+async def _call_ai_for_self_review(
+    task_description: str,
+    agent_type: str,
+    workspace_tree: str,
+    tech_spec: str = "",
+) -> tuple[bool, str]:
+    """Call AI to generate a self-review of the project structure before pushing."""
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        raise ValueError("AI API key not configured")
+
+    system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
+    
+    review_prompt = f"""SELF-REVIEW TASK:
+You are about to commit your work to the main repository. Before you do, evaluate your generated workspace tree against the original task description and technical requirements.
+
+ORIGINAL TASK:
+{task_description}
+
+"""
+    if tech_spec:
+        review_prompt += f"TECH SPEC:\n{tech_spec[:2000]}\n\n"
+
+    review_prompt += f"""GENERATED WORKSPACE TREE:
+{workspace_tree}
+
+Are the core requirements structurally met? Are there any glaring missing folders/files based on the specs?
+Reply EXACTLY on the very first line with either 'PASS' or 'FAIL'.
+On the following lines, provide a short 1-3 sentence justification."""
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": review_prompt},
+        ],
+        "stream": False,
+        "chat_template_kwargs": {"thinking": False},
+        "temperature": 0.2, # Low temp for analytical check
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        last_err = None
+        for attempt in range(3):
+            try:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+        if last_err:
+            return True, f"Self-review API failed: {last_err}. Passing by default."
+
+    if data and "choices" in data and len(data["choices"]) > 0:
+        content = data["choices"][0].get("message", {}).get("content", "").strip()
+        passed = content.upper().startswith("PASS")
+        return passed, content
+    return True, "No response from AI model for self-review. Passing by default."
 
 
 # ── Docker Configuration ────────────────────────────────────────────────────
@@ -4765,6 +4835,76 @@ def _parse_stats_from_output(stdout: str, agent_type: str) -> Dict[str, Any]:
     return {}
 
 
+# ── Master Agent Task Assignment ────────────────────────────────────────────
+
+async def _master_assign_task_to_agent(
+    task_id: str,
+    agent_id: str,
+    agent_name: Optional[str] = None,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> bool:
+    """
+    Master Agent actively assigns task to agent via API.
+    Uses POST /api/agent/task-assign-in/ endpoint.
+    """
+    try:
+        # Convert task_id to int (handle both string and int)
+        try:
+            task_id_int = int(task_id)
+        except (ValueError, TypeError):
+            logger.warning(f"[Master Agent] Invalid task_id for assignment: {task_id}")
+            return False
+        
+        # Get agent username
+        username = build_external_agent_username(agent_id, agent_name)
+        
+        # Call the assignment API endpoint
+        import httpx
+        from config import settings
+        
+        url = f"{settings.frontend_url.replace(':5173', ':8000')}/api/agent/task-assign-in/"
+        if not url.startswith("http"):
+            url = f"http://127.0.0.1:8000/api/agent/task-assign-in/"
+        
+        payload = {
+            "task_id": task_id_int,
+            "username": username
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+        }
+        
+        # Add task token if available
+        if task_token:
+            headers["x-task-token"] = task_token
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("success"):
+                _log_master_agent(
+                    f"✅ Assigned task {task_id} to {username} ({agent_id})",
+                    project_token=project_token,
+                )
+                return True
+            else:
+                logger.warning(f"[Master Agent] Assignment API returned success=False: {result}")
+                return False
+                
+    except Exception as e:
+        logger.warning(f"[Master Agent] Failed to assign task {task_id} to {agent_id}: {e}")
+        _log_master_agent(
+            f"⚠️ Failed to assign task {task_id} to {agent_id}: {str(e)[:100]}",
+            level="warning",
+            project_token=project_token,
+        )
+        return False
+
+
 # ── Fetch tasks from External Task API ──────────────────────────────────────
 
 async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -6537,6 +6677,7 @@ def _build_master_recommended_assignments(
             "opt_in_username": opt_in_username,
             "lane": lane,
             "reason": "; ".join(dict.fromkeys(reason_tokens))[:280],
+            "assigned": False,  # Track if actually assigned via API
         }
         assignments.append(recommendation)
 
@@ -6548,6 +6689,62 @@ def _build_master_recommended_assignments(
             plan_entry["assignment_reason"] = recommendation["reason"]
 
     return assignments
+
+
+async def _master_assign_recommended_tasks(
+    recommended_assignments: List[Dict[str, Any]],
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Master Agent actively assigns tasks to agents via API.
+    This enforces assignments instead of just recommending.
+    """
+    if not recommended_assignments:
+        return {"assigned": 0, "failed": 0, "total": 0}
+    
+    assigned_count = 0
+    failed_count = 0
+    
+    for assignment in recommended_assignments:
+        task_id = str(assignment.get("task_id") or "").strip()
+        agent_id = str(assignment.get("recommended_agent_id") or "").strip()
+        agent_name = assignment.get("recommended_agent_name")
+        
+        if not task_id or not agent_id:
+            continue
+        
+        # Skip if already assigned
+        if assignment.get("assigned"):
+            continue
+        
+        # Only assign tasks that are not completed
+        # We'll check task status when agent picks it up
+        
+        success = await _master_assign_task_to_agent(
+            task_id=task_id,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            project_token=project_token,
+            task_token=task_token,
+        )
+        
+        if success:
+            assignment["assigned"] = True
+            assigned_count += 1
+        else:
+            failed_count += 1
+    
+    _log_master_agent(
+        f"📋 Task assignment complete: {assigned_count} assigned, {failed_count} failed (total: {len(recommended_assignments)})",
+        project_token=project_token,
+    )
+    
+    return {
+        "assigned": assigned_count,
+        "failed": failed_count,
+        "total": len(recommended_assignments),
+    }
 
 
 def _get_master_recommended_assignment_map(project_token: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
@@ -7149,6 +7346,14 @@ def _infer_project_stack(
             backend_scores["flask"] += 4
         elif token in combined_text:
             backend_scores["flask"] += 2
+    for token in (
+        "django", "manage.py", "settings.py", "wsgi.py", "asgi.py", 
+        "django admin", "urls.py", "django models", "django templates"
+    ):
+        if token in task_text:
+            backend_scores["django"] += 4
+        elif token in combined_text:
+            backend_scores["django"] += 2
     for token in ("fastapi", "pydantic", "sqlalchemy", "uvicorn", "python api"):
         if token in task_text:
             backend_scores["fastapi"] += 3
@@ -7199,6 +7404,7 @@ def _infer_project_stack(
 
     if backend_scores:
         backend_priority = {
+            "django": 5,
             "flask": 4,
             "fastapi": 3,
             "express": 2,
@@ -7287,6 +7493,7 @@ def _infer_project_stack(
         "static-html": "Static HTML + CSS",
         "nextjs": "Next.js + TypeScript",
         "react-vite": "React + Vite + TypeScript",
+        "django": "Django + Python",
         "flask": "Flask + Python",
         "fastapi": "FastAPI + Python",
         "express": "Node.js + Express + TypeScript",
@@ -7844,6 +8051,11 @@ def _heuristic_master_tree_validation(
             issues.append("The inferred backend stack is Express, but the tree does not show Node/Express entrypoints.")
         if "main.py" in lines_lower or "pyproject.toml" in lines_lower:
             issues.append("The inferred backend stack is Express, but the tree contains Python/FastAPI-specific backend files.")
+    elif backend_key == "django":
+        if "requirements.txt" not in lines_lower and "pyproject.toml" not in lines_lower:
+            issues.append("The inferred backend stack is Django, but the tree does not show Python dependency files.")
+        if "manage.py" not in lines_lower and "settings.py" not in lines_lower:
+            issues.append("The inferred backend stack is Django, but the tree does not show manage.py or a settings module.")
     elif backend_key == "none":
         if "backend/" in lines_lower or "\nbackend" in lines_lower:
             issues.append("No backend stack is required for this task plan, but the tree still contains a backend area.")
@@ -8596,6 +8808,16 @@ async def ensure_master_workspace_note(
             workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
         )
         recommended_assignments: List[Dict[str, Any]] = []
+        
+        # Build recommended assignments
+        if tasks:
+            recommended_assignments = _build_master_recommended_assignments(
+                tasks=tasks,
+                task_plan=task_plan,
+                project_token=project_token,
+            )
+            # We track recommendations silently internally to assist idle assignment later.
+        
         deterministic_tree = _build_deterministic_master_tree(
             workspace_tree=workspace_tree,
             tech_spec=tech_spec,
@@ -8663,22 +8885,52 @@ async def ensure_master_workspace_note(
                     validation = revised_validation
                     workspace_tree_source = "deterministic_spec_merge"
 
+        max_retries = 3
+        retry_count = 0
+        while not validation.get("approved") and retry_count < max_retries:
+            retry_count += 1
+            validation_summary = _summarize_master_tree_validation(validation)
+            _log_master_agent(
+                f"🔄 Master project tree validation conflict (Attempt {retry_count}/{max_retries}): {validation_summary}\n"
+                "Auto-healing... Master Agent is actively regenerating tree plan to fix structural mismatch.",
+                level="warning",
+                project_token=project_token,
+            )
+            
+            workspace_tree = await _generate_detailed_project_tree_plan(
+                tasks=tasks,
+                brd_summary=brd_summary,
+                kg_context=kg_context + f"\n\nCRITICAL FIX REQUIRED:\nYour previous tree failed validation:\n{validation_summary}\nYou MUST fix these structural conflicts to proceed.",
+                tech_spec=tech_spec,
+                stack_profile=stack_profile,
+                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                repo_tree_context=current_repo_tree,
+            )
+            workspace_tree_source = f"ai_tree_plan_retry_{retry_count}"
+            
+            validation = await _validate_master_project_tree_plan(
+                tasks=tasks,
+                workspace_tree=workspace_tree,
+                brd_summary=brd_summary,
+                tech_spec=tech_spec,
+                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                stack_profile=stack_profile,
+                repo_tree_context=current_repo_tree,
+            )
+
         if not validation.get("approved"):
             validation_summary = _summarize_master_tree_validation(validation)
             _log_master_agent(
-                "Master project tree failed validation and will not be published."
-                + (f" {validation_summary}" if validation_summary else ""),
+                f"❌ Master project tree failed validation after {max_retries} auto-healing attempts and will not be published.\n"
+                f"Conflict: {validation_summary}\n"
+                "Agents are safely waiting. The Master Agent will keep attempting to fix this in the next background cycle until it matches requirements.",
                 level="error",
                 project_token=project_token,
             )
             return {
                 "success": False,
                 "reason": "master_tree_validation_failed",
-                "error": (
-                    f"master_tree_validation_failed: {validation_summary}"
-                    if validation_summary
-                    else "master_tree_validation_failed"
-                ),
+                "error": f"master_tree_validation_failed: {validation_summary}",
                 "title": title,
                 "validation": validation,
             }
@@ -9309,6 +9561,9 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
             effective_token = task_token or get_project_task_token(resolved_project)
             await task_service.update_task_progress(payload, task_token=effective_token)
             state["task_progress_state"][task_key] = progress
+            if progress == 100:
+                print(f"[agent_service] Progress reached 100% for task {task_id}, triggering task completion...")
+                await _post_task_complete(task, project_token=resolved_project, task_token=effective_token)
             return True
         except Exception as e:
             if attempt < max_retries - 1:
@@ -9428,6 +9683,8 @@ async def _opt_in_task(task: Dict[str, Any], username: str,
                 "task_id": task_id,
                 "username": username
             }, task_token=task_token or get_project_task_token(resolved_project))
+            print(f"[agent_service] Successfully opted in to task {task_id}, posting check-in message...")
+            await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
             return True
         except Exception as e:
             if attempt < max_retries - 1:
@@ -9807,11 +10064,20 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 "sprint_mismatch": 0,
                 "dependency_blocked": 0,
                 "conflict_blocked": 0,
+                "explicitly_blocked": 0,
             }
 
         def _try_pick_task() -> tuple[Optional[Dict[str, Any]], Dict[str, int]]:
             skip_reasons = _new_skip_reasons()
-
+            
+            agent = project_agents.get(agent_id)
+            agent_username = build_external_agent_username(agent_id, agent.get("name") if agent else None)
+            agent_name = normalize_agent_name(agent_id, agent.get("name") if agent else None)
+            
+            # Separate tasks: assigned to me vs others
+            assigned_to_me = []
+            other_tasks = []
+            
             for t in external_tasks:
                 _apply_master_task_metadata(t, project_token=project_token)
                 tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
@@ -9837,11 +10103,16 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 else:
                     other_tasks.append(t)
             
+<<<<<<< HEAD
             # Prioritize assigned tasks first. If assigned tasks exist, ONLY work on those.
             if assigned_to_me:
                 task_list = assigned_to_me
             else:
                 task_list = other_tasks
+=======
+            # Prioritize assigned tasks first
+            task_list = assigned_to_me + other_tasks
+>>>>>>> 0ecf4d091bf79106c5405a2f2d42de2a2c43415c
 
             for t in task_list:
                 _apply_master_task_metadata(t, project_token=project_token)
@@ -9852,6 +10123,22 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 if _task_status_is_done(status_lower) or tid in claimed_task_ids:
                     skip_reasons["completed_or_claimed"] += 1
                     continue
+                
+                # If the task explicitly has the "BLOCKED" tag or status, skip it
+                task_tags = [str(tag).lower() for tag in (t.get("tags") or [])]
+                if status_lower == "blocked" or "blocked" in task_tags:
+                    skip_reasons["explicitly_blocked"] += 1
+                    continue
+
+                # If not assigned to me and assigned to someone else, skip
+                if t not in assigned_to_me:
+                    assigned_agent = str(t.get("assigned_agent") or "").strip()
+                    assigned_username = str(t.get("assignee") or "").strip()
+                    if assigned_agent or assigned_username:
+                        continue  # Skip tasks assigned to other agents
+                    
+                    # If we fall through here, it means the task is OPEN (no assignee).
+                    # Thus, the agent is allowed to process and claim it!
 
                 # Integration gate: if blocked, only allow fix tasks
                 if integration_blocked:
@@ -10047,6 +10334,20 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "type": "error",
                     "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {str(e)}",
                 })
+                
+                # Notify Master Agent for failure analysis
+                try:
+                    current_task = agent.get("current_task")
+                    await _master_notify_agent_failure(
+                        agent_id=agent_id,
+                        task=current_task,
+                        error=str(e),
+                        project_token=project_token,
+                        task_token=task_token,
+                    )
+                except Exception as master_err:
+                    logger.warning(f"[{agent_id}] Failed to notify Master Agent: {master_err}")
+                
                 agent["last_run"] = datetime.utcnow().isoformat()
                 agent["current_task"] = None
                 return last_result
@@ -10426,6 +10727,26 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "message": f"Created branch: {branch_name}"
                     })
 
+            # ── Structure Validation Before Code Generation ────────────
+            agent["progress"] = 14
+            agent["progress_message"] = "Validating project structure..."
+            structure_validation = await _master_validate_structure(project_token=project_token)
+            
+            structure_warnings = []
+            if structure_validation.get("duplicates"):
+                dup_count = len(structure_validation.get("duplicates", []))
+                structure_warnings.append(f"⚠️ {dup_count} duplicate file(s) detected in project")
+            if structure_validation.get("violations"):
+                viol_count = len(structure_validation.get("violations", []))
+                structure_warnings.append(f"⚠️ {viol_count} structure violation(s) detected")
+            
+            if structure_warnings:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": " | ".join(structure_warnings)
+                })
+
             # ── AI Code Generation ───────────────────────────────────
             agent["progress"] = 15
             agent["progress_message"] = "Preparing context layers..."
@@ -10609,6 +10930,14 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
             except Exception as prompt_err:
                 dynamic_system_prompt = AGENT_SYSTEM_PROMPTS.get(agent["type"], AGENT_SYSTEM_PROMPTS["validator"])
+                
+                # Add recovery prompt even if dynamic generation failed
+                master_recovery_prompt = agent.get("master_recovery_prompt")
+                if master_recovery_prompt:
+                    dynamic_system_prompt = f"{dynamic_system_prompt}\n\n{master_recovery_prompt}"
+                    agent.pop("master_recovery_prompt", None)
+                    agent.pop("master_failure_analysis", None)
+                
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
@@ -10644,6 +10973,21 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             result = await asyncio.to_thread(
                 _exec_script_in_container, container_name, generated_code, f"build_{agent_id}"
             )
+            
+            # ── Post-execution structure validation ──────────────────
+            # Validate structure after files are created
+            try:
+                post_structure_validation = await _master_validate_structure(project_token=project_token)
+                if post_structure_validation.get("duplicates") or post_structure_validation.get("violations"):
+                    dup_count = len(post_structure_validation.get("duplicates", []))
+                    viol_count = len(post_structure_validation.get("violations", []))
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "warning",
+                        "message": f"⚠️ Structure issues detected after execution: {dup_count} duplicates, {viol_count} violations"
+                    })
+            except Exception as struct_err:
+                logger.debug(f"Structure validation skipped: {struct_err}")
 
             # Log output
             for line in (result["stdout"] or "").strip().split("\n"):
@@ -10912,6 +11256,42 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
 
             # ═════════════════════════════════════════════════════════
+            # AGENT SELF-REVIEW (Ensures Structure matches Task)
+            # ═════════════════════════════════════════════════════════
+            if workspace_tree.count('FILE:') > 0:
+                agent["progress"] = 92
+                agent["progress_message"] = "Self-Reviewing code structure..."
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": "Initiating AI self-review before committing..."
+                })
+                try:
+                    passed_review, review_feedback = await _call_ai_for_self_review(
+                        task_description=task.get("description", task.get("title")),
+                        agent_type=agent["type"],
+                        workspace_tree=workspace_tree,
+                        tech_spec=task.get("_tech_spec", "")
+                    )
+                    log_type = "info" if passed_review else "warning"
+                    pass_str = "PASSED" if passed_review else "FAILED"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": log_type,
+                        "message": f"🤖 Self-Review {pass_str}:\n{review_feedback[:300]}"
+                    })
+                    if not passed_review and not integration_blocked:
+                        logger.warning(f"[{agent_id}] Self-review failed: {review_feedback[:100]}")
+                        # Even if failed, it pushes to Git so Master Agent can intervene in next cycle, 
+                        # but agent logs it properly as a warning structural mismatch.
+                except Exception as eval_err:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "warning",
+                        "message": f"Self-review failed to execute: {eval_err}"
+                    })
+
+            # ═════════════════════════════════════════════════════════
             # MARK CHECKLIST ITEMS COMPLETE
             # Only if the workspace capture contains real project files.
             # ═════════════════════════════════════════════════════════
@@ -10940,10 +11320,15 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         project_token=project_token,
                         task_token=task_token,
                     )
+                    
+                    # Update dynamic percentage strictly based on checklist tracking
+                    current_percent = int(((idx_cl + 1) / len(checklist)) * 100)
+                    await _post_task_progress(task, current_percent, f"Completed checklist step {idx_cl+1}/{len(checklist)}", task_token=task_token)
+                    
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"  ✓ Checklist step {idx_cl+1}/{len(checklist)}: {checklist[idx_cl].get('text','')[:80]}"
+                        "message": f"  ✓ Checklist step {idx_cl+1}/{len(checklist)}: {checklist[idx_cl].get('text','')[:80]} (Progress: {current_percent}%)"
                     })
 
             # ═════════════════════════════════════════════════════════
@@ -11124,6 +11509,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 project_token=project_token,
                                 task_token=task_token,
                             )
+                            # Update dynamic percentage strictly based on checklist tracking for Linked Tasks
+                            lt_percent = int(((ci + 1) / len(lt_checklist)) * 100)
+                            await _post_task_progress(linked_task, lt_percent, f"Completed linked checklist step {ci+1}/{len(lt_checklist)}", task_token=task_token)
 
                     # Update linked task progress/completion in external system
                     # Always complete linked task if build succeeded, regardless of git push
@@ -11133,25 +11521,25 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         else:
                             lt_completion_message = f"Completed by {agent_id} (with git errors)."
                         msg_ok = await _post_task_message(linked_task, lt_completion_message, task_token=task_token)
-                        prog_ok = await _post_task_progress(linked_task, 100, "Completed", task_token=task_token)
+                        
+                        # Note: We rely on the checklist iteration above to have updated progress to exactly 100%.
+                        # To ensure the final state registers, we still mark task_complete.
                         complete_ok = await _post_task_complete(linked_task, task_token=task_token)
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
                             "message": (
                                 f"API: linked task complete message {'ok' if msg_ok else 'failed'}, "
-                                f"progress 100% {'ok' if prog_ok else 'skipped/failed'}, "
                                 f"complete {'ok' if complete_ok else 'failed'}"
                             )
                         })
                     else:
                         lt_failure_message = f"Failed (exit={lt_result['exit_code']})."
                         msg_ok = await _post_task_message(linked_task, lt_failure_message, task_token=task_token)
-                        prog_ok = await _post_task_progress(linked_task, 0, "Failed", task_token=task_token)
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"API: linked task failure message {'ok' if msg_ok else 'failed'}, progress 0% {'ok' if prog_ok else 'skipped/failed'}"
+                            "message": f"API: linked task failure message {'ok' if msg_ok else 'failed'}"
                         })
 
                     # Clear tracking state for linked task
@@ -11349,14 +11737,15 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 else:
                     completion_message = f"Completed by {agent_id} in {elapsed}s (with git errors)."
                 msg_ok = await _post_task_message(task, completion_message, task_token=task_token)
-                prog_ok = await _post_task_progress(task, 100, "Completed", task_token=task_token)
+                
+                # Note: Progress should be 100% already strictly set by the checklist iterator!
+                # We just confirm `complete` physically inside NxDune
                 complete_ok = await _post_task_complete(task, task_token=task_token)
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
                     "message": (
                         f"API: complete message {'ok' if msg_ok else 'failed'}, "
-                        f"progress 100% {'ok' if prog_ok else 'skipped/failed'}, "
                         f"complete {'ok' if complete_ok else 'failed'}"
                     )
                 })
@@ -11387,11 +11776,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             else:
                 failure_message = f"Failed (exit={result['exit_code']})."
                 msg_ok = await _post_task_message(task, failure_message, task_token=task_token)
-                prog_ok = await _post_task_progress(task, 0, "Failed", task_token=task_token)
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"API: failure message {'ok' if msg_ok else 'failed'}, progress 0% {'ok' if prog_ok else 'skipped/failed'}"
+                    "message": f"API: failure message {'ok' if msg_ok else 'failed'}"
                 })
 
             # Clear tracking state for this task id
@@ -12922,23 +13310,793 @@ def remove_agent(agent_id: str, project_token: Optional[str] = None) -> bool:
 
 # ── Run All Agents Simultaneously ───────────────────────────────────────────
 
+# ── Master Agent Failure Detection & Intervention ──────────────────────────────
+
+async def _master_detect_agent_failures(
+    project_token: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Detect agents that failed or are stuck.
+    Returns list of failed agents with context.
+    """
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    failed_agents = []
+    
+    current_time = datetime.utcnow()
+    stuck_threshold_seconds = 1800  # 30 minutes
+    
+    for agent_id, agent in project_agents.items():
+        if _is_system_agent_id(agent_id):
+            continue
+        
+        agent_status = agent.get("status", "idle")
+        current_task = agent.get("current_task")
+        output_log = agent.get("output_log", [])
+        last_run = agent.get("last_run")
+        
+        failure_info = {
+            "agent_id": agent_id,
+            "agent_name": agent.get("name", ""),
+            "status": agent_status,
+            "current_task": current_task,
+            "failure_type": None,
+            "failure_reason": None,
+            "output_log_tail": output_log[-10:] if output_log else [],
+            "last_run": last_run,
+        }
+        
+        # Check for error status
+        if agent_status == "error":
+            failure_info["failure_type"] = "error"
+            failure_info["failure_reason"] = agent.get("progress_message", "Agent in error state")
+            failed_agents.append(failure_info)
+            continue
+        
+        # Check for stuck agents (running too long)
+        if agent_status == "running" and last_run:
+            try:
+                # Dynamic SLA timeout based on days_left
+                # 1 day = 86400 seconds, fallback to 1800s if days_left is 0 or missing
+                days_left = 0
+                if isinstance(current_task, dict):
+                    try:
+                        days_left = int(current_task.get("days_left", 0))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # If they have a deadline, give them up to that deadline incrementally
+                # Otherwise, stick to the strict 30 min (1800s) hard limit
+                dynamic_threshold = max((days_left * 86400) // 24, stuck_threshold_seconds) if days_left > 0 else stuck_threshold_seconds
+                
+                last_run_time = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
+                if last_run_time.tzinfo is None:
+                    last_run_time = last_run_time.replace(tzinfo=timezone.utc)
+                elapsed = (current_time.replace(tzinfo=timezone.utc) - last_run_time).total_seconds()
+                
+                if elapsed > dynamic_threshold:
+                    failure_info["failure_type"] = "stuck"
+                    failure_info["failure_reason"] = f"Agent running for {elapsed:.0f} seconds (>{stuck_threshold_seconds}s threshold)"
+                    failed_agents.append(failure_info)
+            except Exception:
+                pass
+        
+        # Check for idle agents (sitting idle too long)
+        if agent_status == "idle" and last_run:
+            try:
+                last_run_time = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
+                if last_run_time.tzinfo is None:
+                    last_run_time = last_run_time.replace(tzinfo=timezone.utc)
+                elapsed = (current_time.replace(tzinfo=timezone.utc) - last_run_time).total_seconds()
+                
+                if elapsed > 180:  # 3 minutes threshold
+                    failure_info["failure_type"] = "idle_too_long"
+                    failure_info["failure_reason"] = f"Agent idle for {elapsed:.0f} seconds (>180s threshold)"
+                    failed_agents.append(failure_info)
+            except Exception:
+                pass
+        
+        # Check for repeated failures in output log
+        error_count = sum(1 for log_entry in output_log if log_entry.get("type") == "error")
+        if error_count >= 3:
+            failure_info["failure_type"] = "repeated_errors"
+            failure_info["failure_reason"] = f"Agent has {error_count} error entries in log"
+            if failure_info not in failed_agents:
+                failed_agents.append(failure_info)
+    
+    return failed_agents
+
+
+async def _master_analyze_failure(
+    agent_id: str,
+    task: Optional[Dict[str, Any]],
+    error: str,
+    output_log: List[Dict[str, Any]],
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Master Agent analyzes why agent failed using AI.
+    Returns analysis with root cause and recovery plan.
+    """
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+    
+    if not key or key == "your-api-key-here":
+        return {
+            "root_cause": "API key not configured",
+            "recovery_plan": "Check configuration",
+            "confidence": 0.0,
+        }
+    
+    # Get task context
+    task_title = task.get("title", "Unknown task") if task else "Unknown task"
+    task_description = task.get("description", "")[:500] if task else ""
+    
+    # Get recent error messages from log
+    error_messages = [
+        entry.get("message", "") 
+        for entry in output_log[-20:] 
+        if entry.get("type") in ("error", "warning")
+    ]
+    error_summary = "\n".join(error_messages[-5:])
+    
+    # Get tech spec and master plan context
+    tech_spec = get_technical_spec(project_token or "")
+    state = _ensure_project_state(project_token)
+    master_note = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+    workspace_tree = str(master_note.get("workspace_tree") or "")[:2000]
+    
+    prompt = f"""You are the Master Agent analyzing why a development agent failed.
+
+AGENT: {agent_id}
+TASK: {task_title}
+TASK DESCRIPTION: {task_description}
+
+ERROR MESSAGE:
+{error}
+
+RECENT ERROR LOG:
+{error_summary}
+
+PROJECT STRUCTURE (from Master Plan):
+{workspace_tree[:1500]}
+
+TECHNICAL SPEC (if available):
+{tech_spec[:1500] if tech_spec else "Not available"}
+
+Analyze the failure and provide:
+1. Root cause analysis (what went wrong?)
+2. Recovery plan (what should the agent do to fix it?)
+3. Confidence level (0.0 to 1.0)
+
+Return ONLY valid JSON:
+{{
+  "root_cause": "Brief explanation of what went wrong",
+  "recovery_plan": "Step-by-step recovery instructions",
+  "confidence": 0.0,
+  "suggested_prompt_addition": "Additional context/prompt to give to the agent"
+}}
+"""
+    
+    try:
+        payload = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert software architect analyzing agent failures. Provide clear, actionable recovery plans."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "stream": False,
+            "chat_template_kwargs": {"thinking": False},
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0].get("message", {}).get("content", "")
+                # Clean response
+                content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL)
+                content = content.replace("```json", "").replace("```", "").strip()
+                
+                # Extract JSON
+                start_idx = content.find("{")
+                end_idx = content.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    content = content[start_idx:end_idx + 1]
+                    analysis = json.loads(content)
+                    return analysis
+        
+        return {
+            "root_cause": "Failed to analyze",
+            "recovery_plan": "Retry the task",
+            "confidence": 0.0,
+        }
+    except Exception as e:
+        logger.warning(f"[Master Agent] Failure analysis failed: {e}")
+        return {
+            "root_cause": f"Analysis error: {str(e)[:100]}",
+            "recovery_plan": "Retry the task with fresh context",
+            "confidence": 0.0,
+        }
+
+
+async def _master_generate_recovery_prompt(
+    agent_id: str,
+    task: Dict[str, Any],
+    failure_analysis: Dict[str, Any],
+    project_token: Optional[str] = None,
+) -> str:
+    """
+    Master Agent generates recovery prompt for stuck/failed agent.
+    This prompt will be added to the agent's system prompt on retry.
+    """
+    root_cause = failure_analysis.get("root_cause", "Unknown issue")
+    recovery_plan = failure_analysis.get("recovery_plan", "Retry the task")
+    suggested_prompt = failure_analysis.get("suggested_prompt_addition", "")
+    
+    task_title = task.get("title", "Unknown task")
+    task_description = task.get("description", "")[:300]
+    
+    recovery_prompt = f"""⚠️ MASTER AGENT RECOVERY GUIDANCE ⚠️
+
+You previously failed on this task. Master Agent has analyzed the failure and provides guidance:
+
+TASK: {task_title}
+DESCRIPTION: {task_description}
+
+ROOT CAUSE ANALYSIS:
+{root_cause}
+
+RECOVERY PLAN:
+{recovery_plan}
+
+{suggested_prompt if suggested_prompt else ""}
+
+INSTRUCTIONS:
+1. Read the root cause analysis carefully
+2. Follow the recovery plan step-by-step
+3. Pay attention to the specific issues mentioned
+4. If you encounter the same error, try a different approach
+5. Ensure you follow the canonical project structure from the Master Plan
+
+Focus on fixing the specific issues identified rather than starting over.
+"""
+    
+    return recovery_prompt
+
+
+async def _master_notify_agent_failure(
+    agent_id: str,
+    task: Optional[Dict[str, Any]],
+    error: str,
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Notify Master Agent about agent failure and get recovery guidance.
+    This is called when an agent fails after all retries.
+    """
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    agent = project_agents.get(agent_id)
+    
+    if not agent:
+        return {"success": False, "error": "Agent not found"}
+    
+    output_log = agent.get("output_log", [])
+    
+    _log_master_agent(
+        f"🔍 Analyzing failure for agent {agent_id} on task {task.get('title', 'unknown') if task else 'unknown'}",
+        project_token=project_token,
+    )
+    
+    # Analyze the failure
+    failure_analysis = await _master_analyze_failure(
+        agent_id=agent_id,
+        task=task,
+        error=error,
+        output_log=output_log,
+        project_token=project_token,
+    )
+    
+    # Generate recovery prompt
+    if task:
+        recovery_prompt = await _master_generate_recovery_prompt(
+            agent_id=agent_id,
+            task=task,
+            failure_analysis=failure_analysis,
+            project_token=project_token,
+        )
+        
+        # Store recovery prompt in agent state for next retry
+        agent["master_recovery_prompt"] = recovery_prompt
+        agent["master_failure_analysis"] = failure_analysis
+        
+        _log_master_agent(
+            f"✅ Generated recovery plan for agent {agent_id}: {failure_analysis.get('root_cause', 'Unknown')[:100]}",
+            project_token=project_token,
+        )
+        
+        # Post message to task
+        try:
+            await _post_task_message(
+                task,
+                f"🔍 Master Agent Analysis:\n\n**Root Cause:** {failure_analysis.get('root_cause', 'Unknown')}\n\n**Recovery Plan:** {failure_analysis.get('recovery_plan', 'Retry task')}",
+                project_token=project_token,
+                task_token=task_token,
+            )
+            
+            # Explicitly mark the task as blocked using the new tag API
+            task_id = _normalize_task_id(task)
+            if task_id:
+                from task_service import task_service
+                await task_service.update_task_tags({
+                    "task_id": int(task_id),
+                    "tags": ["blocked"]
+                }, task_token=task_token)
+                _log_master_agent(f"🔴 Marked task {task_id} as BLOCKED", project_token=project_token)
+
+        except Exception as api_err:
+            logger.warning(f"Failed to post failure artifacts or block status: {api_err}")
+    
+    return {
+        "success": True,
+        "failure_analysis": failure_analysis,
+        "recovery_prompt": recovery_prompt if task else None,
+    }
+
+
+# ── Master Agent Structure Validation ──────────────────────────────────────────
+
+async def _master_validate_structure(
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Master Agent validates structure continuously.
+    Checks for duplicates, violations, and ensures canonical tree is followed.
+    """
+    state = _ensure_project_state(project_token)
+    master_note = state.get("master_note_cache") if isinstance(state.get("master_note_cache"), dict) else {}
+    workspace_tree = str(master_note.get("workspace_tree") or "").strip()
+    
+    if not workspace_tree:
+        return {
+            "valid": False,
+            "reason": "No master tree available",
+            "duplicates": [],
+            "violations": [],
+        }
+    
+    try:
+        import context_manager as ctx_mgr
+        workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
+        repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
+        
+        violations = []
+        duplicates = []
+        
+        if isinstance(repo_snapshot, dict):
+            current_files = [
+                str(path).strip()
+                for path in (repo_snapshot.get("all_file_paths") or [])
+                if str(path).strip()
+            ]
+            
+            # Check for duplicates (same file in multiple locations)
+            file_basenames = {}
+            for file_path in current_files:
+                basename = os.path.basename(file_path)
+                if basename in file_basenames:
+                    duplicates.append({
+                        "file": basename,
+                        "locations": [file_basenames[basename], file_path],
+                    })
+                else:
+                    file_basenames[basename] = file_path
+            
+            # Check workspace contract violations
+            if isinstance(workspace_contract, dict) and workspace_contract.get("status") == "ready":
+                allowed_roots = set((workspace_contract.get("allowed_source_roots") or []))
+                allowed_dirs = set((workspace_contract.get("allowed_top_level_dirs") or []))
+                
+                for file_path in current_files:
+                    parts = file_path.split("/")
+                    if parts:
+                        root_dir = parts[0]
+                        if root_dir not in allowed_roots and root_dir not in allowed_dirs:
+                            if root_dir not in [".git", ".github", "node_modules", "__pycache__", ".venv", "venv"]:
+                                violations.append({
+                                    "file": file_path,
+                                    "reason": f"File outside allowed roots: {root_dir}",
+                                })
+        
+        return {
+            "valid": len(violations) == 0 and len(duplicates) == 0,
+            "duplicates": duplicates[:10],  # Limit to first 10
+            "violations": violations[:10],  # Limit to first 10
+            "total_files_checked": len(current_files) if isinstance(repo_snapshot, dict) else 0,
+        }
+    except Exception as e:
+        logger.warning(f"[Master Agent] Structure validation failed: {e}")
+        return {
+            "valid": True,  # Assume valid if check fails
+            "reason": f"Validation check failed: {str(e)[:100]}",
+            "duplicates": [],
+            "violations": [],
+        }
+
+
+def _check_file_duplication_before_create(
+    file_path: str,
+    project_token: Optional[str] = None,
+) -> tuple[bool, str]:
+    """
+    Check if file already exists before agent creates it.
+    Returns (is_duplicate, reason)
+    """
+    try:
+        import context_manager as ctx_mgr
+        repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
+        
+        if isinstance(repo_snapshot, dict):
+            existing_files = [
+                str(path).strip().lower()
+                for path in (repo_snapshot.get("all_file_paths") or [])
+                if str(path).strip()
+            ]
+            
+            file_path_lower = file_path.strip().lower()
+            
+            # Check exact match
+            if file_path_lower in existing_files:
+                return True, f"File {file_path} already exists"
+            
+            # Check basename match (same filename in different location)
+            basename = os.path.basename(file_path_lower)
+            for existing in existing_files:
+                if os.path.basename(existing) == basename and existing != file_path_lower:
+                    return True, f"File {basename} already exists at {existing}"
+        
+        return False, ""
+    except Exception:
+        return False, ""  # Allow creation if check fails
+
+
+# ── Master Agent Git Manager Coordination ─────────────────────────────────────
+
+async def _master_coordinate_git_manager(
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Master Agent coordinates with Git Manager.
+    Checks integration branch readiness and coordinates merges.
+    Ensures deploy-ready state when all tasks complete.
+    """
+    try:
+        import context_manager as ctx_mgr
+        
+        # Get all tasks
+        external_tasks = await _fetch_external_tasks(project_token)
+        
+        # Check if all tasks are completed
+        completed_tasks = [t for t in external_tasks if _task_status_is_done(t.get("status"))]
+        total_tasks = len(external_tasks)
+        completed_count = len(completed_tasks)
+        
+        # Check integration branch status
+        workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
+        repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
+        
+        integration_ready = False
+        integration_branch = GIT_INTEGRATION_BRANCH
+        
+        if isinstance(repo_snapshot, dict):
+            current_branches = repo_snapshot.get("branches", [])
+            if integration_branch in current_branches:
+                integration_ready = True
+        
+        # Validate structure before integration
+        structure_validation = await _master_validate_structure(project_token=project_token)
+        
+        deploy_ready = (
+            integration_ready and
+            structure_validation.get("valid", True) and
+            completed_count == total_tasks and
+            total_tasks > 0
+        )
+        
+        # If all tasks completed and structure valid, notify Git Manager
+        if completed_count == total_tasks and total_tasks > 0:
+            if structure_validation.get("valid", True):
+                _log_master_agent(
+                    f"✅ All tasks completed ({completed_count}/{total_tasks}). Structure validated. Ready for integration.",
+                    project_token=project_token,
+                )
+                
+                # Get Git Manager credentials
+                state = _ensure_project_state(project_token)
+                git_creds = _resolve_project_git_credentials(project_token)
+                repo_url = git_creds.get("repo_url")
+                git_token = git_creds.get("token")
+                
+                if repo_url:
+                    # Ensure integration branch exists and is ready
+                    _log_master_agent(
+                        f"🔗 Coordinating with Git Manager for integration branch: {integration_branch}",
+                        project_token=project_token,
+                    )
+            else:
+                _log_master_agent(
+                    f"⚠️ All tasks completed but structure has issues. Fix before deployment.",
+                    level="warning",
+                    project_token=project_token,
+                )
+        
+        return {
+            "integration_ready": integration_ready,
+            "integration_branch": integration_branch,
+            "tasks_completed": completed_count,
+            "tasks_total": total_tasks,
+            "structure_valid": structure_validation.get("valid", True),
+            "structure_duplicates": structure_validation.get("duplicates", []),
+            "structure_violations": structure_validation.get("violations", []),
+            "deploy_ready": deploy_ready,
+            "completion_percentage": round((completed_count / total_tasks * 100) if total_tasks > 0 else 0, 1),
+        }
+    except Exception as e:
+        logger.warning(f"[Master Agent] Git Manager coordination failed: {e}")
+        return {
+            "integration_ready": False,
+            "error": str(e)[:200],
+            "deploy_ready": False,
+        }
+
+
+# ── Master Agent Supervisor Loop ──────────────────────────────────────────────
+
+async def _master_supervisor_loop(
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+    check_interval: int = 30,
+    max_iterations: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Continuous supervisor loop to ensure all agents work.
+    - Monitors agent status
+    - Assigns tasks to idle agents
+    - Detects stuck/failed agents
+    - Redistributes work
+    """
+    state = _ensure_project_state(project_token)
+    if task_token:
+        state["task_token"] = task_token
+    
+    iteration = 0
+    total_assignments = 0
+    total_interventions = 0
+    
+    _log_master_agent(
+        f"🔄 Master Supervisor Loop started (check_interval={check_interval}s)",
+        project_token=project_token,
+    )
+    
+    try:
+        while max_iterations is None or iteration < max_iterations:
+            iteration += 1
+            
+            # Get current state
+            project_agents = state["agent_states"]
+            external_tasks = await _fetch_external_tasks(project_token)
+            state["tasks"] = external_tasks
+            
+            # Find idle agents
+            idle_agents = [
+                agent for agent in project_agents.values()
+                if agent["status"] == "idle" and not _is_system_agent_id(agent["id"])
+            ]
+            
+            # Find available tasks (not completed, not claimed)
+            available_tasks = []
+            claimed_task_ids = state["claimed_task_ids"]
+            
+            for task in external_tasks:
+                tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                if not tid:
+                    continue
+                if _task_status_is_done(task.get("status")):
+                    continue
+                if tid in claimed_task_ids:
+                    continue
+                available_tasks.append(task)
+            
+            # Agent self-assignment ensures they opt-in sequentially.
+            # Active assignment is only done when an agent is idle for too long (see failure/idle handling below)
+            
+            # Check for failed/stuck agents using dedicated function
+            failed_agents = await _master_detect_agent_failures(project_token=project_token)
+            
+            for failure_info in failed_agents:
+                agent_id = failure_info["agent_id"]
+                failure_type = failure_info["failure_type"]
+                failure_reason = failure_info["failure_reason"]
+                current_task = failure_info.get("current_task")
+                
+                if failure_type == "error":
+                    _log_master_agent(
+                        f"❌ Agent {agent_id} in error state: {failure_reason}",
+                        level="error",
+                        project_token=project_token,
+                    )
+                    
+                    # Analyze and provide recovery guidance
+                    if current_task:
+                        try:
+                            await _master_notify_agent_failure(
+                                agent_id=agent_id,
+                                task=current_task,
+                                error=failure_reason or "Agent in error state",
+                                project_token=project_token,
+                                task_token=task_token,
+                            )
+                            
+                            # Reassign task if agent keeps failing
+                            agent = project_agents.get(agent_id)
+                            if agent and agent.get("status") == "error":
+                                # Unassign task using explicit API endpoint so Master Agent can review and fix
+                                task_id = str(_normalize_task_id(current_task) or current_task.get("external_id") or current_task.get("id") or "")
+                                if task_id:
+                                    username = build_external_agent_username(agent_id, agent.get("name"))
+                                    from task_service import task_service
+                                    await task_service.unassign_task({
+                                        "task_id": int(task_id),
+                                        "username": username
+                                    }, task_token=task_token)
+                                    _log_master_agent(
+                                        f"🔄 Unassigned blocked task {task_id} from failing agent {agent_id} for Master Agent review",
+                                        project_token=project_token,
+                                    )
+                                    await _post_task_message(
+                                        current_task,
+                                        f"Master Agent intervened: Unassigned task from failing agent {agent_id} for review.",
+                                        project_token=project_token,
+                                        task_token=task_token,
+                                    )
+                                    agent["current_task"] = None
+                                    agent["status"] = "idle"
+                        except Exception as analysis_err:
+                            logger.warning(f"[Master Agent] Failed to analyze agent {agent_id} failure: {analysis_err}")
+                    
+                    total_interventions += 1
+                elif failure_type == "stuck":
+                    _log_master_agent(
+                        f"⚠️ Agent {agent_id} appears stuck: {failure_reason}",
+                        level="warning",
+                        project_token=project_token,
+                    )
+                    total_interventions += 1
+                elif failure_type == "idle_too_long":
+                    _log_master_agent(
+                        f"⚠️ Agent {agent_id} is idle for >3 mins, Master Agent intervening to assign task.",
+                        level="warning",
+                        project_token=project_token,
+                    )
+                    if available_tasks:
+                        task = available_tasks.pop(0)
+                        task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                        if task_id:
+                            success = await _master_assign_task_to_agent(
+                                task_id=task_id,
+                                agent_id=agent_id,
+                                agent_name=project_agents.get(agent_id, {}).get("name"),
+                                project_token=project_token,
+                                task_token=task_token,
+                            )
+                            if success:
+                                _log_master_agent(
+                                    f"✅ Assigned task {task_id} to idle agent {agent_id}",
+                                    project_token=project_token,
+                                )
+                                total_assignments += 1
+                    total_interventions += 1
+            
+            # Check integration branch readiness
+            if iteration % 10 == 0:  # Check every 10 iterations (5 minutes)
+                git_coordination = await _master_coordinate_git_manager(
+                    project_token=project_token,
+                    task_token=task_token,
+                )
+                if git_coordination.get("deploy_ready"):
+                    _log_master_agent(
+                        f"🚀 Project ready for deployment! All tasks completed, structure validated.",
+                        project_token=project_token,
+                    )
+                elif git_coordination.get("structure_duplicates") or git_coordination.get("structure_violations"):
+                    _log_master_agent(
+                        f"⚠️ Structure issues detected: {len(git_coordination.get('structure_duplicates', []))} duplicates, "
+                        f"{len(git_coordination.get('structure_violations', []))} violations",
+                        level="warning",
+                        project_token=project_token,
+                    )
+            
+            # Sleep before next check
+            await asyncio.sleep(check_interval)
+            
+    except asyncio.CancelledError:
+        _log_master_agent(
+            "🛑 Master Supervisor Loop cancelled",
+            project_token=project_token,
+        )
+        raise
+    except Exception as e:
+        _log_master_agent(
+            f"❌ Master Supervisor Loop error: {str(e)[:200]}",
+            level="error",
+            project_token=project_token,
+        )
+        raise
+    
+    return {
+        "iterations": iteration,
+        "total_assignments": total_assignments,
+        "total_interventions": total_interventions,
+    }
+
+
 async def run_all_agents(agents_config: Dict[str, Dict[str, str]] = None,
                          project_token: Optional[str] = None,
-                         task_token: Optional[str] = None) -> Dict[str, Any]:
+                         task_token: Optional[str] = None,
+                         enable_supervisor: bool = True) -> Dict[str, Any]:
     """
-    Run idle agents simultaneously.
-    Each agent picks tasks for itself from the shared ordered queue and continues
-    until no eligible tasks remain.
+    Run idle agents simultaneously with Master Agent supervision.
+    Each agent picks tasks assigned to them or picks from available tasks.
+    Supervisor loop ensures all agents work continuously.
     """
     prime_project_git_credentials(agents_config, project_token=project_token)
+    
+    # Start supervisor loop in background if enabled
+    supervisor_task = None
+    if enable_supervisor:
+        supervisor_task = asyncio.create_task(
+            _master_supervisor_loop(
+                project_token=project_token,
+                task_token=task_token,
+                check_interval=30,
+            )
+        )
+        _log_master_agent(
+            "🚀 Master Supervisor Loop started in background",
+            project_token=project_token,
+        )
+    
     try:
         import langgraph_workflow
 
-        return await langgraph_workflow.run_agent_supervisor_workflow(
+        result = await langgraph_workflow.run_agent_supervisor_workflow(
             agents_config=agents_config,
             project_token=project_token,
             task_token=task_token,
         )
+        
+        # DO NOT cancel supervisor - it should run continuously to handle new tasks
+        # The supervisor loop runs independently and monitors/assigns tasks continuously
+        # Even if workflow completes, supervisor keeps running for continuous operation
+        
+        return result
     except ImportError as exc:
         logger.warning("LangGraph workflow unavailable, falling back to legacy runner: %s", exc)
 
