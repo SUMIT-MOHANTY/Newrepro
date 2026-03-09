@@ -799,11 +799,6 @@ async def _generate_ai_tasks(
         agents=agents,
         project_deadline=project_deadline,
         project_wallet=total_wallet,
-<<<<<<< HEAD
-        custom_rules=custom_rules,
-=======
-        project_type=project_type,
->>>>>>> 0ecf4d091bf79106c5405a2f2d42de2a2c43415c
     )
 
 
@@ -859,15 +854,12 @@ async def build_local_task_plan_preview(
     # Derive project_type from analysis if not explicitly overriden
     derived_project_type = project_type if project_type != "greenfield" else _derive_project_type(analysis_payload)
 
-<<<<<<< HEAD
-    # Generate all tasks first so we know which phases exist
-=======
     sprint_plan = await ai_service.generate_sprint_milestone_plan(
         analysis_report=analysis_context,
         project_name=project_name,
         project_deadline=deadline_iso,
     )
-    
+
     sprint_payload = sprint_plan.get("sprint") if isinstance(sprint_plan, dict) else {}
     milestone_payload = sprint_plan.get("milestone") if isinstance(sprint_plan, dict) else {}
     sprint_start_iso, sprint_deadline_iso = _normalize_task_dates(
@@ -900,8 +892,6 @@ async def build_local_task_plan_preview(
         "deadline": milestone_deadline_iso,
     }
 
-    
->>>>>>> 0ecf4d091bf79106c5405a2f2d42de2a2c43415c
     raw_tasks, remaining_wallet = await _generate_ai_tasks(
         analysis_report=analysis_context,
         reporter=reporter,
@@ -912,19 +902,6 @@ async def build_local_task_plan_preview(
         custom_rules=custom_rules,
         project_type=derived_project_type,
     )
-
-<<<<<<< HEAD
-    # Determine sprint groups from task phases and create sprints/milestones
-    groups_used = _determine_sprint_groups(raw_tasks)
-    sprints, milestones, group_to_sprint_idx = _create_sprints_and_milestones(
-        groups_used=groups_used,
-        project_start=project_start,
-        project_deadline=project_deadline,
-        project_name=project_name or "Untitled Project",
-    )
-=======
-
->>>>>>> 0ecf4d091bf79106c5405a2f2d42de2a2c43415c
 
     structured_tasks = _build_structured_tasks(
         raw_tasks,

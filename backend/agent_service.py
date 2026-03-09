@@ -10082,42 +10082,6 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 _apply_master_task_metadata(t, project_token=project_token)
                 tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
                 status_lower = (t.get("status") or "").lower()
-                
-                if _task_status_is_done(status_lower):
-                    continue
-                
-                # Check if task is assigned to this agent
-                assigned_agent = str(t.get("assigned_agent") or "").strip().lower()
-                assigned_agent_name = str(t.get("assigned_agent_name") or "").strip().lower()
-                assigned_username = str(t.get("assignee") or "").strip().lower()
-                
-                is_assigned_to_me = (
-                    assigned_agent == agent_id.lower() or
-                    assigned_agent_name == agent_name.lower() or
-                    assigned_username == agent_username.lower() or
-                    assigned_username == agent_id.lower()
-                )
-                
-                if is_assigned_to_me:
-                    assigned_to_me.append(t)
-                else:
-                    other_tasks.append(t)
-            
-<<<<<<< HEAD
-            # Prioritize assigned tasks first. If assigned tasks exist, ONLY work on those.
-            if assigned_to_me:
-                task_list = assigned_to_me
-            else:
-                task_list = other_tasks
-=======
-            # Prioritize assigned tasks first
-            task_list = assigned_to_me + other_tasks
->>>>>>> 0ecf4d091bf79106c5405a2f2d42de2a2c43415c
-
-            for t in task_list:
-                _apply_master_task_metadata(t, project_token=project_token)
-                tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
-                status_lower = (t.get("status") or "").lower()
 
                 # Skip if completed or already claimed
                 if _task_status_is_done(status_lower) or tid in claimed_task_ids:
@@ -10907,22 +10871,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     tech_spec=tech_spec,
                     kg_context=jit_context,
                     cross_agent_info=cross_agent_info,
-                    task_messages=task_messages_text,
                 )
-                
-                # Add Master Agent recovery prompt if available
-                master_recovery_prompt = agent.get("master_recovery_prompt")
-                if master_recovery_prompt:
-                    dynamic_system_prompt = f"{dynamic_system_prompt}\n\n{master_recovery_prompt}"
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": "🔧 Master Agent recovery guidance included in prompt"
-                    })
-                    # Clear recovery prompt after using it
-                    agent.pop("master_recovery_prompt", None)
-                    agent.pop("master_failure_analysis", None)
-                
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
