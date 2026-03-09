@@ -982,7 +982,24 @@ def _parse_llm_task_response(content: str) -> list:
     end_idx = content.rfind("]")
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         content = content[start_idx:end_idx + 1]
-    tasks = json.loads(content)
+    try:
+        tasks = json.loads(content)
+    except json.JSONDecodeError as decode_err:
+        logger.warning(f"JSONDecodeError parsing tasks: {decode_err}. Attempting basic fix.")
+        # Try finding the last '}' and appending ']'
+        last_brace = content.rfind("}")
+        if last_brace != -1:
+            try:
+                repaired = content[:last_brace + 1] + "]"
+                tasks = json.loads(repaired)
+                logger.info("Successfully repaired truncated JSON array.")
+            except json.JSONDecodeError:
+                logger.error("Failed to parse JSON even after simple repair.")
+                tasks = []
+        else:
+            logger.error("Failed to parse JSON. No objects found.")
+            tasks = []
+
     if not isinstance(tasks, list):
         raise ValueError("LLM did not return a list")
 

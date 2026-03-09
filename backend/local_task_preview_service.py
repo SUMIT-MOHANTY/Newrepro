@@ -903,6 +903,20 @@ async def build_local_task_plan_preview(
         project_type=derived_project_type,
     )
 
+    groups_used = _determine_sprint_groups(raw_tasks)
+    sprints, milestones, group_to_sprint_idx = _create_sprints_and_milestones(
+        groups_used=groups_used,
+        project_start=project_start,
+        project_deadline=project_deadline,
+        project_name=project_name or "Untitled Project",
+    )
+
+    if sprints and sprint:
+        sprints[0]["name"] = sprint.get("name") or sprints[0]["name"]
+        sprints[0]["summary"] = sprint.get("summary") or sprints[0]["summary"]
+    if milestones and milestone:
+        milestones[0]["name"] = milestone.get("name") or milestones[0]["name"]
+
     structured_tasks = _build_structured_tasks(
         raw_tasks,
         project_id=str(project_token or "PROJ-001"),

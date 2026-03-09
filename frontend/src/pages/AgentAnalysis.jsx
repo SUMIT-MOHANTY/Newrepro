@@ -912,7 +912,7 @@ export default function AgentAnalysis({
             { label: 'Deployment', value: metrics.deployment || 'TBD' },
             { label: 'Resources', value: metrics.resources || 'TBD' },
             { label: 'Complexity', value: metrics.complexity || 'TBD' },
-            { label: 'Timeline', value: metrics.timeline || 'TBD' },
+            { label: 'Timeline ( For Developer Only Mode)', value: metrics.timeline || 'TBD' },
         ];
 
         const cardW = (contentWidth - 9) / 4;
@@ -1237,7 +1237,7 @@ export default function AgentAnalysis({
                                             { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-app-primary', bg: 'bg-app-primary-light' },
                                             { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
                                             { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
-                                            { label: 'Timeline', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
+                                            { label: 'Timeline ( For Developer Only Mode)', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
                                         ];
 
                                         return metricItems.map((metric, idx) => (
