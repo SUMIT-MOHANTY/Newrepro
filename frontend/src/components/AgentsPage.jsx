@@ -406,28 +406,28 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
               </div>
             </div>
 
-            {/* ── Add Shared Agents Card ── */}
-            <div className="rounded-xl border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 p-3 shadow-sm hover:shadow-lg hover:border-cyan-500/50 transition-all duration-200">
+            {/* ── Dev Capacity (Shared + Dedicated) ── */}
+            <div className="rounded-xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 p-3 shadow-sm hover:shadow-lg hover:border-emerald-500/50 transition-all duration-200">
               <div className="flex items-center gap-2 mb-3">
-                <div className="p-1 rounded-lg bg-cyan-500/20"><Users className="w-3.5 h-3.5 text-cyan-400" /></div>
-                <span className="text-xs font-bold text-app-text-main">Add Shared Capacity</span>
+                <div className="p-1 rounded-lg bg-emerald-500/20"><Users className="w-3.5 h-3.5 text-emerald-400" /></div>
+                <span className="text-xs font-bold text-app-text-main">Dev Capacity</span>
               </div>
               
               <div className="space-y-3 mb-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-emerald-400">DEV</span>
+                  <span className="text-[10px] font-bold text-emerald-400">Shared Dev</span>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setSharedDevToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">-</button>
+                    <button onClick={() => setSharedDevToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-emerald-400 border border-app-border-light">-</button>
                     <input value={sharedDevToAdd} onChange={e => setSharedDevToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
-                    <button onClick={() => setSharedDevToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">+</button>
+                    <button onClick={() => setSharedDevToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-emerald-400 border border-app-border-light">+</button>
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-sky-400">TEST</span>
+                  <span className="text-[10px] font-bold text-indigo-400">Dedicated Dev</span>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setSharedTestToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">-</button>
-                    <input value={sharedTestToAdd} onChange={e => setSharedTestToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
-                    <button onClick={() => setSharedTestToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">+</button>
+                    <button onClick={() => setDedicatedDevToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">-</button>
+                    <input value={dedicatedDevToAdd} onChange={e => setDedicatedDevToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
+                    <button onClick={() => setDedicatedDevToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">+</button>
                   </div>
                 </div>
               </div>
@@ -435,33 +435,33 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
               <button type="button" 
                 onClick={async () => {
                   if (sharedDevToAdd > 0) await increaseQuota('shared', 'dev', sharedDevToAdd);
-                  if (sharedTestToAdd > 0) await increaseQuota('shared', 'test', sharedTestToAdd);
-                  setSharedDevToAdd(0); setSharedTestToAdd(0);
+                  if (dedicatedDevToAdd > 0) await increaseQuota('dedicated', 'dev', dedicatedDevToAdd);
+                  setSharedDevToAdd(0); setDedicatedDevToAdd(0);
                 }}
-                disabled={quotaUpdatingKind === 'shared' || quotaLoading || (sharedDevToAdd === 0 && sharedTestToAdd === 0)}
-                className="w-full h-8 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-[11px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1.5">
-                {quotaUpdatingKind === 'shared' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Add Capacity</span>}
+                disabled={quotaUpdatingKind === 'shared' || quotaUpdatingKind === 'dedicated' || quotaLoading || (sharedDevToAdd === 0 && dedicatedDevToAdd === 0)}
+                className="w-full h-8 rounded-lg bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-[11px] font-bold hover:from-emerald-700 hover:to-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1.5">
+                {quotaUpdatingKind === 'shared' || quotaUpdatingKind === 'dedicated' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Add Capacity</span>}
               </button>
             </div>
 
-            {/* ── Add Dedicated Agents Card ── */}
-            <div className="rounded-xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/10 to-purple-500/5 p-3 shadow-sm hover:shadow-lg hover:border-indigo-500/50 transition-all duration-200">
+            {/* ── Test Capacity (Shared + Dedicated) ── */}
+            <div className="rounded-xl border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 p-3 shadow-sm hover:shadow-lg hover:border-cyan-500/50 transition-all duration-200">
               <div className="flex items-center gap-2 mb-3">
-                <div className="p-1 rounded-lg bg-indigo-500/20"><Database className="w-3.5 h-3.5 text-indigo-400" /></div>
-                <span className="text-xs font-bold text-app-text-main">Add Dedicated Capacity</span>
+                <div className="p-1 rounded-lg bg-cyan-500/20"><Database className="w-3.5 h-3.5 text-cyan-400" /></div>
+                <span className="text-xs font-bold text-app-text-main">Test Capacity</span>
               </div>
 
               <div className="space-y-3 mb-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-emerald-400">DEV</span>
+                  <span className="text-[10px] font-bold text-emerald-400">Shared Test</span>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setDedicatedDevToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">-</button>
-                    <input value={dedicatedDevToAdd} onChange={e => setDedicatedDevToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
-                    <button onClick={() => setDedicatedDevToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">+</button>
+                    <button onClick={() => setSharedTestToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">-</button>
+                    <input value={sharedTestToAdd} onChange={e => setSharedTestToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
+                    <button onClick={() => setSharedTestToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">+</button>
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-sky-400">TEST</span>
+                  <span className="text-[10px] font-bold text-indigo-400">Dedicated Test</span>
                   <div className="flex items-center gap-2">
                     <button onClick={() => setDedicatedTestToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">-</button>
                     <input value={dedicatedTestToAdd} onChange={e => setDedicatedTestToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
@@ -472,13 +472,13 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
 
               <button type="button" 
                 onClick={async () => {
-                  if (dedicatedDevToAdd > 0) await increaseQuota('dedicated', 'dev', dedicatedDevToAdd);
+                  if (sharedTestToAdd > 0) await increaseQuota('shared', 'test', sharedTestToAdd);
                   if (dedicatedTestToAdd > 0) await increaseQuota('dedicated', 'test', dedicatedTestToAdd);
-                  setDedicatedDevToAdd(0); setDedicatedTestToAdd(0);
+                  setSharedTestToAdd(0); setDedicatedTestToAdd(0);
                 }}
-                disabled={quotaUpdatingKind === 'dedicated' || quotaLoading || (dedicatedDevToAdd === 0 && dedicatedTestToAdd === 0)}
-                className="w-full h-8 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-[11px] font-bold hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1.5">
-                {quotaUpdatingKind === 'dedicated' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Add Capacity</span>}
+                disabled={quotaUpdatingKind === 'shared' || quotaUpdatingKind === 'dedicated' || quotaLoading || (sharedTestToAdd === 0 && dedicatedTestToAdd === 0)}
+                className="w-full h-8 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-[11px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1.5">
+                {quotaUpdatingKind === 'shared' || quotaUpdatingKind === 'dedicated' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Add Capacity</span>}
               </button>
             </div>
           </div>

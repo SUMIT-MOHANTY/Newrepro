@@ -789,6 +789,7 @@ async def _generate_ai_tasks(
     project_end: date,
     custom_rules: Optional[str],
     project_type: str = "greenfield",
+    process_mode: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], int]:
 
     agents = [{"user_id": 1, "username": reporter}]
@@ -815,6 +816,53 @@ async def _generate_ai_tasks(
         )
         normalized_tasks.append(normalized)
 
+    def _mode_days(wallet_points: int) -> int:
+        """Convert wallet points into an estimated duration (days), based on the chosen execution mode."""
+        w = max(1, min(int(wallet_points or 1), 10))
+        mode = str(process_mode or "").strip().lower()
+        if mode == "ai_first":
+            # AI agents can execute faster; compress the timeline.
+            return max(1, (w + 3) // 4)  # 1..3 days
+        if mode in {"developer_only"}:
+            # Human-only execution tends to be slower.
+            return max(1, w)  # 1..10 days
+        # coexistence / ai_assist / vibe_coding / unknown -> balanced pace
+        return max(1, (w + 1) // 2)  # 1..5 days
+
+    def _apply_mode_schedule(tasks: List[Dict[str, Any]]) -> None:
+        if not tasks:
+            return
+
+        available_days = max((project_end - project_start).days + 1, 1)
+        desired = [_mode_days(t.get("wallet")) for t in tasks]
+        desired_total = max(sum(desired), 1)
+
+        # If the desired plan exceeds the project window, scale it down to fit.
+        if desired_total > available_days:
+            ratio = available_days / float(desired_total)
+            scaled = [max(1, int(d * ratio)) for d in desired]
+            scaled_total = sum(scaled)
+            # Distribute remaining days to match the window (best-effort).
+            remaining = available_days - scaled_total
+            idx = 0
+            while remaining > 0 and scaled:
+                scaled[idx % len(scaled)] += 1
+                remaining -= 1
+                idx += 1
+            durations = scaled
+        else:
+            durations = desired
+
+        cursor = project_start
+        for t, days in zip(tasks, durations):
+            start = cursor
+            end = min(project_end, start + timedelta(days=max(days - 1, 0)))
+            t["startdate"] = _format_date(start)
+            t["deadline"] = _format_date(end)
+            cursor = min(project_end, end + timedelta(days=1))
+
+    _apply_mode_schedule(normalized_tasks)
+
     remaining_wallet = max(
         total_wallet - sum(max(_safe_int(task.get("wallet"), 0), 0) for task in normalized_tasks),
         0,
@@ -835,6 +883,7 @@ async def build_local_task_plan_preview(
     reporter_name: Optional[str] = None,
     custom_rules: Optional[str] = None,
     project_type: str = "greenfield",
+    process_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
 
     analysis_payload = analysis_payload or {}
@@ -901,6 +950,7 @@ async def build_local_task_plan_preview(
         project_end=project_deadline,
         custom_rules=custom_rules,
         project_type=derived_project_type,
+        process_mode=process_mode,
     )
 
     groups_used = _determine_sprint_groups(raw_tasks)

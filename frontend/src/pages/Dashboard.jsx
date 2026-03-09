@@ -7,7 +7,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound } from 'lucide-react';
 import { jsPDF } from 'jspdf';
-import AIConfig from '../components/AIConfig';
 
 // import bourntecLogo from '../assets/bourntec_logo.png';
 import StatusDashboard from '../components/StatusDashboard';
@@ -351,14 +350,11 @@ const Dashboard = ({
     fetchRoadmapData,
     selectedRole,
     setSelectedRole,
+    aiConfig,
+    setAiConfig,
 }) => {
     const { projectToken } = useParams();
     const [user, setUser] = useState(propUser || null);
-    const [aiConfig, setAiConfig] = useState({
-        apiUrl: '',
-        apiKey: '',
-        model: ''
-    });
     const [analyzeWithAi] = useState(true);
     const navigate = useNavigate();
 
@@ -374,10 +370,6 @@ const Dashboard = ({
     const [internalSelectedProjectKey, setInternalSelectedProjectKey] = useState('');
     const selectedProjectKey = propSelectedProjectKey !== undefined ? propSelectedProjectKey : internalSelectedProjectKey;
     const setSelectedProjectKey = propSetSelectedProjectKey || setInternalSelectedProjectKey;
-
-    const [internalShowSettings, setInternalShowSettings] = useState(false);
-    const showSettings = propShowSettings !== undefined ? propShowSettings : internalShowSettings;
-    const setShowSettings = propSetShowSettings || setInternalShowSettings;
 
     // -- Per-Project State Management --
     const [projectStates, setProjectStates] = useState({});
@@ -3430,43 +3422,6 @@ const Dashboard = ({
                         )}
                     </div>
                 </main>
-            )}
-
-            {/* AI Config Modal */}
-            {showSettings && (
-                <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-                    {/* Backdrop with blur */}
-                    <div
-                        className="absolute inset-0 bg-black/70 backdrop-blur-md"
-                        onClick={() => setShowSettings(false)}
-                    />
-                    {/* Modal Content */}
-                    <div className="relative z-[301] bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
-                        <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
-                            <h2 className="font-bold text-lg text-app-text-main flex items-center">
-                                <Settings className="w-5 h-5 mr-2 text-app-primary" />
-                                AI Configuration
-                            </h2>
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
-                            >
-                                ✕
-                            </button>
-                        </div>
-                        <div className="p-6">
-                            <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
-                        </div>
-                        <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="px-5 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover font-medium text-sm transition-colors shadow-md active:scale-95"
-                            >
-                                Done
-                            </button>
-                        </div>
-                    </div>
-                </div>
             )}
         </>
     );
