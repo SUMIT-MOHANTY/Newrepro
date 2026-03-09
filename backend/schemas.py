@@ -9,7 +9,7 @@ class UserCreate(UserBase):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     organization_name: Optional[str] = None
-    password: str
+    password: Optional[str] = None
 
 class User(UserBase):
     id: int

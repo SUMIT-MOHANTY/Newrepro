@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck } from 'lucide-react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
@@ -28,6 +28,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     const [isLoading, setIsLoading] = useState(false);
     const [isSsoLoading, setIsSsoLoading] = useState(false);
     const navigate = useNavigate();
+    const location = useLocation();
+    const successMessage = location.state?.registrationMessage || '';
 
     const finishNavigate = (path) => {
         if (isModal && onClose) onClose();
@@ -122,6 +124,12 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
             {/* Form Section */}
             <div className="p-8">
+                {successMessage && (
+                    <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-lg">
+                        {successMessage}
+                    </div>
+                )}
+
                 {error && (
                     <div className="mb-6 p-4 bg-app-status-errorBg border border-red-100 text-app-status-error text-sm rounded-lg flex items-center">
                         <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

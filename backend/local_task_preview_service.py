@@ -18,6 +18,23 @@ TYPE_CONFIG = {
     "BUG": {"prefix": "BUG", "level": 4},
 }
 
+# Phase-to-sprint-group mapping: tasks whose phase maps to the same
+# index will be placed inside the same sprint.
+PHASE_TO_SPRINT_INDEX = {
+    "foundation": 0,
+    "backend-core": 0,
+    "backend-features": 1,
+    "frontend-core": 1,
+    "frontend-features": 2,
+    "integration": 2,
+}
+
+SPRINT_GROUP_LABELS = [
+    ("Foundation & Core Setup", "Project foundation, scaffolding, and core backend setup"),
+    ("Feature Development", "Backend and frontend feature implementation"),
+    ("Integration & Polish", "Frontend features, integration testing, and deployment preparation"),
+]
+
 
 def _format_date(value: date) -> str:
     return value.strftime("%Y-%m-%d")
@@ -266,6 +283,74 @@ def _normalize_dependencies(value: Any) -> List[int]:
     return dependencies
 
 
+def _determine_sprint_groups(raw_tasks: List[Dict[str, Any]]) -> List[int]:
+    """Return sorted list of sprint-group indices that have at least one task."""
+    groups: set[int] = set()
+    for task in raw_tasks:
+        phase = str(task.get("phase") or "").strip().lower()
+        groups.add(PHASE_TO_SPRINT_INDEX.get(phase, 0))
+    return sorted(groups) if groups else [0]
+
+
+def _create_sprints_and_milestones(
+    *,
+    groups_used: List[int],
+    project_start: date,
+    project_deadline: date,
+    project_name: str,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[int, int]]:
+    """Create sprint and milestone objects for each active phase group.
+
+    Returns ``(sprints, milestones, group_index -> position)``.
+    """
+    num = max(len(groups_used), 1)
+    if not groups_used:
+        groups_used = [0]
+
+    total_days = max((project_deadline - project_start).days, 1)
+    sprint_days = max(total_days // num, 1)
+
+    sprints: List[Dict[str, Any]] = []
+    milestones: List[Dict[str, Any]] = []
+    group_to_pos: Dict[int, int] = {}
+
+    for i, group_idx in enumerate(groups_used):
+        s_start = project_start + timedelta(days=i * sprint_days)
+        s_end = (
+            project_deadline
+            if i == num - 1
+            else project_start + timedelta(days=(i + 1) * sprint_days - 1)
+        )
+        if s_end < s_start:
+            s_end = s_start
+
+        label, summary = (
+            SPRINT_GROUP_LABELS[group_idx]
+            if group_idx < len(SPRINT_GROUP_LABELS)
+            else (f"Phase {i + 1}", f"Sprint {i + 1} for {project_name}")
+        )
+        sprint_id = f"SPR-{i + 1:02d}"
+        milestone_id = f"MS-{i + 1:02d}"
+
+        sprints.append({
+            "id": sprint_id,
+            "name": f"Sprint {i + 1} - {label}",
+            "summary": summary,
+            "start_date": _format_date(s_start),
+            "deadline": _format_date(s_end),
+        })
+        milestones.append({
+            "id": milestone_id,
+            "name": f"Milestone {i + 1} - {label}",
+            "sprint_id": sprint_id,
+            "start_date": _format_date(s_start),
+            "deadline": _format_date(s_end),
+        })
+        group_to_pos[group_idx] = i
+
+    return sprints, milestones, group_to_pos
+
+
 def _normalize_generated_task(
     raw_task: Dict[str, Any],
     *,
@@ -432,6 +517,8 @@ def _build_preview_json_tasks(
                 _safe_int(task.get("estimated_hours"), 0) // 8,
                 0,
             ),
+            "_placeholder_sprint_id": task.get("sprint_id"),
+            "_placeholder_milestone_id": task.get("milestone_id"),
         }
 
         if checklist_payload:
@@ -447,8 +534,9 @@ def _build_structured_tasks(
     *,
     project_id: str,
     project_name: str,
-    sprint: Dict[str, Any],
-    milestone: Dict[str, Any],
+    sprints: List[Dict[str, Any]],
+    milestones: List[Dict[str, Any]],
+    group_to_sprint_idx: Dict[int, int],
     reporter_name: str,
 ) -> List[Dict[str, Any]]:
     type_counters: Dict[str, int] = {}
@@ -488,6 +576,23 @@ def _build_structured_tasks(
             if parent_id not in dependency_ids:
                 dependency_ids.append(parent_id)
 
+        # Determine which sprint this task belongs to based on its phase
+        phase = str(raw_task.get("phase") or "").strip().lower()
+        group_idx = PHASE_TO_SPRINT_INDEX.get(phase, 0)
+        sprint_pos = group_to_sprint_idx.get(group_idx, 0)
+        task_sprint = sprints[sprint_pos]
+        task_milestone = milestones[sprint_pos]
+
+        # Re-clamp task dates to the assigned sprint's date range
+        sprint_start = _parse_date(task_sprint["start_date"]) or date.today()
+        sprint_end = _parse_date(task_sprint["deadline"]) or sprint_start
+        planned_start, planned_end = _normalize_task_dates(
+            raw_task.get("startdate"),
+            raw_task.get("deadline"),
+            min_date=sprint_start,
+            max_date=sprint_end,
+        )
+
         structured = {
             "project_id": project_id,
             "project_name": project_name,
@@ -499,14 +604,14 @@ def _build_structured_tasks(
             "status": "in_progress" if index == 0 else "todo",
             "priority": raw_task.get("priority") or "medium",
             "story_points": 0 if task_type == "EPIC" else raw_task.get("wallet", 1),
-            "sprint_id": sprint["id"],
-            "sprint_name": sprint["name"],
-            "milestone_id": milestone["id"],
+            "sprint_id": task_sprint["id"],
+            "sprint_name": task_sprint["name"],
+            "milestone_id": task_milestone["id"],
             "reporter": MASTER_AGENT_ID,
             "assignee": "",
             "resource_names": [reporter_name],
-            "planned_start": raw_task.get("startdate"),
-            "planned_end": raw_task.get("deadline"),
+            "planned_start": planned_start,
+            "planned_end": planned_end,
             "estimated_hours": max(_safe_int(raw_task.get("wallet"), 1) * 8, 8),
             "wbs": wbs,
             "level": level,
@@ -582,11 +687,12 @@ async def _generate_ai_tasks(
     agents = [{"user_id": 1, "username": reporter}]
     normalized_tasks: List[Dict[str, Any]] = []
 
-    raw_tasks = await ai_service.generate_tasks_for_project(
+    raw_tasks = await ai_service.generate_all_tasks(
         analysis_report=analysis_report,
         agents=agents,
         project_deadline=project_deadline,
         project_wallet=total_wallet,
+        custom_rules=custom_rules,
     )
 
     for index, raw_task in enumerate(raw_tasks or []):
@@ -631,44 +737,7 @@ async def build_local_task_plan_preview(
     deadline_iso = _format_date(project_deadline)
     analysis_context = _build_analysis_context(analysis_report, prerequisites, custom_rules)
 
-    sprint_plan = await ai_service.generate_sprint_milestone_plan(
-        analysis_report=analysis_context,
-        project_name=project_name,
-        project_deadline=deadline_iso,
-    )
-
-    sprint_payload = sprint_plan.get("sprint") if isinstance(sprint_plan, dict) else {}
-    milestone_payload = sprint_plan.get("milestone") if isinstance(sprint_plan, dict) else {}
-    sprint_start_iso, sprint_deadline_iso = _normalize_task_dates(
-        sprint_payload.get("start_date"),
-        sprint_payload.get("deadline"),
-        min_date=project_start,
-        max_date=project_deadline,
-        require_strict_order=True,
-    )
-    sprint = {
-        "id": "SPR-01",
-        "name": str(sprint_payload.get("name") or "Sprint 1").strip() or "Sprint 1",
-        "summary": str(sprint_payload.get("summary") or f"Initial sprint for {project_name or 'the project'}").strip(),
-        "start_date": sprint_start_iso,
-        "deadline": sprint_deadline_iso,
-    }
-    sprint_start = _parse_date(sprint["start_date"]) or project_start
-    sprint_deadline = _parse_date(sprint["deadline"]) or project_deadline
-    milestone_start_iso, milestone_deadline_iso = _normalize_task_dates(
-        milestone_payload.get("start_date"),
-        milestone_payload.get("deadline"),
-        min_date=sprint_start,
-        max_date=sprint_deadline,
-    )
-    milestone = {
-        "id": "MS-01",
-        "name": str(milestone_payload.get("name") or "Phase 1 Complete").strip() or "Phase 1 Complete",
-        "sprint_id": sprint["id"],
-        "start_date": milestone_start_iso,
-        "deadline": milestone_deadline_iso,
-    }
-
+    # Generate all tasks first so we know which phases exist
     raw_tasks, remaining_wallet = await _generate_ai_tasks(
         analysis_report=analysis_context,
         reporter=reporter,
@@ -679,12 +748,22 @@ async def build_local_task_plan_preview(
         custom_rules=custom_rules,
     )
 
+    # Determine sprint groups from task phases and create sprints/milestones
+    groups_used = _determine_sprint_groups(raw_tasks)
+    sprints, milestones, group_to_sprint_idx = _create_sprints_and_milestones(
+        groups_used=groups_used,
+        project_start=project_start,
+        project_deadline=project_deadline,
+        project_name=project_name or "Untitled Project",
+    )
+
     structured_tasks = _build_structured_tasks(
         raw_tasks,
         project_id=str(project_token or "PROJ-001"),
         project_name=project_name or "Untitled Project",
-        sprint=sprint,
-        milestone=milestone,
+        sprints=sprints,
+        milestones=milestones,
+        group_to_sprint_idx=group_to_sprint_idx,
         reporter_name=reporter,
     )
     await _attach_checklists(structured_tasks=structured_tasks, analysis_report=analysis_context)
@@ -694,7 +773,8 @@ async def build_local_task_plan_preview(
         "status": "success",
         "preview_mode": True,
         "message": (
-            f"AI generated {len(structured_tasks)} task preview item(s) from the analysis report. "
+            f"AI generated {len(structured_tasks)} task preview item(s) across "
+            f"{len(sprints)} sprint(s) from the analysis report. "
             "No external task API call was made."
         ),
         "project_start_date": _format_date(project_start),
@@ -702,14 +782,14 @@ async def build_local_task_plan_preview(
         "project_wallet": total_wallet,
         "remaining_wallet": remaining_wallet,
         "tasks_created": len(structured_tasks),
-        "sprint_id": sprint["id"],
-        "milestone_id": milestone["id"],
-        "created_sprint": sprint,
-        "created_milestone": milestone,
-        "created_sprints": [sprint],
-        "created_milestones": [milestone],
-        "sprints": [sprint],
-        "milestones": [milestone],
+        "sprint_id": sprints[0]["id"] if sprints else "SPR-01",
+        "milestone_id": milestones[0]["id"] if milestones else "MS-01",
+        "created_sprint": sprints[0] if sprints else {},
+        "created_milestone": milestones[0] if milestones else {},
+        "created_sprints": sprints,
+        "created_milestones": milestones,
+        "sprints": sprints,
+        "milestones": milestones,
         "tasks": structured_tasks,
         "preview_json": preview_tasks,
     }

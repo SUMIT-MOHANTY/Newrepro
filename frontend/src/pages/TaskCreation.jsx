@@ -80,6 +80,16 @@ function extractEntityId(item, key) {
     return null;
 }
 
+function extractEntityName(item, key) {
+    const direct = item?.[key];
+    if (direct && typeof direct === 'object') {
+        const nestedName = String(direct.name || direct[`${key}_name`] || '').trim();
+        if (nestedName) return nestedName;
+    }
+    const fallback = String(item?.[`${key}_name`] || '').trim();
+    return fallback || '';
+}
+
 function getErrorMessage(errorPayload, fallback) {
     if (!errorPayload) return fallback;
     
@@ -464,14 +474,101 @@ export default function TaskCreation({
         setIsLoading(true);
         setError('');
         try {
-            const storedPlan = readGeneratedTaskPlan(selectedProjectKey);
-            hydrateGeneratedPlan(storedPlan);
+            // First, try to fetch tasks from backend API if we have a task token
+            let backendTasks = null;
+            if (taskToken) {
+                try {
+                    const headers = { 'Authorization': `Bearer ${token}` };
+                    if (taskToken) headers['x-task-token'] = taskToken;
+                    
+                    const tasksRes = await fetch(API_ENDPOINTS.AGENT_TASKS, { headers });
+                    if (tasksRes.ok) {
+                        const tasksData = await tasksRes.json();
+                        // Handle both array and paginated response formats
+                        const tasksList = Array.isArray(tasksData) 
+                            ? tasksData 
+                            : (Array.isArray(tasksData?.results) ? tasksData.results : []);
+                        
+                        if (tasksList.length > 0) {
+                            // Group tasks by sprint and milestone for display
+                            const sprintsMap = new Map();
+                            const milestonesMap = new Map();
+                            
+                            tasksList.forEach((task) => {
+                                const sprintId = extractEntityId(task, 'sprint');
+                                const milestoneId = extractEntityId(task, 'milestone');
+                                const sprintName = extractEntityName(task, 'sprint');
+                                const milestoneName = extractEntityName(task, 'milestone');
+                                
+                                if (sprintId != null) {
+                                    const sprint = task.sprint;
+                                    if (sprint && typeof sprint === 'object') {
+                                        sprintsMap.set(String(sprintId), {
+                                            id: sprintId,
+                                            name: sprint.name || sprint.sprint_name || sprintName || `Sprint #${sprintId}`,
+                                        });
+                                    } else if (!sprintsMap.has(String(sprintId))) {
+                                        sprintsMap.set(String(sprintId), {
+                                            id: sprintId,
+                                            name: sprintName || `Sprint #${sprintId}`,
+                                        });
+                                    }
+                                }
+                                
+                                if (milestoneId != null) {
+                                    const milestone = task.milestone;
+                                    if (milestone && typeof milestone === 'object') {
+                                        milestonesMap.set(String(milestoneId), {
+                                            id: milestoneId,
+                                            name: milestone.name || milestone.milestone_name || milestoneName || `Milestone #${milestoneId}`,
+                                        });
+                                    } else if (!milestonesMap.has(String(milestoneId))) {
+                                        milestonesMap.set(String(milestoneId), {
+                                            id: milestoneId,
+                                            name: milestoneName || `Milestone #${milestoneId}`,
+                                        });
+                                    }
+                                }
+                            });
+                            
+                            // Build the plan structure from backend data
+                            backendTasks = {
+                                tasks: tasksList,
+                                sprints: Array.from(sprintsMap.values()),
+                                milestones: Array.from(milestonesMap.values()),
+                                project_deadline: projectInfo?.project?.deadline || projectInfo?.deadline || projectDeadline || '',
+                            };
+                            
+                            // Save to localStorage for offline access
+                            writeGeneratedTaskPlan(selectedProjectKey, backendTasks);
+                        }
+                    }
+                } catch (fetchError) {
+                    // If backend fetch fails, fallback to localStorage
+                    console.warn('Failed to fetch tasks from backend, using localStorage:', fetchError);
+                }
+            }
+            
+            // Use backend data if available, otherwise fallback to localStorage
+            const planToUse = backendTasks || readGeneratedTaskPlan(selectedProjectKey);
+            
+            if (planToUse) {
+                hydrateGeneratedPlan(planToUse);
+                return {
+                    sprints: Array.isArray(planToUse?.sprints) ? planToUse.sprints : [],
+                    milestones: Array.isArray(planToUse?.milestones) ? planToUse.milestones : [],
+                    tasks: Array.isArray(planToUse?.tasks) ? planToUse.tasks : [],
+                    taskTotalCount: Array.isArray(planToUse?.tasks) ? planToUse.tasks.length : 0,
+                    projectDeadline: planToUse?.project_deadline || '',
+                };
+            }
+            
             return {
-                sprints: Array.isArray(storedPlan?.sprints) ? storedPlan.sprints : [],
-                milestones: Array.isArray(storedPlan?.milestones) ? storedPlan.milestones : [],
-                tasks: Array.isArray(storedPlan?.tasks) ? storedPlan.tasks : [],
-                taskTotalCount: Array.isArray(storedPlan?.tasks) ? storedPlan.tasks.length : 0,
-                projectDeadline: storedPlan?.project_deadline || '',
+                sprints: [],
+                milestones: [],
+                tasks: [],
+                taskTotalCount: 0,
+                projectDeadline: '',
             };
         } catch (e) {
             setError(e?.message || 'Failed to load generated task plan');
@@ -501,13 +598,15 @@ export default function TaskCreation({
         tasks.forEach((task) => {
             const sprintId = extractEntityId(task, 'sprint');
             const milestoneId = extractEntityId(task, 'milestone');
+            const sprintName = extractEntityName(task, 'sprint');
+            const milestoneName = extractEntityName(task, 'milestone');
             const sprintKey = sprintId != null ? String(sprintId) : 'unassigned_sprint';
             const milestoneKey = milestoneId != null ? String(milestoneId) : 'unassigned_milestone';
 
             if (!groups.has(sprintKey)) {
                 groups.set(sprintKey, {
                     sprint: sprintId != null
-                        ? (sprintById.get(String(sprintId)) || { id: sprintId, name: `Sprint #${sprintId}` })
+                        ? (sprintById.get(String(sprintId)) || { id: sprintId, name: sprintName || `Sprint #${sprintId}` })
                         : { id: 'unassigned_sprint', name: 'Unassigned Sprint' },
                     milestones: new Map(),
                 });
@@ -517,7 +616,7 @@ export default function TaskCreation({
             if (!sprintGroup.milestones.has(milestoneKey)) {
                 sprintGroup.milestones.set(milestoneKey, {
                     milestone: milestoneId != null
-                        ? (milestoneById.get(String(milestoneId)) || { id: milestoneId, name: `Milestone #${milestoneId}` })
+                        ? (milestoneById.get(String(milestoneId)) || { id: milestoneId, name: milestoneName || `Milestone #${milestoneId}` })
                         : { id: 'unassigned_milestone', name: 'Unassigned Milestone' },
                     tasks: [],
                 });

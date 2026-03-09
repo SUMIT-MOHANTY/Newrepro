@@ -746,15 +746,62 @@ def update_workspace_contract_from_workspace_tree(project_token: str, workspace_
 
 
 def _extract_file_paths_from_canonical_tree(tree_text: str) -> List[str]:
+    raw_text = str(tree_text or "").strip()
+    if not raw_text:
+        return []
+
+    # Attempt to parse as JSON first for high-accuracy machine-readable trees
+    if raw_text.startswith(("{", "[")):
+        try:
+            import json
+            data = json.loads(raw_text)
+            
+            def _walk_json(node: Any, current_prefix: str = "") -> List[str]:
+                results = []
+                if isinstance(node, dict):
+                    # Handle "name"/"children" format
+                    name = node.get("name")
+                    children = node.get("children")
+                    if name:
+                        path_part = str(name).strip("/")
+                        full_path = f"{current_prefix}/{path_part}" if current_prefix else path_part
+                        if children and isinstance(children, list):
+                            for child in children:
+                                results.extend(_walk_json(child, full_path))
+                        else:
+                            results.append(full_path)
+                    # Handle direct key-value nesting: {"backend": {"main.py": None}}
+                    else:
+                        for key, value in node.items():
+                            path_part = str(key).strip("/")
+                            full_path = f"{current_prefix}/{path_part}" if current_prefix else path_part
+                            if isinstance(value, dict) and value:
+                                results.extend(_walk_json(value, full_path))
+                            else:
+                                results.append(full_path)
+                elif isinstance(node, list):
+                    for item in node:
+                        results.extend(_walk_json(item, current_prefix))
+                elif node:
+                    path_part = str(node).strip("/")
+                    results.append(f"{current_prefix}/{path_part}" if current_prefix else path_part)
+                return results
+
+            json_paths = _walk_json(data)
+            if json_paths:
+                return sorted({path for path in json_paths if path and not path.endswith("/")})
+        except Exception:
+            pass # Fallback to ASCII parser
+
     paths: List[str] = []
     stack: List[str] = []
 
-    for raw_line in str(tree_text or "").splitlines():
+    for raw_line in raw_text.splitlines():
         line = raw_line.rstrip()
         if not line.strip():
             continue
         stripped = line.strip().strip("`")
-        if stripped.lower() in {"text", "project/"}:
+        if stripped.lower() in {"text", "project/", "json"}:
             continue
 
         content = line
@@ -804,6 +851,7 @@ def _extract_file_paths_from_canonical_tree(tree_text: str) -> List[str]:
         paths.append(current_path)
 
     return sorted({path for path in paths if path and not path.endswith("/")})
+
 
 
 def update_workspace_contract_from_canonical_tree(project_token: str, workspace_tree: str) -> Dict[str, Any]:

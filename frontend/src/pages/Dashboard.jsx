@@ -1289,6 +1289,35 @@ const Dashboard = ({
                     extractedMarkdown = textInput;
                     filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
                     setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+
+                    // If the user also selected files in the Upload tab, merge that content in
+                    if (files.length > 0) {
+                        try {
+                            const fileFormData = new FormData();
+                            for (let i = 0; i < files.length; i++) {
+                                fileFormData.append('files', files[i]);
+                            }
+                            const fileUploadResponse = await fetch(API_ENDPOINTS.DOCUMENTS_UPLOAD, {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${token}` },
+                                body: fileFormData
+                            });
+                            if (fileUploadResponse.ok) {
+                                const fileData = await fileUploadResponse.json();
+                                if (fileData.markdown) {
+                                    const divider = "\n\n--- UPLOADED DOCUMENT CONTENT ---\n\n";
+                                    extractedMarkdown = `${fileData.markdown}${divider}${textInput}`;
+                                    if (fileData.html) {
+                                        extractedHtml = `${fileData.html}<div class="document-separator"><h2>Manual Text Input</h2></div><pre style="white-space: pre-wrap; font-family: inherit;">${textInput}</pre>`;
+                                    }
+                                    filename = `${fileData.filename} (with notes)`;
+                                }
+                            }
+                        } catch (fileErr) {
+                            console.warn('Could not merge uploaded file content with text:', fileErr);
+                            // Continue with just textInput
+                        }
+                    }
                 } else if (activeTab === 'url') {
                     const fetchedData = urlRequirements.trim()
                         ? {
@@ -1315,6 +1344,25 @@ const Dashboard = ({
                         urlFetchSummary: fetchedData.summary || urlFetchSummary || null,
                         urlRequirements: extractedMarkdown
                     });
+                }
+            }
+
+            // Merge additional text context if provided alongside files/URL source
+            if (activeTab !== 'text' && textInput.trim()) {
+                const noteDivider = "\n\n---  USER NOTES ---\n\n";
+                extractedMarkdown = (extractedMarkdown || '').trim()
+                    ? `${extractedMarkdown}${noteDivider}${textInput}`
+                    : textInput;
+
+                if (extractedHtml) {
+                    extractedHtml += `<div class="document-separator"><h2> User Notes</h2></div><div style="padding: 1.5rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; margin-top: 1.5rem; font-family: ui-sans-serif, system-ui, sans-serif;"><h3 style="margin-top: 0; font-size: 0.875rem; font-weight: 700; color: #1e293b; text-transform: uppercase; letter-spacing: 0.05em;">Manual Notes</h3><pre style="white-space: pre-wrap; font-family: inherit; font-size: 0.875rem; color: #475569; margin: 0; line-height: 1.6;">${textInput}</pre></div>`;
+                }
+
+                const noteSuffix = ' (with notes)';
+                if (!filename) {
+                    filename = 'Project_Context_' + new Date().toISOString().slice(0, 10);
+                } else if (!filename.includes(noteSuffix)) {
+                    filename += noteSuffix;
                 }
             }
 
@@ -2331,7 +2379,7 @@ const Dashboard = ({
             setAzureLinkError('Please enter a valid Azure DevOps URL (dev.azure.com or *.visualstudio.com).');
             return;
         }
-        
+
         // Check if it's a project URL (without /_git/{repo})
         const isProjectUrl = (() => {
             if (rawUrl.includes('dev.azure.com')) {
@@ -2354,13 +2402,13 @@ const Dashboard = ({
                 setAzureProjectReposLoading(true);
                 setAzureLinkError('');
                 const token = localStorage.getItem('token');
-                
+
                 // Parse organization and project from URL
                 const urlObj = new URL(rawUrl.includes('://') ? rawUrl : `https://${rawUrl}`);
                 const pathParts = urlObj.pathname.split('/').filter(Boolean);
                 let organization = '';
                 let project = '';
-                
+
                 if (urlObj.hostname.includes('dev.azure.com')) {
                     organization = decodeURIComponent(pathParts[0] || '');
                     project = decodeURIComponent(pathParts[1] || '');
@@ -2368,15 +2416,15 @@ const Dashboard = ({
                     organization = urlObj.hostname.split('.visualstudio.com')[0];
                     project = decodeURIComponent(pathParts[0] || '');
                 }
-                
+
                 if (!organization || !project) {
                     throw new Error('Unable to parse organization and project from URL.');
                 }
-                
+
                 if (!selectedProjectKey) {
                     throw new Error('Please select a project first.');
                 }
-                
+
                 const resp = await fetch(API_ENDPOINTS.AZURE_DEVOPS_LIST_PROJECT_REPOS, {
                     method: 'POST',
                     headers: {
@@ -2389,7 +2437,7 @@ const Dashboard = ({
                         project,
                     }),
                 });
-                
+
                 const data = await resp.json();
                 if (!resp.ok) {
                     let errMessage = 'Failed to fetch repositories from Azure DevOps project';
@@ -2398,13 +2446,13 @@ const Dashboard = ({
                     }
                     throw new Error(errMessage);
                 }
-                
+
                 const repos = Array.isArray(data.repos) ? data.repos : [];
                 if (repos.length === 0) {
                     setAzureLinkError('No repositories found in this project.');
                     return;
                 }
-                
+
                 setAzureProjectRepos(repos);
                 setAzureProjectUrl(rawUrl);
                 setShowAzureRepoSelector(true);
@@ -2461,7 +2509,7 @@ const Dashboard = ({
             setAzureLinkParsing(false);
         }
     };
-    
+
     const handleSelectAzureRepo = async (repo) => {
         const repoUrl = repo.repo_url || repo.html_url || `https://dev.azure.com/${repo.organization}/${repo.project}/_git/${repo.name}`;
         setAzureLinkUrl(repoUrl);
@@ -2732,7 +2780,7 @@ const Dashboard = ({
                                                 id={`file-upload-${activeTab}`}
                                                 multiple
                                                 onChange={handleFileChange}
-                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
+                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg,.txt"
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
@@ -2752,7 +2800,7 @@ const Dashboard = ({
                                                 </div>
                                             )}
                                             <span className="mt-1 block text-xs text-app-text-light">
-                                                PDF, DOCX, PPTX, HTML, Images
+                                                PDF, DOCX, PPTX, HTML, Images, Text
                                             </span>
                                         </div>
                                     ) : activeTab === 'linked-doc' ? (
@@ -2762,7 +2810,7 @@ const Dashboard = ({
                                                 id={`file-upload-linked`}
                                                 multiple
                                                 onChange={handleFileChange}
-                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg"
+                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg,.txt"
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                 disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                             />
@@ -2782,7 +2830,7 @@ const Dashboard = ({
                                                 </div>
                                             )}
                                             <span className="mt-1 block text-xs text-app-text-light">
-                                                PDF, DOCX, PPTX, HTML, Images
+                                                PDF, DOCX, PPTX, HTML, Images, Text
                                             </span>
                                         </div>
                                     ) : activeTab === 'text' ? (
@@ -2854,10 +2902,10 @@ const Dashboard = ({
                                                         return false;
                                                     }
                                                     // Check if any GitHub link fields are filled
-                                                    const hasGithubLinkFields = (githubLinkUrl && githubLinkUrl.trim().length > 0) || 
-                                                                                (githubLinkToken && githubLinkToken.trim().length > 0) || 
-                                                                                (githubLinkUsername && githubLinkUsername.trim().length > 0) || 
-                                                                                (githubLinkPassword && githubLinkPassword.trim().length > 0);
+                                                    const hasGithubLinkFields = (githubLinkUrl && githubLinkUrl.trim().length > 0) ||
+                                                        (githubLinkToken && githubLinkToken.trim().length > 0) ||
+                                                        (githubLinkUsername && githubLinkUsername.trim().length > 0) ||
+                                                        (githubLinkPassword && githubLinkPassword.trim().length > 0);
                                                     // Check if repoContext is from link (but not Azure DevOps)
                                                     const hasLinkRepoContext = repoContext && repoContext.fromLink && repoContext.provider !== 'azure-devops';
                                                     return hasGithubLinkFields || hasLinkRepoContext;
@@ -3437,7 +3485,7 @@ const Dashboard = ({
             {showSettings && (
                 <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
                     {/* Backdrop with blur */}
-                    <div 
+                    <div
                         className="absolute inset-0 bg-black/70 backdrop-blur-md"
                         onClick={() => setShowSettings(false)}
                     />
@@ -3448,8 +3496,8 @@ const Dashboard = ({
                                 <Settings className="w-5 h-5 mr-2 text-app-primary" />
                                 AI Configuration
                             </h2>
-                            <button 
-                                onClick={() => setShowSettings(false)} 
+                            <button
+                                onClick={() => setShowSettings(false)}
                                 className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
                             >
                                 ✕

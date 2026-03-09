@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, Lock, User, Building2, Loader2, ArrowRight } from 'lucide-react';
+import { Mail, User, Building2, Loader2, ArrowRight } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
 
@@ -9,7 +9,6 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
     const [lastName, setLastName] = useState('');
     const [organizationName, setOrganizationName] = useState('');
     const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const navigate = useNavigate();
@@ -26,11 +25,10 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    first_name: firstName,
-                    last_name: lastName,
-                    organization_name: organizationName,
-                    email,
-                    password,
+                    first_name: firstName.trim(),
+                    last_name: lastName.trim(),
+                    organization_name: organizationName.trim(),
+                    email: email.trim().toLowerCase(),
                 }),
             });
 
@@ -39,8 +37,9 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                 throw new Error(errorData.detail || 'Signup failed');
             }
 
+            const registrationMessage = 'Registration successful. Check your email for the generated password, then sign in.';
             if (isModal && onClose) onClose();
-            navigate('/login');
+            navigate('/login', { state: { registrationMessage } });
         } catch (err) {
             setError(err.message);
         } finally {
@@ -62,8 +61,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                         </svg>
                     </button>
                 )}
-                <h2 className="text-2xl font-bold text-slate-800 tracking-tight mb-2">Register Organization</h2>
-                <p className="text-app-text-muted text-sm">Create your admin account and configure enterprise SSO</p>
+                <h2 className="text-2xl font-bold text-app-text-main tracking-tight mb-2">Register Organization</h2>
+                <p className="text-app-text-muted text-sm">Create your admin account. A random password will be emailed to you.</p>
             </div>
 
             {/* Form Section */}
@@ -159,24 +158,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                         </div>
                     </div>
 
-                    <div className="space-y-1">
-                        <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="password">
-                            Password
-                        </label>
-                        <div className="relative group">
-                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <Lock className="h-5 w-5 text-app-text-light group-focus-within:text-blue-500 transition-colors" />
-                            </div>
-                            <input
-                                id="password"
-                                type="password"
-                                placeholder="••••••••"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
-                                required
-                            />
-                        </div>
+                    <div className="rounded-xl border border-app-border-light bg-app-bg-page px-4 py-3 text-sm text-app-text-muted">
+                        A secure password will be generated automatically and sent to this email address after registration.
                     </div>
 
                     <button
@@ -187,11 +170,11 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                         {isLoading ? (
                             <>
                                 <Loader2 className="animate-spin -ml-1 mr-2 h-4 w-4" />
-                                Registering...
+                                Creating account...
                             </>
                         ) : (
                             <>
-                                Create Admin Account
+                                Register Organization
                                 <ArrowRight className="ml-2 h-4 w-4" />
                             </>
                         )}

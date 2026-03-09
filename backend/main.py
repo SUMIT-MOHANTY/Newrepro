@@ -34,6 +34,7 @@ import azure_devops_oauth_service
 import agent_service
 import rag_service
 import context_manager
+import email_service
 import knowledge_graph_service as kg_service
 from local_task_preview_service import build_local_task_plan_preview
 from database import engine, get_db, SessionLocal
@@ -61,6 +62,10 @@ SSO_STATE_TTL_SECONDS = 1800
 SSO_STATE_CLOCK_SKEW_SECONDS = 300
 OAUTH_AUTH_CODE_TTL_SECONDS = 300
 OAUTH_ACCESS_TOKEN_TTL_SECONDS = 3600
+
+
+def _generate_registration_password() -> str:
+    return secrets.token_urlsafe(12)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1232,7 +1237,13 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
             detail="Organization already registered. Sign in with your admin account.",
         )
 
-    hashed_password = auth.get_password_hash(user.password)
+    try:
+        email_service.ensure_email_delivery_configured()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    generated_password = _generate_registration_password()
+    hashed_password = auth.get_password_hash(generated_password)
     db_user = models.User(
         email=normalized_email,
         hashed_password=hashed_password,
@@ -1244,6 +1255,27 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    try:
+        email_service.send_organization_registration_password_email(
+            recipient_email=normalized_email,
+            organization_name=organization_name,
+            generated_password=generated_password,
+            first_name=(user.first_name or "").strip() or None,
+        )
+    except Exception:
+        logger.exception("Failed to deliver organization registration email to %s", normalized_email)
+        try:
+            db.delete(db_user)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to roll back user creation after email delivery failure for %s", normalized_email)
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to deliver the generated password email. Please try again.",
+        )
+
     return db_user
 
 @app.get("/users/me", response_model=schemas.User)
@@ -1560,7 +1592,7 @@ async def upload_document(
     Supports: PDF, DOCX, PPTX, HTML, Images, and more.
     Requires authentication.
     """
-    allowed_extensions = {".pdf", ".docx", ".pptx", ".html", ".htm", ".png", ".jpg", ".jpeg"}
+    allowed_extensions = {".pdf", ".docx", ".pptx", ".html", ".htm", ".png", ".jpg", ".jpeg", ".txt"}
     
     MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
     total_size = 0
@@ -1585,7 +1617,24 @@ async def upload_document(
         total_size += len(content)
         if total_size > MAX_SIZE_BYTES:
             raise HTTPException(status_code=400, detail="Total file size exceeds 100MB limit.")
-            
+
+        # Handle plain text files directly
+        if file_ext == ".txt":
+            try:
+                text_content = content.decode("utf-8", errors="replace").strip()
+            except Exception:
+                text_content = content.decode("latin-1", errors="replace").strip()
+
+            if text_content:
+                file_markdown = f"\n\n--- DOCUMENT: {file.filename} ---\n\n{text_content}"
+                combined_markdown += file_markdown
+                combined_html += f"<div class='document-separator'><h2>Document: {file.filename}</h2></div><pre style='white-space: pre-wrap; font-family: inherit;'>{text_content}</pre>"
+                total_pages += 1
+                processed_files.append(file.filename)
+            else:
+                print(f"Warning: Text file {file.filename} was empty.")
+            continue
+
         file_path = ingestion.save_uploaded_file(content, file.filename)
         
         # Process with Docling
@@ -4135,18 +4184,7 @@ async def get_pending_tasks(
     }
 
 
-@app.post("/agents/tasks")
-async def create_agent_task(
-    request: CreateTaskRequest,
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """Create a new pending task for agents to pick up."""
-    task = agent_service.create_task(
-        title=request.title,
-        description=request.description,
-        priority=request.priority,
-    )
-    return {"task": task}
+
 
 
 # ─────────────────────────────── Preview Deploy ──────────────────────────────
@@ -4894,20 +4932,7 @@ class AgentNoteUpsertRequest(BaseModel):
     content: str
     user: Optional[str] = None
 
-@app.post("/api/agent/tasks/")
-async def create_external_agent_task(
-    task: AgentTaskCreate,
-    current_user: models.User = Depends(auth.get_current_user),
-    x_task_token: Optional[str] = Header(None)
-):
-    """Create a new task in the external task management API."""
-    try:
-        result = await task_service.create_task(task.dict(), task_token=x_task_token)
-        return result
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to create task")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create task: {e}")
+
 
 
 @app.get("/api/agent/sprints/")
@@ -5432,58 +5457,140 @@ def _extract_created_entity_id(payload: Any, entity_key: str) -> Optional[int]:
     return None
 
 
+def _extract_created_entity_name(payload: Any, entity_key: str) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+
+    direct_name = str(
+        payload.get("name")
+        or payload.get(f"{entity_key}_name")
+        or ""
+    ).strip()
+    if direct_name:
+        return direct_name
+
+    for nested_key in (entity_key, "data", "result", f"created_{entity_key}"):
+        nested = payload.get(nested_key)
+        if not isinstance(nested, dict):
+            continue
+        nested_name = str(
+            nested.get("name")
+            or nested.get(f"{entity_key}_name")
+            or ""
+        ).strip()
+        if nested_name:
+            return nested_name
+
+    return None
+
+
 def _apply_schedule_ids_to_preview_payload(
     preview_payload: Dict[str, Any],
     *,
-    sprint_id: Optional[int],
-    milestone_id: Optional[int],
+    placeholder_to_real_sprint: Dict[str, int],
+    placeholder_to_real_milestone: Dict[str, int],
+    placeholder_to_real_sprint_name: Optional[Dict[str, str]] = None,
+    placeholder_to_real_milestone_name: Optional[Dict[str, str]] = None,
+    fallback_sprint_id: Optional[int] = None,
+    fallback_milestone_id: Optional[int] = None,
 ) -> None:
+    """Replace placeholder sprint/milestone IDs with real external API IDs.
+
+    Each task carries ``_placeholder_sprint_id`` and ``_placeholder_milestone_id``
+    which are mapped to the real IDs created in the external task API.
+    """
     if not isinstance(preview_payload, dict):
         return
 
-    if sprint_id is not None:
-        preview_payload["sprint_id"] = sprint_id
-        for key in ("created_sprint",):
-            value = preview_payload.get(key)
-            if isinstance(value, dict):
-                value["id"] = sprint_id
-        for key in ("created_sprints", "sprints"):
-            collection = preview_payload.get(key)
-            if isinstance(collection, list):
-                for item in collection:
-                    if isinstance(item, dict):
-                        item["id"] = sprint_id
-        for task in preview_payload.get("tasks") or []:
-            if isinstance(task, dict):
-                task["sprint_id"] = sprint_id
+    sprint_name_map = placeholder_to_real_sprint_name if isinstance(placeholder_to_real_sprint_name, dict) else {}
+    milestone_name_map = placeholder_to_real_milestone_name if isinstance(placeholder_to_real_milestone_name, dict) else {}
+    first_real_sprint = fallback_sprint_id
+    if not first_real_sprint and placeholder_to_real_sprint:
+        first_real_sprint = next(iter(placeholder_to_real_sprint.values()), None)
+    first_real_milestone = fallback_milestone_id
+    if not first_real_milestone and placeholder_to_real_milestone:
+        first_real_milestone = next(iter(placeholder_to_real_milestone.values()), None)
 
-    if milestone_id is not None:
-        preview_payload["milestone_id"] = milestone_id
-        for key in ("created_milestone",):
-            value = preview_payload.get(key)
-            if isinstance(value, dict):
-                value["id"] = milestone_id
-                if sprint_id is not None:
-                    value["sprint_id"] = sprint_id
-        for key in ("created_milestones", "milestones"):
-            collection = preview_payload.get(key)
-            if isinstance(collection, list):
-                for item in collection:
-                    if isinstance(item, dict):
-                        item["id"] = milestone_id
-                        if sprint_id is not None:
-                            item["sprint_id"] = sprint_id
-        for task in preview_payload.get("tasks") or []:
-            if isinstance(task, dict):
-                task["milestone_id"] = milestone_id
+    if first_real_sprint is not None:
+        preview_payload["sprint_id"] = first_real_sprint
 
-    preview_json = preview_payload.get("preview_json")
-    if isinstance(preview_json, list):
-        for task in preview_json:
-            if not isinstance(task, dict):
+    if first_real_milestone is not None:
+        preview_payload["milestone_id"] = first_real_milestone
+
+    # Update created_sprints / sprints list entries
+    for key in ("created_sprints", "sprints"):
+        collection = preview_payload.get(key)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, dict):
                 continue
-            task["sprint"] = "new"
-            task["milestone"] = "main"
+            placeholder = str(item.get("id") or "")
+            real_id = placeholder_to_real_sprint.get(placeholder, fallback_sprint_id)
+            if real_id is not None:
+                item["id"] = real_id
+    # Keep created_sprint pointing to the first
+    cs = preview_payload.get("created_sprint")
+    if isinstance(cs, dict):
+        placeholder = str(cs.get("id") or "")
+        cs["id"] = placeholder_to_real_sprint.get(placeholder, first_real_sprint)
+
+    # Update created_milestones / milestones list entries
+    for key in ("created_milestones", "milestones"):
+        collection = preview_payload.get(key)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            placeholder = str(item.get("id") or "")
+            real_id = placeholder_to_real_milestone.get(placeholder, fallback_milestone_id)
+            if real_id is not None:
+                item["id"] = real_id
+            sprint_placeholder = str(item.get("sprint_id") or "")
+            real_sprint = placeholder_to_real_sprint.get(sprint_placeholder, first_real_sprint)
+            if real_sprint is not None:
+                item["sprint_id"] = real_sprint
+    cm = preview_payload.get("created_milestone")
+    if isinstance(cm, dict):
+        placeholder = str(cm.get("id") or "")
+        cm["id"] = placeholder_to_real_milestone.get(placeholder, first_real_milestone)
+        sprint_placeholder = str(cm.get("sprint_id") or "")
+        cm["sprint_id"] = placeholder_to_real_sprint.get(sprint_placeholder, first_real_sprint)
+
+    # Update structured tasks
+    for task in preview_payload.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        sp = str(task.get("sprint_id") or "")
+        task["sprint_id"] = placeholder_to_real_sprint.get(sp, first_real_sprint)
+        sprint_name = sprint_name_map.get(sp, "")
+        if sprint_name:
+            task["sprint_name"] = sprint_name
+        mp = str(task.get("milestone_id") or "")
+        task["milestone_id"] = placeholder_to_real_milestone.get(mp, first_real_milestone)
+        milestone_name = milestone_name_map.get(mp, "")
+        if milestone_name:
+            task["milestone_name"] = milestone_name
+
+    # Update preview_json tasks (sent to external batch API)
+    for task in preview_payload.get("preview_json") or []:
+        if not isinstance(task, dict):
+            continue
+        sp = str(task.pop("_placeholder_sprint_id", "") or "")
+        mp = str(task.pop("_placeholder_milestone_id", "") or "")
+        sprint_name = sprint_name_map.get(sp, "")
+        milestone_name = milestone_name_map.get(mp, "")
+
+        task.pop("sprint_id", None)
+        task.pop("milestone_id", None)
+        task.pop("sprint_name", None)
+        task.pop("milestone_name", None)
+
+        if sprint_name:
+            task["sprint"] = sprint_name
+        if milestone_name:
+            task["milestone"] = milestone_name
 
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
@@ -5615,169 +5722,178 @@ async def auto_generate_project_tasks(
             custom_rules=request.custom_rules,
         )
 
-        created_sprint_payload = (
-            preview_payload.get("created_sprint")
-            if isinstance(preview_payload, dict) and isinstance(preview_payload.get("created_sprint"), dict)
-            else {}
+        created_sprints_list = (
+            preview_payload.get("created_sprints")
+            if isinstance(preview_payload, dict)
+            and isinstance(preview_payload.get("created_sprints"), list)
+            else []
         )
-        created_milestone_payload = (
-            preview_payload.get("created_milestone")
-            if isinstance(preview_payload, dict) and isinstance(preview_payload.get("created_milestone"), dict)
-            else {}
+        created_milestones_list = (
+            preview_payload.get("created_milestones")
+            if isinstance(preview_payload, dict)
+            and isinstance(preview_payload.get("created_milestones"), list)
+            else []
         )
+        # Fallback: if lists are empty keep backward compat with single-sprint keys
+        if not created_sprints_list:
+            single_sprint = (
+                preview_payload.get("created_sprint")
+                if isinstance(preview_payload, dict) and isinstance(preview_payload.get("created_sprint"), dict)
+                else {}
+            )
+            if single_sprint:
+                created_sprints_list = [single_sprint]
+        if not created_milestones_list:
+            single_milestone = (
+                preview_payload.get("created_milestone")
+                if isinstance(preview_payload, dict) and isinstance(preview_payload.get("created_milestone"), dict)
+                else {}
+            )
+            if single_milestone:
+                created_milestones_list = [single_milestone]
 
-        resolved_sprint_id = request.sprint_id
-        sprint_create_result = None
-        if resolved_sprint_id is None:
-            sprint_start_value = str(
-                created_sprint_payload.get("start_date")
-                or preview_payload.get("project_start_date")
-                or ""
-            ).strip()
-            sprint_deadline_value = str(
-                created_sprint_payload.get("deadline")
-                or preview_payload.get("project_deadline")
-                or ""
-            ).strip()
+        placeholder_to_real_sprint: Dict[str, int] = {}
+        placeholder_to_real_milestone: Dict[str, int] = {}
+        placeholder_to_real_sprint_name: Dict[str, str] = {}
+        placeholder_to_real_milestone_name: Dict[str, str] = {}
+        sprint_create_results: list = []
+        milestone_create_results: list = []
 
-            sprint_start_obj = _parse_yyyy_mm_dd_date(sprint_start_value)
-            sprint_deadline_obj = _parse_yyyy_mm_dd_date(sprint_deadline_value)
-            project_start_obj = _parse_yyyy_mm_dd_date(preview_payload.get("project_start_date"))
-            project_deadline_obj = _parse_yyyy_mm_dd_date(preview_payload.get("project_deadline"))
+        project_start_obj = _parse_yyyy_mm_dd_date(preview_payload.get("project_start_date"))
+        project_deadline_obj = _parse_yyyy_mm_dd_date(preview_payload.get("project_deadline"))
 
-            if (
-                sprint_start_obj is not None
-                and sprint_deadline_obj is not None
-                and sprint_start_obj >= sprint_deadline_obj
-            ):
+        # --- Create sprints ------------------------------------------------
+        if request.sprint_id is not None:
+            # User provided a single sprint — map every placeholder to it
+            for sp in created_sprints_list:
+                placeholder = str(sp.get("id") or "")
+                if placeholder:
+                    placeholder_to_real_sprint[placeholder] = request.sprint_id
+        else:
+            for sp in created_sprints_list:
+                placeholder = str(sp.get("id") or "")
+                sprint_start_value = str(
+                    sp.get("start_date")
+                    or preview_payload.get("project_start_date")
+                    or ""
+                ).strip()
+                sprint_deadline_value = str(
+                    sp.get("deadline")
+                    or preview_payload.get("project_deadline")
+                    or ""
+                ).strip()
+
+                s_start_obj = _parse_yyyy_mm_dd_date(sprint_start_value)
+                s_deadline_obj = _parse_yyyy_mm_dd_date(sprint_deadline_value)
                 if (
-                    project_start_obj is not None
-                    and project_deadline_obj is not None
-                    and project_start_obj < project_deadline_obj
+                    s_start_obj is not None
+                    and s_deadline_obj is not None
+                    and s_start_obj >= s_deadline_obj
                 ):
-                    sprint_start_value = str(preview_payload.get("project_start_date") or "").strip()
-                    sprint_deadline_value = str(preview_payload.get("project_deadline") or "").strip()
-                else:
+                    if (
+                        project_start_obj is not None
+                        and project_deadline_obj is not None
+                        and project_start_obj < project_deadline_obj
+                    ):
+                        sprint_start_value = str(preview_payload.get("project_start_date") or "").strip()
+                        sprint_deadline_value = str(preview_payload.get("project_deadline") or "").strip()
+                    else:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Project date window is too small for sprint creation. "
+                                "Project deadline must be after project start date."
+                            ),
+                        )
+
+                result = await task_service.create_sprint(
+                    {
+                        "name": str(sp.get("name") or f"Sprint {len(sprint_create_results) + 1}").strip()
+                               or f"Sprint {len(sprint_create_results) + 1}",
+                        "summary": str(sp.get("summary") or "").strip(),
+                        "start_date": sprint_start_value,
+                        "deadline": sprint_deadline_value,
+                    },
+                    task_token=x_task_token,
+                )
+                real_id = _extract_created_entity_id(result, "sprint")
+                if real_id is None:
                     raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Project date window is too small for sprint creation. "
-                            "Project deadline must be after project start date."
-                        ),
+                        status_code=502,
+                        detail=f"Sprint '{sp.get('name')}' was created but no id was returned by the task API.",
                     )
+                sprint_create_results.append(result)
+                if placeholder:
+                    placeholder_to_real_sprint[placeholder] = real_id
+                    real_name = _extract_created_entity_name(result, "sprint")
+                    if real_name:
+                        placeholder_to_real_sprint_name[placeholder] = real_name
+                logger.info("Created sprint %s (placeholder %s) -> real id %s", sp.get("name"), placeholder, real_id)
 
-            created_sprint_payload["start_date"] = sprint_start_value
-            created_sprint_payload["deadline"] = sprint_deadline_value
-            sprint_create_result = await task_service.create_sprint(
-                {
-                    "name": str(created_sprint_payload.get("name") or "Sprint 1").strip() or "Sprint 1",
-                    "summary": str(created_sprint_payload.get("summary") or "").strip(),
-                    "start_date": sprint_start_value,
-                    "deadline": sprint_deadline_value,
-                },
-                task_token=x_task_token,
-            )
-            resolved_sprint_id = _extract_created_entity_id(sprint_create_result, "sprint")
-            if resolved_sprint_id is None:
-                raise HTTPException(status_code=502, detail="Sprint was created but no sprint id was returned by the task API.")
-
-        resolved_sprint_payload = await _resolve_sprint_schedule_payload(
-            resolved_sprint_id,
-            fallback=created_sprint_payload,
-            created_result=sprint_create_result,
-            task_token=x_task_token,
-        )
-        resolved_sprint_start_value = str(
-            _extract_schedule_start(resolved_sprint_payload)
-            or created_sprint_payload.get("start_date")
-            or preview_payload.get("project_start_date")
-            or ""
-        ).strip()
-        resolved_sprint_deadline_value = str(
-            _extract_schedule_deadline(resolved_sprint_payload)
-            or created_sprint_payload.get("deadline")
-            or preview_payload.get("project_deadline")
-            or ""
-        ).strip()
-        resolved_sprint_start_obj = _parse_yyyy_mm_dd_date(resolved_sprint_start_value)
-        resolved_sprint_deadline_obj = _parse_yyyy_mm_dd_date(resolved_sprint_deadline_value)
-        if (
-            resolved_sprint_start_obj is not None
-            and resolved_sprint_deadline_obj is not None
-            and resolved_sprint_deadline_obj < resolved_sprint_start_obj
-        ):
-            resolved_sprint_deadline_obj = resolved_sprint_start_obj
-            resolved_sprint_deadline_value = resolved_sprint_deadline_obj.strftime("%Y-%m-%d")
-        if resolved_sprint_start_value:
-            created_sprint_payload["start_date"] = resolved_sprint_start_value
-        if resolved_sprint_deadline_value:
-            created_sprint_payload["deadline"] = resolved_sprint_deadline_value
-
-        resolved_milestone_id = request.milestone_id
-        milestone_create_result = None
-        if resolved_milestone_id is None:
-            raw_milestone_start_value = str(
-                created_milestone_payload.get("start_date")
-                or resolved_sprint_start_value
-                or preview_payload.get("project_start_date")
-                or ""
-            ).strip()
-            raw_milestone_deadline_value = str(
-                created_milestone_payload.get("deadline")
-                or resolved_sprint_deadline_value
-                or preview_payload.get("project_deadline")
-                or ""
-            ).strip()
-
-            milestone_start_value = raw_milestone_start_value
-            milestone_deadline_value = raw_milestone_deadline_value
-            if resolved_sprint_start_obj is not None and resolved_sprint_deadline_obj is not None:
-                milestone_start_value, milestone_deadline_value = _normalize_schedule_dates(
-                    raw_milestone_start_value,
-                    raw_milestone_deadline_value,
-                    min_date=resolved_sprint_start_obj,
-                    max_date=resolved_sprint_deadline_obj,
+        # --- Create milestones --------------------------------------------
+        if request.milestone_id is not None:
+            for ms in created_milestones_list:
+                placeholder = str(ms.get("id") or "")
+                if placeholder:
+                    placeholder_to_real_milestone[placeholder] = request.milestone_id
+        else:
+            for ms in created_milestones_list:
+                placeholder = str(ms.get("id") or "")
+                sprint_placeholder = str(ms.get("sprint_id") or "")
+                real_sprint_id = placeholder_to_real_sprint.get(
+                    sprint_placeholder,
+                    next(iter(placeholder_to_real_sprint.values()), None) if placeholder_to_real_sprint else None,
                 )
+                ms_start = str(ms.get("start_date") or "").strip()
+                ms_deadline = str(ms.get("deadline") or "").strip()
 
-            created_milestone_payload["sprint_id"] = resolved_sprint_id
-            created_milestone_payload["start_date"] = milestone_start_value
-            created_milestone_payload["deadline"] = milestone_deadline_value
-            if (
-                milestone_start_value != raw_milestone_start_value
-                or milestone_deadline_value != raw_milestone_deadline_value
-            ):
-                logger.info(
-                    "Adjusted milestone window for sprint %s from %s..%s to %s..%s",
-                    resolved_sprint_id,
-                    raw_milestone_start_value or "-",
-                    raw_milestone_deadline_value or "-",
-                    milestone_start_value,
-                    milestone_deadline_value,
+                # Clamp milestone dates within its sprint's window
+                if real_sprint_id is not None:
+                    resolved_sprint_payload = await _resolve_sprint_schedule_payload(
+                        real_sprint_id,
+                        fallback=ms,
+                        task_token=x_task_token,
+                    )
+                    sp_start_obj = _parse_yyyy_mm_dd_date(_extract_schedule_start(resolved_sprint_payload) or ms_start)
+                    sp_end_obj = _parse_yyyy_mm_dd_date(_extract_schedule_deadline(resolved_sprint_payload) or ms_deadline)
+                    if sp_start_obj is not None and sp_end_obj is not None:
+                        ms_start, ms_deadline = _normalize_schedule_dates(
+                            ms_start, ms_deadline,
+                            min_date=sp_start_obj,
+                            max_date=max(sp_start_obj, sp_end_obj),
+                        )
+
+                result = await task_service.create_milestone(
+                    {
+                        "name": str(ms.get("name") or f"Milestone {len(milestone_create_results) + 1}").strip()
+                               or f"Milestone {len(milestone_create_results) + 1}",
+                        "sprint_id": real_sprint_id,
+                        "start_date": ms_start,
+                        "deadline": ms_deadline,
+                    },
+                    task_token=x_task_token,
                 )
+                real_id = _extract_created_entity_id(result, "milestone")
+                if real_id is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Milestone '{ms.get('name')}' was created but no id was returned by the task API.",
+                    )
+                milestone_create_results.append(result)
+                if placeholder:
+                    placeholder_to_real_milestone[placeholder] = real_id
+                    real_name = _extract_created_entity_name(result, "milestone")
+                    if real_name:
+                        placeholder_to_real_milestone_name[placeholder] = real_name
+                logger.info("Created milestone %s (placeholder %s) -> real id %s", ms.get("name"), placeholder, real_id)
 
-            milestone_create_result = await task_service.create_milestone(
-                {
-                    "name": str(created_milestone_payload.get("name") or "Phase 1 Complete").strip() or "Phase 1 Complete",
-                    "sprint_id": resolved_sprint_id,
-                    "start_date": milestone_start_value,
-                    "deadline": milestone_deadline_value,
-                },
-                task_token=x_task_token,
-            )
-            resolved_milestone_id = _extract_created_entity_id(milestone_create_result, "milestone")
-            if resolved_milestone_id is None:
-                raise HTTPException(status_code=502, detail="Milestone was created but no milestone id was returned by the task API.")
-
-        _clamp_preview_payload_task_dates(
-            preview_payload,
-            min_date=resolved_sprint_start_obj,
-            max_date=resolved_sprint_deadline_obj,
-        )
-
+        # --- Apply real IDs to all tasks ----------------------------------
         _apply_schedule_ids_to_preview_payload(
             preview_payload,
-            sprint_id=resolved_sprint_id,
-            milestone_id=resolved_milestone_id,
+            placeholder_to_real_sprint=placeholder_to_real_sprint,
+            placeholder_to_real_milestone=placeholder_to_real_milestone,
+            placeholder_to_real_sprint_name=placeholder_to_real_sprint_name,
+            placeholder_to_real_milestone_name=placeholder_to_real_milestone_name,
         )
 
         batch_payload = (
@@ -5798,14 +5914,14 @@ async def auto_generate_project_tasks(
         )
 
         if isinstance(preview_payload, dict):
-            if sprint_create_result is not None:
-                preview_payload["sprint_create_result"] = sprint_create_result
-            if milestone_create_result is not None:
-                preview_payload["milestone_create_result"] = milestone_create_result
+            if sprint_create_results:
+                preview_payload["sprint_create_results"] = sprint_create_results
+            if milestone_create_results:
+                preview_payload["milestone_create_results"] = milestone_create_results
             preview_payload["batch_upload_result"] = batch_upload_result
             preview_payload["message"] = (
                 f"AI generated {preview_payload.get('tasks_created', 0)} task preview item(s) "
-                "and uploaded them to the external batch task API."
+                f"across {len(created_sprints_list)} sprint(s) "
             )
             preview_payload["preview_mode"] = False
 

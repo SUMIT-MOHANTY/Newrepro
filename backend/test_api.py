@@ -1,14 +1,21 @@
 import requests
+import os
 
 BASE_URL = "http://localhost:8000"
 
 def test_signup():
     print("Testing Signup...")
-    payload = {"email": "test@example.com", "password": "password123"}
+    payload = {
+        "email": "test@example.com",
+        "first_name": "Test",
+        "last_name": "User",
+        "organization_name": "Test Organization",
+    }
     try:
         response = requests.post(f"{BASE_URL}/users/", json=payload)
         if response.status_code == 200:
             print("Signup Success:", response.json())
+            print("Password was sent by email.")
             return True
         elif response.status_code == 400 and "Email already registered" in response.text:
             print("User already exists.")
@@ -22,7 +29,12 @@ def test_signup():
 
 def test_login():
     print("\nTesting Login...")
-    payload = {"username": "test@example.com", "password": "password123"}
+    emailed_password = os.getenv("TEST_LOGIN_PASSWORD")
+    if not emailed_password:
+        print("Skipping login test. Set TEST_LOGIN_PASSWORD to the emailed password to verify login.")
+        return None
+
+    payload = {"username": "test@example.com", "password": emailed_password}
     try:
         response = requests.post(f"{BASE_URL}/token", data=payload)
         if response.status_code == 200:

@@ -462,58 +462,30 @@ async def get_ai_config() -> dict:
         "model": settings.brn_model if use_brn_llama else settings.ai_model
     }
 
-TASK_GENERATION_PROMPT = """You are an expert Project Manager and Agile Practitioner.
-Given the following BRD Analysis Report and Project constraints, break down the project into an actionable, detailed task list (Epics, Features, User Stories, and Tasks).
 
-You are provided with a team of Agents (with their `user_id` and `username`) and a wallet budget. However, YOU MUST NOT assign any agents. The `assignees` field MUST ALWAYS be an empty array `[]`.
 
-You MUST format your ONLY output as a JSON array of task objects matching this exact structure:
+FULL_PROJECT_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
+You are generating the FULL, COMPREHENSIVE task list for a project all at once.
 
-[
-  {
-    "taskName": "string", // Short descriptive title
-    "description": "string", // Detailed description of the work
-    "wallet": int, // Estimated cost/effort from the budget (MUST be between 1 and 10)
-    "deadline": "YYYY-MM-DD", // A realistic deadline within the project timeframe
-    "startdate": "YYYY-MM-DD", // Start date within the project timeframe
-    "task_type": "string", // Must be one of: "EPIC", "FEATURE", "STORY", "TASK", "BUG"
-    "priority": "string" // Must be one of: "high", "medium", "low"
-  }
-]
-
-COMPLEXITY & BUDGET RULES:
-1. **Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
-2. **Smart Allocation**: Distribute the total project wallet smartly across all phases (EPIC, FEATURE, STORY). Higher-level epics should reflect the cumulative weight of their sub-tasks.
-3. **Budget Adherence**: Ensure the sum of all task wallets does not exceed the provided Total Budget Wallet.
-
-IMPORTANT: Each task's "wallet" value MUST be between 1 and 10 (inclusive). Never assign 0 or any value above 10.
-Do not include any other markdown, text, or explanations. Only output the JSON array.
-"""
-
-BATCH_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
-You are generating tasks INCREMENTALLY for a project in batches of up to 5 tasks at a time.
-
-CRITICAL: The VERY FIRST task you create (task with ID 1 in the first batch, phase="foundation")
+CRITICAL: The VERY FIRST task you create (task with ID 1, phase="foundation")
 MUST be a **full-stack project bootstrap** that creates a COMPLETE, CLEAN and
 PRODUCTION-READY project structure for BOTH backend AND frontend.
 
 RULES:
-1. Generate the NEXT batch of up to 5 tasks only.
-2. DO NOT repeat any tasks that have already been created (listed below).
-3. The total wallet for this batch MUST NOT exceed the REMAINING WALLET provided.
+1. Generate ALL necessary tasks for the entire project from start to finish.
+2. Provide the complete list without repeating tasks or starting over.
+3. The total wallet combined for all tasks MUST NOT exceed the TOTAL WALLET provided.
 4. Each task's wallet MUST be between 1 and 10 (inclusive). Never assign 0 or any value above 10.
 5. YOU MUST NOT assign any agents. The `assignees` field MUST ALWAYS be an empty array `[]`.
-6. Continue logically from where the previous batch left off.
-7. Ensure tasks follow a logical sequence (e.g., setup before features, features before testing).
-8. **Complexity-based Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
-9. **Smart Budgeting**: You MUST complete the entire project development within the total project wallet. Allocate points smartly so that high-priority/complex tasks get sufficient budget while still leaving enough for the remaining development (e.g., don't exhaust the budget on just the first few features).
-10. If all necessary tasks have already been created and the project breakdown is complete, return an EMPTY array: []
-11. **Placeholder Handling for Missing Prerequisites**: If the PREREQUISITES section lists items marked as [NOT YET PROVIDED], you MUST include in the relevant task descriptions:
+6. Ensure tasks follow a logical sequence from project start to completion (e.g., setup before features, features before testing).
+7. **Complexity-based Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
+8. **Smart Budgeting**: You MUST complete the entire project development within the total project wallet. Allocate points smartly so that high-priority/complex tasks get sufficient budget while still leaving enough for the remaining development.
+9. **Placeholder Handling for Missing Prerequisites**: If the PREREQUISITES section lists items marked as [NOT YET PROVIDED], you MUST include in the relevant task descriptions:
     - Use environment variables with placeholder defaults (e.g., `API_KEY=your-api-key-here`) so the app can still run.
     - Use mock/stub services where applicable (e.g., mock SMTP, in-memory cache instead of Redis, local file storage instead of S3).
     - Add a clear note in the task description like: "NOTE: Using placeholder credentials — replace with real values once provided."
     - This ensures development is NOT blocked by missing credentials or access.
-12. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
+10. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
     - "foundation": Project setup, structure, API contracts, database schema, configuration files.
       For FULL-STACK projects (e.g., React + Flask), the **foundation phase MUST create**:
         * `backend/` directory with: virtualenv, `requirements.txt`, `config.py`, app entry, API module layout
@@ -524,22 +496,14 @@ RULES:
     - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the already-created `frontend/` structure
     - "frontend-features": Feature-specific frontend components (Books UI, Members UI, Transactions UI)
     - "integration": Testing, bug fixes, deployment preparation, end-to-end integration
-13. **DEPENDENCIES**: List task IDs from "ALREADY CREATED TASKS" that must complete BEFORE this task can start:
+11. **DEPENDENCIES**: List task IDs from prior tasks that must complete BEFORE a given task can start:
     - Foundation tasks have NO dependencies (empty array [])
     - Backend features depend on backend-core tasks
     - Frontend features depend on frontend-core tasks AND corresponding backend-features tasks
     - Integration tasks depend on all feature tasks
-    - Use sequential numbering: First batch = 1,2,3,4,5. Second batch = 6,7,8,9,10. Reference these IDs in dependencies.
-14. **DOMAIN**: Assign each task to a feature domain for better organization:
-    - "auth": Authentication, authorization, user management
-    - "books": Book management, catalog, inventory
-    - "members": Member/user management
-    - "transactions": Borrowing, returning, transactions
-    - "reports": Reporting, analytics, statistics
-    - "common": Shared utilities, helpers, common components
-    - "infrastructure": DevOps, CI/CD, deployment, infrastructure setup
+12. **DOMAIN**: Assign each task to a feature domain for better organization (e.g. "auth", "books", "members", "common", "infrastructure").
 
-Output ONLY a JSON array of task objects (max 5) with this structure:
+Output ONLY a JSON array of task objects with this structure:
 [
   {
     "taskName": "string",
@@ -551,12 +515,11 @@ Output ONLY a JSON array of task objects (max 5) with this structure:
     "task_type": "string",  // "EPIC", "FEATURE", "STORY", "TASK", or "BUG"
     "priority": "string",   // "high", "medium", or "low"
     "phase": "string",      // REQUIRED: "foundation", "backend-core", "backend-features", "frontend-core", "frontend-features", or "integration"
-    "dependencies": [int],  // Array of task IDs from ALREADY CREATED TASKS that must complete first. Foundation tasks have [].
+    "dependencies": [int],  // Array of prior task IDs that must complete first. Foundation tasks have [].
     "domain": "string"      // Feature domain: "auth", "books", "members", "transactions", "reports", "common", "infrastructure"
   }
 ]
 
-If the project is fully broken down, return: []
 Do not include any other markdown, text, or explanations. Only output the JSON array.
 """
 
@@ -740,26 +703,18 @@ async def generate_checklists_for_tasks(
         return {}
 
 
-async def generate_task_batch(
+async def generate_all_tasks(
     analysis_report: str,
     agents: list,
     project_deadline: str,
-    remaining_wallet: int,
-    total_project_wallet: int,
-    already_created_tasks: list,
-    batch_number: int,
+    project_wallet: int,
     custom_rules: Optional[str] = None,
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
 ) -> list:
     """
-    Generate the NEXT batch of up to 5 tasks using the LLM.
-    Provides context of previously created tasks so the LLM continues
-    without repeating or starting over.
-
-    Returns an empty list when the LLM considers the breakdown complete
-    or when the remaining wallet is exhausted.
+    Generate all tasks for the project all at once using the LLM.
     """
     url = api_url or settings.ai_api_url
     key = api_key or settings.ai_api_key
@@ -768,56 +723,29 @@ async def generate_task_batch(
     if not key or key == "your-api-key-here":
         raise Exception("API key not configured.")
 
-    if remaining_wallet <= 0:
-        logger.info(f"[Batch {batch_number}] No remaining wallet. Stopping task generation.")
+    if project_wallet <= 0:
+        logger.info("No project wallet provided. Defaulting to empty list.")
         return []
 
     current_date = datetime.now().strftime("%Y-%m-%d")
-
-    # Build context summary of already-created tasks
-    if already_created_tasks:
-        created_summary = json.dumps(
-            [
-                {
-                    "taskName": t.get("taskName"),
-                    "task_type": t.get("task_type"),
-                    "wallet": t.get("wallet"),
-                    "startdate": t.get("startdate"),
-                    "deadline": t.get("deadline"),
-                }
-                for t in already_created_tasks
-            ],
-            indent=2,
-        )
-        wallet_used = sum(t.get("wallet", 0) for t in already_created_tasks)
-        context_block = (
-            f"\n\nALREADY CREATED TASKS ({len(already_created_tasks)} tasks, wallet used: {wallet_used}):\n"
-            f"{created_summary}\n"
-        )
-    else:
-        context_block = "\n\nNo tasks have been created yet. Start from the beginning.\n"
 
     text_content = (
         f"PROJECT CONSTRAINTS:\n"
         f"- Current Date (Today): {current_date}\n"
         f"- Project Deadline: {project_deadline}\n"
-        f"- TOTAL Project Wallet: {total_project_wallet}\n"
-        f"- REMAINING Wallet Budget: {remaining_wallet}\n"
+        f"- TOTAL Project Wallet: {project_wallet}\n"
         f"- Available Agents: {json.dumps(agents)}\n"
-        f"- Batch Number: {batch_number} (generating tasks in batches of 5)\n"
-        f"{context_block}\n"
         f"BRD ANALYSIS REPORT:\n"
         f"{analysis_report}\n\n"
         f"{'CUSTOM RULES TO FOLLOW:' + chr(10) + custom_rules + chr(10) + chr(10) if custom_rules else ''}"
-        f"Generate the NEXT batch of up to 5 tasks. "
-        f"The total wallet for this batch must NOT exceed {remaining_wallet}. "
-        f"If all tasks are already covered, return an empty array []."
+        f"Generate the FULL list of tasks. "
+        f"The total wallet for all combined tasks must NOT exceed {project_wallet}. "
     )
 
     payload = {
         "model": model_name,
         "messages": [
-            {"role": "system", "content": BATCH_TASK_PROMPT},
+            {"role": "system", "content": FULL_PROJECT_TASK_PROMPT},
             {"role": "user", "content": text_content},
         ],
         "stream": False,
@@ -829,12 +757,12 @@ async def generate_task_batch(
         "Authorization": f"Bearer {key}",
     }
 
-    logger.info(f"[Batch {batch_number}] Requesting next batch. Remaining wallet: {remaining_wallet}")
+    logger.info(f"Requesting full task generation. Total wallet: {project_wallet}")
 
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(url, json=payload, headers=headers)
-            logger.info(f"[Batch {batch_number}] LLM response status: {response.status_code}")
+            logger.info(f"LLM response status: {response.status_code}")
             response.raise_for_status()
 
             data = response.json()
@@ -843,15 +771,15 @@ async def generate_task_batch(
                 tasks = _parse_llm_task_response(content)
 
                 if not tasks:
-                    logger.info(f"[Batch {batch_number}] LLM returned empty — task generation complete.")
+                    logger.info("LLM returned empty — task generation failed or complete.")
                     return []
 
-                # Normalize this batch against the remaining wallet
-                tasks = _normalize_task_wallets(tasks, remaining_wallet)
+                # Normalize this against the total wallet
+                tasks = _normalize_task_wallets(tasks, project_wallet)
 
                 logger.info(
-                    f"[Batch {batch_number}] Generated {len(tasks)} tasks, "
-                    f"batch wallet: {sum(t.get('wallet', 0) for t in tasks)}"
+                    f"Generated {len(tasks)} tasks, "
+                    f"total wallet allocated: {sum(t.get('wallet', 0) for t in tasks)}"
                 )
                 return tasks
             else:
@@ -865,14 +793,15 @@ async def generate_task_batch(
         except Exception:
             error_body = e.response.text
         raise Exception(
-            f"[Batch {batch_number}] Task generation failed. HTTP {e.response.status_code}: {error_body}"
+            f"Task generation failed. HTTP {e.response.status_code}: {error_body}"
         )
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
         raise Exception(
-            f"[Batch {batch_number}] Task generation failed: {str(e)}\n\nTraceback:\n{error_details}"
+            f"Task generation failed: {str(e)}\n\nTraceback:\n{error_details}"
         )
+
 
 
 SPRINT_MILESTONE_PROMPT = """You are an expert Agile Delivery Manager.
@@ -1040,80 +969,4 @@ async def generate_sprint_milestone_plan(
         return default_plan
 
 
-# Keep the legacy single-shot function for backward compatibility
-async def generate_tasks_for_project(
-    analysis_report: str,
-    agents: list,
-    project_deadline: str,
-    project_wallet: int,
-    api_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-    model: Optional[str] = None,
-) -> list:
-    """Legacy: generates all tasks in a single LLM call. Use generate_task_batch for incremental generation."""
-    url = api_url or settings.ai_api_url
-    key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
 
-    if not key or key == "your-api-key-here":
-        raise Exception("API key not configured.")
-
-    current_date = datetime.now().strftime("%Y-%m-%d")
-
-    text_content = (
-        f"PROJECT RESTRAINTS:\n"
-        f"- Current Date (Today): {current_date}\n"
-        f"- Deadline: {project_deadline}\n"
-        f"- Total Budget Wallet: {project_wallet}\n"
-        f"- Available Agents: {json.dumps(agents)}\n\n"
-        f"BRD ANALYSIS REPORT:\n"
-        f"{analysis_report}\n\n"
-        f"Generate the comprehensive task breakdown mapping these factors together."
-    )
-
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": TASK_GENERATION_PROMPT},
-            {"role": "user", "content": text_content},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
-
-    logger.info(f"Starting AI Task Generation with model '{model_name}'")
-    logger.info(f"Passing {len(agents)} agents to LLM context.")
-
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            logger.info(f"Received LLM response with status {response.status_code}")
-            response.raise_for_status()
-
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                tasks = _parse_llm_task_response(content)
-                tasks = _normalize_task_wallets(tasks, project_wallet)
-                return tasks
-            else:
-                raise Exception("No response from AI model")
-    except httpx.HTTPStatusError as e:
-        import traceback
-        traceback.format_exc()
-        try:
-            error_body = e.response.json()
-        except Exception:
-            error_body = e.response.text
-        raise Exception(
-            f"Task generation failed. HTTP {e.response.status_code}: {error_body}"
-        )
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        raise Exception(f"Failed during task generation: {str(e)}\n\nTraceback:\n{error_details}")

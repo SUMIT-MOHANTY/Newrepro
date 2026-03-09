@@ -285,6 +285,11 @@ class TaskManagementService:
         """Post a comment/message to a task."""
         return await self._make_request("POST", "/api/agent/messages/", task_token=task_token, json=payload)
 
+    async def get_task_messages(self, task_id: Any, task_token: Optional[str] = None) -> dict:
+        """Fetch message/comment history for a specific task."""
+        normalized_task_id = str(task_id).strip()
+        return await self._make_request("GET", f"/api/agent/task-messages/?task_id={normalized_task_id}", task_token=task_token)
+
     async def update_task_progress(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update progress for a task."""
         return await self._make_request("POST", "/api/agent/task-progress/", task_token=task_token, json=payload)

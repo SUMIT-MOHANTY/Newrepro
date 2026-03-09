@@ -10,6 +10,17 @@ class Settings(BaseSettings):
     
     # Frontend URL (for CORS)
     frontend_url: str = "http://localhost:5173"
+
+    # SMTP / email delivery
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_from_email: Optional[str] = None
+    smtp_from_name: str = "DSuite"
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_timeout_seconds: int = 20
     
     # Database
     database_url: str = "sqlite:///./app.db"
@@ -73,4 +84,3 @@ def get_settings() -> Settings:
     return Settings()
 
 settings = get_settings()
-

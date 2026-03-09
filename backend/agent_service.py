@@ -149,7 +149,8 @@ MASTER_TREE_GENERATOR_SYSTEM_PROMPT = (
     "You are a senior software architect generating the canonical project tree used by all worker agents. "
     "The user content includes an authoritative PLANNING_PACKET_JSON. Parse that JSON first and treat it as binding. "
     "Use the task details and checklist items as hard evidence for what the tree must contain. "
-    "Return exactly one final tree with one fixed canonical root. "
+    "Return exactly one final tree as a strictly valid JSON objects with a nested 'children' structure. "
+    "Each node in the JSON should have a 'name' (string) and optional 'children' (array of nodes). "
     "Choose one solid structure and commit to it. "
     "Never output alternate roots, conditional variants, migration notes, fallback layouts, "
     "multiple diagrams, or prose like 'pick one'. "
@@ -168,7 +169,7 @@ MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
     "Reject trees that introduce frameworks or roots that are not supported by the task details, checklist evidence, "
     "current repo tree, stack decision, and workspace contract. "
     "Approve only one complete replacement tree with one fixed root. "
-    "If rejected, corrected_tree must be one full replacement tree, not a diff or a set of options."
+    "If rejected, corrected_tree must be a strictly valid JSON project tree (with 'name' and 'children' keys), not a diff, ASCII diagram, or a set of options."
 )
 
 
@@ -1141,6 +1142,7 @@ async def _generate_dynamic_prompt(
     tech_spec: str = "",
     kg_context: str = "",
     cross_agent_info: str = "",
+    task_messages: str = "",
 ) -> str:
     """
     LAYER 3: Dynamic Prompt Writer.
@@ -1185,6 +1187,9 @@ EXISTING CODEBASE CONTEXT (from Knowledge Graph):
 
 OTHER AGENTS' ACTIVITY:
 {cross_agent_info[:1000] if cross_agent_info else "No other agents active."}
+
+PRIOR TASK MESSAGES/COMMENTS (HISTORY):
+{task_messages[:2000] if task_messages else "No prior comments found."}
 
 Write a system prompt for the Coding Agent that:
 1. Tells it EXACTLY what module/files to create for THIS specific task
@@ -5379,8 +5384,34 @@ def _strip_markdown_fences(text: str) -> str:
 
 
 def _count_tree_file_lines(tree_text: str) -> int:
+    raw = str(tree_text or "").strip()
+    if not raw:
+        return 0
+
+    if raw.startswith(("{", "[")):
+        try:
+            import json
+            data = json.loads(raw)
+            
+            def count_json_entries(node):
+                if isinstance(node, dict):
+                    name = node.get("name")
+                    children = node.get("children")
+                    if name:
+                        if children and isinstance(children, list):
+                            return sum(count_json_entries(c) for c in children)
+                        return 1
+                    return sum(count_json_entries(v) for v in node.values())
+                if isinstance(node, list):
+                    return sum(count_json_entries(i) for i in node)
+                return 1
+            
+            return count_json_entries(data)
+        except Exception:
+            pass
+
     count = 0
-    for raw_line in str(tree_text or "").splitlines():
+    for raw_line in raw.splitlines():
         line = raw_line.strip()
         if not line:
             continue
@@ -6071,6 +6102,7 @@ def _render_tree_from_paths(
     file_paths: List[str],
     directory_paths: Optional[List[str]] = None,
     root_label: str = "project",
+    output_format: str = "ascii",
 ) -> str:
     tree: Dict[str, Any] = {}
 
@@ -6095,6 +6127,30 @@ def _render_tree_from_paths(
             continue
         parent = ensure_dir(parts[:-1])
         parent.setdefault(parts[-1], None)
+
+    if output_format == "json":
+        import json
+        def dict_to_json_node(name: str, node: Any) -> Dict[str, Any]:
+            if node is None:
+                return {"name": name, "children": []}
+            children = []
+            dir_names = sorted(k for k, v in node.items() if isinstance(v, dict))
+            file_names = sorted(k for k, v in node.items() if v is None)
+            for k in dir_names:
+                children.append(dict_to_json_node(k, node[k]))
+            for k in file_names:
+                children.append(dict_to_json_node(k, None))
+            return {"name": name, "children": children}
+            
+        root_node = {"name": root_label, "children": []}
+        dir_names = sorted(k for k, v in tree.items() if isinstance(v, dict))
+        file_names = sorted(k for k, v in tree.items() if v is None)
+        for k in dir_names:
+            root_node["children"].append(dict_to_json_node(k, tree[k]))
+        for k in file_names:
+            root_node["children"].append(dict_to_json_node(k, None))
+            
+        return json.dumps(root_node, ensure_ascii=True, indent=2)
 
     lines = [f"{root_label}/"]
 
@@ -6139,7 +6195,7 @@ def _build_deterministic_master_tree(
     if not file_paths and not directory_paths:
         return ""
     root_label = _extract_tree_root_label(workspace_tree, fallback=fallback_root_label)
-    return _render_tree_from_paths(file_paths, directory_paths, root_label=root_label)
+    return _render_tree_from_paths(file_paths, directory_paths, root_label=root_label, output_format="json")
 
 
 def _sanitize_master_planned_files(
@@ -7355,9 +7411,61 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     if workspace_tree:
         lines.append("")
         lines.append("## Canonical Project Tree")
+        
+        display_tree = workspace_tree
+        is_json = str(workspace_tree).strip().startswith(("{", "["))
+        # Render a beautiful ASCII tree for the user
+        if is_json:
+            try:
+                import json
+                tree_data = json.loads(workspace_tree)
+                if isinstance(tree_data, dict):
+                    root_name = tree_data.get("name", "project")
+                    children = tree_data.get("children", [])
+                    ascii_lines = [f"{root_name}/"]
+                    
+                    def walk_json_tree(node, prefix="", is_last=True):
+                        node_name = str(node.get("name") or "unknown")
+                        node_children = node.get("children", [])
+                        branch = "└── " if is_last else "├── "
+                        line = f"{prefix}{branch}{node_name}"
+                        if node_children:
+                            line += "/"
+                        ascii_lines.append(line)
+                        
+                        new_prefix = prefix + ("    " if is_last else "│   ")
+                        if isinstance(node_children, list):
+                            for idx, child in enumerate(node_children):
+                                walk_json_tree(child, new_prefix, idx == len(node_children) - 1)
+                                
+                    if isinstance(children, list):
+                        for idx, child in enumerate(children):
+                            walk_json_tree(child, "", idx == len(children) - 1)
+                    display_tree = "\n".join(ascii_lines)
+            except Exception:
+                pass # Fallback to raw text
+
         lines.append("```text")
-        lines.append(workspace_tree)
+        lines.append(display_tree)
         lines.append("```")
+
+        # Also provide the raw JSON for the user to see/edit
+        json_tree = workspace_tree if is_json else None
+        if not is_json:
+            try:
+                import context_manager as ctx_mgr # type: ignore
+                paths = ctx_mgr._extract_file_paths_from_canonical_tree(workspace_tree)
+                if paths:
+                    json_tree = _render_tree_from_paths(paths, root_label=_extract_tree_root_label(workspace_tree, "project"), output_format="json")
+            except Exception as e:
+                logger.warning("Failed to automatically convert ASCII tree to JSON tree: %s", e)
+                
+        if json_tree:
+            lines.append("")
+            lines.append("## Machine Readable Structure (JSON)")
+            lines.append("```json")
+            lines.append(json_tree)
+            lines.append("```")
 
     if current_repo_tree:
         lines.append("")
@@ -7488,27 +7596,23 @@ STACK DECISION TO FOLLOW:
 {stack_text}
 
 Output rules:
-- Output ONLY one project tree diagram.
+- Output ONLY one project tree as a strictly valid JSON object.
+- The JSON object must have a "name" for the root and a "children" array containing nested objects.
+- Example structure: {{"name": "project_root", "children": [{{"name": "backend", "children": [{{"name": "api.py"}}]}}]}}
 - The tree must declare exactly one fixed canonical root.
 - Never output multiple alternatives, fallback layouts, conditional notes, or instructions like "pick only one".
 - Treat the PLANNING_PACKET_JSON as authoritative structured input. Use it before relying on generic scaffold defaults.
 - Resolve framework contradictions in favor of the task details, checklist evidence, stack evidence, and current repo tree.
-- Never mix conflicting stacks in one tree, such as Flask with Express, Flask/Jinja with React/Vite, React with Vue, or Next.js with static HTML.
+- Never mix conflicting stacks in one tree.
 - Include directories and specific file names, not placeholders like "etc" or "other files".
 - Every listed task must have an obvious home in the tree.
 - Include configuration files, tests, shared types/contracts, and integration points when appropriate.
 - Keep the tree consistent with the stack decision above.
 - Use only directories that are justified by the tasks or existing codebase context.
 - Prefer extending the current git repo tree over inventing alternate roots when the repo already establishes a clear structure.
-- If the current repo tree already establishes an application root, keep that root unless the BRD/tasks clearly require a migration.
-- For static/frontend-only projects, do not invent backend/, database, Docker, or API files.
-- For Flask + Jinja projects, keep HTML templates under templates/ and browser assets under static/ inside the Flask app structure; do not invent a separate Node frontend root.
-- Do not duplicate files across roots (for example both `index.html` and `frontend/index.html`).
-- Prefer `.github/workflows/deploy.yml` over a duplicate root-level `deploy.yml` when the task is a GitHub Actions workflow.
-- For static HTML/CSS projects, keep `index.html` and `styles.css` together in the repo's canonical static root; do not invent `frontend/` if a different root already exists.
-- Use inline comments to briefly explain key files.
+- Resolve inconsistencies in favor of the current repository tree if it is already established.
 - Choose the best production-ready structure for the tasks, not the easiest structure.
-- Do not include prose before or after the tree.
+- Do not include prose before or after the JSON.
 """
 
     payload = {
@@ -7535,7 +7639,13 @@ Output rules:
             content = data["choices"][0].get("message", {}).get("content", "")
         content = _re.sub(r"<think>.*?</think>", "", str(content), flags=_re.DOTALL).strip()
         content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
-        return _strip_markdown_fences(content)
+        
+        clean_text = _strip_markdown_fences(content)
+        parsed_json = _extract_json_object_from_text(clean_text)
+        if parsed_json is not None:
+            return json.dumps(parsed_json, ensure_ascii=False, indent=2)
+            
+        return clean_text
     except Exception as exc:
         logger.warning("Master project tree generation failed: %s", exc)
         return ""
@@ -7570,7 +7680,15 @@ def _coerce_bool(value: Any) -> bool:
 
 
 def _detect_ambiguous_master_tree_issues(workspace_tree: str) -> List[str]:
-    text = str(workspace_tree or "")
+    raw = str(workspace_tree or "").strip()
+    if not raw:
+        return []
+
+    # JSON trees are deterministic and don't suffer from ASCII parsing ambiguities
+    if raw.startswith(("{", "[")):
+        return []
+
+    text = raw
     lower = text.lower()
     issues: List[str] = []
 
@@ -9698,6 +9816,37 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 _apply_master_task_metadata(t, project_token=project_token)
                 tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
                 status_lower = (t.get("status") or "").lower()
+                
+                if _task_status_is_done(status_lower):
+                    continue
+                
+                # Check if task is assigned to this agent
+                assigned_agent = str(t.get("assigned_agent") or "").strip().lower()
+                assigned_agent_name = str(t.get("assigned_agent_name") or "").strip().lower()
+                assigned_username = str(t.get("assignee") or "").strip().lower()
+                
+                is_assigned_to_me = (
+                    assigned_agent == agent_id.lower() or
+                    assigned_agent_name == agent_name.lower() or
+                    assigned_username == agent_username.lower() or
+                    assigned_username == agent_id.lower()
+                )
+                
+                if is_assigned_to_me:
+                    assigned_to_me.append(t)
+                else:
+                    other_tasks.append(t)
+            
+            # Prioritize assigned tasks first. If assigned tasks exist, ONLY work on those.
+            if assigned_to_me:
+                task_list = assigned_to_me
+            else:
+                task_list = other_tasks
+
+            for t in task_list:
+                _apply_master_task_metadata(t, project_token=project_token)
+                tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
+                status_lower = (t.get("status") or "").lower()
 
                 # Skip if completed or already claimed
                 if _task_status_is_done(status_lower) or tid in claimed_task_ids:
@@ -10401,6 +10550,31 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "message": f"KG context fetch skipped: {str(ctx_err)[:100]}"
                 })
 
+            # Fetch Task message/comment context for additional history
+            task_messages_text = ""
+            try:
+                from task_service import task_service
+                tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                if tid:
+                    msg_resp = await task_service.get_task_messages(tid, task_token=task_token)
+                    if isinstance(msg_resp, dict) and msg_resp.get("comments"):
+                        comments = msg_resp["comments"]
+                        msg_lines = []
+                        # Take last 10 comments for context
+                        for c in comments[-10:]:
+                            user = c.get("user") or "unknown"
+                            msg = c.get("message") or ""
+                            msg_lines.append(f"[{user}]: {msg}")
+                        task_messages_text = "\n".join(msg_lines)
+                        if task_messages_text:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"Task history retrieved: {len(comments)} comments found"
+                            })
+            except Exception as msg_err:
+                logger.warning(f"Failed to fetch task messages for context: {msg_err}")
+
             # ── LAYER 3: Generate Dynamic Prompt ────────────────────
             agent["progress"] = 22
             agent["progress_message"] = "Manager Agent writing task-specific prompt..."
@@ -10412,7 +10586,22 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     tech_spec=tech_spec,
                     kg_context=jit_context,
                     cross_agent_info=cross_agent_info,
+                    task_messages=task_messages_text,
                 )
+                
+                # Add Master Agent recovery prompt if available
+                master_recovery_prompt = agent.get("master_recovery_prompt")
+                if master_recovery_prompt:
+                    dynamic_system_prompt = f"{dynamic_system_prompt}\n\n{master_recovery_prompt}"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "🔧 Master Agent recovery guidance included in prompt"
+                    })
+                    # Clear recovery prompt after using it
+                    agent.pop("master_recovery_prompt", None)
+                    agent.pop("master_failure_analysis", None)
+                
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
