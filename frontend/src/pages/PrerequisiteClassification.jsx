@@ -67,64 +67,64 @@ const CATEGORY_CONFIG = {
         icon: Lock,
         label: 'Credentials & Access Keys',
         gradient: 'from-app-status-warning to-orange-600',
-        bg: 'bg-app-status-warningBg',
-        border: 'border-amber-200',
-        text: 'text-app-status-warning',
-        badge: 'bg-app-status-warningBg text-amber-800',
+        bg: 'bg-app-status-warningBg/30 dark:bg-app-status-warningBg/10',
+        border: 'border-amber-200 dark:border-amber-900/50',
+        text: 'text-app-status-warning dark:text-amber-400',
+        badge: 'bg-app-status-warningBg text-amber-800 dark:bg-amber-900/50 dark:text-amber-300',
     },
     apis: {
         icon: Globe,
         label: 'APIs & Integrations',
         gradient: 'from-app-primary to-app-primary',
-        bg: 'bg-app-primary-light',
-        border: 'border-app-primary-ring',
-        text: 'text-app-primary-hover',
-        badge: 'bg-app-primary-light text-app-primary-dark',
+        bg: 'bg-app-primary-light/50 dark:bg-app-primary-light/10',
+        border: 'border-app-primary-ring dark:border-app-primary-ring/30',
+        text: 'text-app-primary-hover dark:text-blue-400',
+        badge: 'bg-app-primary-light text-app-primary-dark dark:bg-blue-900/50 dark:text-blue-200',
     },
     infrastructure: {
         icon: Server,
         label: 'Infrastructure & Services',
         gradient: 'from-app-status-success to-teal-600',
-        bg: 'bg-app-status-successBg',
-        border: 'border-emerald-200',
-        text: 'text-app-status-success',
-        badge: 'bg-app-status-successBg text-emerald-800',
+        bg: 'bg-app-status-successBg/30 dark:bg-app-status-successBg/10',
+        border: 'border-emerald-200 dark:border-emerald-900/50',
+        text: 'text-app-status-success dark:text-emerald-400',
+        badge: 'bg-app-status-successBg text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300',
     },
     databases: {
         icon: Database,
         label: 'Databases & Storage',
         gradient: 'from-violet-500 to-purple-600',
-        bg: 'bg-violet-50',
-        border: 'border-violet-200',
-        text: 'text-violet-700',
-        badge: 'bg-violet-100 text-violet-800',
+        bg: 'bg-violet-50 dark:bg-violet-900/20',
+        border: 'border-violet-200 dark:border-violet-800/50',
+        text: 'text-violet-700 dark:text-violet-400',
+        badge: 'bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-200',
     },
     cloud: {
         icon: Cloud,
         label: 'Cloud Services',
         gradient: 'from-sky-500 to-cyan-600',
-        bg: 'bg-sky-50',
-        border: 'border-sky-200',
-        text: 'text-sky-700',
-        badge: 'bg-sky-100 text-sky-800',
+        bg: 'bg-sky-50 dark:bg-sky-900/20',
+        border: 'border-sky-200 dark:border-sky-800/50',
+        text: 'text-sky-700 dark:text-sky-400',
+        badge: 'bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-200',
     },
     dependencies: {
         icon: Package,
         label: 'Dependencies & Libraries',
         gradient: 'from-app-status-error to-pink-600',
-        bg: 'bg-app-status-errorBg',
-        border: 'border-rose-200',
-        text: 'text-app-status-error',
-        badge: 'bg-app-status-errorBg text-rose-800',
+        bg: 'bg-app-status-errorBg/30 dark:bg-app-status-errorBg/10',
+        border: 'border-rose-200 dark:border-rose-900/50',
+        text: 'text-app-status-error dark:text-rose-400',
+        badge: 'bg-app-status-errorBg text-rose-800 dark:bg-rose-900/50 dark:text-rose-300',
     },
     other: {
         icon: FileKey,
         label: 'Other Prerequisites',
         gradient: 'from-app-text-muted to-app-text-label',
-        bg: 'bg-app-bg-page',
-        border: 'border-app-border',
-        text: 'text-app-text-label',
-        badge: 'bg-app-bg-muted text-app-text-main',
+        bg: 'bg-app-bg-page dark:bg-slate-800/50',
+        border: 'border-app-border dark:border-slate-700',
+        text: 'text-app-text-label dark:text-slate-300',
+        badge: 'bg-app-bg-muted text-app-text-main dark:bg-slate-700 dark:text-slate-200',
     },
 };
 
@@ -1221,8 +1221,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 <div className="bg-app-primary-light/80 rounded-xl border border-app-primary-ring/60 p-4 mb-6 flex items-start gap-3">
                     <Info className="w-5 h-5 text-app-primary flex-shrink-0 mt-0.5" />
                     <div>
-                        <p className="text-sm font-semibold text-blue-900 mb-0.5">How this works</p>
-                        <p className="text-xs text-blue-700 leading-relaxed">
+                        <p className="text-sm font-semibold text-app-primary-dark mb-0.5">How this works</p>
+                        <p className="text-xs text-app-text-main leading-relaxed">
                             {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
                                 ? `In ${processMode === 'vibe_coding' ? 'Vibe Coding' : processMode === 'ai_assist' ? 'AI Assist' : 'Developer Only'} mode, prerequisite classification is not required. You can proceed directly to VS Code where you will work in the designated workflow.`
                                 : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Each prerequisite asks for the expected answer type (text, URL, or file upload).'

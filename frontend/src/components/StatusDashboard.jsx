@@ -300,22 +300,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             const data = await res.json();
             const fetchedAgents = data.agents || [];
 
-            // Ensure Test Agent (agent_05) exists by default in all projects
-            const hasTestAgent = fetchedAgents.some(agent => agent.id === 'agent_05');
-            if (!hasTestAgent) {
-                fetchedAgents.push({
-                    id: 'agent_05',
-                    name: 'Test Agent',
-                    status: 'idle',
-                    progress: 0,
-                    progress_message: '',
-                    stats: {},
-                });
-            }
+
 
             // Fetch live status for each agent using AGENT_STATUS endpoint
             const agentsWithLiveStatus = await Promise.all(fetchedAgents.map(async (agent) => {
-                if (agent.id === 'agent_03' || agent.id === 'agent_04' || agent.id === 'agent_05') {
+                if (agent.id === 'agent_03' || agent.id === 'agent_04') {
                     // System agents don't typically run as standalone tasks here, but we can still fetch status if needed
                     // For now, let's keep it safe.
                 }
@@ -354,7 +343,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         };
 
         return [...agents]
-            .filter(agent => agent.id !== 'agent_03' && agent.id !== 'agent_04' && agent.id !== 'agent_05')
+            .filter(agent => agent.id !== 'agent_03' && agent.id !== 'agent_04')
             .sort((a, b) => {
                 const aNumber = parseAgentNumber(a.id);
                 const bNumber = parseAgentNumber(b.id);
@@ -366,13 +355,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const orderedAgents = useMemo(() => {
         const masterAgent = agents.find(agent => agent.id === 'agent_04');
         const gitManagerAgent = agents.find(agent => agent.id === 'agent_03');
-        const testAgent = agents.find(agent => agent.id === 'agent_05');
-
         return [
             ...(masterAgent ? [masterAgent] : []),
             ...(gitManagerAgent ? [gitManagerAgent] : []),
             ...devAgents,
-            ...(testAgent ? [testAgent] : []),
         ];
     }, [agents, devAgents]);
 
@@ -620,7 +606,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
-        if (agent.id === 'agent_03' || agent.id === 'agent_04' || agent.id === 'agent_05') return;
+        if (agent.id === 'agent_03' || agent.id === 'agent_04') return;
         const needsConfig = !agent.git_repo_url || !agent.has_git_token;
         if (needsConfig) {
             navigate('/prerequisites');
@@ -729,7 +715,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [runningAll, setRunningAll] = useState(false);
 
     const handleRunAll = useCallback(async () => {
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
         if (idleAgents.length === 0) return;
 
         const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
@@ -740,7 +726,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05')
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
             ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
             : a));
 
@@ -770,7 +756,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         if (!hasValidTaskToken) return;
         if (agents.some(a => a.status === 'running')) return;
 
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
         if (idleAgents.length === 0) return;
 
         const autoKey = `${selectedProjectKey}:${processMode}`;
@@ -783,7 +769,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const globalConfig = agentsGitConfig.__global__ || {};
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05')
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
             ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
             : a));
         try {
@@ -1075,16 +1061,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             stats: ['avg_time'],
             statLabels: { avg_time: 'Duration' },
         },
-        agent_05: {
-            icon: <Activity className="w-5 h-5 text-app-bg-card" />,
-            logo: kaktoxLogo,
-            gradient: 'from-app-bg-page to-app-bg-muted',
-            shadow: 'shadow-app-bg-hover',
-            accent: 'from-app-status-warning to-orange-500',
-            color: 'amber',
-            stats: ['avg_time'],
-            statLabels: { avg_time: 'Duration' },
-        },
+
     };
 
 
@@ -1092,13 +1069,25 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const renderAgentCard = (agent) => {
         const isGitManager = agent.id === 'agent_03';
         const isMasterAgent = agent.id === 'agent_04';
-        const isTestAgent = agent.id === 'agent_05';
-        const isSystemAgent = isGitManager || isMasterAgent || isTestAgent;
+        const isTest = agent.sub_type === 'test';
+        const isSystemAgent = isGitManager || isMasterAgent;
         const isShared = agent.id?.startsWith('shared_');
         const isDedicated = agent.id?.startsWith('dedicated_');
         const agentType = isShared ? 'Shared' : isDedicated ? 'Dedicated' : null;
         const displayName = getAgentDisplayName(agent);
-        const cfg = agentConfig[agent.id] || agentConfig.agent_01;
+        let cfg = agentConfig[agent.id] || agentConfig.agent_01;
+
+        if (isTest) {
+            cfg = {
+                ...cfg,
+                gradient: 'from-orange-400 to-orange-600',
+                accent: 'from-orange-400 to-orange-600',
+                shadow: 'shadow-orange-200',
+                color: 'orange',
+                logo: kaktoxLogo,
+            };
+        }
+
         const Icon = cfg.icon;
         // Use logo for specific agents, or dev agents use N-Mod logo
         const useLogo = cfg.logo || (isShared || isDedicated);
@@ -2211,7 +2200,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 </span>
                                                 <button
                                                     onClick={() => handleRunAll()}
-                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05').length === 0}
+                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0}
                                                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05').length === 0
                                                         ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
                                                         : 'bg-gradient-to-r from-orange-500 to-app-status-warning text-app-bg-card shadow-md hover:shadow-lg hover:scale-105'

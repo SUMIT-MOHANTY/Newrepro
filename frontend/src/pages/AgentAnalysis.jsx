@@ -6,6 +6,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
+import ReactFlow, { Background, Controls } from 'reactflow';
+import 'reactflow/dist/style.css';
+import dagre from 'dagre';
 
 const parseStoredDocumentAnalysis = (doc) => {
     try {
@@ -25,6 +28,41 @@ const hasCompletedStoredAnalysis = (analysis) => {
     return String(analysis.analysis || '').trim().length > 0;
 };
 
+// Utility: layout architecture graph with dagre so nodes don't overlap
+const layoutArchitectureGraph = (nodes, edges, direction = 'LR') => {
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: direction, nodesep: 80, ranksep: 120 });
+    g.setDefaultEdgeLabel(() => ({}));
+
+    const NODE_WIDTH = 200;
+    const NODE_HEIGHT = 60;
+
+    nodes.forEach((node) => {
+        const id = String(node.id || node.label);
+        g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    });
+
+    edges.forEach((edge) => {
+        if (!edge.from || !edge.to) return;
+        g.setEdge(String(edge.from), String(edge.to));
+    });
+
+    dagre.layout(g);
+
+    return nodes.map((node) => {
+        const id = String(node.id || node.label);
+        const dagreNode = g.node(id);
+        const position = dagreNode
+            ? { x: dagreNode.x - NODE_WIDTH / 2, y: dagreNode.y - NODE_HEIGHT / 2 }
+            : { x: 0, y: 0 };
+        return {
+            id,
+            data: { label: node.label || id },
+            position,
+        };
+    });
+};
+
 const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
 
 const parseAIResponse = (text) => {
@@ -33,7 +71,7 @@ const parseAIResponse = (text) => {
     source = source.replace(/<think>[\s\S]*/gi, '').trim();
 
     const hasExpectedShape = (obj) => obj && typeof obj === 'object' && !Array.isArray(obj)
-        && ('questions' in obj || 'metrics' in obj || 'title' in obj);
+        && ('questions' in obj || 'metrics' in obj || 'title' in obj || 'architecture' in obj);
 
     const tryParseObject = (value) => {
         try {
@@ -68,14 +106,22 @@ const parseAIResponse = (text) => {
             questions: lastValidFenced.parsed.questions || [],
             metrics: lastValidFenced.parsed.metrics || null,
             title: lastValidFenced.parsed.title || null,
-            prerequisites: lastValidFenced.parsed.prerequisites || []
+            prerequisites: lastValidFenced.parsed.prerequisites || [],
+            architecture: lastValidFenced.parsed.architecture || null
         };
     }
 
     if (lastJsonLikeFence) {
         const before = source.slice(0, lastJsonLikeFence.index);
         const after = source.slice(lastJsonLikeFence.index + lastJsonLikeFence.fullMatch.length);
-        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null, prerequisites: [] };
+        return {
+            report: `${before}${after}`.trim(),
+            questions: [],
+            metrics: null,
+            title: null,
+            prerequisites: [],
+            architecture: null
+        };
     }
 
     const trimmed = source.trim().replace(/```+\s*$/g, '').trim();
@@ -89,12 +135,20 @@ const parseAIResponse = (text) => {
                 questions: parsed.questions || [],
                 metrics: parsed.metrics || null,
                 title: parsed.title || null,
-                prerequisites: parsed.prerequisites || []
+                prerequisites: parsed.prerequisites || [],
+                architecture: parsed.architecture || null
             };
         }
     }
 
-    return { report: source, questions: [], metrics: null, title: null, prerequisites: [] };
+    return {
+        report: source,
+        questions: [],
+        metrics: null,
+        title: null,
+        prerequisites: [],
+        architecture: null
+    };
 };
 
 const buildRepoContextMeta = (context) => {
@@ -168,6 +222,7 @@ export default function AgentAnalysis({
     const [userFeedback, setUserFeedback] = useState('');
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
+    const [isArchModalOpen, setIsArchModalOpen] = useState(false);
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
@@ -273,7 +328,7 @@ export default function AgentAnalysis({
             }
 
             const data = await response.json();
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(data.analysis || '');
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setAiQuestions(questions);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
@@ -289,6 +344,7 @@ export default function AgentAnalysis({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
@@ -367,7 +423,7 @@ export default function AgentAnalysis({
                                 aiText += delta.content;
                             }
 
-                            const { report, questions, metrics, prerequisites } = parseAIResponse(aiText);
+                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText);
                             if (questions.length > 0) setAiQuestions(questions);
 
                             setResult(prev => ({
@@ -378,7 +434,8 @@ export default function AgentAnalysis({
                                     reasoning: aiReasoning,
                                     model: payload.model || 'Streaming...',
                                     metrics: metrics,
-                                    prerequisites: prerequisites
+                                    prerequisites: prerequisites,
+                                    architecture: architecture
                                 }
                             }));
                         }
@@ -388,7 +445,7 @@ export default function AgentAnalysis({
                 }
             }
 
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(aiText);
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
             const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
@@ -402,6 +459,7 @@ export default function AgentAnalysis({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
@@ -657,6 +715,16 @@ export default function AgentAnalysis({
 
             if (userFeedback.trim()) {
                 feedbackToSend += `\n\nAdditional Comments:\n${userFeedback}`;
+            }
+        }
+
+        // Attach existing architecture so the model can refine instead of replacing it
+        if (result?.analysis?.architecture) {
+            try {
+                const archJson = JSON.stringify(result.analysis.architecture, null, 2);
+                feedbackToSend += `\n\nCURRENT_ARCHITECTURE_JSON (refine, do not radically change unless business requirements demand it):\n${archJson}`;
+            } catch {
+                // ignore serialization errors
             }
         }
 
@@ -1261,8 +1329,60 @@ export default function AgentAnalysis({
                                     </div>
                                 </div>
 
-                                {/* Right Column: Key Actions / Q&A (4 cols) */}
+                                {/* Right Column: Architecture + Key Actions / Q&A (4 cols) */}
                                 <div className="lg:col-span-4 space-y-6">
+                                    {/* Application Architecture (React Flow diagram from AI JSON) */}
+                                    {result.analysis?.architecture && (() => {
+                                        const arch = result.analysis.architecture || {};
+                                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
+                                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
+
+                                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
+                                        const rfEdges = edges.map((edge, idx) => ({
+                                            id: String(edge.id || `e-${idx}`),
+                                            source: String(edge.from),
+                                            target: String(edge.to),
+                                            label: edge.description || undefined,
+                                        }));
+
+                                        return (
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5">
+                                                <div className="flex items-center justify-between mb-3">
+                                                    <h3 className="text-sm font-bold text-app-text-main">
+                                                        Application Architecture
+                                                    </h3>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setIsArchModalOpen(true)}
+                                                        className="text-[11px] font-semibold text-app-primary hover:text-app-primary-dark border border-app-primary-light rounded-full px-2 py-0.5 bg-app-bg-page"
+                                                    >
+                                                        Expand
+                                                    </button>
+                                                </div>
+
+                                                {rfNodes.length > 0 ? (
+                                                    <div className="h-80 w-full rounded-lg border border-app-border-light bg-app-bg-page overflow-hidden">
+                                                        <ReactFlow
+                                                            nodes={rfNodes}
+                                                            edges={rfEdges}
+                                                            fitView
+                                                            nodesDraggable={false}
+                                                            nodesConnectable={false}
+                                                            elementsSelectable={false}
+                                                        >
+                                                            <Background gap={16} size={1} />
+                                                            <Controls showInteractive={false} />
+                                                        </ReactFlow>
+                                                    </div>
+                                                ) : (
+                                                    <p className="text-xs text-app-text-muted italic">
+                                                        Architecture details are not available for this analysis.
+                                                    </p>
+                                                )}
+                                            </div>
+                                        );
+                                    })()}
+
                                     <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:sticky lg:top-6">
                                         <div className="flex items-center mb-4">
                                             <div className="w-1.5 h-1.5 rounded-full bg-app-status-warning mr-2"></div>
@@ -1327,6 +1447,61 @@ export default function AgentAnalysis({
                     </div>
                 )}
             </div>
+
+            {/* Architecture Fullscreen Modal */}
+            {isArchModalOpen && result?.analysis?.architecture && (() => {
+                const arch = result.analysis.architecture || {};
+                const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
+                const edges = Array.isArray(arch.edges) ? arch.edges : [];
+                const layerOrder = ['frontend', 'backend', 'service', 'data', 'integration', 'infra'];
+
+                const rfNodes = layoutArchitectureGraph(nodes, edges, 'LR');
+
+                const rfEdges = edges.map((edge, idx) => ({
+                    id: String(edge.id || `e-${idx}`),
+                    source: String(edge.from),
+                    target: String(edge.to),
+                    label: edge.description || undefined,
+                }));
+
+                return (
+                    <div className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="relative w-full max-w-6xl h-[80vh] rounded-2xl bg-app-bg-card border border-app-border-light shadow-2xl flex flex-col">
+                            <div className="flex items-center justify-between px-4 py-3 border-b border-app-border-light">
+                                <h2 className="text-sm font-bold text-app-text-main">
+                                    Application Architecture (Expanded)
+                                </h2>
+                                <button
+                                    type="button"
+                                    onClick={() => setIsArchModalOpen(false)}
+                                    className="text-xs font-semibold text-app-text-muted hover:text-app-text-main px-2 py-1 rounded-md"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                            <div className="flex-1 bg-app-bg-page">
+                                {rfNodes.length > 0 ? (
+                                    <ReactFlow
+                                        nodes={rfNodes}
+                                        edges={rfEdges}
+                                        fitView
+                                        nodesDraggable={false}
+                                        nodesConnectable={false}
+                                        elementsSelectable={false}
+                                    >
+                                        <Background gap={16} size={1} />
+                                        <Controls showInteractive={false} />
+                                    </ReactFlow>
+                                ) : (
+                                    <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
+                                        Architecture details are not available for this analysis.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 }

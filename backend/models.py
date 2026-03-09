@@ -124,6 +124,7 @@ class OrganizationAgentQuota(Base):
     Organization-wide capacity (license) for agent slots.
     - shared_quota: how many shared agents the org is allowed to create (in addition to defaults)
     - dedicated_quota: how many dedicated agents the org is allowed to create across ALL projects (in addition to defaults)
+    - *_dev_quota / *_test_quota: sub_type breakdown of the above quotas
     """
     __tablename__ = "organization_agent_quotas"
 
@@ -131,6 +132,11 @@ class OrganizationAgentQuota(Base):
     organization_name = Column(String, unique=True, index=True, nullable=False)
     shared_quota = Column(Integer, nullable=False, default=0)
     dedicated_quota = Column(Integer, nullable=False, default=0)
+    # Sub-type breakdown
+    shared_dev_quota = Column(Integer, nullable=False, default=0)
+    shared_test_quota = Column(Integer, nullable=False, default=0)
+    dedicated_dev_quota = Column(Integer, nullable=False, default=0)
+    dedicated_test_quota = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class OrganizationAgentMapping(Base):
@@ -148,6 +154,7 @@ class OrganizationAgentMapping(Base):
     agent_id = Column(String, ForeignKey("agents.id"), index=True, nullable=False)
     project_token = Column(String, index=True, nullable=True)
     agent_kind = Column(String, index=True, nullable=True)
+    agent_sub_type = Column(String, index=True, nullable=True)  # 'dev' or 'test'
     is_default = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 

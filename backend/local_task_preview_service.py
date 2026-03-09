@@ -174,14 +174,43 @@ def _derive_total_wallet(analysis_payload: Dict[str, Any], analysis_report: str)
         base_wallet += 8
 
     return max(20, min(base_wallet, 90))
+ 
+ 
+def _derive_project_type(analysis_payload: Dict[str, Any]) -> str:
+    metrics = analysis_payload.get("metrics") or {}
+    ptype = str(metrics.get("project_type") or "").strip().lower()
+    if "modernization" in ptype:
+        return "modernization"
+    if "brownfield" in ptype:
+        return "brownfield"
+    return "greenfield"
+
+
 
 
 def _build_analysis_context(
     analysis_report: str,
     prerequisites: List[Dict[str, Any]],
     custom_rules: Optional[str],
+    *,
+    max_chars: int = 8000,
 ) -> str:
-    parts: List[str] = [str(analysis_report or "").strip()]
+    """
+    Build the analysis context string for downstream AI calls.
+
+    The analysis text is truncated to `max_chars` to avoid unbounded token usage
+    while still keeping the most recent / most relevant content.
+    """
+    trimmed_report = str(analysis_report or "").strip()
+    if max_chars and len(trimmed_report) > max_chars:
+        logger.info(
+            "Truncating analysis report for AI context: original_len=%s, max_chars=%s",
+            len(trimmed_report),
+            max_chars,
+        )
+        trimmed_report = trimmed_report[:max_chars]
+
+    parts: List[str] = [trimmed_report]
 
     if prerequisites:
         prereq_lines = ["PREREQUISITES & CREDENTIALS (confirmed by the team):"]
@@ -296,7 +325,9 @@ def _normalize_generated_task(
         "dependencies": _normalize_dependencies(raw_task.get("dependencies")),
         "phase": str(raw_task.get("phase") or "").strip().lower(),
         "domain": str(raw_task.get("domain") or "").strip().lower(),
+        "checklist": raw_task.get("checklist"),
     }
+
 
 
 def _fallback_checklist(title: str, task_type: str) -> List[Dict[str, Any]]:
@@ -512,7 +543,9 @@ def _build_structured_tasks(
             "level": level,
             "dependencies": dependency_ids,
             "checklists": [],
+            "raw_checklist": raw_task.get("checklist"),
         }
+
 
         structured_tasks.append(structured)
         seq_to_task_id[_safe_int(raw_task.get("sequence_number"), 0)] = task_id
@@ -529,6 +562,62 @@ async def _attach_checklists(
     structured_tasks: List[Dict[str, Any]],
     analysis_report: str,
 ) -> None:
+    tasks_needing_checklists = []
+    for task in structured_tasks:
+        raw_items = task.get("raw_checklist")
+        if isinstance(raw_items, list) and raw_items:
+            items = []
+            for item in raw_items:
+                if isinstance(item, dict):
+                    text = str(item.get("text") or item.get("title") or "").strip()
+                else:
+                    text = str(item or "").strip()
+                if text:
+                    items.append(text)
+
+            # Enforce architect spec: at least 4 concrete checklist steps
+            while len(items) < 4:
+                # Add generic but real development actions to reach minimum length
+                filler_steps = [
+                    "analyze current module",
+                    "design interface",
+                    "implement service layer",
+                    "write unit tests",
+                    "update documentation",
+                ]
+                for step in filler_steps:
+                    if len(items) >= 4:
+                        break
+                    if step not in items:
+                        items.append(step)
+
+            item_count = len(items)
+            if item_count < 3 or item_count > 7:
+                logger.warning(
+                    "Checklist item count out of recommended range (3-7). "
+                    "task_id=%s type=%s count=%s",
+                    task.get("task_id"),
+                    task.get("type"),
+                    item_count,
+                )
+                # Hard cap extremely long lists to avoid bloated payloads.
+                if item_count > 10:
+                    items = items[:10]
+
+            if items:
+                task["checklists"] = [
+                    {
+                        "title": "Planning" if task["type"] in {"epic", "feature"} else "Execution",
+                        "items": items,
+                    }
+                ]
+                continue
+        
+        tasks_needing_checklists.append(task)
+
+    if not tasks_needing_checklists:
+        return
+
     checklist_inputs = [
         {
             "id": task["task_id"],
@@ -537,7 +626,7 @@ async def _attach_checklists(
             "task_type": str(task["type"]).upper(),
             "priority": task["priority"],
         }
-        for task in structured_tasks
+        for task in tasks_needing_checklists
     ]
 
     checklist_map: Dict[str, Any] = {}
@@ -549,7 +638,7 @@ async def _attach_checklists(
     except Exception as exc:
         logger.warning(f"Checklist generation failed for preview payload: {exc}")
 
-    for task in structured_tasks:
+    for task in tasks_needing_checklists:
         raw_items = checklist_map.get(task["task_id"]) if isinstance(checklist_map, dict) else None
         if isinstance(raw_items, list):
             items = [
@@ -558,6 +647,21 @@ async def _attach_checklists(
                 if isinstance(item, dict) and str(item.get("text") or "").strip()
             ]
             if items:
+                # Ensure at least 4 checklist items as per architect rules
+                while len(items) < 4:
+                    filler_steps = [
+                        "analyze current module",
+                        "design interface",
+                        "implement service layer",
+                        "write unit tests",
+                        "update documentation",
+                    ]
+                    for step in filler_steps:
+                        if len(items) >= 4:
+                            break
+                        if step not in items:
+                            items.append(step)
+
                 task["checklists"] = [
                     {
                         "title": "Planning" if task["type"] in {"epic", "feature"} else "Execution",
@@ -569,6 +673,7 @@ async def _attach_checklists(
         task["checklists"] = _fallback_checklist(task["title"], task["type"])
 
 
+
 async def _generate_ai_tasks(
     *,
     analysis_report: str,
@@ -578,7 +683,9 @@ async def _generate_ai_tasks(
     project_start: date,
     project_end: date,
     custom_rules: Optional[str],
+    project_type: str = "greenfield",
 ) -> tuple[List[Dict[str, Any]], int]:
+
     agents = [{"user_id": 1, "username": reporter}]
     normalized_tasks: List[Dict[str, Any]] = []
 
@@ -587,7 +694,9 @@ async def _generate_ai_tasks(
         agents=agents,
         project_deadline=project_deadline,
         project_wallet=total_wallet,
+        project_type=project_type,
     )
+
 
     for index, raw_task in enumerate(raw_tasks or []):
         task_name = str(raw_task.get("taskName") or "").strip()
@@ -621,7 +730,9 @@ async def build_local_task_plan_preview(
     prerequisites: Optional[List[Dict[str, Any]]] = None,
     reporter_name: Optional[str] = None,
     custom_rules: Optional[str] = None,
+    project_type: str = "greenfield",
 ) -> Dict[str, Any]:
+
     analysis_payload = analysis_payload or {}
     prerequisites = prerequisites or []
 
@@ -629,14 +740,22 @@ async def build_local_task_plan_preview(
     project_start, project_deadline = _normalize_project_dates(analysis_payload)
     total_wallet = _derive_total_wallet(analysis_payload, analysis_report)
     deadline_iso = _format_date(project_deadline)
-    analysis_context = _build_analysis_context(analysis_report, prerequisites, custom_rules)
+    analysis_context = _build_analysis_context(
+        analysis_report,
+        prerequisites,
+        custom_rules,
+        max_chars=8000,
+    )
+    
+    # Derive project_type from analysis if not explicitly overriden
+    derived_project_type = project_type if project_type != "greenfield" else _derive_project_type(analysis_payload)
 
     sprint_plan = await ai_service.generate_sprint_milestone_plan(
         analysis_report=analysis_context,
         project_name=project_name,
         project_deadline=deadline_iso,
     )
-
+    
     sprint_payload = sprint_plan.get("sprint") if isinstance(sprint_plan, dict) else {}
     milestone_payload = sprint_plan.get("milestone") if isinstance(sprint_plan, dict) else {}
     sprint_start_iso, sprint_deadline_iso = _normalize_task_dates(
@@ -669,6 +788,7 @@ async def build_local_task_plan_preview(
         "deadline": milestone_deadline_iso,
     }
 
+    
     raw_tasks, remaining_wallet = await _generate_ai_tasks(
         analysis_report=analysis_context,
         reporter=reporter,
@@ -677,7 +797,10 @@ async def build_local_task_plan_preview(
         project_start=project_start,
         project_end=project_deadline,
         custom_rules=custom_rules,
+        project_type=derived_project_type,
     )
+
+
 
     structured_tasks = _build_structured_tasks(
         raw_tasks,
@@ -689,6 +812,47 @@ async def build_local_task_plan_preview(
     )
     await _attach_checklists(structured_tasks=structured_tasks, analysis_report=analysis_context)
     preview_tasks = _build_preview_json_tasks(structured_tasks)
+
+    # ------------------------------------------------------------
+    # Strategy-aware statistics to help verify architect behaviour
+    # ------------------------------------------------------------
+    task_type_counts: Dict[str, int] = {}
+    domain_counts: Dict[str, int] = {}
+    for task in structured_tasks:
+        ttype = str(task.get("type") or "").lower()
+        if ttype:
+            task_type_counts[ttype] = task_type_counts.get(ttype, 0) + 1
+        domain = str(task.get("domain") or "").lower()
+        if domain:
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+    total_tasks = len(structured_tasks) or 1
+    def _ratio(keys: List[str], pool: Dict[str, int]) -> float:
+        return sum(pool.get(k, 0) for k in keys) / float(total_tasks)
+
+    strategy_alignment = {
+        "project_type": derived_project_type,
+        "greenfield_focus_foundation": _ratio(
+            ["epic", "feature"], task_type_counts
+        ),
+        "brownfield_fix_ratio": _ratio(
+            ["bug", "task", "story", "refactor"], task_type_counts
+        ),
+        "modernization_infra_security_ratio": _ratio(
+            ["infrastructure", "task", "story"], task_type_counts
+        )
+        + _ratio(
+            ["security", "devops"], domain_counts
+        ),
+    }
+
+    logger.info(
+        "Local plan preview stats: project_type=%s total_tasks=%s type_counts=%s domain_counts=%s",
+        derived_project_type,
+        len(structured_tasks),
+        task_type_counts,
+        domain_counts,
+    )
 
     return {
         "status": "success",
@@ -712,4 +876,7 @@ async def build_local_task_plan_preview(
         "milestones": [milestone],
         "tasks": structured_tasks,
         "preview_json": preview_tasks,
+        "task_type_counts": task_type_counts,
+        "domain_counts": domain_counts,
+        "strategy_alignment": strategy_alignment,
     }

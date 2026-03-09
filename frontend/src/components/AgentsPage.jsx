@@ -13,74 +13,47 @@ import cloudIcon from '../assets/cloud-icon.png';
  * It lists shared and dedicated agents separately and allows deletion of dedicated agents only.
  */
 export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, projects = [] }) {
-  const [sharedAgents, setSharedAgents] = useState([]);
-  const [dedicatedAgents, setDedicatedAgents] = useState([]);
+  const [sharedAgents, setSharedAgents] = useState([]);        // this project's agents
+  const [dedicatedAgents, setDedicatedAgents] = useState([]);   // this project's agents
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
-  const [filter, setFilter] = useState('all'); // 'all', 'shared', 'dedicated'
+  const [filter, setFilter] = useState('all');
   const [quota, setQuota] = useState(null);
   const [quotaError, setQuotaError] = useState('');
   const [quotaLoading, setQuotaLoading] = useState(false);
-  const [sharedToAdd, setSharedToAdd] = useState(1);
-  const [dedicatedToAdd, setDedicatedToAdd] = useState(1);
+  const [sharedDevToAdd, setSharedDevToAdd] = useState(0);
+  const [sharedTestToAdd, setSharedTestToAdd] = useState(0);
+  const [dedicatedDevToAdd, setDedicatedDevToAdd] = useState(0);
+  const [dedicatedTestToAdd, setDedicatedTestToAdd] = useState(0);
   const [quotaUpdatingKind, setQuotaUpdatingKind] = useState('');
 
   const fetchAgents = async () => {
     setLoading(true);
     setError(null);
-
     const token = localStorage.getItem('token');
-
     try {
-      // Fetch shared agents (no project_token)
-      const sharedUrl = new URL(API_ENDPOINTS.AGENTS);
-      sharedUrl.searchParams.set('include_defaults', 'false');
-      sharedUrl.searchParams.set('kind', 'shared');
-      if (selectedProjectKey) {
-        sharedUrl.searchParams.set('project_token', selectedProjectKey);
-      }
-      const sharedRes = await fetch(sharedUrl.toString(), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const headers = { Authorization: `Bearer ${token}` };
+      const parse = (data) => Array.isArray(data) ? data : (data?.agents || data?.results || data?.data || []);
 
-      // Fetch dedicated agents (with project_token)
-      const dedicatedUrl = new URL(API_ENDPOINTS.AGENTS);
-      dedicatedUrl.searchParams.set('include_defaults', 'false');
-      dedicatedUrl.searchParams.set('kind', 'dedicated');
-      if (selectedProjectKey) {
-        dedicatedUrl.searchParams.set('project_token', selectedProjectKey);
-      }
-      const dedicatedRes = selectedProjectKey
-        ? await fetch(dedicatedUrl.toString(), {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        : { ok: true, json: async () => ({ agents: [] }) };
+      const fetchKind = (kind, projectToken) => {
+        const url = new URL(API_ENDPOINTS.AGENTS);
+        url.searchParams.set('include_defaults', 'false');
+        url.searchParams.set('kind', kind);
+        if (projectToken) url.searchParams.set('project_token', projectToken);
+        return fetch(url.toString(), { headers })
+          .then(r => r.ok ? r.json().then(parse) : [])
+          .catch(() => []);
+      };
 
-      if (!sharedRes.ok) {
-        throw new Error(`Failed to fetch shared agents: ${sharedRes.status}`);
-      }
-      if (!dedicatedRes.ok) {
-        throw new Error(`Failed to fetch dedicated agents: ${dedicatedRes.status}`);
-      }
+      // Project-level: agents onboarded to THIS project
+      const [projShared, projDedicated] = await Promise.all([
+        fetchKind('shared', selectedProjectKey),
+        selectedProjectKey ? fetchKind('dedicated', selectedProjectKey) : Promise.resolve([]),
+      ]);
+      setSharedAgents(projShared.map(a => ({ ...a, agentType: 'shared' })));
+      setDedicatedAgents(projDedicated.map(a => ({ ...a, agentType: 'dedicated' })));
 
-      const sharedData = await sharedRes.json();
-      const dedicatedData = await dedicatedRes.json();
-
-      const sharedList = Array.isArray(sharedData)
-        ? sharedData
-        : (sharedData?.agents || sharedData?.results || sharedData?.data || []);
-
-      const dedicatedList = Array.isArray(dedicatedData)
-        ? dedicatedData
-        : (dedicatedData?.agents || dedicatedData?.results || dedicatedData?.data || []);
-
-      // Mark agents with their type
-      const sharedWithType = sharedList.map(agent => ({ ...agent, agentType: 'shared' }));
-      const dedicatedWithType = dedicatedList.map(agent => ({ ...agent, agentType: 'dedicated' }));
-
-      setSharedAgents(sharedWithType);
-      setDedicatedAgents(dedicatedWithType);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -124,7 +97,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
     return Math.max(1, Math.min(max, Math.floor(n)));
   };
 
-  const increaseQuota = async (kind, amount) => {
+  const increaseQuota = async (kind, subType, amount) => {
     const token = localStorage.getItem('token');
     if (!token) return;
     setQuotaUpdatingKind(kind);
@@ -136,7 +109,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ kind, amount }),
+        body: JSON.stringify({ kind, sub_type: subType, amount }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -236,15 +209,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
         logo: masterLogo,
         icon: Bot,
       },
-      {
-        id: 'agent_05',
-        name: 'Test Agent',
-        status: 'idle',
-        agentType: 'system',
-        type: 'system',
-        logo: kaktoxLogo,
-        icon: Activity,
-      },
+
       {
         id: 'deploy_agent',
         name: 'Deploy Agent',
@@ -284,15 +249,37 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
       : Number(quota.dedicated_used ?? 0);
     const sharedAvailable = Math.max(0, sharedQuota - sharedUsed);
     const dedicatedAvailable = Math.max(0, dedicatedQuota - dedicatedUsed);
+
+    // This project's dev/test used
+    const sharedDevCount = sharedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length;
+    const sharedTestCount = sharedAgents.filter(a => a.sub_type === 'test').length;
+    const dedicatedDevCount = dedicatedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length;
+    const dedicatedTestCount = dedicatedAgents.filter(a => a.sub_type === 'test').length;
+
+    // Org-wide pool totals: from quota API sub_type fields (source of truth)
+    const orgSharedDevTotal = Number(quota.shared_dev_quota ?? 0);
+    const orgSharedTestTotal = Number(quota.shared_test_quota ?? 0);
+    const orgDedicatedDevTotal = Number(quota.dedicated_dev_quota ?? 0);
+    const orgDedicatedTestTotal = Number(quota.dedicated_test_quota ?? 0);
+
+    // Available for this project = org sub_type quota − this project's sub_type usage
+    const sharedDevAvailable = Math.max(0, orgSharedDevTotal - sharedDevCount);
+    const sharedTestAvailable = Math.max(0, orgSharedTestTotal - sharedTestCount);
+    const dedicatedDevAvailable = Math.max(0, orgDedicatedDevTotal - dedicatedDevCount);
+    const dedicatedTestAvailable = Math.max(0, orgDedicatedTestTotal - dedicatedTestCount);
+
     return {
-      sharedQuota,
-      dedicatedQuota,
-      sharedUsed,
-      dedicatedUsed,
-      sharedAvailable,
-      dedicatedAvailable,
+      sharedQuota, dedicatedQuota,
+      sharedUsed, dedicatedUsed,
+      sharedAvailable, dedicatedAvailable,
+      sharedDevCount, sharedTestCount,
+      dedicatedDevCount, dedicatedTestCount,
+      orgSharedDevTotal, orgSharedTestTotal,
+      orgDedicatedDevTotal, orgDedicatedTestTotal,
+      sharedDevAvailable, sharedTestAvailable,
+      dedicatedDevAvailable, dedicatedTestAvailable,
     };
-  }, [quota, selectedProjectKey, sharedAgents.length, dedicatedAgents.length]);
+  }, [quota, selectedProjectKey, sharedAgents, dedicatedAgents]);
 
   return (
     <div className="h-full w-full flex flex-col bg-app-bg-page text-app-text-main">
@@ -341,149 +328,160 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             </p>
           </div>
         ) : quotaSummary ? (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-            {/* Shared Capacity Card */}
-            <div className="relative overflow-hidden rounded-lg border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 to-cyan-500/10 p-2 shadow-sm hover:shadow-md transition-all">
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <div className="p-0.5 rounded bg-cyan-500/20">
-                  <Users className="w-3 h-3 text-cyan-400" />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+
+            {/* ── Shared Capacity Card ── */}
+            <div className="rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/8 to-cyan-400/4 p-3 shadow-sm hover:shadow-lg hover:border-cyan-500/40 transition-all duration-200">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1 rounded-lg bg-cyan-500/20"><Users className="w-3.5 h-3.5 text-cyan-400" /></div>
+                  <span className="text-xs font-bold text-app-text-main">Shared</span>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-[10px] font-bold text-app-text-main truncate">Shared</h3>
+                <span className="text-[10px] text-app-text-muted font-medium">{quotaSummary.sharedUsed}/{quotaSummary.sharedQuota} used</span>
+              </div>
+              <div className="relative h-1.5 bg-app-bg-muted/60 rounded-full overflow-hidden mb-3">
+                <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-500"
+                  style={{ width: `${quotaSummary.sharedQuota > 0 ? Math.min(100, (quotaSummary.sharedUsed / quotaSummary.sharedQuota) * 100) : 0}%` }} />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-app-text-muted uppercase tracking-widest">Org Pool</span>
+                  <div className="flex gap-1.5">
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Dev {quotaSummary.orgSharedDevTotal}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/15 text-sky-400 border border-sky-500/20">Test {quotaSummary.orgSharedTestTotal}</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-app-text-muted uppercase tracking-widest">Used</span>
+                  <div className="flex gap-1.5">
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/20">Dev {quotaSummary.sharedDevCount}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/20">Test {quotaSummary.sharedTestCount}</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-1.5 border-t border-cyan-500/15">
+                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-widest">Available</span>
+                  <div className="flex gap-1.5">
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Dev {quotaSummary.sharedDevAvailable}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">Test {quotaSummary.sharedTestAvailable}</span>
+                  </div>
                 </div>
               </div>
+            </div>
 
-              <div className="space-y-1">
-                <div className="flex items-baseline gap-1">
-                  <span className="text-lg font-bold text-cyan-400">{quotaSummary.sharedUsed}</span>
-                  <span className="text-[10px] text-app-text-muted">/</span>
-                  <span className="text-xs font-semibold text-app-text-main">{quotaSummary.sharedQuota}</span>
+            {/* ── Dedicated Capacity Card ── */}
+            <div className="rounded-xl border border-indigo-500/25 bg-gradient-to-br from-indigo-500/8 to-purple-500/4 p-3 shadow-sm hover:shadow-lg hover:border-indigo-500/40 transition-all duration-200">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1 rounded-lg bg-indigo-500/20"><Database className="w-3.5 h-3.5 text-indigo-400" /></div>
+                  <span className="text-xs font-bold text-app-text-main">Dedicated</span>
                 </div>
-
-                {/* Progress Bar */}
-                <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
-                  <div
-                    className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-500"
-                    style={{ width: `${quotaSummary.sharedQuota > 0 ? Math.min(100, (quotaSummary.sharedUsed / quotaSummary.sharedQuota) * 100) : 0}%` }}
-                  />
+                <span className="text-[10px] text-app-text-muted font-medium">{quotaSummary.dedicatedUsed}/{quotaSummary.dedicatedQuota} used</span>
+              </div>
+              <div className="relative h-1.5 bg-app-bg-muted/60 rounded-full overflow-hidden mb-3">
+                <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-500"
+                  style={{ width: `${quotaSummary.dedicatedQuota > 0 ? Math.min(100, (quotaSummary.dedicatedUsed / quotaSummary.dedicatedQuota) * 100) : 0}%` }} />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-app-text-muted uppercase tracking-widest">Org Pool</span>
+                  <div className="flex gap-1.5">
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Dev {quotaSummary.orgDedicatedDevTotal}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/15 text-sky-400 border border-sky-500/20">Test {quotaSummary.orgDedicatedTestTotal}</span>
+                  </div>
                 </div>
-
-                <div className="flex items-center justify-between text-[9px]">
-                  <span className="text-app-text-muted">Avail</span>
-                  <span className="font-bold text-cyan-400">{quotaSummary.sharedAvailable}</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-app-text-muted uppercase tracking-widest">Used</span>
+                  <div className="flex gap-1.5">
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/20">Dev {quotaSummary.dedicatedDevCount}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/20">Test {quotaSummary.dedicatedTestCount}</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-1.5 border-t border-indigo-500/15">
+                  <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Available</span>
+                  <div className="flex gap-1.5">
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Dev {quotaSummary.dedicatedDevAvailable}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">Test {quotaSummary.dedicatedTestAvailable}</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-              {/* Dedicated Capacity Card */}
-              <div className="relative overflow-hidden rounded-lg border border-app-primary/20 bg-gradient-to-br from-app-primary/5 to-app-primary/10 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-app-primary/20">
-                    <Database className="w-3 h-3 text-indigo-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Dedicated</h3>
+            {/* ── Add Shared Agents Card ── */}
+            <div className="rounded-xl border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 p-3 shadow-sm hover:shadow-lg hover:border-cyan-500/50 transition-all duration-200">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="p-1 rounded-lg bg-cyan-500/20"><Users className="w-3.5 h-3.5 text-cyan-400" /></div>
+                <span className="text-xs font-bold text-app-text-main">Add Shared Capacity</span>
+              </div>
+              
+              <div className="space-y-3 mb-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-emerald-400">DEV</span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setSharedDevToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">-</button>
+                    <input value={sharedDevToAdd} onChange={e => setSharedDevToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
+                    <button onClick={() => setSharedDevToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">+</button>
                   </div>
                 </div>
-                
-                <div className="space-y-1">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-bold text-indigo-400">{quotaSummary.dedicatedUsed}</span>
-                    <span className="text-[10px] text-app-text-muted">/</span>
-                    <span className="text-xs font-semibold text-app-text-main">{quotaSummary.dedicatedQuota}</span>
-                  </div>
-                  
-                  {/* Progress Bar */}
-                  <div className="relative h-1 bg-app-bg-muted/50 rounded-full overflow-hidden">
-                    <div
-                      className="absolute inset-y-0 left-0 bg-gradient-to-r from-app-primary to-indigo-400 rounded-full transition-all duration-500"
-                      style={{ width: `${quotaSummary.dedicatedQuota > 0 ? Math.min(100, (quotaSummary.dedicatedUsed / quotaSummary.dedicatedQuota) * 100) : 0}%` }}
-                    />
-                  </div>
-                  
-                  <div className="flex items-center justify-between text-[9px]">
-                    <span className="text-app-text-muted">Avail</span>
-                    <span className="font-bold text-indigo-400">{quotaSummary.dedicatedAvailable}</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-sky-400">TEST</span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setSharedTestToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">-</button>
+                    <input value={sharedTestToAdd} onChange={e => setSharedTestToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
+                    <button onClick={() => setSharedTestToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-cyan-400 border border-app-border-light">+</button>
                   </div>
                 </div>
               </div>
 
-              {/* Add Shared Agents Card */}
-              <div className="relative overflow-hidden rounded-lg border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-cyan-500/20">
-                    <Users className="w-3 h-3 text-cyan-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Add Shared</h3>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-1.5">
-                  <input
-                    value={sharedToAdd}
-                    onChange={(e) => setSharedToAdd(clampPositiveInt(e.target.value))}
-                    className="w-12 h-7 rounded border border-cyan-500/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
-                    inputMode="numeric"
-                    type="number"
-                    min="1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => increaseQuota('shared', clampPositiveInt(sharedToAdd))}
-                    disabled={quotaUpdatingKind === 'shared' || quotaLoading}
-                    className="flex-1 h-7 rounded bg-gradient-to-r from-cyan-600 to-cyan-500 text-app-bg-card text-[10px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
-                  >
-                    {quotaUpdatingKind === 'shared' ? (
-                      <RefreshCw className="w-2.5 h-2.5 animate-spin" />
-                    ) : (
-                      <>
-                        <Users className="w-2.5 h-2.5" />
-                        <span>Add</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* Add Dedicated Agents Card */}
-              <div className="relative overflow-hidden rounded-lg border border-app-primary/30 bg-gradient-to-br from-app-primary/10 to-app-primary/5 p-2 shadow-sm hover:shadow-md transition-all">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <div className="p-0.5 rounded bg-app-primary/20">
-                    <Database className="w-3 h-3 text-indigo-400" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-[10px] font-bold text-app-text-main truncate">Add Dedicated</h3>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-1.5">
-                  <input
-                    value={dedicatedToAdd}
-                    onChange={(e) => setDedicatedToAdd(clampPositiveInt(e.target.value))}
-                    className="w-12 h-7 rounded border border-app-primary/30 bg-app-bg-card px-1.5 text-xs font-bold text-app-text-main text-center focus:ring-1 focus:ring-app-primary/50 focus:border-app-primary transition-all"
-                    inputMode="numeric"
-                    type="number"
-                    min="1"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => increaseQuota('dedicated', clampPositiveInt(dedicatedToAdd))}
-                    disabled={quotaUpdatingKind === 'dedicated' || quotaLoading}
-                    className="flex-1 h-7 rounded bg-gradient-to-r from-app-primary to-app-primary text-app-bg-card text-[10px] font-bold hover:from-app-primary-hover hover:to-app-primary disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1"
-                  >
-                    {quotaUpdatingKind === 'dedicated' ? (
-                      <RefreshCw className="w-2.5 h-2.5 animate-spin" />
-                    ) : (
-                      <>
-                        <Database className="w-2.5 h-2.5" />
-                        <span>Add</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
+              <button type="button" 
+                onClick={async () => {
+                  if (sharedDevToAdd > 0) await increaseQuota('shared', 'dev', sharedDevToAdd);
+                  if (sharedTestToAdd > 0) await increaseQuota('shared', 'test', sharedTestToAdd);
+                  setSharedDevToAdd(0); setSharedTestToAdd(0);
+                }}
+                disabled={quotaUpdatingKind === 'shared' || quotaLoading || (sharedDevToAdd === 0 && sharedTestToAdd === 0)}
+                className="w-full h-8 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 text-white text-[11px] font-bold hover:from-cyan-700 hover:to-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1.5">
+                {quotaUpdatingKind === 'shared' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Add Capacity</span>}
+              </button>
             </div>
+
+            {/* ── Add Dedicated Agents Card ── */}
+            <div className="rounded-xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/10 to-purple-500/5 p-3 shadow-sm hover:shadow-lg hover:border-indigo-500/50 transition-all duration-200">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="p-1 rounded-lg bg-indigo-500/20"><Database className="w-3.5 h-3.5 text-indigo-400" /></div>
+                <span className="text-xs font-bold text-app-text-main">Add Dedicated Capacity</span>
+              </div>
+
+              <div className="space-y-3 mb-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-emerald-400">DEV</span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setDedicatedDevToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">-</button>
+                    <input value={dedicatedDevToAdd} onChange={e => setDedicatedDevToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
+                    <button onClick={() => setDedicatedDevToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">+</button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-sky-400">TEST</span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setDedicatedTestToAdd(v => Math.max(0, v - 1))} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">-</button>
+                    <input value={dedicatedTestToAdd} onChange={e => setDedicatedTestToAdd(clampPositiveInt(e.target.value))} className="w-10 h-6 text-center bg-app-bg-card border border-app-border-light rounded text-[11px] font-bold" />
+                    <button onClick={() => setDedicatedTestToAdd(v => v + 1)} className="w-6 h-6 flex items-center justify-center rounded bg-app-bg-muted text-app-text-muted hover:text-indigo-400 border border-app-border-light">+</button>
+                  </div>
+                </div>
+              </div>
+
+              <button type="button" 
+                onClick={async () => {
+                  if (dedicatedDevToAdd > 0) await increaseQuota('dedicated', 'dev', dedicatedDevToAdd);
+                  if (dedicatedTestToAdd > 0) await increaseQuota('dedicated', 'test', dedicatedTestToAdd);
+                  setDedicatedDevToAdd(0); setDedicatedTestToAdd(0);
+                }}
+                disabled={quotaUpdatingKind === 'dedicated' || quotaLoading || (dedicatedDevToAdd === 0 && dedicatedTestToAdd === 0)}
+                className="w-full h-8 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-[11px] font-bold hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md flex items-center justify-center gap-1.5">
+                {quotaUpdatingKind === 'dedicated' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Add Capacity</span>}
+              </button>
+            </div>
+          </div>
           ) : (
             <div className="p-2 rounded-lg bg-app-bg-muted/50 border border-app-border-light">
               <p className="text-xs text-app-text-muted">Capacity not available.</p>
@@ -563,7 +561,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                   const isDedicated = agent.agentType === 'dedicated';
                   const isGitManager = agent.id === 'agent_03';
                   const isMasterAgent = agent.id === 'agent_04';
-                  const isTestAgent = agent.id === 'agent_05';
+                  const isTestAgent = agent.sub_type === 'test';
                   const isDeployAgent = agent.id === 'deploy_agent';
                   const isRunning = agent.status === 'running';
                   const isCompleted = agent.status === 'completed';

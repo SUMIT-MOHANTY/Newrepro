@@ -188,6 +188,8 @@
         --color-app-primary: #3b82f6; 
         --color-app-primary-light: #1e3a8a;
         --color-app-primary-hover: #60a5fa;
+        --color-app-primary-dark: #93c5fd;
+        --color-app-primary-ring: #1d4ed8;
 
         --color-app-status-successBg: #064e3b;
         --color-app-status-errorBg: #4c0519;

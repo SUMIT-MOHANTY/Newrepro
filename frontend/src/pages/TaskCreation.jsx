@@ -330,7 +330,9 @@ export default function TaskCreation({
     const [success, setSuccess] = useState('');
     const [creationStageIndex, setCreationStageIndex] = useState(0);
     const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
+    const [projectType, setProjectType] = useState('greenfield');
     const autoStartRunKeysRef = useRef(new Set());
+
     const [customRules, setCustomRules] = useState(() => {
         if (selectedProjectKey) {
             return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
@@ -932,7 +934,9 @@ export default function TaskCreation({
                 project_token: selectedProjectKey,
                 auto_create_plan: true,
                 custom_rules: customRules,
+                project_type: projectType,
             };
+
             if (prerequisites && prerequisites.length > 0) {
                 generatePayload.prerequisites = prerequisites;
             }
@@ -1090,9 +1094,22 @@ export default function TaskCreation({
                         <p className="text-sm text-app-text-muted">
                             Master Agent will generate the task JSON, upload it to the external batch task API, and show the same payload on this page.
                         </p>
-                        <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light">
-                            Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span>
+                        <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light flex items-center justify-between">
+                            <span>Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span></span>
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] uppercase font-bold text-app-text-muted">Strategy:</span>
+                                <select 
+                                    value={projectType}
+                                    onChange={(e) => setProjectType(e.target.value)}
+                                    className="bg-app-bg-card border border-app-border rounded px-2 py-0.5 text-xs font-semibold text-app-primary-hover focus:outline-none focus:ring-1 focus:ring-app-primary"
+                                >
+                                    <option value="greenfield">Greenfield (New Build)</option>
+                                    <option value="brownfield">Brownfield (Enhancement)</option>
+                                    <option value="modernization">Modernization (Migration)</option>
+                                </select>
+                            </div>
                         </div>
+
                         <button
                             onClick={handleMasterCreate}
                             disabled={!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true}
