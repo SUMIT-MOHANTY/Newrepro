@@ -2920,149 +2920,146 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </p>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="rounded-xl border border-emerald-200 bg-app-status-successBg/70 p-4">
-                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                    {/* DEV AGENTS CARD (Shared + Dedicated) */}
+                                    <div className="rounded-xl border border-emerald-200 bg-app-status-successBg/60 p-4">
+                                        <div className="flex items-center justify-between gap-3 mb-3">
                                             <div>
-                                                <p className="text-sm font-bold text-emerald-900">Shared Dev Agents</p>
-                                                <p className="text-[11px] text-app-status-success">
-                                                    Available capacity: {agentQuotaLoading ? '...' : sharedDevAvailableForModal}
+                                                <p className="text-sm font-bold text-emerald-900">Dev Agents</p>
+                                                <p className="text-[10px] text-app-status-success whitespace-nowrap">
+                                                    Shared: {agentQuotaLoading ? '...' : sharedDevAvailableForModal} • Dedicated: {agentQuotaLoading ? '...' : dedicatedDevAvailableForModal}
                                                 </p>
                                             </div>
                                             <Users className="w-5 h-5 text-app-status-success" />
                                         </div>
-                                        <label className="block text-[10px] font-bold text-emerald-800 mb-2 uppercase tracking-widest">How many to add</label>
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max={sharedDevAvailableForModal}
-                                            value={sharedAgentsToAdd}
-                                            onChange={(e) => {
-                                                const val = e.target.value;
-                                                // Allow empty string or valid numbers
-                                                if (val === '' || /^\d+$/.test(val)) {
-                                                    setSharedAgentsToAdd(val);
-                                                }
-                                            }}
-                                            onBlur={(e) => {
-                                                const val = e.target.value;
-                                                if (val === '') {
-                                                    setSharedAgentsToAdd('');
-                                                } else {
-                                                    const num = clampAgentCount(Number(val), sharedDevAvailableForModal);
-                                                    setSharedAgentsToAdd(num.toString());
-                                                }
-                                            }}
-                                            placeholder="0"
-                                            className="w-full px-4 py-3 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-app-status-successBg focus:border-emerald-400 text-sm bg-app-bg-card text-app-text-main font-bold"
-                                        />
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-emerald-800 mb-1 uppercase tracking-widest">
+                                                    Shared
+                                                </label>
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max={sharedDevAvailableForModal}
+                                                    value={sharedAgentsToAdd}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '' || /^\d+$/.test(val)) {
+                                                            setSharedAgentsToAdd(val);
+                                                        }
+                                                    }}
+                                                    onBlur={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '') {
+                                                            setSharedAgentsToAdd('');
+                                                        } else {
+                                                            const num = clampAgentCount(Number(val), sharedDevAvailableForModal);
+                                                            setSharedAgentsToAdd(num.toString());
+                                                        }
+                                                    }}
+                                                    placeholder="0"
+                                                    className="w-full px-4 py-2.5 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-app-status-successBg focus:border-emerald-400 text-sm bg-app-bg-card text-app-text-main font-bold"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-emerald-800 mb-1 uppercase tracking-widest">
+                                                    Dedicated
+                                                </label>
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max={dedicatedDevAvailableForModal}
+                                                    value={dedicatedAgentsToAdd}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '' || /^\d+$/.test(val)) {
+                                                            setDedicatedAgentsToAdd(val);
+                                                        }
+                                                    }}
+                                                    onBlur={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '') {
+                                                            setDedicatedAgentsToAdd('');
+                                                        } else {
+                                                            const num = clampAgentCount(Number(val), dedicatedDevAvailableForModal);
+                                                            setDedicatedAgentsToAdd(num.toString());
+                                                        }
+                                                    }}
+                                                    placeholder="0"
+                                                    className="w-full px-4 py-2.5 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-app-status-successBg focus:border-emerald-400 text-sm bg-app-bg-card text-app-text-main font-bold"
+                                                />
+                                            </div>
+                                        </div>
                                     </div>
 
-                                    <div className="rounded-xl border border-app-primary-ring bg-app-primary-light/70 p-4">
-                                        <div className="flex items-center justify-between gap-3 mb-2">
-                                            <div>
-                                                <p className="text-sm font-bold text-app-primary-dark">Dedicated Dev Agents</p>
-                                                <p className="text-[11px] text-app-primary-hover">
-                                                    Available capacity: {agentQuotaLoading ? '...' : dedicatedDevAvailableForModal}
-                                                </p>
-                                            </div>
-                                            <Bot className="w-5 h-5 text-app-primary" />
-                                        </div>
-                                        <label className="block text-[10px] font-bold text-app-primary-dark mb-2 uppercase tracking-widest">How many to add</label>
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max={dedicatedDevAvailableForModal}
-                                            value={dedicatedAgentsToAdd}
-                                            onChange={(e) => {
-                                                const val = e.target.value;
-                                                // Allow empty string or valid numbers
-                                                if (val === '' || /^\d+$/.test(val)) {
-                                                    setDedicatedAgentsToAdd(val);
-                                                }
-                                            }}
-                                            onBlur={(e) => {
-                                                const val = e.target.value;
-                                                if (val === '') {
-                                                    setDedicatedAgentsToAdd('');
-                                                } else {
-                                                    const num = clampAgentCount(Number(val), dedicatedDevAvailableForModal);
-                                                    setDedicatedAgentsToAdd(num.toString());
-                                                }
-                                            }}
-                                            placeholder="0"
-                                            className="w-full px-4 py-3 border border-app-primary-ring rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main font-bold"
-                                        />
-                                    </div>
-                                    <div className="rounded-xl border border-emerald-200 bg-app-status-successBg/40 p-4">
-                                        <div className="flex items-center justify-between gap-3 mb-2">
-                                            <div>
-                                                <p className="text-sm font-bold text-emerald-900">Shared Test Agents</p>
-                                                <p className="text-[11px] text-app-status-success">
-                                                    Available capacity: {agentQuotaLoading ? '...' : sharedTestAvailableForModal}
-                                                </p>
-                                            </div>
-                                            <Users className="w-5 h-5 text-app-status-success" />
-                                        </div>
-                                        <label className="block text-[10px] font-bold text-emerald-800 mb-2 uppercase tracking-widest">How many to add</label>
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max={sharedTestAvailableForModal}
-                                            value={sharedTestAgentsToAdd}
-                                            onChange={(e) => {
-                                                const val = e.target.value;
-                                                if (val === '' || /^\d+$/.test(val)) {
-                                                    setSharedTestAgentsToAdd(val);
-                                                }
-                                            }}
-                                            onBlur={(e) => {
-                                                const val = e.target.value;
-                                                if (val === '') {
-                                                    setSharedTestAgentsToAdd('');
-                                                } else {
-                                                    const num = clampAgentCount(Number(val), sharedTestAvailableForModal);
-                                                    setSharedTestAgentsToAdd(num.toString());
-                                                }
-                                            }}
-                                            placeholder="0"
-                                            className="w-full px-4 py-3 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-app-status-successBg focus:border-emerald-400 text-sm bg-app-bg-card text-app-text-main font-bold"
-                                        />
-                                    </div>
-
+                                    {/* TEST AGENTS CARD (Shared + Dedicated) */}
                                     <div className="rounded-xl border border-app-primary-ring bg-app-primary-light/60 p-4">
-                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                        <div className="flex items-center justify-between gap-3 mb-3">
                                             <div>
-                                                <p className="text-sm font-bold text-app-primary-dark">Dedicated Test Agents</p>
-                                                <p className="text-[11px] text-app-primary-hover">
-                                                    Available capacity: {agentQuotaLoading ? '...' : dedicatedTestAvailableForModal}
+                                                <p className="text-sm font-bold text-app-primary-dark">Test Agents</p>
+                                                <p className="text-[10px] text-app-primary-hover whitespace-nowrap">
+                                                    Shared: {agentQuotaLoading ? '...' : sharedTestAvailableForModal} • Dedicated: {agentQuotaLoading ? '...' : dedicatedTestAvailableForModal}
                                                 </p>
                                             </div>
                                             <Bot className="w-5 h-5 text-app-primary" />
                                         </div>
-                                        <label className="block text-[10px] font-bold text-app-primary-dark mb-2 uppercase tracking-widest">How many to add</label>
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max={dedicatedTestAvailableForModal}
-                                            value={dedicatedTestAgentsToAdd}
-                                            onChange={(e) => {
-                                                const val = e.target.value;
-                                                if (val === '' || /^\d+$/.test(val)) {
-                                                    setDedicatedTestAgentsToAdd(val);
-                                                }
-                                            }}
-                                            onBlur={(e) => {
-                                                const val = e.target.value;
-                                                if (val === '') {
-                                                    setDedicatedTestAgentsToAdd('');
-                                                } else {
-                                                    const num = clampAgentCount(Number(val), dedicatedTestAvailableForModal);
-                                                    setDedicatedTestAgentsToAdd(num.toString());
-                                                }
-                                            }}
-                                            placeholder="0"
-                                            className="w-full px-4 py-3 border border-app-primary-ring rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main font-bold"
-                                        />
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-app-primary-dark mb-1 uppercase tracking-widest">
+                                                    Shared
+                                                </label>
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max={sharedTestAvailableForModal}
+                                                    value={sharedTestAgentsToAdd}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '' || /^\d+$/.test(val)) {
+                                                            setSharedTestAgentsToAdd(val);
+                                                        }
+                                                    }}
+                                                    onBlur={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '') {
+                                                            setSharedTestAgentsToAdd('');
+                                                        } else {
+                                                            const num = clampAgentCount(Number(val), sharedTestAvailableForModal);
+                                                            setSharedTestAgentsToAdd(num.toString());
+                                                        }
+                                                    }}
+                                                    placeholder="0"
+                                                    className="w-full px-4 py-2.5 border border-app-primary-ring rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main font-bold"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-app-primary-dark mb-1 uppercase tracking-widest">
+                                                    Dedicated
+                                                </label>
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max={dedicatedTestAvailableForModal}
+                                                    value={dedicatedTestAgentsToAdd}
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '' || /^\d+$/.test(val)) {
+                                                            setDedicatedTestAgentsToAdd(val);
+                                                        }
+                                                    }}
+                                                    onBlur={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val === '') {
+                                                            setDedicatedTestAgentsToAdd('');
+                                                        } else {
+                                                            const num = clampAgentCount(Number(val), dedicatedTestAvailableForModal);
+                                                            setDedicatedTestAgentsToAdd(num.toString());
+                                                        }
+                                                    }}
+                                                    placeholder="0"
+                                                    className="w-full px-4 py-2.5 border border-app-primary-ring rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main font-bold"
+                                                />
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
 

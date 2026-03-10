@@ -2274,6 +2274,14 @@ const Dashboard = ({
             setAzureLinkError('Please enter an Azure DevOps repository URL.');
             return;
         }
+
+        const username = String(azureLinkBranch || '').trim();
+        const pat = String(azureLinkToken || '').trim();
+        if (!username || !pat) {
+            setAzureLinkError('Azure DevOps repository URL, username, and PAT are all required.');
+            return;
+        }
+
         if (!/dev\.azure\.com|\.visualstudio\.com/i.test(rawUrl)) {
             setAzureLinkError('Please enter a valid Azure DevOps URL (dev.azure.com or *.visualstudio.com).');
             return;
@@ -2944,7 +2952,7 @@ const Dashboard = ({
                                                         type="text"
                                                         value={repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl}
                                                         onChange={e => handleRepoLinkUrlChange(e.target.value)}
-                                                        placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo or https://dev.azure.com/org/project' : 'https://github.com/owner/repo'}
+                                                        placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo or https://dev.azure.com/org/project *' : 'https://github.com/owner/repo'}
                                                         className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                     />
                                                     {repoLinkProvider === 'azure-devops' && (
@@ -2955,7 +2963,7 @@ const Dashboard = ({
                                                                 setAzureLinkBranch(e.target.value);
                                                                 if (repoContext) setRepoContext(null);
                                                             }}
-                                                            placeholder="Optional branch (e.g., main)"
+                                                            placeholder="Azure DevOps username *"
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                         />
                                                     )}
@@ -2967,7 +2975,7 @@ const Dashboard = ({
                                                                 setAzureLinkToken(e.target.value);
                                                                 if (repoContext) setRepoContext(null);
                                                             }}
-                                                            placeholder="Optional Azure DevOps PAT..."
+                                                            placeholder="Azure DevOps PAT *"
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                         />
                                                     ) : githubAuthMode === 'pat' ? (
@@ -3009,7 +3017,9 @@ const Dashboard = ({
                                                         <button
                                                             type="button"
                                                             onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
-                                                            disabled={repoLinkProvider === 'azure-devops' ? (!azureLinkUrl || azureLinkParsing || azureProjectReposLoading) : (!githubLinkUrl || githubLinkParsing)}
+                                                            disabled={repoLinkProvider === 'azure-devops'
+                                                                ? (!azureLinkUrl || !azureLinkBranch || !azureLinkToken || azureLinkParsing || azureProjectReposLoading)
+                                                                : (!githubLinkUrl || githubLinkParsing)}
                                                             className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
                                                         >
                                                             {(repoLinkProvider === 'azure-devops' ? (azureLinkParsing || azureProjectReposLoading) : githubLinkParsing) ? (
