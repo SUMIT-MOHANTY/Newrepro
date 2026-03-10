@@ -163,7 +163,9 @@ export default function Sidebar({
                 <div className="p-4 border-t border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
                     <button
                         onClick={() => setCurrentView('statusDashboard')}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard'
+                            ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark'
+                            : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
                     >
                         <Activity className="w-4 h-4 mr-3" />
                         Status Dashboard
@@ -173,40 +175,45 @@ export default function Sidebar({
 onClick={() => {
                             setCurrentView('organizationAdmin');
                         }}
-                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin' ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark' : 'text-app-border hover:bg-app-text-label hover:text-white'
-                                }`}
+                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin'
+                                ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
                         >
                             <ShieldCheck className="w-4 h-4 mr-3" />
                             SSO Configuration
                         </button>
                     )}
-<button
-  onClick={() => {
-    navigate('/agents');
-  }}
-  className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents') ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
->
-  <Users className="w-4 h-4 mr-3" />
-  Agents
-</button>
-<button
-  onClick={() => {
-    navigate('/plugins');
-  }}
-  className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins') ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
->
-  <Globe className="w-4 h-4 mr-3" />
-  Plugins
-</button>
-<button
-  onClick={() => setShowSettings(true)}
-  className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2"
->
+                    <button
+                        onClick={() => {
+                            navigate('/agents');
+                        }}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents')
+                            ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                            : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                    >
+                        <Users className="w-4 h-4 mr-3" />
+                        Agents
+                    </button>
+                    <button
+                        onClick={() => {
+                            navigate('/plugins');
+                        }}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins')
+                            ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                            : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                    >
+                        <Globe className="w-4 h-4 mr-3" />
+                        Plugins
+                    </button>
+                    <button
+                        onClick={() => setShowSettings(true)}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}
+                    >
                         <Settings className="w-4 h-4 mr-3" />
                         Settings
                     </button>
                     {user && (
-                        <div className="flex items-center w-full px-4 py-2 text-sm font-medium text-app-border rounded-md hover:bg-app-text-label transition-colors justify-between bg-white/5 border border-white/10">
+                        <div className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label transition-colors justify-between bg-white/5 border border-white/10 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}>
                             <div className="flex items-center overflow-hidden">
                                 <User className="w-4 h-4 mr-3 flex-shrink-0" />
                                 <span className="truncate w-24 text-xs" title={user.email}>{user.email}</span>
