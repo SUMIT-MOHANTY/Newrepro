@@ -158,7 +158,15 @@ MASTER_TREE_GENERATOR_SYSTEM_PROMPT = (
     "If the packet indicates Flask + Jinja, do not invent Express, React, Vite, Next.js, or a separate frontend app root "
     "unless the tasks explicitly require them. "
     "The tree must be production-ready, structurally complete for the tasks, and consistent with the "
-    "current repository tree, workspace contract, and stack decision."
+    "current repository tree, workspace contract, and stack decision. "
+    "Output MUST be strict JSON only (double quotes only, no Python dict literals, no single quotes). "
+    "Do not place serialized JSON/Python objects inside any node 'name'. "
+    "Root 'name' must be a plain folder label (for example, 'project' or 'app'). "
+    "Do not flatten the tree into duplicate file lists under the root. "
+    "Place module/tool configuration files in module roots, not inside source-code folders. "
+    "Do not emit multiple extension variants of the same config stem in the same directory. "
+    "Use repository-relative structure semantics: canonical source roots must map to real repository directories "
+    "and must not be prefixed by a synthetic wrapper segment."
 )
 
 MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
@@ -168,6 +176,13 @@ MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
     "conditional wording, migration options, more than one tree, or mixed stack signals that contradict the packet. "
     "Reject trees that introduce frameworks or roots that are not supported by the task details, checklist evidence, "
     "current repo tree, stack decision, and workspace contract. "
+    "Reject malformed JSON trees, including Python-style dict literals, single-quoted pseudo-JSON, "
+    "or any node whose 'name' contains serialized objects like '{\"name\": ...}' or '{'name': ...}'. "
+    "Reject trees that duplicate flattened file lists at root in addition to nested directories. "
+    "Reject trees that place configuration files under source directories when they should be module-level files. "
+    "Reject trees that include multiple extension variants of the same config file stem in one directory. "
+    "Reject trees whose canonical source roots require a synthetic wrapper prefix that is not a real repository "
+    "top-level directory in the current repo snapshot. "
     "Approve only one complete replacement tree with one fixed root. "
     "If rejected, corrected_tree must be a strictly valid JSON project tree (with 'name' and 'children' keys), not a diff, ASCII diagram, or a set of options."
 )
@@ -5728,6 +5743,8 @@ def _canonicalize_master_tree_path(
     lower = normalized.lower()
     if lower == "env.example":
         normalized = ".env.example"
+    elif _re.fullmatch(r"env\.[A-Za-z0-9_.-]+", lower):
+        normalized = "." + normalized
     elif lower.startswith("github/workflows/"):
         normalized = ".github/" + normalized[len("github/"):]
     elif lower.startswith("src/"):
@@ -5743,6 +5760,17 @@ def _canonicalize_master_tree_path(
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     frontend_key = str(stack.get("frontend_key") or "").strip()
     lower = normalized.lower()
+    basename = os.path.basename(lower)
+
+    # Lift environment/config files out of source directories generically.
+    if "/src/" in lower and (
+        basename.startswith(".env")
+        or ("config." in basename and "." in basename)
+    ):
+        prefix = normalized.split("/src/", 1)[0]
+        normalized = f"{prefix}/{os.path.basename(normalized)}"
+        lower = normalized.lower()
+
     if frontend_key == "static-html":
         if lower.startswith("frontend/src/"):
             normalized = "frontend/" + normalized[len("frontend/src/"):]
@@ -7365,15 +7393,23 @@ def _infer_project_stack(
         elif token in combined_text:
             backend_scores["express"] += 2
 
-    for root in contract_roots:
-        if "frontend" in root or root.endswith("web") or root.endswith("client"):
-            frontend_scores["react-vite"] += 1
-        if root.endswith("templates") or root.endswith("static"):
-            frontend_scores["jinja-html"] += 2
-        if "backend" in root or root.endswith("api") or root.endswith("server"):
-            backend_scores["fastapi"] += 2
-        if root == "app" or root.endswith("/app"):
-            backend_scores["flask"] += 2
+    # Avoid overfitting stack inference to host repository roots when task evidence exists.
+    if not task_text.strip():
+        for root in contract_roots:
+            if "frontend" in root or root.endswith("web") or root.endswith("client"):
+                frontend_scores["react-vite"] += 1
+            if root.endswith("templates") or root.endswith("static"):
+                frontend_scores["jinja-html"] += 2
+            if "backend" in root or root.endswith("api") or root.endswith("server"):
+                backend_scores["fastapi"] += 2
+            if root == "app" or root.endswith("/app"):
+                backend_scores["flask"] += 2
+
+    backend_explicitly_not_required = bool(
+        _re.search(r"\bbackend\b.{0,40}\bnot applicable\b", combined_text, flags=_re.IGNORECASE)
+        or _re.search(r"\bnot applicable\b.{0,40}\bbackend\b", combined_text, flags=_re.IGNORECASE)
+        or _re.search(r"\b(frontend[- ]only|pure client[- ]side|browser[- ]only)\b", combined_text, flags=_re.IGNORECASE)
+    )
 
     frontend_task_evidence = any(
         str(task.get("phase") or task.get("task_phase") or "").strip().lower().startswith("frontend")
@@ -7423,7 +7459,12 @@ def _infer_project_stack(
             path.endswith("/index.html") or path.endswith("/styles.css")
             for path in contract_manifests
         ) else "react-vite"
-    if not backend and any("backend" in root for root in contract_roots):
+    if (
+        not backend
+        and any("backend" in root for root in contract_roots)
+        and not backend_explicitly_not_required
+        and (backend_task_evidence or not frontend_task_evidence)
+    ):
         backend = "fastapi"
     if not backend and backend_scores.get("flask", 0) > 0:
         backend = "flask"
@@ -7433,7 +7474,6 @@ def _infer_project_stack(
     explicit_frontend_only = (
         frontend_task_evidence
         and not backend_task_evidence
-        and not any("backend" in root for root in contract_roots)
     )
     explicit_backend_only = (
         backend_task_evidence
@@ -7441,7 +7481,19 @@ def _infer_project_stack(
         and not any("frontend" in root for root in contract_roots)
     )
 
-    if explicit_frontend_only:
+    if backend_explicitly_not_required and not backend_task_evidence:
+        if not frontend or frontend == "none":
+            if frontend_scores.get("jinja-html", 0) > max(frontend_scores.get("static-html", 0), frontend_scores.get("react-vite", 0)):
+                frontend = "jinja-html"
+            else:
+                frontend = "static-html" if frontend_scores.get("static-html") >= frontend_scores.get("react-vite") else "react-vite"
+        if frontend == "jinja-html":
+            backend = "flask"
+            reason = "Specification indicates backend is not applicable except Flask template rendering."
+        else:
+            backend = "none"
+            reason = "Specification indicates a frontend-only project with no backend required."
+    elif explicit_frontend_only:
         if not frontend or frontend == "none":
             if frontend_scores.get("jinja-html", 0) > max(frontend_scores.get("static-html", 0), frontend_scores.get("react-vite", 0)):
                 frontend = "jinja-html"
@@ -7518,6 +7570,7 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     current_repo_tree = str(payload.get("current_repo_tree") or "").rstrip()
     current_repo_tree_source = str(payload.get("current_repo_tree_source") or "").strip()
     workspace_tree = str(payload.get("workspace_tree") or "").rstrip()
+    workspace_tree_json = str(payload.get("workspace_tree_json") or "").strip()
     architecture_overview = str(payload.get("architecture_overview") or "").strip()
     dependencies = str(payload.get("dependencies") or "").strip()
     validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
@@ -7534,11 +7587,6 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     if summary:
         lines.append("")
         lines.append(summary)
-
-    if brd_analysis_context:
-        lines.append("")
-        lines.append("## BRD Analysis Context")
-        lines.append(brd_analysis_context[:4000])
 
     if stack_profile:
         lines.append("")
@@ -7590,9 +7638,6 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
                     if item
                 )
             lines.append(header)
-            task_description = _truncate_task_text(task.get("description") or "", 360)
-            if task_description:
-                lines.append(f"  Description: {task_description}")
             task_dependencies = [
                 str(dep).strip()
                 for dep in (task.get("dependencies") or [])
@@ -7600,13 +7645,6 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             ]
             if task_dependencies:
                 lines.append(f"  Depends on: {', '.join(task_dependencies[:10])}")
-            checklist_items = [
-                str(item).strip()
-                for item in (task.get("checklist") or [])
-                if str(item).strip()
-            ]
-            if checklist_items:
-                lines.append(f"  Checklist: {_truncate_task_text('; '.join(checklist_items[:8]), 320)}")
             planned_files = [
                 str(path or "").strip()
                 for path in (task.get("planned_files") or [])
@@ -7615,72 +7653,15 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             if planned_files:
                 lines.append(f"  Planned files: {', '.join(planned_files[:6])}")
 
-    if workspace_tree:
+    canonical_tree_json = workspace_tree_json or _ensure_workspace_tree_json(
+        workspace_tree,
+        fallback_root_label=(project_token or "project"),
+    )
+    if canonical_tree_json:
         lines.append("")
-        lines.append("## Canonical Project Tree")
-        
-        display_tree = workspace_tree
-        is_json = str(workspace_tree).strip().startswith(("{", "["))
-        # Render a beautiful ASCII tree for the user
-        if is_json:
-            try:
-                import json
-                tree_data = json.loads(workspace_tree)
-                if isinstance(tree_data, dict):
-                    root_name = tree_data.get("name", "project")
-                    children = tree_data.get("children", [])
-                    ascii_lines = [f"{root_name}/"]
-                    
-                    def walk_json_tree(node, prefix="", is_last=True):
-                        node_name = str(node.get("name") or "unknown")
-                        node_children = node.get("children", [])
-                        branch = "└── " if is_last else "├── "
-                        line = f"{prefix}{branch}{node_name}"
-                        if node_children:
-                            line += "/"
-                        ascii_lines.append(line)
-                        
-                        new_prefix = prefix + ("    " if is_last else "│   ")
-                        if isinstance(node_children, list):
-                            for idx, child in enumerate(node_children):
-                                walk_json_tree(child, new_prefix, idx == len(node_children) - 1)
-                                
-                    if isinstance(children, list):
-                        for idx, child in enumerate(children):
-                            walk_json_tree(child, "", idx == len(children) - 1)
-                    display_tree = "\n".join(ascii_lines)
-            except Exception:
-                pass # Fallback to raw text
-
-        lines.append("```text")
-        lines.append(display_tree)
-        lines.append("```")
-
-        # Also provide the raw JSON for the user to see/edit
-        json_tree = workspace_tree if is_json else None
-        if not is_json:
-            try:
-                import context_manager as ctx_mgr # type: ignore
-                paths = ctx_mgr._extract_file_paths_from_canonical_tree(workspace_tree)
-                if paths:
-                    json_tree = _render_tree_from_paths(paths, root_label=_extract_tree_root_label(workspace_tree, "project"), output_format="json")
-            except Exception as e:
-                logger.warning("Failed to automatically convert ASCII tree to JSON tree: %s", e)
-                
-        if json_tree:
-            lines.append("")
-            lines.append("## Machine Readable Structure (JSON)")
-            lines.append("```json")
-            lines.append(json_tree)
-            lines.append("```")
-
-    if current_repo_tree:
-        lines.append("")
-        lines.append("## Current Repository Tree")
-        if current_repo_tree_source:
-            lines.append(f"Source: `{current_repo_tree_source}`")
-        lines.append("```text")
-        lines.append(current_repo_tree)
+        lines.append("## Canonical Project Tree (JSON)")
+        lines.append("```json")
+        lines.append(canonical_tree_json)
         lines.append("```")
 
     if workspace_contract:
@@ -7695,23 +7676,280 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
             for root in allowed_roots[:20]:
                 lines.append(f"- {root}")
 
-    if architecture_overview:
-        lines.append("")
-        lines.append("## Architecture Overview")
-        lines.append(architecture_overview)
-
-    if dependencies:
-        lines.append("")
-        lines.append("## Dependencies")
-        lines.append(dependencies)
-
     if instructions:
         lines.append("")
         lines.append("## Instructions")
-        for instruction in instructions[:10]:
+        for instruction in instructions[:5]:
             lines.append(f"- {instruction}")
 
     return "\n".join(lines).strip()
+
+
+def _repo_root_dir() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _ensure_workspace_tree_json(workspace_tree: str, fallback_root_label: str = "project") -> str:
+    raw = str(workspace_tree or "").strip()
+    if not raw:
+        return ""
+    parsed = _extract_json_object_from_text(raw)
+    if isinstance(parsed, dict):
+        sanitized = _sanitize_tree_node(parsed)
+        if sanitized and sanitized.get("name"):
+            return json.dumps(sanitized, ensure_ascii=True, indent=2)
+
+    paths = _extract_paths_from_workspace_tree(raw)
+    if not paths:
+        return ""
+    root = _extract_tree_root_label(raw, fallback=fallback_root_label)
+    return _render_tree_from_paths(paths, root_label=root or fallback_root_label, output_format="json")
+
+
+def _extract_paths_from_workspace_tree(workspace_tree: str) -> List[str]:
+    raw = str(workspace_tree or "").strip()
+    if not raw:
+        return []
+
+    paths: List[str] = []
+    seen = set()
+
+    def add_path(value: str) -> None:
+        normalized = _normalize_master_tree_path_candidate(value)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        paths.append(normalized)
+
+    if raw.startswith(("{", "[")):
+        try:
+            parsed = json.loads(raw)
+
+            def walk(node: Any, prefix: str = "", is_root: bool = False) -> None:
+                if not isinstance(node, dict):
+                    return
+                name = str(node.get("name") or "").strip()
+                children = node.get("children")
+                children_list = children if isinstance(children, list) else []
+                name_is_file = _looks_like_repo_file_name(name)
+                current_prefix = prefix
+                if name and not is_root:
+                    current_prefix = f"{prefix}/{name}" if prefix else name
+                    if name_is_file:
+                        add_path(current_prefix)
+                for child in children_list:
+                    walk(child, current_prefix, False)
+
+            if isinstance(parsed, dict):
+                walk(parsed, "", True)
+            elif isinstance(parsed, list):
+                for node in parsed:
+                    walk(node, "", True)
+            return paths
+        except Exception:
+            pass
+
+    for path in _extract_task_paths_from_text(raw):
+        add_path(path)
+    return paths
+
+
+def _resolve_repo_manifest_path(path: str, repo_root: str) -> str:
+    normalized = _normalize_master_tree_path_candidate(path)
+    if not normalized:
+        return ""
+    direct = os.path.join(repo_root, normalized)
+    if os.path.isfile(direct):
+        return normalized
+
+    parts = normalized.split("/")
+    for idx in range(1, min(4, len(parts))):
+        candidate = "/".join(parts[idx:])
+        if not candidate:
+            continue
+        if os.path.isfile(os.path.join(repo_root, candidate)):
+            return candidate
+    return ""
+
+
+def _derive_dynamic_architecture_overview(
+    *,
+    stack_profile: Optional[Dict[str, Any]],
+    workspace_contract: Optional[Dict[str, Any]],
+    workspace_tree: str,
+    tasks: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    stack = stack_profile if isinstance(stack_profile, dict) else {}
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    frontend = str(stack.get("frontend") or "").strip()
+    backend = str(stack.get("backend") or "").strip()
+    frontend_key = str(stack.get("frontend_key") or "").strip()
+    backend_key = str(stack.get("backend_key") or "").strip()
+    roots = [
+        str(root).strip()
+        for root in (contract.get("allowed_source_roots") or [])
+        if str(root).strip()
+    ][:8]
+    tree_paths = _extract_paths_from_workspace_tree(workspace_tree)
+    lower_paths = [path.lower() for path in tree_paths]
+    task_domains = {
+        str(_normalize_task_domain(task) or "").strip()
+        for task in (tasks or [])
+        if isinstance(task, dict)
+    }
+    task_domains = {domain for domain in task_domains if domain}
+
+    lines: List[str] = []
+    if frontend and frontend_key != "none":
+        lines.append(f"- **Frontend**: {frontend}")
+    elif frontend_key == "none":
+        lines.append("- **Frontend**: Not applicable for this project")
+    if backend and backend_key != "none":
+        lines.append(f"- **Backend**: {backend}")
+    elif backend_key == "none":
+        lines.append("- **Backend**: Not applicable for this project")
+
+    if roots:
+        lines.append(f"- **Canonical source roots**: {', '.join(roots)}")
+    if any("/store/" in path for path in lower_paths):
+        lines.append("- **State management**: Store/reducer layer present under the canonical frontend source tree")
+    if any(path.endswith(("manifest.json", "sw.js")) for path in lower_paths):
+        lines.append("- **PWA/offline layer**: Manifest/service worker files are part of the planned structure")
+    if any("/test" in path or path.endswith((".spec.ts", ".test.ts", "_test.py")) for path in lower_paths):
+        lines.append("- **Testing**: Dedicated test files/directories are included in the canonical tree")
+    if task_domains:
+        lines.append(f"- **Task coverage domains**: {', '.join(sorted(task_domains))}")
+
+    return "\n".join(lines).strip()
+
+
+def _derive_dynamic_dependencies(
+    *,
+    workspace_tree: str,
+    workspace_contract: Optional[Dict[str, Any]],
+) -> str:
+    repo_root = _repo_root_dir()
+    contract = workspace_contract if isinstance(workspace_contract, dict) else {}
+    candidates: List[str] = []
+
+    candidates.extend(_extract_paths_from_workspace_tree(workspace_tree))
+    candidates.extend(
+        str(path or "").strip()
+        for path in (contract.get("root_files") or [])
+        if str(path or "").strip()
+    )
+    for module in (contract.get("modules") or []):
+        if not isinstance(module, dict):
+            continue
+        candidates.extend(
+            str(path or "").strip()
+            for path in (module.get("manifests") or [])
+            if str(path or "").strip()
+        )
+    resolved: List[str] = []
+    seen = set()
+
+    def _looks_like_dependency_manifest(path: str) -> bool:
+        normalized = _normalize_master_tree_path_candidate(path).lower()
+        if not normalized:
+            return False
+        filename = os.path.basename(normalized)
+        if filename in {"dockerfile", "readme.md", "license", "license.md"}:
+            return False
+        # Pattern-based detection instead of exact manifest name matching.
+        manifest_hint = _re.search(
+            r"(depend|deps|package|requirement|pip|poetry|pdm|pyproject|lock)",
+            filename,
+            flags=_re.IGNORECASE,
+        )
+        extension_hint = filename.endswith((".json", ".toml", ".txt", ".lock", ".yml", ".yaml"))
+        return bool(manifest_hint and extension_hint)
+
+    # First resolve manifests hinted by canonical tree/task/contract context.
+    for candidate in candidates:
+        rel = _resolve_repo_manifest_path(candidate, repo_root)
+        if not rel or rel in seen:
+            continue
+        if not _looks_like_dependency_manifest(rel):
+            continue
+        seen.add(rel)
+        resolved.append(rel)
+
+    # Then discover manifests directly from repository files to avoid path assumptions.
+    for root, _, files in os.walk(repo_root):
+        rel_root = os.path.relpath(root, repo_root)
+        root_name = os.path.basename(rel_root)
+        if rel_root.startswith(".git") or root_name in {"venv", ".venv", "node_modules", "__pycache__"}:
+            continue
+        for name in files:
+            rel = name if rel_root in (".", "") else f"{rel_root}/{name}"
+            rel = rel.replace("\\", "/")
+            if rel in seen:
+                continue
+            if not _looks_like_dependency_manifest(rel):
+                continue
+            seen.add(rel)
+            resolved.append(rel)
+
+    if not resolved:
+        return ""
+
+    sections: List[str] = []
+    for rel in sorted(resolved):
+        abs_path = os.path.join(repo_root, rel)
+        basename = os.path.basename(rel).lower()
+        try:
+            with open(abs_path, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+        except Exception:
+            continue
+
+        if rel.lower().endswith(".json"):
+            try:
+                data = json.loads(raw)
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                dependency_keys = [
+                    key for key, value in data.items()
+                    if isinstance(value, dict) and "depend" in str(key).lower()
+                ]
+                if dependency_keys:
+                    payload: Dict[str, Dict[str, str]] = {}
+                    for key in dependency_keys[:4]:
+                        value = data.get(key)
+                        if isinstance(value, dict):
+                            payload[str(key)] = {
+                                str(k): str(v) for k, v in sorted(value.items())[:30]
+                            }
+                    if payload:
+                        sections.append(f"**Manifest (`{rel}`)**")
+                        sections.append("```json")
+                        sections.append(json.dumps(payload, ensure_ascii=True, indent=2))
+                        sections.append("```")
+                        continue
+
+        if rel.lower().endswith(".toml"):
+            preview = [line.rstrip() for line in raw.splitlines() if line.strip()][:80]
+            if preview:
+                sections.append(f"**Manifest (`{rel}`)**")
+                sections.append("```toml")
+                sections.extend(preview)
+                sections.append("```")
+                continue
+
+        lines = [
+            line.strip()
+            for line in raw.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ][:40]
+        if lines:
+            sections.append(f"**Manifest (`{rel}`)**")
+            sections.append("```text")
+            sections.extend(lines)
+            sections.append("```")
+
+    return "\n".join(sections).strip()
 
 
 def _build_public_master_task_plan(task_plan: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -7820,6 +8058,8 @@ Output rules:
 - Resolve inconsistencies in favor of the current repository tree if it is already established.
 - Choose the best production-ready structure for the tasks, not the easiest structure.
 - Do not include prose before or after the JSON.
+- Keep paths repository-relative; do not require an extra wrapper prefix in canonical source roots.
+- If you use a root label in JSON, it must not force all source roots to be prefixed with a non-repository segment.
 """
 
     payload = {
@@ -7875,8 +8115,60 @@ def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
             if isinstance(parsed, dict):
                 return parsed
         except Exception:
-            continue
+            try:
+                # Fallback for pseudo-JSON emitted as Python dict literals.
+                py_parsed = ast.literal_eval(normalized)
+                if isinstance(py_parsed, dict):
+                    return py_parsed
+            except Exception:
+                continue
     return None
+
+
+def _tree_name_looks_serialized_payload(name: Any) -> bool:
+    text = str(name or "").strip()
+    if not text:
+        return False
+    return text.startswith("{'name':") or text.startswith('{"name":') or ("'children'" in text and "'name'" in text)
+
+
+def _sanitize_tree_node(node: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(node, dict):
+        return None
+
+    raw_name = node.get("name")
+    name = str(raw_name or "").strip()
+    if not name:
+        return None
+
+    if _tree_name_looks_serialized_payload(name):
+        try:
+            reparsed = ast.literal_eval(name)
+            if isinstance(reparsed, dict):
+                reparsed_node = _sanitize_tree_node(reparsed)
+                if reparsed_node:
+                    return reparsed_node
+        except Exception:
+            return None
+
+    children_in = node.get("children")
+    children_list = children_in if isinstance(children_in, list) else []
+    sanitized_children: List[Dict[str, Any]] = []
+    seen = set()
+    for child in children_list:
+        sanitized_child = _sanitize_tree_node(child)
+        if not sanitized_child:
+            continue
+        sig = (
+            sanitized_child.get("name"),
+            bool(sanitized_child.get("children")),
+        )
+        if sig in seen:
+            continue
+        seen.add(sig)
+        sanitized_children.append(sanitized_child)
+
+    return {"name": name, "children": sanitized_children}
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -7974,15 +8266,62 @@ def _heuristic_master_tree_validation(
         root_text = str(root or "").strip()
         if root_text:
             expected_roots.append(root_text)
+    if backend_key == "none":
+        expected_roots = [
+            root for root in expected_roots
+            if "backend" not in root.lower() and "/app" not in root.lower()
+        ]
+    if frontend_key == "none":
+        expected_roots = [
+            root for root in expected_roots
+            if "frontend" not in root.lower() and "/src" not in root.lower()
+        ]
 
     issues = []
     recommendations = []
     issues.extend(_detect_ambiguous_master_tree_issues(workspace_tree)[:3])
+    tree_file_paths = _extract_paths_from_workspace_tree(workspace_tree)
+    tree_file_paths_lower = [path.lower() for path in tree_file_paths]
+
+    raw_tree = str(workspace_tree or "").strip()
+    if raw_tree.startswith(("{", "[")):
+        parsed_tree = _extract_json_object_from_text(raw_tree)
+        if not isinstance(parsed_tree, dict):
+            issues.append("Canonical tree JSON is malformed or not parseable as an object.")
+        else:
+            root_name = str(parsed_tree.get("name") or "").strip()
+            if _tree_name_looks_serialized_payload(root_name):
+                issues.append("Canonical tree root 'name' contains serialized object text instead of a plain label.")
+            sanitized = _sanitize_tree_node(parsed_tree)
+            if not sanitized:
+                issues.append("Canonical tree JSON failed structural sanitization (invalid node shape).")
 
     if task_count > 0 and file_line_count < expected_file_lines:
         issues.append(
             "The project tree is too shallow relative to the number of tasks and may not contain enough concrete files."
         )
+
+    # Generic structural hygiene checks.
+    config_under_source = [
+        path for path in tree_file_paths_lower
+        if "/src/" in path and ("config." in os.path.basename(path) or os.path.basename(path).startswith(".env"))
+    ]
+    if config_under_source:
+        issues.append("Configuration/environment files are placed inside source directories instead of module roots.")
+
+    config_variants: Dict[str, set[str]] = {}
+    for path in tree_file_paths_lower:
+        base = os.path.basename(path)
+        match = _re.match(r"^(.*?config)\.([a-z0-9]+)$", base)
+        if not match:
+            continue
+        stem = match.group(1)
+        ext = match.group(2)
+        directory = os.path.dirname(path)
+        key = f"{directory}/{stem}"
+        config_variants.setdefault(key, set()).add(ext)
+    if any(len(exts) > 1 for exts in config_variants.values()):
+        issues.append("The tree contains multiple extension variants of the same config file in a single directory.")
 
     for root in expected_roots[:8]:
         if root.lower() not in lines_lower:
@@ -8178,6 +8517,7 @@ Rules:
 - Reject if the tree contains alternatives, conditional wording, multiple diagrams, or more than one candidate root.
 - Reject if the tree invents a new top-level application root when the current repo tree already establishes a different canonical root.
 - Reject if Flask + Jinja is indicated but the tree invents a separate Node frontend app root instead of using template/static structure.
+- Reject if source roots in the proposed tree become valid only after adding/removing an artificial wrapper prefix.
 - If rejected, provide a corrected_tree as a full replacement tree, not a diff.
 """
 
@@ -8226,16 +8566,6 @@ Rules:
             "validator_agent_id": "structure_validator",
             "mode": "ai",
         }
-        if not ai_result.get("approved") and heuristic.get("approved"):
-            heuristic_override = dict(heuristic)
-            heuristic_override["mode"] = "heuristic_override"
-            recommendations = list(heuristic_override.get("recommendations") or [])
-            recommendations.insert(
-                0,
-                "AI validator rejection was ignored because deterministic heuristic validation approved the tree.",
-            )
-            heuristic_override["recommendations"] = recommendations[:10]
-            return heuristic_override
         return ai_result
     except Exception as exc:
         logger.warning("Master project tree validation failed, using heuristic fallback: %s", exc)
@@ -8271,6 +8601,53 @@ def _summarize_master_tree_validation(validation: Optional[Dict[str, Any]]) -> s
     if mode:
         detail_parts.append(f"mode={mode}")
     return " | ".join(detail_parts[:3])
+
+
+def _render_master_tree_validation_report(validation: Optional[Dict[str, Any]]) -> str:
+    payload = validation if isinstance(validation, dict) else {}
+    lines: List[str] = []
+    mode = str(payload.get("mode") or "").strip()
+    confidence = payload.get("confidence")
+    if mode:
+        lines.append(f"mode: {mode}")
+    if confidence not in (None, ""):
+        lines.append(f"confidence: {confidence}")
+
+    missing = [
+        str(item or "").strip()
+        for item in (payload.get("issues_missing_files") or [])
+        if str(item or "").strip()
+    ]
+    conflicts = [
+        str(item or "").strip()
+        for item in (payload.get("issues_conflicts") or [])
+        if str(item or "").strip()
+    ]
+    recommendations = [
+        str(item or "").strip()
+        for item in (payload.get("recommendations") or [])
+        if str(item or "").strip()
+    ]
+    corrected_tree = _strip_markdown_fences(str(payload.get("corrected_tree") or "")).strip()
+
+    if missing:
+        lines.append("missing/coverage issues:")
+        for item in missing[:12]:
+            lines.append(f"- {item}")
+    if conflicts:
+        lines.append("conflicts:")
+        for item in conflicts[:12]:
+            lines.append(f"- {item}")
+    if recommendations:
+        lines.append("recommendations:")
+        for item in recommendations[:12]:
+            lines.append(f"- {item}")
+    if corrected_tree:
+        preview = corrected_tree[:1800]
+        lines.append("validator_corrected_tree_preview:")
+        lines.append(preview)
+
+    return "\n".join(lines).strip()
 
 
 def _coerce_note_entries(existing_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -8366,6 +8743,9 @@ async def _load_persisted_master_note(
     validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
     if not validation.get("approved"):
         return {}
+    if str(validation.get("mode") or "").strip().lower() == "heuristic_override":
+        # Do not reuse notes where AI validator rejected the structure.
+        return {}
 
     persisted_task_signature = str(payload.get("task_signature") or "").strip()
     if persisted_task_signature and persisted_task_signature != task_signature:
@@ -8377,6 +8757,14 @@ async def _load_persisted_master_note(
     workspace_tree = str(payload.get("workspace_tree") or "").strip()
     if not workspace_tree:
         return {}
+    normalized_persisted_tree = _ensure_workspace_tree_json(
+        workspace_tree,
+        fallback_root_label=(project_token or "project"),
+    )
+    if not normalized_persisted_tree:
+        # Persisted note contains malformed/non-canonical tree; force regeneration.
+        return {}
+    workspace_tree = normalized_persisted_tree
 
     stack_profile = payload.get("stack_profile") if isinstance(payload.get("stack_profile"), dict) else {}
     workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
@@ -8890,6 +9278,7 @@ async def ensure_master_workspace_note(
         while not validation.get("approved") and retry_count < max_retries:
             retry_count += 1
             validation_summary = _summarize_master_tree_validation(validation)
+            validation_report = _render_master_tree_validation_report(validation)
             _log_master_agent(
                 f"🔄 Master project tree validation conflict (Attempt {retry_count}/{max_retries}): {validation_summary}\n"
                 "Auto-healing... Master Agent is actively regenerating tree plan to fix structural mismatch.",
@@ -8900,7 +9289,12 @@ async def ensure_master_workspace_note(
             workspace_tree = await _generate_detailed_project_tree_plan(
                 tasks=tasks,
                 brd_summary=brd_summary,
-                kg_context=kg_context + f"\n\nCRITICAL FIX REQUIRED:\nYour previous tree failed validation:\n{validation_summary}\nYou MUST fix these structural conflicts to proceed.",
+                kg_context=kg_context + (
+                    "\n\nCRITICAL FIX REQUIRED:\n"
+                    "Your previous tree failed validation. You MUST fix all issues below before returning the next tree.\n"
+                    f"{validation_report or validation_summary}\n"
+                    "Do not partially fix one item and ignore others."
+                ),
                 tech_spec=tech_spec,
                 stack_profile=stack_profile,
                 workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
@@ -8934,6 +9328,29 @@ async def ensure_master_workspace_note(
                 "title": title,
                 "validation": validation,
             }
+
+        dynamic_architecture = _derive_dynamic_architecture_overview(
+            stack_profile=stack_profile,
+            workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+            workspace_tree=workspace_tree,
+            tasks=tasks,
+        )
+        if dynamic_architecture:
+            architecture_overview = dynamic_architecture
+
+        dynamic_dependencies = _derive_dynamic_dependencies(
+            workspace_tree=workspace_tree,
+            workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+        )
+        if dynamic_dependencies:
+            dependencies = dynamic_dependencies
+
+        normalized_tree_json = _ensure_workspace_tree_json(
+            workspace_tree,
+            fallback_root_label=(effective_project or "project"),
+        )
+        if normalized_tree_json:
+            workspace_tree = normalized_tree_json
 
         try:
             refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
@@ -8970,6 +9387,7 @@ async def ensure_master_workspace_note(
             "current_repo_tree": current_repo_tree,
             "current_repo_tree_source": current_repo_tree_source,
             "workspace_tree": workspace_tree,
+            "workspace_tree_json": normalized_tree_json or workspace_tree,
             "workspace_tree_source": workspace_tree_source,
             "architecture_overview": architecture_overview[:3000],
             "dependencies": dependencies[:1800],
@@ -8993,10 +9411,8 @@ async def ensure_master_workspace_note(
             "instructions": [
                 "Use this canonical tree as the single source of truth for where files should live.",
                 "Every task below must be implemented inside this structure; do not create alternate app roots or duplicate folders.",
-                "Coordinate task pickup through the normal task workflow rather than relying on names written in this note.",
-                "If another agent already has the relevant file in its status note, extend that file instead of recreating the same feature elsewhere.",
-                "Keep per-agent status notes updated so other agents can see live work, completed files, and coordination guidance.",
-                "If a task requires a structural change, update this master note first before coding.",
+                "Coordinate task pickup through the normal task workflow.",
+                "If a task requires a structural change, update this master note first.",
             ],
         }
         rendered_markdown = _render_master_note_markdown(public_payload)
@@ -10930,10 +11346,18 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 if post_structure_validation.get("duplicates") or post_structure_validation.get("violations"):
                     dup_count = len(post_structure_validation.get("duplicates", []))
                     viol_count = len(post_structure_validation.get("violations", []))
+                    detail_text = _format_structure_issue_details(
+                        post_structure_validation.get("duplicates", []) or [],
+                        post_structure_validation.get("violations", []) or [],
+                        max_items=3,
+                    )
+                    base_message = f"⚠️ Structure issues detected after execution: {dup_count} duplicates, {viol_count} violations"
+                    if detail_text:
+                        base_message += f" | {detail_text}"
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "warning",
-                        "message": f"⚠️ Structure issues detected after execution: {dup_count} duplicates, {viol_count} violations"
+                        "message": base_message
                     })
             except Exception as struct_err:
                 logger.debug(f"Structure validation skipped: {struct_err}")
@@ -13645,33 +14069,59 @@ async def _master_validate_structure(
                 if str(path).strip()
             ]
             
-            # Check for duplicates (same file in multiple locations)
-            file_basenames = {}
+            # Check for true duplicates (exact same normalized path observed multiple times).
+            path_counts: Dict[str, int] = {}
             for file_path in current_files:
-                basename = os.path.basename(file_path)
-                if basename in file_basenames:
+                normalized = _normalize_master_tree_path_candidate(file_path)
+                if not normalized:
+                    continue
+                path_counts[normalized] = path_counts.get(normalized, 0) + 1
+            for normalized, count in path_counts.items():
+                if count > 1:
                     duplicates.append({
-                        "file": basename,
-                        "locations": [file_basenames[basename], file_path],
+                        "file": normalized,
+                        "occurrences": count,
                     })
-                else:
-                    file_basenames[basename] = file_path
             
             # Check workspace contract violations
             if isinstance(workspace_contract, dict) and workspace_contract.get("status") == "ready":
-                allowed_roots = set((workspace_contract.get("allowed_source_roots") or []))
-                allowed_dirs = set((workspace_contract.get("allowed_top_level_dirs") or []))
+                allowed_roots = [
+                    _normalize_master_tree_path_candidate(path)
+                    for path in (workspace_contract.get("allowed_source_roots") or [])
+                    if _normalize_master_tree_path_candidate(path)
+                ]
+                allowed_dirs = {
+                    _normalize_master_tree_path_candidate(path)
+                    for path in (workspace_contract.get("allowed_top_level_dirs") or [])
+                    if _normalize_master_tree_path_candidate(path)
+                }
+                allowed_root_files = {
+                    _normalize_master_tree_path_candidate(path)
+                    for path in (workspace_contract.get("root_files") or [])
+                    if _normalize_master_tree_path_candidate(path)
+                }
                 
                 for file_path in current_files:
-                    parts = file_path.split("/")
-                    if parts:
-                        root_dir = parts[0]
-                        if root_dir not in allowed_roots and root_dir not in allowed_dirs:
-                            if root_dir not in [".git", ".github", "node_modules", "__pycache__", ".venv", "venv"]:
-                                violations.append({
-                                    "file": file_path,
-                                    "reason": f"File outside allowed roots: {root_dir}",
-                                })
+                    normalized_path = _normalize_master_tree_path_candidate(file_path)
+                    if not normalized_path:
+                        continue
+                    if normalized_path in allowed_root_files:
+                        continue
+                    parts = normalized_path.split("/")
+                    root_dir = parts[0] if parts else ""
+                    if root_dir in {".git", ".github", "node_modules", "__pycache__", ".venv", "venv"}:
+                        continue
+                    in_allowed_dir = root_dir in allowed_dirs
+                    in_allowed_root = any(
+                        normalized_path == root
+                        or normalized_path.startswith(root + "/")
+                        for root in allowed_roots
+                    )
+                    if not in_allowed_dir and not in_allowed_root:
+                        violations.append({
+                            "file": normalized_path,
+                            "reason": f"File outside allowed roots: {root_dir}",
+                        })
         
         return {
             "valid": len(violations) == 0 and len(duplicates) == 0,
@@ -13687,6 +14137,40 @@ async def _master_validate_structure(
             "duplicates": [],
             "violations": [],
         }
+
+
+def _format_structure_issue_details(
+    duplicates: List[Dict[str, Any]],
+    violations: List[Dict[str, Any]],
+    *,
+    max_items: int = 3,
+) -> str:
+    detail_parts: List[str] = []
+
+    for entry in (duplicates or [])[:max_items]:
+        if not isinstance(entry, dict):
+            continue
+        file_path = str(entry.get("file") or "").strip()
+        occurrences = entry.get("occurrences")
+        if file_path:
+            if occurrences not in (None, ""):
+                detail_parts.append(f"duplicate: {file_path} (occurrences={occurrences})")
+            else:
+                detail_parts.append(f"duplicate: {file_path}")
+
+    for entry in (violations or [])[:max_items]:
+        if not isinstance(entry, dict):
+            continue
+        file_path = str(entry.get("file") or "").strip()
+        reason = str(entry.get("reason") or "").strip()
+        if file_path and reason:
+            detail_parts.append(f"violation: {file_path} ({reason})")
+        elif file_path:
+            detail_parts.append(f"violation: {file_path}")
+        elif reason:
+            detail_parts.append(f"violation: {reason}")
+
+    return " | ".join(detail_parts[: max_items * 2])
 
 
 def _check_file_duplication_before_create(
@@ -13975,9 +14459,21 @@ async def _master_supervisor_loop(
                         project_token=project_token,
                     )
                 elif git_coordination.get("structure_duplicates") or git_coordination.get("structure_violations"):
+                    dup_items = git_coordination.get("structure_duplicates", []) or []
+                    viol_items = git_coordination.get("structure_violations", []) or []
+                    detail_text = _format_structure_issue_details(
+                        dup_items,
+                        viol_items,
+                        max_items=3,
+                    )
+                    message = (
+                        f"⚠️ Structure issues detected: {len(dup_items)} duplicates, "
+                        f"{len(viol_items)} violations"
+                    )
+                    if detail_text:
+                        message += f" | {detail_text}"
                     _log_master_agent(
-                        f"⚠️ Structure issues detected: {len(git_coordination.get('structure_duplicates', []))} duplicates, "
-                        f"{len(git_coordination.get('structure_violations', []))} violations",
+                        message,
                         level="warning",
                         project_token=project_token,
                     )
