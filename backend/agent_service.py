@@ -5356,7 +5356,7 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
         normalized.sort(key=_task_sort_key)
         return normalized
     except Exception as e:
-        print(f"[agent_service] Failed to fetch external tasks: {e}")
+        logger.error(f"[agent_service] Failed to fetch external tasks: {e}")
         return []
 
 
@@ -5375,7 +5375,7 @@ async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, 
         task_token = task_token or get_project_task_token(project_token)
         await task_service.add_checklist_to_task(int(task_id), updated, task_token=task_token)
     except Exception as e:
-        print(f"[agent_service] Failed to update checklist for task {task_id}: {e}")
+        logger.error(f"[agent_service] Failed to update checklist for task {task_id}: {e}")
 
 
 def _normalize_task_id(task: Dict[str, Any]):
@@ -5548,10 +5548,13 @@ async def _restore_persisted_agent_assignments(
     if not target_agent_ids:
         return {"count": 0, "recovered": []}
 
+    now = time.time()
+    last_restore_at = restore_meta.get("completed_at", 0)
     if (
         not force
         and str(restore_meta.get("task_token") or "").strip() == str(effective_token or "").strip()
         and restore_meta.get("completed") is True
+        and (now - last_restore_at < 120)  # 2 minutes cache
     ):
         return {
             "count": 0,
@@ -13850,12 +13853,13 @@ async def repair_preview(
                 "status": "pending"
             }
             
-            # Triage: Align Deploy Agent for setup issues, Dev Agent for semantic/logic issues
+            # Align Deploy Agent for setup issues, Dev Agent for semantic/logic issues
             repair_owner = DEPLOY_AGENT_ID
             pstate["last_error_reason"] = str(error_context)
             
             # Simple content-based triage
-            if any(kw in str(error_context).lower() for kw in ["missing", "component", "wrong", "rejected by ai", "semantic"]):
+            is_semantic = any(kw in str(error_context).lower() for kw in ["missing", "component", "wrong", "rejected", "semantic", "audit failed", "lacks", "placeholder"])
+            if is_semantic:
                 repair_owner = _pick_best_dev_agent(project_token)
                 
             master_agent = project_agents.get(MASTER_AGENT_ID)
@@ -13863,8 +13867,51 @@ async def repair_preview(
                 master_agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"⚖️ Triage: Aligning {repair_owner} to address deployment failure ({'semantic' if repair_owner != DEPLOY_AGENT_ID else 'operational'} issue)."
+                    "message": f"⚖️ Triage: Aligning {repair_owner} to address deployment failure ({'semantic' if is_semantic else 'operational'} issue)."
                 })
+
+            # Formalize as a system task (BUG) for visibility
+            try:
+                from task_service import task_service
+                effective_token = get_project_task_token(project_token)
+                deadline = await _resolve_project_deadline(project_token, task_token=effective_token)
+                
+                bug_payload = {
+                    "taskName": f"Fix Deployment: {repair_owner}",
+                    "description": f"The application failed verification/deployment.\n\nTYPE: {'Semantic/Logic' if is_semantic else 'Operational/Setup'}\n\nERROR:\n{error_context[:2000]}",
+                    "assignees": [repair_owner],
+                    "wallet": 1,
+                    "deadline": deadline,
+                    "startdate": datetime.utcnow().strftime("%Y-%m-%d"),
+                    "task_type": "BUG",
+                    "priority": "high",
+                }
+                
+                create_res = await task_service.create_task(bug_payload, task_token=effective_token)
+                ext_task_id_raw = create_res.get("id") or create_res.get("task_id") or create_res.get("taskId")
+                ext_task_id = str(ext_task_id_raw or uuid.uuid4().hex[:8])
+                task["id"] = ext_task_id
+                
+                # Normalize username for the external API (e.g., agent_05 -> agent5)
+                # This ensures the external system recognizes the assigned worker.
+                ext_username = build_external_agent_username(repair_owner)
+                
+                # Assign it formally
+                await task_service.assign_task(ext_task_id, [ext_username], task_token=effective_token)
+                
+                # Explicitly transition status to "In Progress" so it shows as "started" in the dashboard
+                try:
+                    if ext_task_id_raw:
+                        await task_service.update_task(int(ext_task_id_raw), {"taskStatus": "In Progress"}, task_token=effective_token)
+                except Exception as e_status:
+                    _master_log(f"⚠️ Could not transition task {ext_task_id} status: {e_status}")
+                
+                # Opt-in automatically so the agent "starts" working in the system
+                await task_service.opt_in_task({"task_id": ext_task_id, "username": ext_username}, task_token=effective_token)
+                
+                _master_log(f"🛠️ Created, assigned, and opted-in BUG task {ext_task_id} to {ext_username} for deployment repair.")
+            except Exception as e_task:
+                _master_log(f"⚠️ Failed to formalize BUG task startup: {e_task}")
 
             # Wait for AI to finish
             res = await asyncio.wait_for(

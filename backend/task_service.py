@@ -47,6 +47,25 @@ class TaskManagementService:
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
         self.token_expires_at: int = 0
+        self._tasks_cache: Dict[tuple, Any] = {}  # Keys: (task_token, page)
+        self._total_tasks_cache: Dict[str, Any] = {}  # Keys: task_token
+        self._project_info_cache: Dict[str, Any] = {}  # Keys: task_token
+        self._sprints_cache: Dict[str, Any] = {}  # Keys: task_token
+        self._cache_ttl = 120  # 2 minutes in seconds
+
+    def _clear_cache(self, task_token: Optional[str] = None):
+        """Clear task-related caches."""
+        if task_token:
+            # Clear all pages for this token
+            self._tasks_cache = {k: v for k, v in self._tasks_cache.items() if k[0] != task_token}
+            self._total_tasks_cache.pop(task_token, None)
+            self._project_info_cache.pop(task_token, None)
+            self._sprints_cache.pop(task_token, None)
+        else:
+            self._tasks_cache.clear()
+            self._total_tasks_cache.clear()
+            self._project_info_cache.clear()
+            self._sprints_cache.clear()
 
     async def _get_access_token(self) -> str:
         """Fetch a new access token using client credentials."""
@@ -206,6 +225,7 @@ class TaskManagementService:
 
     async def create_task(self, task_data: dict, task_token: Optional[str] = None) -> dict:
         """Create a new task in external task management API."""
+        self._clear_cache(task_token)
         return await self._make_request("POST", "/api/agent/tasks/", task_token=task_token, json=task_data)
 
     async def create_tasks_batch(self, payload: Any, task_token: Optional[str] = None) -> dict:
@@ -215,17 +235,28 @@ class TaskManagementService:
         files = {
             "file": ("generated_tasks.json", serialized_payload, "application/json")
         }
-        return await self._make_request(
+        result = await self._make_request(
             "POST",
             "/api/agent/tasks/batch/",
             task_token=task_token,
             headers=headers,
             files=files,
         )
+        self._clear_cache(task_token)
+        return result
 
     async def get_sprints(self, task_token: Optional[str] = None) -> dict:
         """Fetch sprints from external task management API."""
-        return await self._make_request("GET", "/api/agent/sprints/", task_token=task_token)
+        cache_key = task_token or "default"
+        now = time.time()
+        if cache_key in self._sprints_cache:
+            ts, data = self._sprints_cache[cache_key]
+            if now - ts < self._cache_ttl:
+                return data
+        
+        response = await self._make_request("GET", "/api/agent/sprints/", task_token=task_token)
+        self._sprints_cache[cache_key] = (now, response)
+        return response
 
     async def create_sprint(self, sprint_data: dict, task_token: Optional[str] = None) -> dict:
         """Create sprint in external task management API."""
@@ -249,6 +280,7 @@ class TaskManagementService:
 
     async def update_task(self, task_id: int, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update a task in external task management API."""
+        self._clear_cache(task_token)
         return await self._make_request("PATCH", f"/api/agent/tasks/{task_id}/", task_token=task_token, json=payload)
 
     async def assign_task(self, task_id: int, assignees: list, task_token: Optional[str] = None) -> dict:
@@ -279,20 +311,49 @@ class TaskManagementService:
 
     async def get_tasks(self, page: int = None, task_token: Optional[str] = None) -> dict:
         """Fetch the list of generated tasks from the external task management API."""
+        cache_key = (task_token, page)
+        now = time.time()
+        
+        if cache_key in self._tasks_cache:
+            timestamp, data = self._tasks_cache[cache_key]
+            if now - timestamp < self._cache_ttl:
+                return data
+
         endpoint = "/api/agent/tasks-list"
         if page:
             endpoint += f"?page={page}"
         response = await self._make_request("GET", endpoint, task_token=task_token)
-        print("Tasks list API Response:", response)
+        
+        self._tasks_cache[cache_key] = (now, response)
         return response
 
     async def get_total_tasks(self, task_token: Optional[str] = None) -> dict:
         """Fetch all tasks (unpaginated total list) from the external task management API."""
-        return await self._make_request("GET", "/api/agent/tasks-total-list", task_token=task_token)
+        cache_key = task_token or "default"
+        now = time.time()
+        
+        if cache_key in self._total_tasks_cache:
+            timestamp, data = self._total_tasks_cache[cache_key]
+            if now - timestamp < self._cache_ttl:
+                return data
+
+        response = await self._make_request("GET", "/api/agent/tasks-total-list", task_token=task_token)
+        
+        self._total_tasks_cache[cache_key] = (now, response)
+        return response
 
     async def get_project_info(self, task_token: Optional[str] = None) -> dict:
         """Fetch project info (deadline, wallet, team) from the external task management API."""
-        return await self._make_request("GET", "/api/agent/project-info/", task_token=task_token)
+        cache_key = task_token or "default"
+        now = time.time()
+        if cache_key in self._project_info_cache:
+            ts, data = self._project_info_cache[cache_key]
+            if now - ts < self._cache_ttl:
+                return data
+                
+        response = await self._make_request("GET", "/api/agent/project-info/", task_token=task_token)
+        self._project_info_cache[cache_key] = (now, response)
+        return response
 
     async def update_project_status(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update project deadline/status in external task management API."""
