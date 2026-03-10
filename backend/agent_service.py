@@ -4877,6 +4877,42 @@ async def _master_assign_task_to_agent(
         # Call the assignment API endpoint
         import httpx
         from config import settings
+        from database import SessionLocal
+        from datetime import timedelta
+        import auth
+        import models
+        
+        # Get a user from database to create authentication token
+        # Prefer admin user, fallback to any user
+        db = SessionLocal()
+        auth_token = None
+        try:
+            # Try to get an admin user first
+            admin_user = db.query(models.User).filter(models.User.is_org_admin == True).first()
+            if not admin_user:
+                # Fallback to any user
+                admin_user = db.query(models.User).first()
+            
+            if admin_user:
+                # Create access token for the user
+                access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+                auth_token = auth.create_access_token(
+                    data={"sub": admin_user.email}, 
+                    expires_delta=access_token_expires
+                )
+        except Exception as token_err:
+            logger.warning(f"[Master Agent] Failed to create auth token: {token_err}")
+        finally:
+            db.close()
+        
+        if not auth_token:
+            logger.error("[Master Agent] Cannot create auth token - no users found in database")
+            _log_master_agent(
+                f"⚠️ Failed to assign task {task_id} to {agent_id}: No authentication token available (no users in database)",
+                level="error",
+                project_token=project_token,
+            )
+            return False
         
         url = f"{settings.frontend_url.replace(':5173', ':8000')}/api/agent/task-assign-in/"
         if not url.startswith("http"):
@@ -4889,6 +4925,7 @@ async def _master_assign_task_to_agent(
         
         headers = {
             "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_token}",
         }
         
         # Add task token if available
