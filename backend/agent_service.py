@@ -420,9 +420,11 @@ def _extract_task_checklist_items(task: Dict[str, Any], limit: Optional[int] = N
     return normalized
 
 
-def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 6000) -> str:
+def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 0) -> str:
     if isinstance(brd_analysis, str):
-        return str(brd_analysis).strip()[:max_chars]
+        if max_chars > 0:
+            return str(brd_analysis).strip()[:max_chars]
+        return str(brd_analysis).strip()
     if not isinstance(brd_analysis, dict):
         return ""
 
@@ -436,8 +438,8 @@ def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 6000) -> str
                 text = json.dumps(value, ensure_ascii=True, indent=2)
             except Exception:
                 text = str(value).strip()
-        if len(text) > limit:
-            return text[: max(0, limit - 3)].rstrip() + "..."
+        if limit != float('inf') and len(text) > limit:
+            return text[: max(0, int(limit) - 3)].rstrip() + "..."
         return text
 
     sections: List[str] = []
@@ -455,7 +457,7 @@ def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 6000) -> str
         ("governanceContext", "Governance Context"),
     ]
 
-    per_section_limit = max(240, max_chars // max(2, len(preferred_keys)))
+    per_section_limit = max(240, max_chars // max(2, len(preferred_keys))) if max_chars > 0 else float('inf')
     for key, label in preferred_keys:
         text = to_text(brd_analysis.get(key), per_section_limit)
         if not text or text in seen_values:
@@ -464,14 +466,13 @@ def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 6000) -> str
         seen_values.add(text)
 
     if not sections:
-        fallback_text = to_text(brd_analysis, max_chars)
-        return fallback_text[:max_chars]
+        fallback_text = to_text(brd_analysis, float('inf') if max_chars == 0 else max_chars)
+        return fallback_text if max_chars == 0 else fallback_text[:max_chars]
 
     combined = "\n\n".join(sections)
-    if len(combined) > max_chars:
+    if max_chars > 0 and len(combined) > max_chars:
         combined = combined[: max(0, max_chars - 3)].rstrip() + "..."
     return combined
-
 
 def _normalize_seed_task(task: Dict[str, Any], sequence_number: int, project_token: Optional[str] = None) -> Dict[str, Any]:
     task_id = str(task.get("task_id") or task.get("id") or f"TASK-{sequence_number:02d}").strip()
@@ -5339,6 +5340,7 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
                 "milestone_name": milestone_name,
                 "startdate": task_start_date,
                 "deadline": task_deadline,
+                "assignees": t.get("assignees") or [],
                 "_project_token": project_token,
             })
 
@@ -5471,11 +5473,17 @@ def _latest_active_status_note_entry(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _agent_identity_keys(agent_id: str, agent_name: Optional[str]) -> set[str]:
+    sequence = _extract_dev_agent_sequence(agent_id)
     values = {
         str(agent_id or "").strip().lower(),
         normalize_agent_name(agent_id, agent_name).strip().lower(),
         build_external_agent_username(agent_id, agent_name).strip().lower(),
     }
+    if sequence is not None:
+        values.add(str(sequence))
+        values.add(f"agent {sequence}")
+        values.add(f"agent{sequence}")
+
     compacted = {
         _re.sub(r"[^a-z0-9]", "", value)
         for value in values
@@ -10663,7 +10671,10 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             if claimed_id in completed_task_ids:
                 continue
             ext_status = external_status_by_id.get(str(claimed_id))
-            if ext_status is None or not _task_status_is_done(ext_status):
+            # Only release a claimed id if it has disappeared upstream or is
+            # definitively completed. If it is still active upstream, keep it
+            # marked as claimed so other local agents do not compete for it.
+            if ext_status is None or _task_status_is_done(ext_status):
                 claimed_task_ids.discard(claimed_id)
                 stale_claims.append(str(claimed_id))
         if stale_claims:
@@ -10765,7 +10776,20 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 )
                 logger.info(f"[{agent_id}] ✅ Serial opt-in succeeded for task {tid}")
             except Exception as opt_err:
-                logger.info(f"[{agent_id}] Opt-in failed for task {tid} (another agent may have claimed it): {opt_err}")
+                # If upstream reports that the task already has assigned users,
+                # treat it as claimed elsewhere so no other local agents will
+                # attempt to opt in again.
+                err_text = str(opt_err).lower()
+                if "task already has assigned users" in err_text:
+                    claimed_task_ids.add(tid)
+                    logger.info(
+                        f"[{agent_id}] Task {tid} already has assigned users upstream; "
+                        f"marking as claimed and skipping."
+                    )
+                else:
+                    logger.info(
+                        f"[{agent_id}] Opt-in failed for task {tid} (another agent may have claimed it): {opt_err}"
+                    )
                 skip_reasons["opt_in_failed"] += 1
                 continue
 

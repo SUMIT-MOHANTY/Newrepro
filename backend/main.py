@@ -267,7 +267,7 @@ def _normalize_and_validate_public_url(raw_url: str) -> str:
     return normalized
 
 
-def _strip_html_to_text(value: str, max_chars: int = 300_000) -> str:
+def _strip_html_to_text(value: str, max_chars: int = 0) -> str:
     text = str(value or "")
     text = re.sub(r"<!--[\s\S]*?-->", " ", text)
     text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.IGNORECASE)
@@ -275,7 +275,7 @@ def _strip_html_to_text(value: str, max_chars: int = 300_000) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = html_lib.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > max_chars:
+    if max_chars > 0 and len(text) > max_chars:
         text = text[:max_chars]
     return text
 

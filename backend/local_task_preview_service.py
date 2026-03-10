@@ -936,7 +936,7 @@ async def build_local_task_plan_preview(
         analysis_report,
         prerequisites,
         custom_rules,
-        max_chars=8000,
+        max_chars=0,
     )
     
     # Derive project_type from analysis if not explicitly overriden

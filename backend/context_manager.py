@@ -214,7 +214,7 @@ def get_current_project_tree_snapshot(
     project_token: str,
     *,
     max_files: int = 160,
-    max_chars: int = 4500,
+    max_chars: int = 0,
 ) -> Dict[str, Any]:
     token = (project_token or "").strip()
     project_ctx = _ensure_project_context(token)
@@ -277,7 +277,7 @@ def get_current_project_tree_snapshot(
         root_label=root_label,
     ) if selected_files or directory_paths else ""
 
-    while len(tree_text) > max_chars and len(selected_files) > 20:
+    while max_chars > 0 and len(tree_text) > max_chars and len(selected_files) > 20:
         selected_files = selected_files[: max(20, int(len(selected_files) * 0.75))]
         tree_text = _render_project_tree_from_paths(
             selected_files,
@@ -286,7 +286,7 @@ def get_current_project_tree_snapshot(
         )
 
     char_truncated = False
-    if len(tree_text) > max_chars:
+    if max_chars > 0 and len(tree_text) > max_chars:
         tree_text = tree_text[: max(0, max_chars - 3)].rstrip() + "..."
         char_truncated = True
 
