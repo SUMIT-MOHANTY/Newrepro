@@ -535,6 +535,13 @@ def _build_preview_json_tasks(
     for task in structured_tasks:
         checklist_payload = _build_preview_checklist(task.get("checklists"))
 
+        raw_task_wallet = max(
+            _safe_int(task.get("story_points"), 0),
+            _safe_int(task.get("estimated_hours"), 0) // 8,
+            0,
+        )
+        task_wallet = max(1, min(5, raw_task_wallet))
+
         payload: Dict[str, Any] = {
             "taskName": task.get("title") or "Untitled Task",
             "task_type": str(task.get("type") or "task").upper(),
@@ -543,11 +550,7 @@ def _build_preview_json_tasks(
             "planned_start": task.get("planned_start"),
             "deadline": task.get("planned_end"),
             "priority": task.get("priority") or "medium",
-            "task_wallet": max(
-                _safe_int(task.get("story_points"), 0),
-                _safe_int(task.get("estimated_hours"), 0) // 8,
-                0,
-            ),
+            "task_wallet": task_wallet,
             "_placeholder_sprint_id": task.get("sprint_id"),
             "_placeholder_milestone_id": task.get("milestone_id"),
         }
