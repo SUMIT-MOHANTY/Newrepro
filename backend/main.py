@@ -1489,7 +1489,9 @@ def _get_or_init_org_agent_quota(
         return quota
 
     # Initialize quotas to current usage so existing installs don't suddenly break.
-    shared_used, dedicated_used = _count_org_agent_usage(db, org)
+    usage = _count_org_agent_usage(db, org)
+    shared_used = usage["shared"]
+    dedicated_used = usage["dedicated"]
     quota = models.OrganizationAgentQuota(
         organization_name=org,
         shared_quota=int(shared_used),

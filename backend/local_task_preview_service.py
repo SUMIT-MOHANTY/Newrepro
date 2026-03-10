@@ -210,7 +210,7 @@ def _build_analysis_context(
     prerequisites: List[Dict[str, Any]],
     custom_rules: Optional[str],
     *,
-    max_chars: int = 8000,
+    max_chars: int = 128000,
 ) -> str:
     """
     Build the analysis context string for downstream AI calls.
