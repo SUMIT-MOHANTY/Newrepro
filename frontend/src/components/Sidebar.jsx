@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
-import logo from '../assets/logo.png';
 import { API_ENDPOINTS } from '../config';
 
 export default function Sidebar({
@@ -88,7 +87,7 @@ export default function Sidebar({
                     <div className="flex items-center justify-between w-full">
                         <div className="flex items-center min-w-0">
                             <img
-                                src={isDarkMode ? bourntecLogo : logo}
+                                src={bourntecLogo}
                                 alt="App Logo"
                                 className="h-5 w-auto object-contain shrink-0"
                             />
