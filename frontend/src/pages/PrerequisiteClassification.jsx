@@ -485,6 +485,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
+    const [repoProvider, setRepoProvider] = useState('github');
 
     // Determine recommended mode based on governance classification
     const recommendedMode = useMemo(() => {
@@ -680,6 +681,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
         setAnalysisRepoSuggestion((prev) => prev || storedSuggestion);
         setGlobalGitRepoUrl((prev) => prev.trim() || storedSuggestion.url);
+        if (storedSuggestion.provider === 'azure-devops') {
+            setRepoProvider('azure-devops');
+        } else if (storedSuggestion.provider === 'github') {
+            setRepoProvider('github');
+        }
     }, [selectedProjectKey, loadStoredProjectRepoSuggestion]);
 
     // Load analysis data for the selected project
@@ -790,6 +796,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 setAnalysisRepoSuggestion(finalRepoSuggestion);
                 if (finalRepoSuggestion?.url) {
                     setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
+                }
+                if (finalRepoSuggestion?.provider === 'azure-devops') {
+                    setRepoProvider('azure-devops');
+                } else if (finalRepoSuggestion?.provider === 'github') {
+                    setRepoProvider('github');
                 }
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
@@ -1430,7 +1441,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="mb-6 pb-6 border-b border-app-border-light">
                             <h3 className="text-base font-bold text-app-text-main mb-1">Git Configuration</h3>
                             <p className="text-sm text-app-text-muted mb-4">
-                                Provide one global repository and PAT here. All agents in this project will use these credentials.
+                                Provide one global repository and PAT (GitHub or Azure DevOps) here. All agents in this project will use these credentials.
                             </p>
                             {shouldShowRepoSuggestion && (
                                 <div className="mb-4 rounded-xl border border-app-primary-ring bg-app-primary-light/80 p-4">
@@ -1444,14 +1455,39 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             )}
                             <div className="grid grid-cols-1 gap-4">
                                 <div>
+                                    <div className="mb-2 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
+                                        <button
+                                            type="button"
+                                            onClick={() => setRepoProvider('github')}
+                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoProvider === 'github'
+                                                ? 'bg-app-primary text-white'
+                                                : 'text-app-text-muted hover:text-app-text-label'
+                                                }`}
+                                        >
+                                            GitHub / Git
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setRepoProvider('azure-devops')}
+                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoProvider === 'azure-devops'
+                                                ? 'bg-app-primary text-white'
+                                                : 'text-app-text-muted hover:text-app-text-label'
+                                                }`}
+                                        >
+                                            Azure DevOps
+                                        </button>
+                                    </div>
                                     <label className="block text-[11px] font-bold text-app-text-label mb-2 uppercase tracking-widest">
-                                        Git Repository URL <span className="text-app-status-error">*</span>
+                                        Repository URL <span className="text-app-status-error">*</span>
                                     </label>
                                     <input
                                         type="text"
                                         value={globalGitRepoUrl}
                                         onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
-                                        placeholder="https://github.com/org/repo.git"
+                                        placeholder={repoProvider === 'azure-devops'
+                                            ? 'https://dev.azure.com/ORG/PROJECT/_git/REPO'
+                                            : 'https://github.com/org/repo.git'
+                                        }
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
                                 </div>
@@ -1469,7 +1505,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <p className="text-xs text-app-text-muted mt-2">
                                         {hasSavedGlobalGitToken
                                             ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
-                                            : 'PAT is required the first time so agents can clone/push to the global repository.'}
+                                            : repoProvider === 'azure-devops'
+                                                ? 'Use an Azure DevOps PAT with Code access so agents can clone/push to this repository.'
+                                                : 'Use a GitHub PAT with repo scope so agents can clone/push to this repository.'}
                                     </p>
                                 </div>
                                 {isLoadingGitConfig && (
