@@ -1464,7 +1464,6 @@ export default function AgentAnalysis({
                 const arch = result.analysis.architecture || {};
                 const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
                 const edges = Array.isArray(arch.edges) ? arch.edges : [];
-                const layerOrder = ['frontend', 'backend', 'service', 'data', 'integration', 'infra'];
 
                 const rfNodes = layoutArchitectureGraph(nodes, edges, 'LR');
 

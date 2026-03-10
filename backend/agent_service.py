@@ -113,6 +113,7 @@ _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimatio
 
 GIT_MANAGER_AGENT_ID = "agent_03"
 MASTER_AGENT_ID = "agent_04"
+DEPLOY_AGENT_ID = "agent_05"
 GIT_INTEGRATION_BRANCH = "agent/integration"
 MASTER_NOTE_PREFIX = "MASTER_PLAN"
 MASTER_NOTE_SCOPE = "Canonical Project Tree and Task Plan"
@@ -648,6 +649,22 @@ def _make_agent(agent_id: str, idx: int = 0) -> Dict[str, Any]:
         })
     return agent
 
+
+def _pick_best_dev_agent(project_token: Optional[str]) -> str:
+    """Pick the most recently active or appropriate dev agent."""
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    
+    # Exclude system agents
+    dev_agent_ids = [aid for aid in project_agents.keys() if not _is_system_agent_id(aid) and aid != DEPLOY_AGENT_ID]
+    if not dev_agent_ids:
+        return "agent_01" # Fallback
+        
+    # Pick the one with the most recent last_run or just the first one
+    active = sorted(dev_agent_ids, key=lambda aid: project_agents[aid].get("last_run") or "", reverse=True)
+    return active[0]
+
+
 def get_default_agents() -> List[Dict[str, Any]]:
     return [
         _make_agent("agent_03", 2),
@@ -779,6 +796,13 @@ CRITICAL SCRIPT SIZE RULES:
 - Focus on the 10-15 most essential files. Do NOT try to create 30+ files in one script.
 - Keep all work rooted in /workspace and prefer editing existing files instead of recreating whole trees.
 
+CRITICAL STRUCTURAL RULES (NO EXCEPTIONS):
+- You MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure).
+- DO NOT invent your own file structure, nesting, or source roots. 
+- You do NOT have the authority to decide where files should go if it contradicts the canonical tree.
+- If you have doubts about where a file belongs, or if you think a new folder is needed, DO NOT guess and DO NOT auto-create it. You must stick to the existing master structure.
+- If you believe the Master Agent's structure is missing something critical, write your code within the closest existing canonical directory and leave a comment explaining your doubt so the Master Agent can refine it later.
+
 If you have want to add a comment to the task if you fell necessary or want to , wrap it in <comment>...</comment> tags anytime in your response. For example:
 <comment>
 I will implement a Flask backend with a PostgreSQL database as requested.
@@ -794,14 +818,14 @@ Example of the CORRECT compact pattern:
 #!/usr/bin/env bash
 set -euo pipefail
 cd /workspace
-mkdir -p backend frontend/src/components
-cat <<'EOF' > backend/main.py
+mkdir -p app/
+cat <<'EOF' > app/main.py
 from flask import Flask
 
 app = Flask(__name__)
 EOF
-printf '[CREATED] backend/main.py\n'
-grep -q 'Flask' backend/main.py && printf '[CHECK] PASS backend/main.py\n'
+printf '[CREATED] app/main.py\n'
+grep -q 'Flask' app/main.py && printf '[CHECK] PASS app/main.py\n'
 
 Do NOT use Python helpers like open(), pathlib, or os.makedirs() for file creation.
 """
@@ -810,17 +834,11 @@ AGENT_SYSTEM_PROMPTS = {
     "validator": """You are a Project Builder AI Agent.
 Your job is to analyze the given task and CREATE a complete, working project implementation.
 
-CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
-- Backend files (Python) go in the `backend/` directory
-- Frontend files (React) go in the `frontend/` directory
-- Config files go where the tech spec specifies
-- DO NOT create files directly in `/workspace/` root unless the tech spec says so
-
 CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - The Master Agent publishes a canonical project tree and workspace contract for this project.
 - Create/modify files ONLY inside that canonical structure and allowed source roots.
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`, `server/`) unless the canonical tree already includes them.
-- If you think a new top-level directory is required, STOP and instead extend the existing `backend/` or `frontend/` structure.
+- If you think a new top-level directory is required, STOP and instead extend the existing structure provided by the master agent.
 
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
@@ -832,8 +850,8 @@ CRITICAL: NEVER create or commit these files:
 - venv/, env/, .venv/ (virtual environments)
 
 Given a task description and Technical Specification, you must:
-1. READ the tech spec's FILE STRUCTURE section carefully
-2. Create files in the directories specified in the tech spec
+1. READ the Master Agent's Canonical Project Tree carefully to determine file locations
+2. Create files EXACTLY in the directories specified in the Master Agent tree
 3. Generate a shell script that CREATES all necessary files and directories
 4. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
 5. Write real, production-quality code into each file
@@ -845,12 +863,6 @@ Given a task description and Technical Specification, you must:
     "risk": """You are a Security and Risk Analysis Builder AI Agent.
 Your job is to analyze the given task, identify all risks, and CREATE actual mitigation code and config files.
 
-CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
-- Backend files (Python) go in the `backend/` directory
-- Frontend files (React) go in the `frontend/` directory
-- Config files go where the tech spec specifies
-- DO NOT create files directly in `/workspace/` root unless the tech spec says so
-
 CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - Create/modify files ONLY inside the canonical structure and allowed source roots.
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
@@ -865,9 +877,9 @@ CRITICAL: NEVER create or commit these files:
 - venv/, env/, .venv/ (virtual environments)
 
 Given a task description and Technical Specification, you must:
-1. READ the tech spec's FILE STRUCTURE section carefully
+1. READ the Master Agent's Canonical Project Tree carefully to determine file locations
 2. Identify technical, business, security, and operational risks
-3. Generate a shell script that CREATES mitigation files in the correct directories
+3. Generate a shell script that CREATES mitigation files in the exact Master Agent tree directories
 4. NEVER create __pycache__ directories or .pyc files
 5. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
 6. Print === RISK SUMMARY === at the end
@@ -876,12 +888,6 @@ Given a task description and Technical Specification, you must:
     "estimator": """You are a Project Planning and Scaffolding AI Agent.
 Your job is to analyze the task, estimate resources, and CREATE a complete project scaffold.
 
-CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
-- Backend files (Python) go in the `backend/` directory
-- Frontend files (React) go in the `frontend/` directory
-- Config files go where the tech spec specifies
-- DO NOT create files directly in `/workspace/` root unless the tech spec says so
-
 CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - Create/modify files ONLY inside the canonical structure and allowed source roots.
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
@@ -896,9 +902,9 @@ CRITICAL: NEVER create or commit these files:
 - venv/, env/, .venv/ (virtual environments)
 
 Given a task description and Technical Specification, you must:
-1. READ the tech spec's FILE STRUCTURE section carefully
+1. READ the Master Agent's Canonical Project Tree carefully to determine file locations
 2. Break down the project into sprints and tasks
-3. Generate a shell script that CREATES the project scaffold following the tech spec structure
+3. Generate a shell script that CREATES the project scaffold EXACTLY matching the canonical tree
 4. Create source files, configs, deployment/orchestration, CI/CD, tests in correct directories
 5. NEVER create __pycache__ directories or .pyc files
 6. Print [SPRINT N] for each sprint, [CREATED] for each file, [CHECK] for validations
@@ -1029,42 +1035,16 @@ Generate a Technical Specification with these EXACT sections:
 You MUST output a specific directory tree. The example below is only for formatting syntax.
 Do NOT copy its frameworks or directory names unless the PLANNING_PACKET_JSON requires them.
 
-Formatting example:
-
-```
-portfolio/
-├── backend/                 # All Python/Flask backend code
-│   ├── __init__.py         # Flask app factory
-│   ├── app.py              # Main Flask application entry point
-│   ├── config.py           # Configuration (DB, JWT, etc.)
-│   ├── requirements.txt    # Python dependencies
-│   └── api/                # API endpoints
-│       ├── __init__.py
-│       ├── routes.py       # Route definitions
-│       └── schemas.py      # Pydantic schemas
-
-├── frontend/               # All frontend code (React)
-│   ├── src/
-│   │   ├── components/     # React components
-│   │   └── pages/          # Page components
-│   └── package.json        # Node dependencies
-
-├── README.md               # Project documentation
-├── .env.example            # Environment template
-└── docker-compose.yml      # Docker configuration
-```
-
 For YOUR project, output the exact directory tree with:
 - Only the directories actually required by the tasks and stack decision
 - Every file with its purpose in comments
 - Output exactly one final canonical tree. Do not output alternatives, migrations, conditional variants, or "pick one" instructions.
 - Treat the PLANNING_PACKET_JSON as authoritative. Resolve contradictions in favor of task details, checklist evidence, stack evidence, and the current repo tree.
 - Never mix conflicting stacks in one spec. For example: Flask with Express, Flask/Jinja with React/Vite, React with Vue, or Next.js with static HTML.
-- If the tasks indicate Flask + Jinja, keep templates and static assets within the Flask application structure.
 - Extend the current repo tree when possible instead of inventing alternate roots
 - If the current repo tree already establishes an app root, preserve that root unless the BRD/tasks clearly require a migration
-- Backend files in `backend/` only if the project truly has backend work and no stronger existing root is already established
-- Frontend files should stay in the existing frontend/static root when one already exists
+- Design the directory layout based on the BEST PRACTICES for the chosen tech stack (e.g., Flask typically uses `app/` at the root, Django uses a standard project folder, Next.js uses `src/app/`).
+- Do NOT arbitrarily prefix paths with `backend/` or `frontend/` unless the project is actually a monorepo requiring that separation.
 - Configuration files only when the tasks/spec explicitly require them
 - For static HTML/CSS sites, keep `index.html` and `styles.css` together in the existing canonical static root from the repo/task plan; if no root exists yet, choose one canonical root and keep both files there
 - Do not invent backend, database, Docker, CI, or package-manager files for a minimal static project
@@ -1226,8 +1206,8 @@ Write a system prompt for the Coding Agent that:
 3. Tells it what files/symbols already exist (from KG) that it should import/reference
 4. Warns about any files being edited by other agents (avoid conflicts)
 5. Specifies the exact naming conventions to follow
-6. **CRITICAL: MUST FOLLOW THE CANONICAL PROJECT TREE** - create files only within the established directory structure
-7. **CRITICAL: DO NOT create new top-level directories** - work within existing canonical structure
+6. **CRITICAL: MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure). DO NOT invent your own file nesting or directories.**
+7. **CRITICAL: If you have ANY doubts about where to put a file, DO NOT guess. You MUST strictly follow the exact structure defined by the Master Agent. Agents cannot decide on their own entirely new architectural structures.**
 8. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
 
 The prompt MUST include these code generation rules at the end:
@@ -1829,6 +1809,8 @@ async def _call_ai_for_code(
     code_context: str = "",
     system_prompt_override: str = "",
     tech_spec: str = "",
+    workspace_tree: str = "",
+    live_repo_tree: str = "",
 ) -> tuple[str, str]:
     """Call AI model to generate a project-building shell script.
     
@@ -1838,6 +1820,8 @@ async def _call_ai_for_code(
         code_context: Optional JIT context from Knowledge Graph + RAG system
         system_prompt_override: Dynamic prompt from Manager Agent (Layer 3)
         tech_spec: Canonical Technical Spec from Architect Agent (Layer 1)
+        workspace_tree: The Master Agent's Canonical Project Tree
+        live_repo_tree: The actual current file structure from the git repository
     """
     url = settings.ai_api_url
     key = settings.ai_api_key
@@ -1857,6 +1841,31 @@ async def _call_ai_for_code(
         user_parts.append(
             f"TECHNICAL SPECIFICATION (Canonical — follow this exactly):\n"
             f"{tech_spec[:4000]}\n\n"
+        )
+
+    # Layer 2: Master Canonical Workspace Tree (the target state)
+    if workspace_tree:
+        user_parts.append(
+            f"MASTER AGENT'S CANONICAL PROJECT TREE (Target Structure):\n"
+            f"{workspace_tree[:4000]}\n\n"
+        )
+        
+    # Layer 2b: Live Repository Structure (the current state)
+    if live_repo_tree:
+        user_parts.append(
+            f"LIVE REPOSITORY STRUCTURE (Current state on disk):\n"
+            f"{live_repo_tree[:4000]}\n\n"
+            f"⚠️ CRITICAL: Compare the LIVE STRUCTURE vs the CANONICAL TREE. "
+            f"Fix any discrepancies or missing files found on disk.\n\n---\n"
+        )
+
+    if workspace_tree or live_repo_tree:
+        user_parts.append(
+            f"⚠️ CRITICAL: You MUST create files where the CANONICAL TREE indicates. "
+            f"DO NOT invent your own folders or alter the pre-approved structure.\n\n---\n"
+        )
+    elif tech_spec:
+        user_parts.append(
             f"⚠️ CRITICAL: Pay special attention to the '## 4. FILE STRUCTURE' section above. "
             f"All files MUST be created in the directories specified in that section. "
             f"DO NOT create files directly in /workspace/ root unless the FILE STRUCTURE section explicitly says so.\n\n---\n"
@@ -1871,15 +1880,14 @@ async def _call_ai_for_code(
 
     user_parts.append(f"Task to implement:\n\n{task_description}")
 
-    if code_context or tech_spec:
+    if code_context or tech_spec or workspace_tree:
         user_parts.append(
             "\n\nUse the context above to understand existing patterns, "
             "naming conventions, file structure, and dependencies. "
             "Ensure your generated code is consistent with the Technical Spec "
             "and existing codebase.\n\n"
-            "⚠️ REMINDER: Check the Technical Spec's '## 4. FILE STRUCTURE' section "
-            "to determine WHERE to create each file. Backend files go in backend/, "
-            "frontend files go in frontend/, etc. as specified in the tech spec."
+            "⚠️ REMINDER: You MUST perfectly align your file paths with the "
+            "pre-approved canonical tree / file structure above. Do not decide file placement on your own."
         )
 
     user_content = "\n".join(user_parts)
@@ -1933,11 +1941,15 @@ async def _call_ai_for_fix(
     builder_crashed: bool = False,
     kg_error_context: str = "",
     tech_spec: str = "",
+    workspace_tree: str = "",
+    live_repo_tree: str = "",
 ) -> tuple[str, str]:
     """
     Call AI to generate a fix script. Enhanced with:
     - KG error context: relevant code from the Knowledge Graph to fix errors
     - Tech spec: canonical architecture reference to stay consistent
+    - Workspace tree: the target canonical structure
+    - Live repo tree: the actual current state on disk to help compare
     If builder_crashed=True, the previous build script failed before producing files
     and /workspace/ is empty, so we regenerate from scratch.
     """
@@ -1956,6 +1968,11 @@ async def _call_ai_for_fix(
     supplementary_context = ""
     if tech_spec:
         supplementary_context += f"\nTECHNICAL SPECIFICATION (follow exact naming and conventions):\n{tech_spec[:2000]}\n"
+    if workspace_tree:
+        supplementary_context += f"\nMASTER AGENT'S CANONICAL PROJECT TREE (Target Structure):\n{workspace_tree[:4000]}\n"
+    if live_repo_tree:
+        supplementary_context += f"\nLIVE REPOSITORY STRUCTURE (Current state on disk):\n{live_repo_tree[:4000]}\n"
+        supplementary_context += "\n⚠️ CRITICAL: Compare the LIVE STRUCTURE vs the CANONICAL TREE. Fix any discrepancies or missing files.\n"
     if kg_error_context:
         supplementary_context += f"\n{kg_error_context}\n"
 
@@ -5049,6 +5066,26 @@ async def _master_assign_task_to_agent(
     The /api/agent/task-assign-in/ endpoint in main.py handles external/UI calls.
     """
     try:
+        # ── GUARD: Check if this agent already has an active task ──
+        state = _ensure_project_state(project_token)
+        project_agents = state["agent_states"]
+        try:
+            existing_tasks = await _fetch_external_tasks(project_token)
+            for t in existing_tasks:
+                if _task_status_is_done(t.get("status")):
+                    continue
+                resolved_owner = _resolve_assigned_runtime_agent_id(t, project_agents)
+                if resolved_owner == agent_id:
+                    existing_tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "")
+                    _log_master_agent(
+                        f"⏭️ Skipping assignment of task {task_id} to {agent_id}: "
+                        f"agent already has active task {existing_tid}",
+                        project_token=project_token,
+                    )
+                    return False
+        except Exception as check_err:
+            logger.warning(f"[Master Agent] Could not check existing assignments for {agent_id}: {check_err}")
+
         # Convert task_id to int (handle both string and int)
         try:
             task_id_int = int(task_id)
@@ -5455,6 +5492,15 @@ def _resolve_assigned_runtime_agent_id(
         str(task.get("assigned_agent") or "").strip(),
         str(task.get("assigned_agent_name") or "").strip(),
     ]
+    assignees_list = task.get("assignees") or []
+    if isinstance(assignees_list, list):
+        for assignee in assignees_list:
+            if isinstance(assignee, dict):
+                val = assignee.get("username") or assignee.get("name")
+                if val:
+                    raw_values.append(str(val).strip())
+            elif isinstance(assignee, str):
+                raw_values.append(assignee.strip())
     candidate_values = {
         value.lower()
         for value in raw_values
@@ -5807,9 +5853,9 @@ def _prefer_stack_consistent_extension(path: str, stack_profile: Optional[Dict[s
     if lower.endswith(".js"):
         if basename in {"sw.js", "vite.config.js", "next.config.js", "jest.config.js"}:
             return normalized
-        if frontend_key in {"react-vite", "nextjs"} and normalized.startswith("frontend/src/"):
+        if frontend_key in {"react-vite", "nextjs"} and "/src/" in normalized:
             return normalized[:-3] + ".ts"
-        if backend_key == "express" and normalized.startswith("backend/src/"):
+        if backend_key == "express" and "/src/" in normalized:
             return normalized[:-3] + ".ts"
 
     return normalized
@@ -5829,15 +5875,17 @@ def _is_stack_consistent_master_tree_path(
     lower = normalized.lower()
     basename = os.path.basename(lower)
 
+    # 1. Frontend filtering
     if frontend_key == "react-vite":
         if basename in {"next.config.js", "next.config.ts", "next.config.mjs"}:
             return False
-        if lower.startswith("frontend/src/app/") and basename in {"page.tsx", "page.jsx", "layout.tsx", "layout.jsx"}:
+        if "/app/" in lower and basename in {"page.tsx", "page.jsx", "layout.tsx", "layout.jsx"}:
             return False
     elif frontend_key == "nextjs":
         if basename in {"vite.config.js", "vite.config.ts"}:
             return False
-        if lower in {"frontend/src/main.tsx", "frontend/src/main.jsx"}:
+        # Catch typical Vite entry points
+        if basename in {"main.tsx", "main.jsx"} and "src/" in lower:
             return False
     elif frontend_key == "jinja-html":
         if basename in {
@@ -5850,47 +5898,28 @@ def _is_stack_consistent_master_tree_path(
             "tsconfig.json",
         }:
             return False
-        if lower.startswith("frontend/"):
+        if lower.endswith((".tsx", ".jsx")):
             return False
-        if lower.startswith("app/templates/") or lower.startswith("app/static/"):
-            return True
     elif frontend_key == "static-html":
         if basename in {"next.config.js", "next.config.ts", "next.config.mjs", "vite.config.js", "vite.config.ts"}:
             return False
-        if lower in {
-            "frontend/src/main.tsx",
-            "frontend/src/main.jsx",
-            "frontend/src/main.ts",
-            "frontend/src/main.js",
-            "frontend/src/app.tsx",
-            "frontend/src/app.jsx",
-            "frontend/src/index.html",
-            "frontend/src/styles.css",
-        }:
-            return False
-    elif frontend_key == "none":
-        if lower.startswith("frontend/"):
+        if lower.endswith((".tsx", ".jsx")):
             return False
 
-    if backend_key == "fastapi":
-        if lower in {"backend/package.json", "backend/tsconfig.json"}:
+    # 2. Backend filtering
+    if backend_key in {"fastapi", "flask"}:
+        if basename in {"app.ts", "server.ts", "index.ts"} and frontend_key == "none":
             return False
-        if lower.startswith("backend/src/") and lower.endswith((".ts", ".js")):
-            return False
-    elif backend_key == "flask":
-        if lower in {"backend/package.json", "backend/tsconfig.json"}:
-            return False
-        if lower.startswith("backend/src/") and lower.endswith((".ts", ".js")):
-            return False
-        if basename in {"app.ts", "server.ts"}:
+        # If neither frontend nor backend uses Node ecosystem
+        if frontend_key in {"jinja-html", "static-html", "none"} and basename in {"package.json", "tsconfig.json"}:
             return False
     elif backend_key == "express":
-        if lower.startswith("backend/") and basename in {"requirements.txt", "pyproject.toml", "alembic.ini"}:
+        if basename in {"requirements.txt", "pyproject.toml", "alembic.ini", "Pipfile"}:
             return False
-        if lower.endswith(".py") and (lower == "backend/main.py" or lower.startswith("backend/app/")):
+        if lower.endswith(".py"):
             return False
     elif backend_key == "none":
-        if lower.startswith("backend/"):
+        if basename in {"requirements.txt", "pyproject.toml", "alembic.ini", "Pipfile", "main.py", "app.py"}:
             return False
 
     return True
@@ -5912,15 +5941,6 @@ def _canonicalize_master_tree_path(
         normalized = "." + normalized
     elif lower.startswith("github/workflows/"):
         normalized = ".github/" + normalized[len("github/"):]
-    elif lower.startswith("src/"):
-        rest = normalized[4:]
-        first_segment = rest.split("/", 1)[0].lower() if rest else ""
-        frontendish = {"components", "pages", "hooks", "styles", "store", "lib", "assets", "tests"}
-        backendish = {"api", "routes", "middleware", "services", "repositories", "models", "controllers", "config", "utils", "types"}
-        if first_segment in frontendish or lower.endswith((".tsx", ".jsx", ".css", ".scss", ".html")):
-            normalized = f"frontend/{normalized}"
-        elif first_segment in backendish:
-            normalized = f"backend/{normalized}"
 
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     frontend_key = str(stack.get("frontend_key") or "").strip()
@@ -6130,144 +6150,15 @@ def _infer_repo_path_from_filename(
     stack_profile: Optional[Dict[str, Any]] = None,
     workspace_contract: Optional[Dict[str, Any]] = None,
 ) -> str:
+    """
+    Previously, this function forcibly routed flat filenames (e.g. 'main.py' -> 'backend/main.py').
+    We are now fully trusting the AI to define its own directory structure. 
+    If the AI generates a flat filename, we leave it flat.
+    """
     filename = str(name or "").strip().strip("`\"'")
     if not filename or not _looks_like_repo_file_name(filename):
         return ""
-    if "/" in filename:
-        return filename
-
-    lower = filename.lower()
-    stack = stack_profile if isinstance(stack_profile, dict) else {}
-    backend_key = str(stack.get("backend_key") or "").strip()
-    frontend_key = str(stack.get("frontend_key") or "").strip()
-    if backend_key == "express":
-        backend_default = "backend/src"
-    elif backend_key == "flask":
-        backend_default = "app"
-    else:
-        backend_default = "backend"
-    if frontend_key == "nextjs":
-        frontend_default = "frontend/src/app"
-    elif frontend_key == "jinja-html":
-        frontend_default = "app/templates"
-    elif frontend_key == "static-html":
-        frontend_default = "frontend"
-    else:
-        frontend_default = "frontend/src"
-    backend_src = _preferred_contract_source_root(workspace_contract, "backend", backend_default)
-    frontend_src = _preferred_contract_source_root(workspace_contract, "frontend", frontend_default)
-    backend_root = _module_root_from_source_root(backend_src, "backend")
-    frontend_root = _module_root_from_source_root(frontend_src, "frontend")
-    flask_template_root = _flask_template_root_from_source_root(frontend_src if frontend_key == "jinja-html" else backend_src)
-    flask_static_root = _flask_static_root_from_source_root(frontend_src if frontend_key == "jinja-html" else backend_src)
-
-    if lower in {
-        "readme.md",
-        ".gitignore",
-        ".dockerignore",
-        ".env.example",
-        "docker-compose.yml",
-        "docker-compose.dev.yml",
-        "docker-compose.prod.yml",
-        "makefile",
-        "license",
-        "security.md",
-    }:
-        return filename
-
-    if lower in {
-        "package.json",
-        "package-lock.json",
-        "tsconfig.json",
-        "next.config.ts",
-        "next.config.js",
-        "vite.config.ts",
-        "vite.config.js",
-    }:
-        if frontend_key in {"nextjs", "react-vite", "static-html"} or lower.startswith(("next.config", "vite.config")):
-            return f"{frontend_root}/{filename}"
-        if backend_key == "express":
-            return f"{backend_root}/{filename}"
-
-    if lower in {"deploy.yml", "deploy.yaml", "ci.yml", "ci.yaml", "release.yml", "release.yaml"}:
-        return f".github/workflows/{filename}"
-
-    if lower in {"pyproject.toml", "requirements.txt", "requirements-dev.txt", "alembic.ini"}:
-        if backend_key == "flask":
-            return filename
-        return f"{backend_root}/{filename}"
-
-    if lower in {"main.py", "config.py", "auth.py", "models.py", "database.py", "schemas.py"} and backend_src == "backend":
-        return f"{backend_root}/{filename}"
-    if lower in {"index.ts", "app.ts", "server.ts"}:
-        return f"{backend_src}/{filename}"
-    if lower in {"main.py", "config.py"}:
-        return f"{backend_src}/{filename}" if backend_key == "fastapi" else f"{backend_root}/{filename}"
-    if lower in {"app.py", "__init__.py", "wsgi.py"} and backend_key == "flask":
-        return f"{backend_root}/{filename}"
-    if lower in {"gunicorn_conf.py", "gunicorn.conf.py"} and backend_key == "flask":
-        return filename
-
-    if any(token in lower for token in ("cpu", "limiter", "sanitize", "sanitization", "security", "rate_limit", "ratelimit", "middleware")):
-        return f"{backend_src}/middleware/{filename}" if backend_key == "express" else f"{backend_src}/core/{filename}"
-    if "route" in lower:
-        if backend_key == "express":
-            return f"{backend_src}/api/routes/{filename}"
-        if backend_key == "flask":
-            return f"{backend_root}/{filename}"
-        return f"{backend_src}/api/v1/routes/{filename}"
-    if any(token in lower for token in ("service", "parser", "cache", "validation")):
-        return f"{backend_src}/services/{filename}"
-    if any(token in lower for token in ("repo", "repository")) and backend_key == "fastapi":
-        return f"{backend_src}/repositories/{filename}"
-    if lower.endswith((".test.ts", ".spec.ts", ".test.js", ".spec.js", "_test.py")):
-        if lower.endswith(".py"):
-            if backend_key == "flask":
-                return f"tests/{filename}"
-            return f"backend/tests/{filename}"
-        if lower.endswith((".tsx", ".jsx")):
-            return f"frontend/tests/{filename}"
-        return f"backend/tests/{filename}"
-
-    if lower.endswith((".tsx", ".jsx")):
-        if lower in {"app.tsx", "app.jsx", "main.tsx", "main.jsx", "index.tsx", "index.jsx"}:
-            return f"frontend/src/{filename}"
-        if frontend_key == "nextjs" and lower in {"page.tsx", "layout.tsx"}:
-            return f"{frontend_src}/{filename}"
-        if any(token in lower for token in ("page", "screen")):
-            return f"{frontend_src}/pages/{filename}" if frontend_key != "nextjs" else f"{frontend_src}/{filename}"
-        return f"frontend/src/components/{filename}"
-
-    if lower.endswith(".html"):
-        if frontend_key == "jinja-html":
-            return f"{flask_template_root}/{filename}"
-        return f"{frontend_root}/{filename}"
-
-    if lower.endswith((".ts", ".js")):
-        if frontend_key == "jinja-html":
-            return f"{flask_static_root}/{filename}"
-        if frontend_key == "static-html":
-            return f"{frontend_root}/{filename}"
-        if lower.startswith("use"):
-            return f"frontend/src/hooks/{filename}"
-        if "store" in lower:
-            return f"frontend/src/store/{filename}"
-        if any(token in lower for token in ("api", "client")):
-            return f"frontend/src/services/{filename}"
-        return f"frontend/src/utils/{filename}"
-
-    if lower.endswith((".css", ".scss")):
-        if frontend_key == "jinja-html":
-            return f"{flask_static_root}/{filename}"
-        if frontend_key == "static-html":
-            return f"{frontend_root}/{filename}"
-        return f"frontend/src/styles/{filename}"
-
-    if lower.endswith(".py") and backend_key == "flask":
-        if lower.startswith("test_") or lower.endswith("_test.py"):
-            return f"tests/{filename}"
-        return f"{backend_root}/{filename}"
-
+    
     return filename
 
 
@@ -6294,40 +6185,40 @@ def _default_master_tree_paths(
 
     if frontend_key == "nextjs":
         paths.update({
-            "frontend/package.json",
-            "frontend/tsconfig.json",
-            "frontend/next.config.ts",
-            "frontend/src/app/layout.tsx",
-            "frontend/src/app/page.tsx",
+            "package.json",
+            "tsconfig.json",
+            "next.config.ts",
+            "src/app/layout.tsx",
+            "src/app/page.tsx",
         })
     elif frontend_key == "jinja-html":
         paths.update({
-            "app/templates/base.html",
-            "app/templates/index.html",
-            "app/static/styles.css",
-            "app/static/ux.js",
+            "templates/base.html",
+            "templates/index.html",
+            "static/styles.css",
+            "static/ux.js",
         })
     elif frontend_key == "react-vite":
         paths.update({
-            "frontend/package.json",
-            "frontend/tsconfig.json",
-            "frontend/vite.config.ts",
-            "frontend/index.html",
-            "frontend/src/main.tsx",
-            "frontend/src/App.tsx",
+            "package.json",
+            "tsconfig.json",
+            "vite.config.ts",
+            "index.html",
+            "src/main.tsx",
+            "src/App.tsx",
         })
     elif frontend_key == "static-html":
         paths.update({
-            "frontend/index.html",
-            "frontend/styles.css",
+            "index.html",
+            "styles.css",
         })
 
     if backend_key == "express":
         paths.update({
-            "backend/package.json",
-            "backend/tsconfig.json",
-            "backend/src/index.ts",
-            "backend/src/app.ts",
+            "package.json",
+            "tsconfig.json",
+            "src/index.ts",
+            "src/app.ts",
         })
     elif backend_key == "flask":
         paths.update({
@@ -6338,9 +6229,9 @@ def _default_master_tree_paths(
         })
     else:
         paths.update({
-            "backend/requirements.txt",
-            "backend/main.py",
-            "backend/config.py",
+            "requirements.txt",
+            "main.py",
+            "config.py",
         })
 
     return sorted(paths)
@@ -8220,12 +8111,27 @@ Output rules:
 - Include configuration files, tests, shared types/contracts, and integration points when appropriate.
 - Keep the tree consistent with the stack decision above.
 - Use only directories that are justified by the tasks or existing codebase context.
-- Prefer extending the current git repo tree over inventing alternate roots when the repo already establishes a clear structure.
-- Resolve inconsistencies in favor of the current repository tree if it is already established.
+- Use the BEST PRACTICE project structure for the detected tech stack. For example:
+  - Flask apps: use app/ at the repo root with templates/, static/, etc. inside it
+  - Django apps: use the standard Django project/app layout with manage.py at root
+  - FastAPI: use a Python package structure with main.py at root
+  - React/Next.js: use the standard frontend framework layout
+- Do NOT force files into a rigid pre-existing workspace contract layout if it contradicts best practices for the tech stack.
+- The tech stack and tasks should drive the directory structure, not pre-existing workspace contract source roots.
 - Choose the best production-ready structure for the tasks, not the easiest structure.
 - Do not include prose before or after the JSON.
 - Keep paths repository-relative; do not require an extra wrapper prefix in canonical source roots.
 - If you use a root label in JSON, it must not force all source roots to be prefixed with a non-repository segment.
+
+CRITICAL STRUCTURAL RULES (MUST FOLLOW):
+- NEVER include virtual environments (venv/, .venv/, env/), node_modules/, __pycache__/, .git/, dist/, build/ in the tree. These are ephemeral artifacts.
+- ALL test files (test_*.py, *_test.py, *.spec.ts, *.test.ts) MUST go in the tests/ directory, NEVER inside the application source (e.g., app/services/test_parser.py is WRONG; tests/test_parser.py is CORRECT).
+- For Flask/Python backends, ALWAYS include a wsgi.py or run.py entry point alongside gunicorn_conf.py.
+- For Django backends, ALWAYS include manage.py and a settings module.
+- Every task with planned_files in the PLANNING_PACKET_JSON must have those files (or equivalent) present in the tree. Do NOT omit task files.
+- If a task mentions "export", "history", "analytics", etc., there MUST be a corresponding source file in the tree (e.g., app/export.py, app/history.py, app/analytics.py).
+- For Alembic/migration setups, include migrations/env.py and migrations/versions/ (not just an empty migrations/ directory).
+- conftest.py belongs in tests/, not in the app source directory.
 {previous_tree_feedback if previous_tree_feedback else ''}
 """
 
@@ -8300,12 +8206,23 @@ def _tree_name_looks_serialized_payload(name: Any) -> bool:
 
 
 def _sanitize_tree_node(node: Any) -> Optional[Dict[str, Any]]:
+    # Directories that should NEVER appear in a canonical project tree
+    _FORBIDDEN_NODE_NAMES = {
+        "venv", ".venv", "env", "node_modules", "__pycache__",
+        ".git", "dist", "build", ".next", ".turbo",
+        ".pytest_cache", ".mypy_cache", ".tox",
+    }
+
     if not isinstance(node, dict):
         return None
 
     raw_name = node.get("name")
     name = str(raw_name or "").strip()
     if not name:
+        return None
+
+    # Strip forbidden ephemeral directories
+    if name.lower().rstrip("/") in _FORBIDDEN_NODE_NAMES:
         return None
 
     if _tree_name_looks_serialized_payload(name):
@@ -8429,20 +8346,6 @@ def _heuristic_master_tree_validation(
         minimum_file_lines,
         min(18, task_count // 2 + (3 if minimum_file_lines <= 4 else 4)),
     )
-    for root in contract.get("allowed_source_roots") or []:
-        root_text = str(root or "").strip()
-        if root_text:
-            expected_roots.append(root_text)
-    if backend_key == "none":
-        expected_roots = [
-            root for root in expected_roots
-            if "backend" not in root.lower() and "/app" not in root.lower()
-        ]
-    if frontend_key == "none":
-        expected_roots = [
-            root for root in expected_roots
-            if "frontend" not in root.lower() and "/src" not in root.lower()
-        ]
 
     issues = []
     recommendations = []
@@ -8490,83 +8393,25 @@ def _heuristic_master_tree_validation(
     if any(len(exts) > 1 for exts in config_variants.values()):
         issues.append("The tree contains multiple extension variants of the same config file in a single directory.")
 
-    for root in expected_roots[:8]:
-        if root.lower() not in lines_lower:
-            issues.append(f"Canonical source root '{root}' is missing from the proposed tree.")
-
-    if "frontend" in lines_lower and "backend" not in lines_lower and any(
-        str(task.get("phase") or task.get("task_phase") or "").startswith("backend")
-        or "backend" in str(task.get("title") or "").lower()
-        for task in tasks or []
-    ):
-        issues.append("Backend-related tasks exist but the tree does not show a backend area.")
-
-    if "backend" in lines_lower and "frontend" not in lines_lower and any(
-        str(task.get("phase") or task.get("task_phase") or "").startswith("frontend")
-        or "frontend" in str(task.get("title") or "").lower()
-        or "ui" in str(task.get("title") or "").lower()
-        for task in tasks or []
-    ):
-        issues.append("Frontend-related tasks exist but the tree does not show a frontend area.")
+    # NOTE: Workspace contract source root checks are advisory only.
+    # The AI model decides the best structure based on tasks and tech stack.
+    # Do NOT block tree generation because of workspace contract mismatches.
+    for root in (contract.get("allowed_source_roots") or [])[:8]:
+        root_text = str(root or "").strip()
+        if root_text and root_text.lower() not in lines_lower:
+            recommendations.append(f"Workspace contract lists source root '{root_text}' which is not in the tree. This is OK if the AI chose a better structure for the tech stack.")
 
     if file_line_count < minimum_file_lines:
         recommendations.append("Add concrete file names for entrypoints, configuration, tests, and feature modules.")
-    if not expected_roots:
-        recommendations.append("Index the repository or establish a workspace contract for stronger structural validation.")
 
-    if frontend_key == "nextjs":
-        if "next.config" not in lines_lower and "/app/" not in lines_lower and " app/" not in lines_lower:
-            issues.append("The inferred frontend stack is Next.js, but the tree does not show Next.js structure (app/ or next.config.*).")
-    elif frontend_key == "jinja-html":
-        if "/templates/" not in lines_lower and "templates/" not in lines_lower:
-            issues.append("The inferred frontend stack is Jinja templates, but the tree does not show a templates/ directory.")
-        if "/static/" not in lines_lower and "static/" not in lines_lower:
-            recommendations.append("Flask/Jinja frontend should usually include a static/ directory for CSS and browser-side JS.")
-        if "frontend/" in lines_lower or "\nfrontend" in lines_lower:
-            issues.append("The inferred frontend stack is Jinja templates, but the tree still creates a separate frontend root.")
-        if "vite.config" in lines_lower or "next.config" in lines_lower or "frontend/src/" in lines_lower:
-            issues.append("The inferred frontend stack is Jinja templates, but the tree still contains Node/frontend framework structure.")
-    elif frontend_key == "react-vite":
-        if "vite.config" not in lines_lower and "src/main.tsx" not in lines_lower and "src/main.jsx" not in lines_lower:
-            recommendations.append("Frontend stack appears to be React/Vite; add vite.config.* or src/main.* to make the structure explicit.")
-    elif frontend_key == "static-html":
-        if "index.html" not in lines_lower:
-            issues.append("The inferred frontend stack is a static HTML/CSS site, but the tree does not show an index.html entry page.")
-        if "vite.config" in lines_lower or "next.config" in lines_lower:
-            issues.append("The inferred frontend stack is a static HTML/CSS site, but the tree contains framework-specific config files.")
-        if "frontend/src/index.html" in lines_lower or "frontend/src/styles.css" in lines_lower:
-            issues.append("Static frontend entry files must live directly under frontend/, not under frontend/src/.")
-    elif frontend_key == "none":
-        if "frontend/" in lines_lower or "\nfrontend" in lines_lower:
-            issues.append("No frontend stack is required for this task plan, but the tree still contains a frontend area.")
-
-    if backend_key == "fastapi":
-        if "main.py" not in lines_lower and "pyproject.toml" not in lines_lower and "requirements.txt" not in lines_lower:
-            issues.append("The inferred backend stack is FastAPI, but the tree does not show Python/FastAPI entrypoints or dependency files.")
-        if "server.ts" in lines_lower or "express" in lines_lower:
-            issues.append("The inferred backend stack is FastAPI, but the tree contains Node/Express-specific backend files.")
-    elif backend_key == "flask":
-        if "requirements.txt" not in lines_lower and "pyproject.toml" not in lines_lower:
-            issues.append("The inferred backend stack is Flask, but the tree does not show Python dependency files.")
-        if "app/__init__.py" not in lines_lower and "app.py" not in lines_lower and "wsgi.py" not in lines_lower:
-            issues.append("The inferred backend stack is Flask, but the tree does not show a Flask app entrypoint or app package.")
-        if "server.ts" in lines_lower or "app.ts" in lines_lower or "backend/src/" in lines_lower:
-            issues.append("The inferred backend stack is Flask, but the tree contains Node/Express-specific backend files.")
-    elif backend_key == "express":
-        if "package.json" not in lines_lower and "server.ts" not in lines_lower and "app.ts" not in lines_lower:
-            issues.append("The inferred backend stack is Express, but the tree does not show Node/Express entrypoints.")
-        if "main.py" in lines_lower or "pyproject.toml" in lines_lower:
-            issues.append("The inferred backend stack is Express, but the tree contains Python/FastAPI-specific backend files.")
-    elif backend_key == "django":
-        if "requirements.txt" not in lines_lower and "pyproject.toml" not in lines_lower:
-            issues.append("The inferred backend stack is Django, but the tree does not show Python dependency files.")
-        if "manage.py" not in lines_lower and "settings.py" not in lines_lower:
-            issues.append("The inferred backend stack is Django, but the tree does not show manage.py or a settings module.")
-    elif backend_key == "none":
-        if "backend/" in lines_lower or "\nbackend" in lines_lower:
-            issues.append("No backend stack is required for this task plan, but the tree still contains a backend area.")
-        if "requirements.txt" in lines_lower or "pyproject.toml" in lines_lower or "uvicorn" in lines_lower:
-            issues.append("No backend stack is required for this task plan, but backend-specific dependency files are still present.")
+    # ── Check for ephemeral/build artifacts that should never be in the canonical tree ──
+    _FORBIDDEN_DIRS = {"venv", ".venv", "env", "node_modules", "__pycache__", ".git", "dist", "build", ".next", ".turbo"}
+    for path in tree_file_paths:
+        parts = [p.lower() for p in path.split("/")]
+        for part in parts:
+            if part in _FORBIDDEN_DIRS:
+                issues.append(f"The tree contains '{part}/' which is an ephemeral artifact (virtual env, cache, or build output) and must not be in the canonical tree.")
+                break
 
     approved = not issues and file_line_count >= minimum_file_lines
     return {
@@ -8655,9 +8500,6 @@ AUTHORITATIVE PLANNING_PACKET_JSON:
 TASKS (titles, descriptions, checklists, file hints):
 {task_lines}
 
-WORKSPACE CONTRACT:
-{contract_summary}
-
 STACK DECISION:
 {stack_summary}
 
@@ -8675,17 +8517,16 @@ Return ONLY valid JSON with this exact shape:
 }}
 
 Rules:
-- Approve only if the tree has concrete filenames and clear homes for the tasks.
-- Reject if the tree is too shallow, creates parallel roots, or ignores workspace contract boundaries.
-- Reject if the tree contradicts the stack decision.
+- Approve if the tree has concrete filenames and clear homes for every task.
+- Approve if the tree follows best practices for the detected tech stack.
+- The AI model decides the best project structure based on the tasks and tech stack. Do NOT enforce rigid workspace contract source root boundaries.
+- Reject if the tree is too shallow (missing files for tasks) or contradicts the stack decision.
 - Reject if the tree contradicts the structured evidence in PLANNING_PACKET_JSON.
 - Reject if the tree mixes conflicting stacks, such as Flask with Express, Flask/Jinja with React/Vite, React with Vue, or Next.js with static HTML.
-- Reject if task planned_files from the packet do not fit cleanly inside the proposed tree.
 - Reject if the tree contains alternatives, conditional wording, multiple diagrams, or more than one candidate root.
-- Reject if the tree invents a new top-level application root when the current repo tree already establishes a different canonical root.
 - Reject if Flask + Jinja is indicated but the tree invents a separate Node frontend app root instead of using template/static structure.
-- Reject if source roots in the proposed tree become valid only after adding/removing an artificial wrapper prefix.
-- If rejected, provide a corrected_tree as a full replacement tree, not a diff.
+- Do NOT reject simply because the tree uses a different directory layout than the workspace contract. The AI should use the best structure for the tech stack.
+- If rejected, provide a corrected_tree as a full replacement tree that follows best practices for the tech stack.
 """
 
     payload = {
@@ -9469,10 +9310,9 @@ async def ensure_master_workspace_note(
             
             # Build explicit feedback with the PREVIOUS failed tree + full validation report
             # so the AI knows exactly what it produced and what's wrong with it.
-            contract_roots = list((workspace_contract or {}).get("allowed_source_roots") or [])
-            contract_roots_text = ", ".join(contract_roots[:15]) if contract_roots else "none detected"
             _log_master_agent(
-                f"  Expected source roots from workspace contract: [{contract_roots_text}]",
+                f"  Stack: {stack_profile.get('backend', 'unknown') if isinstance(stack_profile, dict) else 'unknown'} backend, "
+                f"{stack_profile.get('frontend', 'unknown') if isinstance(stack_profile, dict) else 'unknown'} frontend",
                 level="warning",
                 project_token=project_token,
             )
@@ -9481,14 +9321,13 @@ async def ensure_master_workspace_note(
                 "Your PREVIOUS tree (shown below) failed validation. You MUST fix ALL issues listed.\n\n"
                 f"--- PREVIOUS FAILED TREE ---\n{workspace_tree[:4000]}\n--- END PREVIOUS TREE ---\n\n"
                 f"--- VALIDATION ERRORS ---\n{validation_report or validation_summary}\n--- END ERRORS ---\n\n"
-                f"--- REQUIRED SOURCE ROOTS (from workspace contract) ---\n"
-                f"The following source roots MUST exist in your tree: {contract_roots_text}\n"
-                f"--- END REQUIRED ROOTS ---\n\n"
                 "INSTRUCTIONS:\n"
                 "- Fix every issue listed above. Do not partially fix one item and ignore others.\n"
                 "- The corrected tree must still be valid JSON with a single root.\n"
-                "- Ensure ALL canonical source roots listed above are present in the output tree.\n"
-                "- If a root like 'backend/app' is required, the tree MUST contain both 'backend/' and 'app/' under it.\n"
+                "- Use the BEST PRACTICE project structure for the detected tech stack.\n"
+                "- Output ONLY valid JSON containing an 'actions' array of dictionaries.\n"
+                "- For Django apps: manage.py at root with standard Django layout.\n"
+                "- Ensure every task has a clear file home in the tree.\n"
             )
             
             workspace_tree = await _generate_detailed_project_tree_plan(
@@ -10172,6 +10011,30 @@ async def _claim_initial_task_assignments(
     effective_token = task_token or get_project_task_token(project_token)
 
     for agent in serial_agents:
+        # ── GUARD: Skip if this agent already has an active task ──
+        already_has_task = None
+        for t in external_tasks:
+            if _task_status_is_done(t.get("status")):
+                continue
+            resolved_owner = _resolve_assigned_runtime_agent_id(t, project_agents)
+            if resolved_owner == agent["id"]:
+                already_has_task = t
+                break
+        
+        if already_has_task:
+            existing_tid = str(_normalize_task_id(already_has_task) or already_has_task.get("external_id") or already_has_task.get("id") or "")
+            logger.info(
+                f"[Serial Assignment] Agent {agent['id']} already has active task {existing_tid}. Skipping new assignment."
+            )
+            claimed_task_ids.add(existing_tid)
+            reserved = _apply_master_task_metadata(dict(already_has_task), project_token=project_token)
+            if project_token:
+                reserved.setdefault("_project_token", project_token)
+            agent["current_task"] = reserved
+            agent["resume_pending_task"] = True
+            assignments.append((agent["id"], reserved))
+            continue
+
         if task_index >= len(available_tasks):
             # No more tasks — agent starts idle, master supervisor will assign later
             assignments.append((agent["id"], None))
@@ -10753,6 +10616,32 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     
     external_tasks = await _fetch_external_tasks(project_token)
 
+    # ── GUARD: Check if this agent already has an active (non-completed) task ──
+    # If the agent is already assigned to a task, return that task instead of picking a new one.
+    # This prevents a single agent from being assigned to multiple tasks simultaneously.
+    agent = project_agents.get(agent_id)
+    agent_username = build_external_agent_username(agent_id, agent.get("name") if agent else None)
+    for t in external_tasks:
+        if _task_status_is_done(t.get("status")):
+            continue
+        resolved_owner = _resolve_assigned_runtime_agent_id(t, project_agents)
+        if resolved_owner == agent_id:
+            tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "")
+            # This agent already has this task — return it, don't pick another
+            logger.info(
+                f"[{agent_id}] Already assigned to active task {tid} "
+                f"('{(t.get('title') or t.get('taskName') or '')[:50]}'). "
+                f"Resuming instead of picking a new task."
+            )
+            claimed_task_ids.add(tid)
+            reserved = _apply_master_task_metadata(dict(t), project_token=project_token)
+            if project_token:
+                reserved.setdefault("_project_token", project_token)
+            if agent:
+                agent["current_task"] = reserved
+                agent["resume_pending_task"] = True
+            return reserved
+
     async with task_claim_lock:
         active_owned_ids = _active_owned_task_ids(project_token)
         completed_task_ids = {
@@ -10797,9 +10686,6 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             "explicitly_blocked": 0,
             "opt_in_failed": 0,
         }
-        
-        agent = project_agents.get(agent_id)
-        agent_username = build_external_agent_username(agent_id, agent.get("name") if agent else None)
         
         # ── Step 1: Separate tasks into assigned-to-me vs unassigned ──
         assigned_to_me = []
@@ -11452,6 +11338,24 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # ── LAYER 1: Retrieve or generate Technical Spec ────────
             tech_spec = ""
+            # 1. Fetch fresh repository documentation & tree for context
+            repo_tree_context = ""
+            try:
+                import context_manager as ctx_mgr
+                repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
+                if isinstance(repo_snapshot, dict):
+                    repo_tree_context = str(repo_snapshot.get("tree") or "").strip()
+                    # If indexed, update the contract as a side effect for the architect
+                    repo_file_paths = [str(p).strip() for p in (repo_snapshot.get("all_file_paths") or []) if str(p).strip()]
+                    if repo_file_paths and project_token:
+                        ctx_mgr.update_workspace_contract_from_file_paths(
+                            project_token, repo_file_paths,
+                            source=f"{repo_snapshot.get('source') or 'git_repo'}_snapshot",
+                            merge_ready=True, force_refresh=True
+                        )
+            except Exception:
+                pass
+
             try:
                 tech_spec = get_technical_spec(project_token or "")
                 if not tech_spec and project_token:
@@ -11474,7 +11378,6 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     # Get KG context for architecture decisions
                     arch_kg_context = ""
                     workspace_contract = {}
-                    repo_tree_context = ""
                     try:
                         import context_manager as ctx_mgr
                         if ctx_mgr.is_project_indexed(project_token or ""):
@@ -11485,24 +11388,6 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 task_token=task_token,
                             )
                         workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
-                        repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
-                        if isinstance(repo_snapshot, dict):
-                            repo_tree_context = str(repo_snapshot.get("tree") or "").strip()
-                            repo_file_paths = [
-                                str(path).strip()
-                                for path in (repo_snapshot.get("all_file_paths") or [])
-                                if str(path).strip()
-                            ]
-                            if repo_file_paths and project_token:
-                                refreshed_contract = ctx_mgr.update_workspace_contract_from_file_paths(
-                                    project_token,
-                                    repo_file_paths,
-                                    source=f"{repo_snapshot.get('source') or 'git_repo'}_snapshot",
-                                    merge_ready=True,
-                                    force_refresh=True,
-                                )
-                                if isinstance(refreshed_contract, dict) and refreshed_contract.get("status") == "ready":
-                                    workspace_contract = refreshed_contract
                     except Exception:
                         pass
 
@@ -11641,6 +11526,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 code_context=jit_context,
                 system_prompt_override=dynamic_system_prompt,
                 tech_spec=tech_spec,
+                workspace_tree=master_note_result.get("workspace_tree", "") if master_note_result else "",
+                live_repo_tree=repo_tree_context,
             )
             if thought:
                 await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
@@ -11830,6 +11717,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         builder_crashed=(builder_crashed and workspace_empty),
                         kg_error_context=kg_error_context,
                         tech_spec=tech_spec,
+                        workspace_tree=master_note_result.get("workspace_tree", "") if master_note_result else "",
+                        live_repo_tree=repo_tree_context,
                     )
                     if thought:
                         await _post_task_message(
@@ -13196,46 +13085,29 @@ def _detect_project_stack(container_name: str, deployment_hints: Optional[Dict[s
             score = 0
             rel_package_path = _repo_rel(package_path)
             rel_workdir = _repo_rel(_dirname(package_path))
-            if package_path == "/workspace/package.json":
-                score += 200
-            if "/frontend/" in package_path or package_path.endswith("/frontend/package.json"):
-                score += 80
-            if "/client/" in package_path or package_path.endswith("/client/package.json"):
-                score += 60
-            if "/web/" in package_path:
-                score += 40
+            
+            # 1. Content capabilities (does it look runnable?)
             if '"scripts"' in text:
                 score += 20
-            if '"start"' in text:
-                score += 35
-            if '"dev"' in text:
-                score += 20
-            if '"vite"' in text or '"@vitejs/plugin-react"' in text:
-                score += 20
-            if package_path == "/workspace/package.json" and has_workspaces:
-                # Root workspace files often orchestrate sub-apps and are poor preview entrypoints.
-                score -= 120
-            looks_fullstack_orchestrator = (
-                "start:backend" in scripts
-                or ("cd backend" in script_text and "cd frontend" in script_text)
-                or ("flask" in script_text and ("react-scripts" in script_text or "vite" in script_text or "next" in script_text))
-            )
-            if package_path == "/workspace/package.json" and looks_fullstack_orchestrator:
-                # Prefer leaf frontend package when root start script expects extra runtimes.
-                score -= 260
+            if '"start"' in text or "start" in scripts:
+                score += 30
+            if '"dev"' in text or "dev" in scripts:
+                score += 30
+            if '"vite"' in text or '"next"' in text or '"react-scripts"' in text:
+                score += 30
+
+            # 2. Dynamic Contract Enforcement (Driven by the Master Agent's Workspace Tree)
             if _path_matches_any_deploy_root(rel_package_path, preferred_frontend_roots):
-                score += 240
+                score += 200
             if _path_matches_any_deploy_root(rel_workdir, preferred_frontend_roots):
-                score += 240
+                score += 200
             if _path_matches_any_deploy_root(rel_package_path, preferred_backend_roots):
                 score += 150 if backend_key == "express" else 50
             if _path_matches_any_deploy_root(rel_workdir, preferred_backend_roots):
                 score += 150 if backend_key == "express" else 50
+                
             if preferred_runtime == "node":
-                if frontend_key not in {"", "none"} and _path_matches_any_deploy_root(rel_workdir, preferred_frontend_roots):
-                    score += 60
-                elif frontend_key in {"", "none"} and backend_key == "express":
-                    score += 40
+                score += 40
             return score
 
         package_path, package_content = max(node_candidates, key=_node_candidate_score)
@@ -13358,20 +13230,19 @@ def _detect_project_stack(container_name: str, deployment_hints: Optional[Dict[s
             rel_req_path = _repo_rel(req_path)
             rel_workdir = _repo_rel(_dirname(req_path))
             score = 0
-            if req_path == "/workspace/requirements.txt":
-                score += 200
-            if "/backend/" in req_path or req_path.endswith("/backend/requirements.txt"):
-                score += 100
+            
+            # 1. Content capabilities (does it look runnable?)    
             if "fastapi" in text or "uvicorn" in text:
                 score += 40
-            if "flask" in text:
-                score += 20
-            if "django" in text:
-                score += 20
+            if "flask" in text or "django" in text:
+                score += 40
+
+            # 2. Dynamic Contract Enforcement (Driven by the Master Agent's Workspace Tree)
             if _path_matches_any_deploy_root(rel_req_path, preferred_backend_roots):
-                score += 260
+                score += 200
             if _path_matches_any_deploy_root(rel_workdir, preferred_backend_roots):
-                score += 260
+                score += 200
+                
             if preferred_runtime == "python" or backend_key in {"fastapi", "flask", "django"}:
                 score += 40
             return score
@@ -13420,6 +13291,157 @@ def _detect_project_stack(container_name: str, deployment_hints: Optional[Dict[s
     return stack
 
 
+async def _generate_master_verification_report(
+    project_token: str,
+    tech_spec: str = "",
+    brd_analysis: str = "",
+    tasks: List[Dict[str, Any]] = None,
+) -> str:
+    """
+    Generate a dynamic verification report/checklist based on project analysis.
+    This defines exactly what the Master Agent should look for in the HTML.
+    """
+    url = settings.ai_api_url
+    key = settings.ai_api_key
+    model_name = settings.ai_model
+
+    if not key or key == "your-api-key-here":
+        return "Check if the application is running and matches basic requirements."
+
+    tasks_text = ""
+    if tasks:
+        tasks_text = "\n".join([f"- {t.get('title')}: {t.get('description', '')[:200]}" for t in tasks[:10]])
+
+    prompt = f"""You are the Master Verification Architect. Your job is to generate a CUSTOM VERIFICATION CHECKLIST for a web application.
+This checklist will be used by an AI agent to audit a live deployment's HTML content.
+
+PROJECT REQUIREMENTS (BRD):
+{brd_analysis[:2000] if brd_analysis else "Not available."}
+
+TECHNICAL SPECIFICATION:
+{tech_spec[:2000] if tech_spec else "Not available."}
+
+RECENTLY COMPLETED TASKS:
+{tasks_text[:1500] if tasks_text else "None."}
+
+Write a PRECISE list of features, components, elements, and UI signals that MUST be present on the homepage (/) for this project to be considered "Success".
+- Do not mention generic things like "HTML tag" or "Correct status code".
+- Be extremely specific to THIS project's unique functional requirements and business logic.
+- Directly reference the core components, data fields, and interactive elements defined in the Tech Spec and BRD.
+- Explicitly look for the unique value proposition of the app, not generic framework boilerplates.
+
+Return ONLY the checklist (max 10 points) as a clear, actionable text report.
+"""
+    try:
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": "You are a software quality architect. Write precise, project-specific verification checklists."},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        }
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            if "choices" in data and len(data["choices"]) > 0:
+                report = data["choices"][0].get("message", {}).get("content", "")
+                return _re.sub(r"<think>.*?</think>", "", report, flags=_re.DOTALL).strip()
+    except Exception as e:
+        logger.warning(f"Failed to generate dynamic verification report: {e}")
+    
+    return "Ensure the landing page reflects the core functional requirements of the project."
+
+
+async def _master_verify_deployed_html(html_content: str, hints_text: str = "", verification_report: str = "") -> tuple[bool, str, Dict[str, Any]]:
+    """
+    Uses the Master Agent LLM to critically evaluate the raw HTML of a deployment.
+    Returns (is_valid, summary_reason, full_analysis_dict).
+    """
+    try:
+        url = settings.ai_api_url
+        key = settings.ai_api_key
+        model_name = settings.ai_model
+        
+        html_preview = html_content[:20000]
+        
+        prompt = f"""You are the Master AI Verification Agent. Your mandate is to REJECT any deployment that is a placeholder or does not contain real features.
+
+PROJECT SUCCESS CRITERIA:
+{verification_report}
+
+DEPLOYED HTML CONTENT:
+```html
+{html_preview}
+```
+{hints_text}
+
+INSTRUCTIONS:
+1. Conduct a point-by-point audit. For every requirement in the PROJECT SUCCESS CRITERIA, look for specific evidence (IDs, CSS classes, unique text, HTML structure) in the DEPLOYED HTML CONTENT.
+2. If the HTML only shows "Application successfully deployed", "Preview", "Vite + React", or other boilerplate text without the features requested, you MUST mark it "REJECT".
+3. Verify the presence of the primary interactive elements and data displays associated with the project's unique purpose as defined in the success criteria.
+4. Do NOT be "helpful" or optimistic. If the core features matching the project requirements are missing, REJECT it.
+
+Respond with JSON strictly following this schema:
+{{
+  "status": "APPROVE" or "REJECT",
+  "reason": "Overall summary of the decision",
+  "audit_log": [
+     "Requirement 1: Found [SPECIFIC EVIDENCE OF FEATURE] in HTML (PASS)",
+     "Requirement 2: No [REQUIRED COMPONENT] found in HTML (FAIL)",
+     ...
+  ]
+}}
+"""
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": "You are a highly critical software auditor. You perform strict, evidence-based verification of HTML content against requirements."},
+                {"role": "user", "content": prompt}
+            ],
+            "stream": False,
+        }
+        if "gpt" in str(model_name).lower():
+            payload["response_format"] = {"type": "json_object"}
+            
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if "choices" in data and len(data["choices"]) > 0:
+                content = data["choices"][0].get("message", {}).get("content", "")
+                content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL)
+                content = content.replace("```json", "").replace("```", "").strip()
+                
+                start_idx = content.find("{")
+                end_idx = content.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    content = content[start_idx:end_idx + 1]
+                    try:
+                        analysis = json.loads(content)
+                        is_approved = analysis.get("status", "").upper() == "APPROVE"
+                        return is_approved, analysis.get("reason", ""), analysis
+                    except Exception as parse_e:
+                        return False, f"Failed to parse AI audit: {parse_e}", {}
+    except Exception as e:
+        logger.warning(f"[Master Agent] HTML verification AI failed: {e}")
+        return False, f"Semantic audit failed to execute: {str(e)[:100]}", {"status": "REJECT", "audit_log": [f"ERROR: AI audit crashed ({e})"]}
+        
+    return False, "Audit failed: AI provided no response", {"status": "REJECT", "audit_log": ["ERROR: Empty AI response"]}
+
+
 async def deploy_preview(
     git_repo_url: str,
     git_token: str,
@@ -13460,6 +13482,7 @@ async def deploy_preview(
     }
     pstate = _preview_states[pk]
     deployment_hints: Dict[str, Any] = {}
+    summary_bits = []
 
     def _log(msg: str):
         pstate["logs"].append({
@@ -13467,6 +13490,19 @@ async def deploy_preview(
             "message": msg,
         })
         logger.info(f"[Preview] {msg}")
+
+    # Master Agent reference for live logging
+    state = _ensure_project_state(project_token)
+    project_agents = state["agent_states"]
+    master_agent = project_agents.get(MASTER_AGENT_ID)
+    
+    def _master_log(msg: str):
+        if master_agent:
+            master_agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"🕵️ [Preview-Audit] {msg}"
+            })
 
     try:
         try:
@@ -13480,7 +13516,6 @@ async def deploy_preview(
             frontend_roots = list(deployment_hints.get("preferred_frontend_roots") or [])
             backend_roots = list(deployment_hints.get("preferred_backend_roots") or [])
             preferred_runtime = str(deployment_hints.get("preferred_runtime") or "").strip()
-            summary_bits = []
             if stack_profile.get("frontend"):
                 summary_bits.append(f"frontend={stack_profile.get('frontend')}")
             if stack_profile.get("backend"):
@@ -13632,9 +13667,86 @@ async def deploy_preview(
             raise RuntimeError(f"Server crashed shortly after starting or failed to start:\n{err_log}")
 
         preview_url = f"http://localhost:{host_port}"
+
+        # 12. Master Agent Verification via curl equivalent
+        _log(f"🕵️ Master Agent verifying deployed page at {preview_url}...")
+        try:
+            import urllib.request
+            import urllib.error
+            # Allow the server an extra couple of seconds to bind to the port completely
+            await asyncio.sleep(2)
+            req = urllib.request.Request(preview_url, headers={'User-Agent': 'MasterAgent/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                status_code = response.getcode()
+                html = response.read().decode('utf-8', errors='ignore')
+                _log(f"Master verification received HTTP {status_code}")
+                
+                hints_text = ""
+                if summary_bits:
+                    hints_text = "Context: This is meant to be a " + ", ".join(summary_bits) + " application."
+                
+                _log(f"🕵️ Master Agent verification snapshot (Length: {len(html)} chars)")
+                _master_log(f"Auditing live page content (Length: {len(html)} chars)...")
+                _master_log(f"--- FETCHED HTML CONTENT ---\n{html[:2000]}\n--- END HTML ---")
+                
+                # Dynamic Verification Planning Layer
+                _master_log("Planning semantic verification strategy based on project context...")
+                state = _ensure_project_state(project_token)
+                brd_analysis = _build_brd_analysis_context(state.get("brd_analysis"))
+                cur_tech_spec = get_technical_spec(project_token or "")
+                completed_tasks = state.get("completed_tasks", [])
+                
+                verification_report = await _generate_master_verification_report(
+                    project_token=project_token or "",
+                    tech_spec=cur_tech_spec,
+                    brd_analysis=brd_analysis,
+                    tasks=completed_tasks
+                )
+                
+                _master_log(f"Verification Checkpoint:\n{verification_report}")
+                
+                is_valid, summary, analysis = await _master_verify_deployed_html(html, hints_text, verification_report)
+                
+                # Log detailed audit for transparency
+                for log_item in (analysis.get("audit_log") or []):
+                    _master_log(f"🔎 Audit: {log_item}")
+                
+                if not is_valid:
+                    _master_log(f"🔴 Deployment Verification REJECTED: {summary}")
+                    raise RuntimeError(f"Master Agent Audit failed: {summary}")
+                
+                _master_log(f"🟢 Deployment Verification APPROVED: {summary}")
+        
+        except urllib.error.HTTPError as e:
+            html = e.read().decode('utf-8', errors='ignore')
+            
+            hints_text = f"The server returned HTTP {e.code}."
+            
+            # Use dynamic verification even for error pages to see if it's a "semantic" error
+            state = _ensure_project_state(project_token)
+            brd_analysis = _build_brd_analysis_context(state.get("brd_analysis"))
+            cur_tech_spec = get_technical_spec(project_token or "")
+            verification_report = await _generate_master_verification_report(
+                project_token=project_token or "",
+                tech_spec=cur_tech_spec,
+                brd_analysis=brd_analysis
+            )
+            
+            is_valid, summary, analysis = await _master_verify_deployed_html(html, hints_text, verification_report)
+            error_reason = summary if not is_valid and summary else f"The app crashed returning HTTP {e.code}"
+            
+            _master_log(f"🔴 Deployment Verification FAILED (HTTP {e.code}): {error_reason}")
+            raise RuntimeError(f"Master verification failed (HTTP {e.code}): {error_reason}. Output: {html[:500]}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Master verification failed: Connection refused on {preview_url} ({e.reason}). The app failed to bind to the port.")
+        except Exception as e:
+            if not isinstance(e, RuntimeError):
+                raise RuntimeError(f"Master verification failed: {str(e)}")
+            raise e
+
         pstate["status"] = "running"
         pstate["preview_url"] = preview_url
-        _log("✅ Preview is live and ready!")
+        _log("✅ Preview is live and verified!")
 
         return {
             "status": "running",
@@ -13690,14 +13802,25 @@ async def repair_preview(
     if not pstate:
         return {"status": "error", "message": "No preview deployment found to repair."}
 
-    # Repair can be triggered before runtime agents are initialized for this project.
-    # Ensure system agents exist so run_agent(MASTER_AGENT_ID) does not fail.
+    # Ensure system agents exist
     state = _ensure_project_state(project_token)
     project_agents = state["agent_states"]
     if GIT_MANAGER_AGENT_ID not in project_agents:
         project_agents[GIT_MANAGER_AGENT_ID] = _make_agent(GIT_MANAGER_AGENT_ID, 2)
     if MASTER_AGENT_ID not in project_agents:
         project_agents[MASTER_AGENT_ID] = _make_agent(MASTER_AGENT_ID, 3)
+    if DEPLOY_AGENT_ID not in project_agents:
+        project_agents[DEPLOY_AGENT_ID] = _make_agent(DEPLOY_AGENT_ID, 4)
+
+    # Get current repository structure for deployment agent context
+    repo_structure = ""
+    try:
+        import context_manager as ctx_mgr
+        repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
+        if isinstance(repo_snapshot, dict):
+            repo_structure = str(repo_snapshot.get("tree") or "").strip()
+    except Exception:
+        pass
 
     logs = "\n".join([log.get("message", "") for log in pstate.get("logs", [])[-30:]])
     server_log = pstate.get("server_log", "")
@@ -13705,6 +13828,8 @@ async def repair_preview(
     if server_log:
         error_context += "\n\nServer Logs:\n" + server_log[-2000:]
 
+    tree_context = f"\n\nCurrent Repository Structure:\n{repo_structure}\n" if repo_structure else ""
+    
     pstate["status"] = "deploying"
     pstate["logs"].append({
         "time": datetime.utcnow().isoformat(),
@@ -13721,14 +13846,30 @@ async def repair_preview(
             task = {
                 "id": f"fix-{uuid.uuid4().hex[:8]}",
                 "title": "Fix Preview Deployment Failure",
-                "description": f"The application failed to start or deploy in the preview environment.\n\nLogs:\n{error_context}\n\nPlease identify the issue and modify the code to fix this deployment error.",
+                "description": f"The application failed to start or deploy in the preview environment.\n\nLogs:\n{error_context}\n{tree_context}\nPlease identify the issue and modify the code to fix this deployment error.",
                 "status": "pending"
             }
             
+            # Triage: Align Deploy Agent for setup issues, Dev Agent for semantic/logic issues
+            repair_owner = DEPLOY_AGENT_ID
+            pstate["last_error_reason"] = str(error_context)
+            
+            # Simple content-based triage
+            if any(kw in str(error_context).lower() for kw in ["missing", "component", "wrong", "rejected by ai", "semantic"]):
+                repair_owner = _pick_best_dev_agent(project_token)
+                
+            master_agent = project_agents.get(MASTER_AGENT_ID)
+            if master_agent:
+                master_agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"⚖️ Triage: Aligning {repair_owner} to address deployment failure ({'semantic' if repair_owner != DEPLOY_AGENT_ID else 'operational'} issue)."
+                })
+
             # Wait for AI to finish
             res = await asyncio.wait_for(
                 run_agent(
-                    agent_id=MASTER_AGENT_ID,
+                    agent_id=repair_owner,
                     assigned_task=task,
                     continuous=False,
                     ignore_running_check=True,

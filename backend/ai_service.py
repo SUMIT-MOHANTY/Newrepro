@@ -151,7 +151,7 @@ The JSON must follow this exact structure:
 
   "user_flow": "A user journey diagram definition describing the end-to-end flow through the application for the primary user types (public users, internal operators, admins, etc.). Derive this ONLY from the business / functional requirements and roles described in the BRD. The flow MUST: (1) start from the primary actor(s), (2) include authentication if the system requires login, (3) include each major feature or workflow (such as performing a calculation, submitting a form, placing an order), (4) include viewing results/confirmation, and (5) include end-of-session actions such as logout/exit where applicable. Steps should align with the architecture modules (for example: Edge/WAF → Frontend → API Gateway → Auth Service → Domain Services → Databases/Ledger). If the BRD does not provide enough detail, fall back to a standard web flow and explicitly note this assumption in the HTML report.",
 
-  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree (for example: 'myproject/', '├── backend/', '│   ├── apps/', ...).",
+  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree (for example: 'myproject/', '├── app/', '│   ├── api/', ...).",
 
   "architecture": {
     "nodes": [
@@ -606,12 +606,12 @@ RULES:
 10. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
     - "foundation": Project setup, structure, API contracts, database schema, configuration files.
       For FULL-STACK projects (e.g., React + Flask), the **foundation phase MUST create**:
-        * `backend/` directory with: virtualenv, `requirements.txt`, `config.py`, app entry, API module layout
-        * `frontend/` directory with: `package.json`, bundler config (Vite/Next/etc.), `src/` with `components/` and `pages/`, main entry files
+        * Core application directories (e.g., backend logic, frontend scaffolding) appropriate for the stack.
+        * Core dependencies definition (`requirements.txt`, `package.json`, virtualenvs/bundler configs)
         * Root-level files: `.env.example`, `.gitignore`, `README.md`, (optionally) `docker-compose.yml`
     - "backend-core": Core backend features (auth system, base models, base API setup, middleware)
     - "backend-features": Feature-specific backend endpoints (books API, members API, transactions API)
-    - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the already-created `frontend/` structure
+    - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the foundation structure
     - "frontend-features": Feature-specific frontend components (Books UI, Members UI, Transactions UI)
     - "integration": Testing, bug fixes, deployment preparation, end-to-end integration
 11. **DEPENDENCIES**: List task IDs from prior tasks that must complete BEFORE a given task can start:

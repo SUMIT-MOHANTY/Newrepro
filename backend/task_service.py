@@ -252,9 +252,21 @@ class TaskManagementService:
         return await self._make_request("PATCH", f"/api/agent/tasks/{task_id}/", task_token=task_token, json=payload)
 
     async def assign_task(self, task_id: int, assignees: list, task_token: Optional[str] = None) -> dict:
-        """Assign users to a task in external task management API."""
-        payload = {"assignees": assignees}
-        return await self.update_task(task_id, payload, task_token=task_token)
+        """Assign users to a task in external task management API via task-assign-in."""
+        # Grab the primary assignee off the list (which is either a string or a dict containing username)
+        primary_assignee = ""
+        if assignees:
+            first = assignees[0]
+            if isinstance(first, dict):
+                primary_assignee = first.get("username", first.get("name", ""))
+            else:
+                primary_assignee = str(first)
+                
+        payload = {
+            "task_id": task_id,
+            "username": primary_assignee
+        }
+        return await self._make_request("POST", f"/api/agent/task-assign-in/{task_id}/", task_token=task_token, json=payload)
 
     async def update_task_tags(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update tags for a task (e.g., adding 'blocked')."""
