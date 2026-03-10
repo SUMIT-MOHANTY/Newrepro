@@ -116,7 +116,7 @@ Assess the technical viability of the project.
 {_build_prerequisite_section()}
 
 # 6. Go / No-Go Recommendation
-**Verdict: [GO / NO-GO / PROCEED WITH CAUTION]**
+**[GO / NO-GO / PROCEED WITH CAUTION]**
 Provide a definitive recommendation on whether to proceed with development, accompanied by a short justification based on the clarity and feasibility of the requirements.
 
 Output format rules for the main report body (everything before the final JSON block):
