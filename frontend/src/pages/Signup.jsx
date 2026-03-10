@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, User, Building2, Loader2, ArrowRight } from 'lucide-react';
+import { Mail, User, Building2, Loader2, ArrowRight, Lock } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
 
@@ -8,9 +8,10 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
     const [firstName, setFirstName] = useState('');
     const [lastName, setLastName] = useState('');
     const [organizationName, setOrganizationName] = useState('');
-    const [email, setEmail] = useState('');
-    const [error, setError] = useState('');
-    const [isLoading, setIsLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
     const navigate = useNavigate();
 
     const handleSubmit = async (e) => {
@@ -28,8 +29,9 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                     first_name: firstName.trim(),
                     last_name: lastName.trim(),
                     organization_name: organizationName.trim(),
-                    email: email.trim().toLowerCase(),
-                }),
+        email: email.trim().toLowerCase(),
+        password: password,
+      }),
             });
 
             if (!response.ok) {
@@ -158,9 +160,25 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                         </div>
                     </div>
 
-                    <div className="rounded-xl border border-app-border-light bg-app-bg-page px-4 py-3 text-sm text-app-text-muted">
-                        A secure password will be generated automatically and sent to this email address after registration.
-                    </div>
+        <div className="space-y-1">
+          <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="password">
+            Password
+          </label>
+          <div className="relative group">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Lock className="h-5 w-5 text-app-text-light group-focus-within:text-app-primary transition-colors" />
+            </div>
+            <input
+              id="password"
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
+              required
+            />
+          </div>
+        </div>
 
                     <button
                         type="submit"

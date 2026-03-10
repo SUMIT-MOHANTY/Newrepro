@@ -949,6 +949,7 @@ export default function TaskCreation({
                 auto_create_plan: true,
                 custom_rules: customRules,
                 project_type: projectType,
+                process_mode: processMode,
             };
 
             if (prerequisites && prerequisites.length > 0) {

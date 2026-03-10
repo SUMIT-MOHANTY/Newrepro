@@ -5328,6 +5328,7 @@ class AutoGenerateRequest(BaseModel):
     auto_create_plan: Optional[bool] = False
     custom_rules: Optional[str] = None
     project_type: Optional[str] = "greenfield"
+    process_mode: Optional[str] = None
 
 
 
@@ -5828,6 +5829,7 @@ async def auto_generate_project_tasks(
             reporter_name=reporter_name,
             custom_rules=request.custom_rules,
             project_type=request.project_type or "greenfield",
+            process_mode=request.process_mode,
         )
 
 

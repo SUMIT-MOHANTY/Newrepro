@@ -52,7 +52,6 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   const processMode = location.state?.processMode || 'ai_first';
   const token = localStorage.getItem('token');
 
-  const [agentType, setAgentType] = useState('shared');
   const [sharedDevRequested, setSharedDevRequested] = useState(0);
   const [sharedTestRequested, setSharedTestRequested] = useState(0);
   const [dedicatedDevRequested, setDedicatedDevRequested] = useState(0);
@@ -313,36 +312,31 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             </div>
           </div>
 
+          {/* Capacity selection – grouped by Dev vs Test, each showing Shared & Dedicated */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div
-              className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-4 transition-all ${
-                agentType === 'shared'
-                  ? 'border-app-status-success bg-app-status-successBg/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
-                  : 'border-app-border-light bg-app-bg-muted'
-              }`}
-              onClick={() => setAgentType('shared')}
-            >
+            {/* Dev Agents card */}
+            <div className="w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-4 transition-all border-app-border-light bg-app-bg-muted">
               <div className="flex items-center gap-2">
-                <Users className={`w-5 h-5 ${agentType === 'shared' ? 'text-app-status-success' : 'text-app-text-muted'}`} />
-                <p className="font-semibold text-app-text-main">Shared Capacity</p>
+                <Users className="w-5 h-5 text-app-status-success" />
+                <p className="font-semibold text-app-text-main">Dev Agents</p>
                 <div className="ml-auto flex gap-1">
                   <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Avail Dev: {quotaLoading ? '…' : Math.max(0, (quota?.shared_dev_quota ?? 0) - existingSharedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
+                    Shared Avail: {quotaLoading ? '…' : Math.max(0, (quota?.shared_dev_quota ?? 0) - existingSharedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
                   </span>
                   <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Avail Test: {quotaLoading ? '…' : Math.max(0, (quota?.shared_test_quota ?? 0) - existingSharedAgents.filter(a => a.sub_type === 'test').length)}
+                    Dedicated Avail: {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_dev_quota ?? 0) - existingDedicatedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
                   </span>
                 </div>
               </div>
 
               <div className="space-y-3">
-                {/* Dev Counter */}
+                {/* Shared Dev Counter */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Dev Agents</span>
+                    <span className="text-xs font-medium text-app-text-main">Shared Dev Agents</span>
                   </div>
-                  <div className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                  <div className="inline-flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setSharedDevRequested(v => clampCount(v - 1))}
@@ -365,66 +359,13 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                   </div>
                 </div>
 
-                {/* Test Counter */}
+                {/* Dedicated Dev Counter */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-cyan-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Test Agents</span>
+                    <span className="text-xs font-medium text-app-text-main">Dedicated Dev Agents</span>
                   </div>
-                  <div className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                    <button
-                      type="button"
-                      onClick={() => setSharedTestRequested(v => clampCount(v - 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Minus className="w-4 h-4" />
-                    </button>
-                    <input
-                      value={sharedTestRequested}
-                      onChange={e => setSharedTestRequested(clampCount(e.target.value))}
-                      className="w-12 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setSharedTestRequested(v => clampCount(v + 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div
-              className={`w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-4 transition-all ${
-                agentType === 'dedicated'
-                  ? 'border-app-status-success bg-app-status-successBg/60 shadow-[0_0_0_1px_rgba(16,185,129,0.35)]'
-                  : 'border-app-border-light bg-app-bg-muted'
-              }`}
-              onClick={() => setAgentType('dedicated')}
-            >
-              <div className="flex items-center gap-2">
-                <Bot className={`w-5 h-5 ${agentType === 'dedicated' ? 'text-app-status-success' : 'text-app-text-muted'}`} />
-                <p className="font-semibold text-app-text-main">Dedicated Capacity</p>
-                <div className="ml-auto flex gap-1">
-                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Avail Dev: {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_dev_quota ?? 0) - existingDedicatedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
-                  </span>
-                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Avail Test: {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_test_quota ?? 0) - existingDedicatedAgents.filter(a => a.sub_type === 'test').length)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                {/* Dev Counter */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Dev Agents</span>
-                  </div>
-                  <div className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                  <div className="inline-flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setDedicatedDevRequested(v => clampCount(v - 1))}
@@ -446,14 +387,61 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
 
-                {/* Test Counter */}
+            {/* Test Agents card */}
+            <div className="w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-4 transition-all border-app-border-light bg-app-bg-muted">
+              <div className="flex items-center gap-2">
+                <Bot className="w-5 h-5 text-app-status-success" />
+                <p className="font-semibold text-app-text-main">Test Agents</p>
+                <div className="ml-auto flex gap-1">
+                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
+                    Shared Avail: {quotaLoading ? '…' : Math.max(0, (quota?.shared_test_quota ?? 0) - existingSharedAgents.filter(a => a.sub_type === 'test').length)}
+                  </span>
+                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
+                    Dedicated Avail: {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_test_quota ?? 0) - existingDedicatedAgents.filter(a => a.sub_type === 'test').length)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {/* Shared Test Counter */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                    <span className="text-xs font-medium text-app-text-main">Shared Test Agents</span>
+                  </div>
+                  <div className="inline-flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSharedTestRequested(v => clampCount(v - 1))}
+                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
+                    >
+                      <Minus className="w-4 h-4" />
+                    </button>
+                    <input
+                      value={sharedTestRequested}
+                      onChange={e => setSharedTestRequested(clampCount(e.target.value))}
+                      className="w-12 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSharedTestRequested(v => clampCount(v + 1))}
+                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Dedicated Test Counter */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-cyan-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Test Agents</span>
+                    <span className="text-xs font-medium text-app-text-main">Dedicated Test Agents</span>
                   </div>
-                  <div className="inline-flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                  <div className="inline-flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setDedicatedTestRequested(v => clampCount(v - 1))}
@@ -486,94 +474,9 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             </div>
           )}
 
-          {(quotaLoading || quotaError || quota) && (
-            <div className="rounded-xl border border-app-border-light bg-app-bg-muted px-4 py-3">
-              <p className="text-xs font-bold text-app-text-main">Organization capacity</p>
-              {quotaLoading && (
-                <p className="text-[11px] text-app-text-muted mt-1">Loading capacity…</p>
-              )}
-              {quotaError && !quotaLoading && (
-                <p className="text-[11px] text-app-status-warning mt-1">{quotaError}</p>
-              )}
-              {quota && !quotaLoading && (
-                <div className="mt-2 space-y-3">
-                  {/* Shared */}
-                  <div className="space-y-1">
-                    <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Shared</span>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9px] text-app-text-muted w-16">Org pool</span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                        Dev {Number(quota.shared_dev_quota ?? 0)}
-                      </span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/20">
-                        Test {Number(quota.shared_test_quota ?? 0)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9px] text-app-text-muted w-16">Used</span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                        Dev {existingSharedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length}
-                      </span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/20">
-                        Test {existingSharedAgents.filter(a => a.sub_type === 'test').length}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9px] text-app-text-muted w-16">Available</span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">
-                        Dev {Math.max(0, Number(quota.shared_dev_quota ?? 0) - existingSharedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
-                      </span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/25 text-cyan-300 border border-cyan-500/30">
-                        Test {Math.max(0, Number(quota.shared_test_quota ?? 0) - existingSharedAgents.filter(a => a.sub_type === 'test').length)}
-                      </span>
-                    </div>
-                  </div>
-                  {/* Dedicated */}
-                  <div className="space-y-1 border-t border-app-border-light/30 pt-2">
-                    <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Dedicated</span>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9px] text-app-text-muted w-16">Org pool</span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                        Dev {Number(quota.dedicated_dev_quota ?? 0)}
-                      </span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/20">
-                        Test {Number(quota.dedicated_test_quota ?? 0)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9px] text-app-text-muted w-16">Used</span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                        Dev {existingDedicatedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length}
-                      </span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/20">
-                        Test {existingDedicatedAgents.filter(a => a.sub_type === 'test').length}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[9px] text-app-text-muted w-16">Available</span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-500/30">
-                        Dev {Math.max(0, Number(quota.dedicated_dev_quota ?? 0) - existingDedicatedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
-                      </span>
-                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/25 text-cyan-300 border border-cyan-500/30">
-                        Test {Math.max(0, Number(quota.dedicated_test_quota ?? 0) - existingDedicatedAgents.filter(a => a.sub_type === 'test').length)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-              <div className="mt-2">
-                <button
-                  type="button"
-                  onClick={() => navigate('/agents')}
-                  className="text-xs font-bold text-app-primary hover:underline"
-                >
-                  Add more agents in Organization →
-                </button>
-              </div>
-            </div>
-          )}
+          {/* Organization capacity summary removed on request */}
 
-          {agentType === 'shared' && existingSharedCount > 0 && (
+          {existingSharedCount > 0 && (
             <div className="rounded-xl border border-app-border-light bg-app-bg-muted px-4 py-3">
               <p className="text-xs font-bold text-app-text-main">Shared agents already created (org-wide)</p>
               <p className="text-[11px] text-app-text-muted mt-1">

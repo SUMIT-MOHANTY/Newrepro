@@ -6,6 +6,7 @@ import { Menu, Settings, Moon, Sun } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
+import AIConfig from '../components/AIConfig';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
 import { fetchRoadmapStep } from '../api/projects';
@@ -85,6 +86,35 @@ export default function AppLayout({ children }) {
             return 'project';
         }
     });
+
+    // Global AI configuration (shared across pages)
+    const [aiConfig, setAiConfig] = useState(() => {
+        try {
+            const raw = localStorage.getItem('aiConfig');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                // Ensure we always have expected shape
+                return {
+                    apiUrl: parsed.apiUrl || '',
+                    apiKey: parsed.apiKey || '',
+                    model: parsed.model || '',
+                    // stream flag is used by AgentAnalysis; default false if missing
+                    stream: typeof parsed.stream === 'boolean' ? parsed.stream : false,
+                };
+            }
+        } catch {
+            // ignore malformed storage
+        }
+        return { apiUrl: '', apiKey: '', model: '', stream: false };
+    });
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('aiConfig', JSON.stringify(aiConfig));
+        } catch {
+            // ignore storage failures
+        }
+    }, [aiConfig]);
 
     useEffect(() => {
         if (!DASHBOARD_ROLES.some((r) => r.value === selectedRole)) {
@@ -769,6 +799,7 @@ export default function AppLayout({ children }) {
         projectsLoading: isProjectsLoading,
         selectedProjectKey, setSelectedProjectKey,
         showSettings, setShowSettings,
+        aiConfig, setAiConfig,
         currentView, setCurrentView,
         handleLogout, fetchHistory: fetchProjects,
         handleNewProject, handleSelectProject,
@@ -914,17 +945,54 @@ export default function AppLayout({ children }) {
                     </div>
                 )}
 
-                <div className="flex-1 h-full overflow-hidden">
-                    {typeof children === 'function'
-                        ? children(layoutProps)
-                        : React.Children.map(children, child =>
-                            React.isValidElement(child)
-                                ? React.cloneElement(child, layoutProps)
-                                : child
-                        )
-                    }
+            <div className="flex-1 h-full overflow-hidden">
+                {typeof children === 'function'
+                    ? children(layoutProps)
+                    : React.Children.map(children, child =>
+                        React.isValidElement(child)
+                            ? React.cloneElement(child, layoutProps)
+                            : child
+                    )
+                }
+            </div>
+        </div>
+
+        {/* Global AI Config Modal - available on all pages */}
+        {showSettings && (
+            <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+                {/* Backdrop with blur */}
+                <div
+                    className="absolute inset-0 bg-black/70 backdrop-blur-md"
+                    onClick={() => setShowSettings(false)}
+                />
+                {/* Modal Content */}
+                <div className="relative z-[301] bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
+                    <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
+                        <h2 className="font-bold text-lg text-app-text-main flex items-center">
+                            <Settings className="w-5 h-5 mr-2 text-app-primary" />
+                            AI Configuration
+                        </h2>
+                        <button
+                            onClick={() => setShowSettings(false)}
+                            className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                    <div className="p-6">
+                        <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
+                    </div>
+                    <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
+                        <button
+                            onClick={() => setShowSettings(false)}
+                            className="px-5 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover font-medium text-sm transition-colors shadow-md active:scale-95"
+                        >
+                            Done
+                        </button>
+                    </div>
                 </div>
-            </div >
-        </div >
+            </div>
+        )}
+    </div>
     );
 }

@@ -1263,6 +1263,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
             const requestBody = {
                 project_token: selectedProjectKey,
+                process_mode: processMode,
             };
             if (prerequisitesPayload && prerequisitesPayload.length > 0) {
                 requestBody.prerequisites = prerequisitesPayload;
