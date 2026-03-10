@@ -74,6 +74,7 @@ export const API_ENDPOINTS = {
 
     // External Task Management API
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
+    AGENT_PROJECT_BOOTSTRAP: `${API_BASE_URL}/api/agent/project-bootstrap/`,
     AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,
     AGENT_TASKS_TOTAL: `${API_BASE_URL}/api/agent/tasks-total-list/`,
     AGENT_CREATE_TASK: `${API_BASE_URL}/api/agent/tasks/`,

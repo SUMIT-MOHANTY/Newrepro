@@ -484,98 +484,10 @@ const GovernanceForm = ({
                 return;
             }
 
-            // Create project in external task management system via API
-            try {
-                const token = localStorage.getItem('token');
-                if (!token) {
-                    setError('Authentication required. Please login again.');
-                    setIsCreatingProject(false);
-                    return;
-                }
-
-                // Get default task token for project creation
-                const defaultClientId = import.meta.env.VITE_TASK_API_CLIENT_ID || "org_1_596a6282";
-                const defaultClientSecret = import.meta.env.VITE_TASK_API_CLIENT_SECRET || "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
-
-                const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        client_id: defaultClientId,
-                        client_secret: defaultClientSecret
-                    }),
-                });
-
-                if (!tokenRes.ok) {
-                    console.warn('Failed to fetch task token for project creation, continuing with draft project');
-                    // Continue with draft project even if token fetch fails
-                } else {
-                    const tokenData = await tokenRes.json();
-                    const taskToken = tokenData?.access;
-
-                    if (taskToken) {
-                        // Create project via API
-                        const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
-                        const createProjectResponse = await fetch(projectCreationUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                Authorization: `Bearer ${token}`,
-                                'x-task-token': taskToken,
-                            },
-                            body: JSON.stringify({
-                                name: projectName,
-                                deadline: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 90 days from now
-                                project_wallet: 1000,
-                                team: [24],
-                                project_token: draftProject.key
-                            }),
-                        });
-
-                        if (createProjectResponse.ok) {
-                            const createdProject = await createProjectResponse.json().catch(() => ({}));
-
-                            const projectApplication = createdProject?.project_application || null;
-
-                            if (projectApplication?.client_id && projectApplication?.client_secret) {
-                                // Update draft project with credentials from API - CRITICAL: Must save before navigation
-                                upsertDraftProject({
-                                    key: draftProject.key,
-                                    name: projectName,
-                                    client_id: projectApplication.client_id,
-                                    client_secret: projectApplication.client_secret,
-                                });
-
-                                // Force refresh projects list to get credentials from backend
-                                queryClient.invalidateQueries({ queryKey: ['projects'] });
-                                fetchHistory?.();
-                            } else {
-                                console.warn('Project created but no credentials in response. Response structure:', {
-                                    has_project_application: !!createdProject?.project_application,
-                                    project_application: createdProject?.project_application,
-                                    full_response: createdProject
-                                });
-                            }
-                        } else {
-                            const errorText = await createProjectResponse.text().catch(() => '');
-                            let errorData = {};
-                            try {
-                                errorData = JSON.parse(errorText);
-                            } catch {
-                                errorData = { detail: errorText };
-                            }
-                            console.error('Project creation API failed:', {
-                                status: createProjectResponse.status,
-                                statusText: createProjectResponse.statusText,
-                                error: errorData
-                            });
-                        }
-                    }
-                }
-            } catch (err) {
-                // Log error but continue - project creation in external system is not critical for continuing
-                console.warn('Failed to create project in external system, continuing with draft project:', err);
-            }
+            // NOTE:
+            // Do NOT create the external task project during initiation/governance.
+            // Project creation must happen during Task Creation (/api/agent/auto-generate/)
+            // so that the project deadline is derived strictly from the selected process_mode.
 
             // Wait a bit to ensure credentials are saved before navigation
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -928,6 +840,13 @@ const GovernanceForm = ({
                                 )}
 
     <div className="flex items-center gap-3">
+        {isDimensionStep && (
+            <button type="button" onClick={handleSkipAll}
+                className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-primary bg-app-primary-light border border-app-primary-light hover:bg-app-primary-light/80 transition-all shadow-sm"
+            >
+                Skip All
+            </button>
+        )}
         {!isReviewStep && (
             <button
                 type="button"
@@ -949,13 +868,6 @@ const GovernanceForm = ({
                         <ChevronRight className="w-4 h-4" />
                     </>
                 )}
-            </button>
-        )}
-        {isDimensionStep && (
-            <button type="button" onClick={handleSkipAll}
-                className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-primary bg-app-primary-light border border-app-primary-light hover:bg-app-primary-light/80 transition-all shadow-sm"
-            >
-                Skip All
             </button>
         )}
     </div>
@@ -1134,40 +1046,6 @@ const GovernanceResult = ({ result, onBack }) => {
                     </div>
                 )}
 
-                {/* ══════════════════════════════════════════════
-                   RECOMMENDATION
-                ══════════════════════════════════════════════ */}
-                <div className="bg-app-bg-card rounded-2xl shadow-sm border border-app-border-light p-5 sm:p-6 mb-6">
-                    <h3 className="text-app-text-main font-bold text-base mb-3 flex items-center gap-2">
-                        💡 Recommendation
-                    </h3>
-                    <div className="text-app-text-label space-y-2 text-sm leading-relaxed">
-                        {recommendation
-                            ? recommendation.split('\n').map((line, idx) => {
-                                if (line.includes('**')) {
-                                    const parts = line.split(/\*\*(.*?)\*\*/g);
-                                    return (
-                                        <div key={idx} className="whitespace-pre-wrap">
-                                            {parts.map((part, i) =>
-                                                i % 2 === 1 ? <strong key={i} className="font-bold text-app-text-main">{part}</strong> : part
-                                            )}
-                                        </div>
-                                    );
-                                }
-                                if (line.trim().startsWith('-'))
-                                    return (
-                                        <div key={idx} className="ml-3 flex gap-2 items-start">
-                                            <span className="text-blue-500 mt-1 flex-shrink-0">›</span>
-                                            <span>{line.trim().substring(1).trim()}</span>
-                                        </div>
-                                    );
-                                if (!line.trim()) return <div key={idx} className="h-1.5" />;
-                                return <div key={idx}>{line}</div>;
-                            })
-                            : <p className="text-app-text-light italic">No recommendation available.</p>
-                        }
-                    </div>
-                </div>
 
                 {/* ══════════════════════════════════════════════
                    NEXT STEPS + RESOURCES (side-by-side cards)

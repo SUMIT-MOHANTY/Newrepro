@@ -800,6 +800,7 @@ async def _generate_ai_tasks(
         agents=agents,
         project_deadline=project_deadline,
         project_wallet=total_wallet,
+        process_mode=process_mode,
     )
 
 
@@ -816,43 +817,70 @@ async def _generate_ai_tasks(
         )
         normalized_tasks.append(normalized)
 
-    def _mode_days(wallet_points: int) -> int:
-        """Convert wallet points into an estimated duration (days), based on the chosen execution mode."""
+    def _ai_days(wallet_points: int) -> int:
+        """AI-only estimated duration (days) derived from wallet points."""
         w = max(1, min(int(wallet_points or 1), 10))
+        # Aggressively faster than human pace: roughly 1/3–1/4 of human duration.
+        # For wallet 1..10 this yields 1..3 calendar days.
+        return max(1, (w + 3) // 4)
+
+    def _human_days(wallet_points: int) -> int:
+        """Human-only estimated duration (days) derived from wallet points."""
+        w = max(1, min(int(wallet_points or 1), 10))
+        # 1..10 days
+        return max(1, w)
+
+    def _mode_days(wallet_points: int) -> int:
+        """
+        Convert wallet points into an estimated duration (days), strictly based on execution mode:
+        - ai_first: AI timeline
+        - vibe_coding: AI timeline
+        - developer_only: human timeline
+        - ai_assist: human timeline (AI assists but calendar follows human pace)
+        - coexistence: AI + human simultaneously -> faster than AI-only
+        """
         mode = str(process_mode or "").strip().lower()
-        if mode == "ai_first":
-            # AI agents can execute faster; compress the timeline.
-            return max(1, (w + 3) // 4)  # 1..3 days
-        if mode in {"developer_only"}:
-            # Human-only execution tends to be slower.
-            return max(1, w)  # 1..10 days
-        # coexistence / ai_assist / vibe_coding / unknown -> balanced pace
-        return max(1, (w + 1) // 2)  # 1..5 days
+        ai = _ai_days(wallet_points)
+        human = _human_days(wallet_points)
+
+        if mode in {"developer_only", "ai_assist"}:
+            return human
+        if mode in {"ai_first", "vibe_coding"}:
+            return ai
+        if mode == "coexistence":
+            # Simultaneous execution (AI + human) should be faster than AI-only.
+            # Apply a modest compression while keeping a floor of 1 day.
+            return max(1, int(round(ai * 0.7)))
+
+        # Unknown -> default to human pace to avoid overly optimistic schedules.
+        return human
 
     def _apply_mode_schedule(tasks: List[Dict[str, Any]]) -> None:
         if not tasks:
             return
 
-        available_days = max((project_end - project_start).days + 1, 1)
-        desired = [_mode_days(t.get("wallet")) for t in tasks]
-        desired_total = max(sum(desired), 1)
+        # Let the execution mode strictly decide the calendar duration.
+        # We deliberately do NOT scale durations to fit into an existing
+        # project window; instead, the project deadline will be derived
+        # from the resulting task schedule.
+        durations = [_mode_days(t.get("wallet")) for t in tasks]
 
-        # If the desired plan exceeds the project window, scale it down to fit.
-        if desired_total > available_days:
-            ratio = available_days / float(desired_total)
-            scaled = [max(1, int(d * ratio)) for d in desired]
-            scaled_total = sum(scaled)
-            # Distribute remaining days to match the window (best-effort).
-            remaining = available_days - scaled_total
-            idx = 0
-            while remaining > 0 and scaled:
-                scaled[idx % len(scaled)] += 1
-                remaining -= 1
-                idx += 1
-            durations = scaled
-        else:
-            durations = desired
+        mode = str(process_mode or "").strip().lower()
 
+        if mode == "coexistence":
+            # Coexistence: model parallel work (AI + human) using 2 lanes.
+            # Place tasks on the earliest-available lane to shorten overall project time.
+            lane_cursors = [project_start, project_start]
+            for t, days in zip(tasks, durations):
+                lane_idx = 0 if lane_cursors[0] <= lane_cursors[1] else 1
+                start = lane_cursors[lane_idx]
+                end = min(project_end, start + timedelta(days=max(days - 1, 0)))
+                t["startdate"] = _format_date(start)
+                t["deadline"] = _format_date(end)
+                lane_cursors[lane_idx] = min(project_end, end + timedelta(days=1))
+            return
+
+        # Default: sequential schedule (single lane)
         cursor = project_start
         for t, days in zip(tasks, durations):
             start = cursor
@@ -891,6 +919,14 @@ async def build_local_task_plan_preview(
 
     reporter = _display_name(reporter_name)
     project_start, project_deadline = _normalize_project_dates(analysis_payload)
+
+    # Always anchor new execution plans from "today" onwards. If the BRD
+    # contained an old historical start date (e.g. 2024), we clamp it so
+    # that AI timelines are calculated from the current date instead of
+    # a past calendar window.
+    today = date.today()
+    if project_start < today:
+        project_start = today
     total_wallet = _derive_total_wallet(analysis_payload, analysis_report)
     deadline_iso = _format_date(project_deadline)
     analysis_context = _build_analysis_context(
@@ -903,6 +939,44 @@ async def build_local_task_plan_preview(
     # Derive project_type from analysis if not explicitly overriden
     derived_project_type = project_type if project_type != "greenfield" else _derive_project_type(analysis_payload)
 
+    # For mode-based scheduling we use a generous horizon so that the
+    # execution mode (AI vs human vs coexistence) strictly controls the
+    # resulting project duration, instead of forcing it into any pre-set
+    # deadline window derived from the BRD.
+    schedule_horizon = project_start + timedelta(days=365 * 3)
+
+    raw_tasks, remaining_wallet = await _generate_ai_tasks(
+        analysis_report=analysis_context,
+        reporter=reporter,
+        project_deadline=deadline_iso,
+        total_wallet=total_wallet,
+        project_start=project_start,
+        project_end=schedule_horizon,
+        custom_rules=custom_rules,
+        project_type=derived_project_type,
+        process_mode=process_mode,
+    )
+
+    # ------------------------------------------------------------
+    # Mode-based project deadline:
+    # The selected process_mode strictly decides the calendar timeline. We derive
+    # the project deadline from the scheduled tasks (max task deadline).
+    # ------------------------------------------------------------
+    mode_project_deadline = project_deadline
+    try:
+        task_deadlines = []
+        for t in raw_tasks or []:
+            d = _parse_date(t.get("deadline"))
+            if d is not None:
+                task_deadlines.append(d)
+        if task_deadlines:
+            mode_project_deadline = max(task_deadlines)
+    except Exception:
+        mode_project_deadline = project_deadline
+
+    deadline_iso = _format_date(mode_project_deadline)
+
+    # Now generate sprint/milestone suggestions INSIDE the mode-based project deadline.
     sprint_plan = await ai_service.generate_sprint_milestone_plan(
         analysis_report=analysis_context,
         project_name=project_name,
@@ -915,7 +989,7 @@ async def build_local_task_plan_preview(
         sprint_payload.get("start_date"),
         sprint_payload.get("deadline"),
         min_date=project_start,
-        max_date=project_deadline,
+        max_date=mode_project_deadline,
         require_strict_order=True,
     )
     sprint = {
@@ -926,7 +1000,7 @@ async def build_local_task_plan_preview(
         "deadline": sprint_deadline_iso,
     }
     sprint_start = _parse_date(sprint["start_date"]) or project_start
-    sprint_deadline = _parse_date(sprint["deadline"]) or project_deadline
+    sprint_deadline = _parse_date(sprint["deadline"]) or mode_project_deadline
     milestone_start_iso, milestone_deadline_iso = _normalize_task_dates(
         milestone_payload.get("start_date"),
         milestone_payload.get("deadline"),
@@ -941,23 +1015,11 @@ async def build_local_task_plan_preview(
         "deadline": milestone_deadline_iso,
     }
 
-    raw_tasks, remaining_wallet = await _generate_ai_tasks(
-        analysis_report=analysis_context,
-        reporter=reporter,
-        project_deadline=deadline_iso,
-        total_wallet=total_wallet,
-        project_start=project_start,
-        project_end=project_deadline,
-        custom_rules=custom_rules,
-        project_type=derived_project_type,
-        process_mode=process_mode,
-    )
-
     groups_used = _determine_sprint_groups(raw_tasks)
     sprints, milestones, group_to_sprint_idx = _create_sprints_and_milestones(
         groups_used=groups_used,
         project_start=project_start,
-        project_deadline=project_deadline,
+        project_deadline=mode_project_deadline,
         project_name=project_name or "Untitled Project",
     )
 

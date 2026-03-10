@@ -1588,48 +1588,10 @@ const Dashboard = ({
                 return defaultDate.toISOString().split('T')[0];
             };
 
-            const projectCreationUrl = `${API_ENDPOINTS.AGENT_PROJECT_INFO.replace('project-info/', 'projects/')}`;
-            const projName = selectedProject?.name || governanceContext?.project_name || "New AI Project";
-            let pToken = selectedProject?.projectToken || null;
-            if (!pToken) {
-                const storedResult = localStorage.getItem('governanceResult');
-                if (storedResult) {
-                    const res = JSON.parse(storedResult);
-                    pToken = res.project_token;
-                }
-            }
-
-            const createProjectResponse = await fetch(projectCreationUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
-                    'x-task-token': taskToken,
-                },
-                body: JSON.stringify({
-                    name: projName,
-                    deadline: parseTimelineToDate(timelineStr),
-                    project_wallet: 1000,
-                    team: teamIds.length > 0 ? teamIds : [24],
-                    project_token: pToken
-                }),
-            });
-
-            if (createProjectResponse.ok) {
-                const createdProject = await createProjectResponse.json().catch(() => ({}));
-                const projectApplication = createdProject?.project_application || null;
-                if (projectApplication && (selectedProjectKey || pToken)) {
-                    // Save to draft as temporary cache, but backend is source of truth
-                    upsertDraftProject({
-                        key: selectedProjectKey || pToken,
-                        name: projName,
-                        client_id: projectApplication.client_id || null,
-                        client_secret: projectApplication.client_secret || null,
-                    });
-                    // Force refetch from backend to get fresh credentials from database
-                    refreshProjects?.();
-                }
-            }
+            // NOTE:
+            // Do NOT create the external task project from Dashboard/initiation.
+            // Project creation must happen during Task Creation (/api/agent/auto-generate/)
+            // so that the project deadline is derived strictly from the selected process_mode.
         } catch (err) {
             console.error("Project generation error:", err);
         }
