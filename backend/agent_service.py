@@ -2990,7 +2990,104 @@ def _commit_if_dirty(container_name: str, message: str) -> None:
     )
 
 
-async def _run_git_manager_tests_with_ai(container_name: str, branch: str, project_token: Optional[str] = None) -> bool:
+def _pick_fix_agent_id(project_token: Optional[str] = None) -> Optional[str]:
+    project_agents = _get_agent_states(project_token)
+    if not project_agents:
+        return None
+
+    def _eligible(agent_id: str, agent: Dict[str, Any]) -> bool:
+        if _is_system_agent_id(agent_id):
+            return False
+        return True
+
+    def _preferred(ids: List[str]) -> Optional[str]:
+        idle = [aid for aid in ids if project_agents.get(aid, {}).get("status") == "idle"]
+        return idle[0] if idle else (ids[0] if ids else None)
+
+    dedicated = [
+        aid for aid, agent in project_agents.items()
+        if aid.startswith("dedicated_agent_") and _eligible(aid, agent)
+    ]
+    shared = [
+        aid for aid, agent in project_agents.items()
+        if aid.startswith("shared_agent_") and _eligible(aid, agent)
+    ]
+    others = [
+        aid for aid, agent in project_agents.items()
+        if _eligible(aid, agent) and aid not in dedicated and aid not in shared
+    ]
+
+    return _preferred(dedicated) or _preferred(shared) or _preferred(others)
+
+
+async def _create_merge_fix_task(
+    *,
+    title: str,
+    description: str,
+    project_token: Optional[str],
+    task_token: Optional[str],
+    preferred_agent_id: Optional[str] = None,
+) -> Optional[str]:
+    from task_service import task_service
+
+    effective_token = task_token or get_project_task_token(project_token)
+    startdate = datetime.utcnow().strftime("%Y-%m-%d")
+    deadline = await _resolve_project_deadline(project_token, task_token=effective_token)
+    if deadline and deadline < startdate:
+        deadline = startdate
+
+    payload = {
+        "taskName": title,
+        "description": description,
+        "assignees": [],
+        "wallet": 1,
+        "deadline": deadline,
+        "startdate": startdate,
+        "task_type": "BUG",
+        "priority": "high",
+    }
+
+    try:
+        result = await task_service.create_task(payload, task_token=effective_token)
+    except Exception as exc:
+        _log_git_agent(
+            f"Failed to create fix task for merge failure: {exc}",
+            "error",
+            project_token=project_token,
+        )
+        return None
+
+    task_id = (
+        str(result.get("id") or result.get("task_id") or result.get("taskId") or "").strip()
+        if isinstance(result, dict) else ""
+    )
+    if not task_id:
+        _log_git_agent(
+            "Fix task created but no task id was returned.",
+            "warning",
+            project_token=project_token,
+        )
+        return None
+
+    if preferred_agent_id:
+        assigned = await _master_assign_task_to_agent(
+            task_id,
+            preferred_agent_id,
+            agent_name=_get_agent_states(project_token).get(preferred_agent_id, {}).get("name"),
+            project_token=project_token,
+            task_token=effective_token,
+        )
+        if not assigned:
+            _log_git_agent(
+                f"Fix task {task_id} created but assignment to {preferred_agent_id} failed.",
+                "warning",
+                project_token=project_token,
+            )
+
+    return task_id
+
+
+async def _run_git_manager_tests_with_ai(container_name: str, branch: str, project_token: Optional[str] = None) -> Dict[str, Any]:
     summary = _collect_repo_summary(container_name)
     plan = await _call_ai_for_test_plan(summary)
     if not plan:
@@ -3000,7 +3097,7 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
     test_cmds = plan.get("tests") or []
     if not test_cmds:
         _log_git_agent("No test commands detected. Skipping tests.", project_token=project_token)
-        return True
+        return {"ok": True, "failures": [], "details": []}
 
     _log_git_agent(
         f"Running installs: {', '.join(install_cmds) if install_cmds else 'none'}",
@@ -3024,7 +3121,7 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
                 "warning",
                 project_token=project_token
             )
-            return True
+            return {"ok": True, "failures": [], "details": []}
         _log_git_agent(
             f"Install failed: {install_res.get('cmd')}\n{install_res.get('stderr')}",
             "warning",
@@ -3035,9 +3132,10 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
             "warning",
             project_token=project_token
         )
-        return True
+        return {"ok": True, "failures": [], "details": []}
 
     test_failures: List[str] = []
+    failure_details: List[Dict[str, str]] = []
 
     for cmd in test_cmds:
         _log_git_agent(f"Running tests: {cmd}", project_token=project_token)
@@ -3055,9 +3153,11 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
         if is_import_error:
             # Try to extract and install missing modules before AI fix
             missing_modules = _re.findall(
-                r"(?:No module named|ModuleNotFoundError:.*?)['\"]([^'\"]+)['\"]",
+                r"(?:No module named|ModuleNotFoundError:.*?)['\"]?([^'\"\s]+)['\"]?",
                 combined_output,
             )
+            if "no module named pytest" in combined_output.lower() and "pytest" not in missing_modules:
+                missing_modules.append("pytest")
             if missing_modules:
                 unique_modules = list(dict.fromkeys(missing_modules))[:5]
                 pip_cmd = f"pip install {' '.join(unique_modules)} 2>/dev/null || true"
@@ -3129,6 +3229,8 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
                 project_token=project_token,
             )
             test_failures.append(cmd)
+            tail = (test_res.get("stderr") or test_res.get("stdout") or "")[-800:]
+            failure_details.append({"cmd": cmd, "tail": tail})
             # We still commit local fixes so logs reflect what was tried,
             # but the overall gate result will be False.
             _commit_if_dirty(container_name, f"Push with test warnings ({branch})")
@@ -3140,9 +3242,9 @@ async def _run_git_manager_tests_with_ai(container_name: str, branch: str, proje
             "error",
             project_token=project_token,
         )
-        return False
+        return {"ok": False, "failures": test_failures, "details": failure_details}
 
-    return True
+    return {"ok": True, "failures": [], "details": []}
 
 
 async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Optional[str],
@@ -3924,6 +4026,20 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 conflict_msg = " | ".join(compact) if compact else "overlapping ownership"
 
                 if ownership_gate.get("reason_type") == "workspace_contract":
+                    fix_agent_id = _pick_fix_agent_id(project_token)
+                    details = (
+                        f"Merge blocked by workspace contract for branch {branch}.\n"
+                        f"Task: {task_title or 'unknown'}.\n"
+                        f"Violations: {conflict_msg}.\n\n"
+                        f"Fix by moving files into allowed roots or updating the workspace contract."
+                    )
+                    await _create_merge_fix_task(
+                        title=f"Fix: Workspace contract violation for {branch}",
+                        description=details,
+                        project_token=project_token,
+                        task_token=get_project_task_token(project_token),
+                        preferred_agent_id=fix_agent_id,
+                    )
                     _log_git_agent(
                         f"Workspace contract blocked merge for {branch}"
                         f"{f' ({task_title})' if task_title else ''}: {conflict_msg}. "
@@ -4104,15 +4220,40 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     return
 
             try:
-                tests_ok = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
+                tests_result = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
             except Exception as test_err:
                 _log_git_agent(
                     f"Test runner error after merging {branch}: {str(test_err)[:200]}",
                     "error",
                     project_token=project_token,
                 )
-                tests_ok = False
-            if not tests_ok:
+                tests_result = {"ok": False, "failures": ["test runner error"], "details": []}
+            if not tests_result.get("ok"):
+                fix_agent_id = _pick_fix_agent_id(project_token)
+                detail_lines = []
+                for entry in tests_result.get("details") or []:
+                    cmd = entry.get("cmd") or ""
+                    tail = entry.get("tail") or ""
+                    if cmd or tail:
+                        detail_lines.append(f"Command: {cmd}\n{tail}")
+                details_blob = "\n\n".join(detail_lines).strip()
+                description = "\n".join(
+                    part for part in [
+                        f"Merge tests failed for branch {branch}.",
+                        f"Task: {task_title or 'unknown'}.",
+                        f"Failures: {', '.join(tests_result.get('failures') or [])}.",
+                        "",
+                        details_blob,
+                    ]
+                    if part
+                )
+                await _create_merge_fix_task(
+                    title=f"Fix: Merge test failures for {branch}",
+                    description=description,
+                    project_token=project_token,
+                    task_token=get_project_task_token(project_token),
+                    preferred_agent_id=fix_agent_id,
+                )
                 _log_git_agent(
                     f"❌ Tests/validation failed after merge for {branch}. Aborting merge and leaving "
                     f"{GIT_INTEGRATION_BRANCH} at last known-good state.",
@@ -4860,8 +5001,9 @@ async def _master_assign_task_to_agent(
     task_token: Optional[str] = None,
 ) -> bool:
     """
-    Master Agent actively assigns task to agent via API.
-    Uses POST /api/agent/task-assign-in/ endpoint.
+    Master Agent actively assigns task to agent via task_service.assign_task().
+    Called when an agent sits idle for too long and the supervisor intervenes.
+    The /api/agent/task-assign-in/ endpoint in main.py handles external/UI calls.
     """
     try:
         # Convert task_id to int (handle both string and int)
@@ -4870,46 +5012,26 @@ async def _master_assign_task_to_agent(
         except (ValueError, TypeError):
             logger.warning(f"[Master Agent] Invalid task_id for assignment: {task_id}")
             return False
-        
+
         # Get agent username
         username = build_external_agent_username(agent_id, agent_name)
-        
-        # Call the assignment API endpoint
-        import httpx
-        from config import settings
-        
-        url = f"{settings.frontend_url.replace(':5173', ':8000')}/api/agent/task-assign-in/"
-        if not url.startswith("http"):
-            url = f"http://127.0.0.1:8000/api/agent/task-assign-in/"
-        
-        payload = {
-            "task_id": task_id_int,
-            "username": username
-        }
-        
-        headers = {
-            "Content-Type": "application/json",
-        }
-        
-        # Add task token if available
-        if task_token:
-            headers["x-task-token"] = task_token
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("success"):
-                _log_master_agent(
-                    f"✅ Assigned task {task_id} to {username} ({agent_id})",
-                    project_token=project_token,
-                )
-                return True
-            else:
-                logger.warning(f"[Master Agent] Assignment API returned success=False: {result}")
-                return False
-                
+
+        # Call task_service directly instead of HTTP self-call
+        from task_service import task_service
+        effective_token = task_token or get_project_task_token(project_token)
+
+        result = await task_service.assign_task(
+            task_id=task_id_int,
+            assignees=[username],
+            task_token=effective_token,
+        )
+
+        _log_master_agent(
+            f"✅ Assigned task {task_id} to {username} ({agent_id})",
+            project_token=project_token,
+        )
+        return True
+
     except Exception as e:
         logger.warning(f"[Master Agent] Failed to assign task {task_id} to {agent_id}: {e}")
         _log_master_agent(
@@ -7978,6 +8100,7 @@ async def _generate_detailed_project_tree_plan(
     stack_profile: Optional[Dict[str, Any]] = None,
     workspace_contract: Optional[Dict[str, Any]] = None,
     repo_tree_context: str = "",
+    previous_tree_feedback: str = "",
 ) -> str:
     url = settings.ai_api_url
     key = settings.ai_api_key
@@ -8060,6 +8183,7 @@ Output rules:
 - Do not include prose before or after the JSON.
 - Keep paths repository-relative; do not require an extra wrapper prefix in canonical source roots.
 - If you use a root label in JSON, it must not force all source roots to be prefixed with a non-repository segment.
+{previous_tree_feedback if previous_tree_feedback else ''}
 """
 
     payload = {
@@ -9286,19 +9410,39 @@ async def ensure_master_workspace_note(
                 project_token=project_token,
             )
             
+            # Build explicit feedback with the PREVIOUS failed tree + full validation report
+            # so the AI knows exactly what it produced and what's wrong with it.
+            contract_roots = list((workspace_contract or {}).get("allowed_source_roots") or [])
+            contract_roots_text = ", ".join(contract_roots[:15]) if contract_roots else "none detected"
+            _log_master_agent(
+                f"  Expected source roots from workspace contract: [{contract_roots_text}]",
+                level="warning",
+                project_token=project_token,
+            )
+            previous_tree_feedback = (
+                "\n\n=== CRITICAL FIX REQUIRED ===\n"
+                "Your PREVIOUS tree (shown below) failed validation. You MUST fix ALL issues listed.\n\n"
+                f"--- PREVIOUS FAILED TREE ---\n{workspace_tree[:4000]}\n--- END PREVIOUS TREE ---\n\n"
+                f"--- VALIDATION ERRORS ---\n{validation_report or validation_summary}\n--- END ERRORS ---\n\n"
+                f"--- REQUIRED SOURCE ROOTS (from workspace contract) ---\n"
+                f"The following source roots MUST exist in your tree: {contract_roots_text}\n"
+                f"--- END REQUIRED ROOTS ---\n\n"
+                "INSTRUCTIONS:\n"
+                "- Fix every issue listed above. Do not partially fix one item and ignore others.\n"
+                "- The corrected tree must still be valid JSON with a single root.\n"
+                "- Ensure ALL canonical source roots listed above are present in the output tree.\n"
+                "- If a root like 'backend/app' is required, the tree MUST contain both 'backend/' and 'app/' under it.\n"
+            )
+            
             workspace_tree = await _generate_detailed_project_tree_plan(
                 tasks=tasks,
                 brd_summary=brd_summary,
-                kg_context=kg_context + (
-                    "\n\nCRITICAL FIX REQUIRED:\n"
-                    "Your previous tree failed validation. You MUST fix all issues below before returning the next tree.\n"
-                    f"{validation_report or validation_summary}\n"
-                    "Do not partially fix one item and ignore others."
-                ),
+                kg_context=kg_context,
                 tech_spec=tech_spec,
                 stack_profile=stack_profile,
                 workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
                 repo_tree_context=current_repo_tree,
+                previous_tree_feedback=previous_tree_feedback,
             )
             workspace_tree_source = f"ai_tree_plan_retry_{retry_count}"
             
@@ -9589,6 +9733,13 @@ def _coerce_task_execution_order(value: Any) -> Optional[float]:
 
 
 def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Sort tasks for serial execution order:
+      1. Sprint (earlier sprints first, by sprint_id numeric order)
+      2. Priority (High → Medium → Low)
+      3. Task serial number (task_number, sequence, etc.)
+      4. Original index as final tiebreaker
+    """
     ordered = list(tasks or [])
     indexed_tasks = list(enumerate(ordered))
     order_fields = (
@@ -9604,13 +9755,57 @@ def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any
         "serial",
     )
 
-    def _task_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[int, float, int]:
-        index, task = item
+    # Priority ranking: lower number = higher priority
+    _PRIORITY_RANK = {
+        "critical": 0,
+        "urgent": 0,
+        "high": 1,
+        "medium": 2,
+        "normal": 2,
+        "low": 3,
+        "none": 4,
+    }
+
+    def _sprint_sort_key(task: Dict[str, Any]) -> float:
+        """Return a numeric sprint rank. Lower = earlier sprint."""
+        sprint_id = task.get("sprint_id") or task.get("sprint")
+        if isinstance(sprint_id, dict):
+            sprint_id = sprint_id.get("id")
+        rank = _coerce_task_execution_order(sprint_id)
+        if rank is not None:
+            return rank
+        # Try to extract sprint number from sprint_name (e.g. "Sprint 2 - Feature Development")
+        sprint_name = str(task.get("sprint_name") or "").strip().lower()
+        if sprint_name:
+            # "foundation" sprints come first
+            if "foundation" in sprint_name:
+                return 0.0
+            match = _re.search(r"sprint\s*(\d+)", sprint_name)
+            if match:
+                return float(match.group(1))
+        return 10**9  # Unknown sprint goes last
+
+    def _priority_sort_key(task: Dict[str, Any]) -> int:
+        """Return priority rank. Lower = higher priority."""
+        raw = str(task.get("priority") or "medium").strip().lower()
+        return _PRIORITY_RANK.get(raw, 2)
+
+    def _serial_sort_key(index: int, task: Dict[str, Any]) -> float:
+        """Return task serial number from order fields."""
         for field in order_fields:
             explicit = _coerce_task_execution_order(task.get(field))
             if explicit is not None:
-                return (0, explicit, index)
-        return (1, float(index), index)
+                return explicit
+        return float(index)
+
+    def _task_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[float, int, float, int]:
+        index, task = item
+        return (
+            _sprint_sort_key(task),        # 1. Sprint order
+            _priority_sort_key(task),      # 2. Priority (High first)
+            _serial_sort_key(index, task), # 3. Task serial number
+            index,                         # 4. Stable tiebreaker
+        )
 
     indexed_tasks.sort(key=_task_sort_key)
     return [task for _, task in indexed_tasks]
@@ -9848,12 +10043,15 @@ async def _claim_initial_task_assignments(
 ) -> Dict[str, Any]:
     """
     Prepare the ordered agent queue for supervisor execution.
-    Tasks are picked by agents themselves later at run time.
+    Serial assignment: tasks are sorted by execution order and assigned
+    one-by-one to agents (task 1 → agent 1, task 2 → agent 2, etc.).
+    If agents sit idle, the master supervisor will assign them later.
     """
     state = _ensure_project_state(project_token)
     if task_token:
         state["task_token"] = task_token
     project_agents = state["agent_states"]
+    claimed_task_ids = state["claimed_task_ids"]
 
     idle_agents = [
         a for a in project_agents.values()
@@ -9891,11 +10089,70 @@ async def _claim_initial_task_assignments(
             if token_val:
                 agent["git_token"] = token_val.strip()
 
+    # ── Serial assignment: sort tasks by execution order, assign to agents one-by-one ──
     serial_agents = sorted(idle_agents, key=lambda item: item["id"])
-    assignments = [(agent["id"], None) for agent in serial_agents]
+    sorted_tasks = _sort_tasks_for_execution(external_tasks)
+
+    # Filter to only available (non-done, non-claimed) tasks
+    available_tasks = []
+    for t in sorted_tasks:
+        tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "")
+        if not tid:
+            continue
+        if _task_status_is_done(t.get("status")):
+            continue
+        if tid in claimed_task_ids:
+            continue
+        # Skip tasks already assigned to a specific agent (they'll pick those up in _pick_next_task)
+        existing_assignee = _resolve_assigned_runtime_agent_id(t, project_agents)
+        if existing_assignee:
+            continue
+        available_tasks.append(t)
+
+    # Serial round-robin: task 1 → agent 1, task 2 → agent 2, ...
+    assignments = []
+    task_index = 0
+    effective_token = task_token or get_project_task_token(project_token)
+
+    for agent in serial_agents:
+        if task_index >= len(available_tasks):
+            # No more tasks — agent starts idle, master supervisor will assign later
+            assignments.append((agent["id"], None))
+            continue
+
+        task = available_tasks[task_index]
+        tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+
+        # Opt-in serially via task_service
+        try:
+            from task_service import task_service
+            agent_username = build_external_agent_username(agent["id"], agent.get("name"))
+            await task_service.opt_in_task(
+                {"task_id": int(tid), "username": agent_username},
+                task_token=effective_token,
+            )
+            claimed_task_ids.add(tid)
+            task = _apply_master_task_metadata(dict(task), project_token=project_token)
+            if project_token:
+                task.setdefault("_project_token", project_token)
+            agent["current_task"] = task
+            agent["resume_pending_task"] = True
+            assignments.append((agent["id"], task))
+            logger.info(f"[Serial Assignment] Task {tid} → {agent['id']} ({agent.get('name', 'unnamed')})")
+            task_index += 1
+        except Exception as opt_err:
+            logger.warning(f"[Serial Assignment] Opt-in failed for task {tid} → {agent['id']}: {opt_err}")
+            # Skip this task (someone else may have claimed it) and try next
+            task_index += 1
+            assignments.append((agent["id"], None))
 
     if not assignments:
         raise ValueError("No idle agents available for serial execution.")
+
+    logger.info(
+        f"[Serial Assignment] Assigned {sum(1 for _, t in assignments if t is not None)} tasks "
+        f"to {len(assignments)} agents serially."
+    )
 
     return {
         "idle_agents": [agent["id"] for agent in idle_agents],
@@ -10397,7 +10654,12 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                           task_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Pick the next uncompleted, unclaimed task from the external API.
-    Now includes dependency checking, phase filtering, and integration gate.
+    Serial opt-in: agents pick tasks one at a time in sorted order.
+    When an eligible task is found, the agent opts-in via task_service.opt_in_task()
+    atomically inside the claim lock. If opt-in fails (another agent got there first),
+    the task is skipped and the next one is tried.
+    If the agent ends up idle (no tasks), the master supervisor loop will
+    assign tasks to them via _master_assign_task_to_agent().
     """
     if task_token:
         set_project_task_token(project_token, task_token)
@@ -10412,7 +10674,6 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         live_mem = ctx_mgr.get_live_memory(project_token or "")
         workspace_contract = ctx_mgr.get_workspace_contract(project_token or "")
         if live_mem.is_integration_blocked():
-            # Only allow tasks with "fix" or "Fix" in the name when integration is blocked
             integration_blocked = True
         else:
             integration_blocked = False
@@ -10465,119 +10726,119 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         current_sprint_id = None
         try:
             project_state = _ensure_project_state(project_token)
-            # Try to get current sprint from state or from first available sprint
-            # For now, we'll determine current sprint based on phase progression
-            # This can be enhanced later with explicit sprint tracking
         except Exception:
             pass
 
         external_tasks = _sort_tasks_for_execution(external_tasks)
 
-        def _new_skip_reasons() -> Dict[str, int]:
-            return {
-                "completed_or_claimed": 0,
-                "integration_gate": 0,
-                "sprint_mismatch": 0,
-                "dependency_blocked": 0,
-                "conflict_blocked": 0,
-                "explicitly_blocked": 0,
-            }
+        skip_reasons = {
+            "completed_or_claimed": 0,
+            "integration_gate": 0,
+            "sprint_mismatch": 0,
+            "dependency_blocked": 0,
+            "conflict_blocked": 0,
+            "explicitly_blocked": 0,
+            "opt_in_failed": 0,
+        }
+        
+        agent = project_agents.get(agent_id)
+        agent_username = build_external_agent_username(agent_id, agent.get("name") if agent else None)
+        
+        # ── Step 1: Separate tasks into assigned-to-me vs unassigned ──
+        assigned_to_me = []
+        other_tasks = []
+        
+        for t in external_tasks:
+            resolved_agent_id = _resolve_assigned_runtime_agent_id(t, project_agents)
+            if resolved_agent_id == agent_id:
+                assigned_to_me.append(t)
+            elif not resolved_agent_id:
+                other_tasks.append(t)
+        
+        # ── Step 2: Serial pick — assigned-to-me first, then unassigned ──
+        for t in assigned_to_me + other_tasks:
+            _apply_master_task_metadata(t, project_token=project_token)
+            tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
+            status_lower = (t.get("status") or "").lower()
 
-        def _try_pick_task() -> tuple[Optional[Dict[str, Any]], Dict[str, int]]:
-            skip_reasons = _new_skip_reasons()
+            # Skip if completed or already claimed by another agent in this process
+            if _task_status_is_done(status_lower) or tid in claimed_task_ids:
+                skip_reasons["completed_or_claimed"] += 1
+                continue
             
-            agent = project_agents.get(agent_id)
-            agent_username = build_external_agent_username(agent_id, agent.get("name") if agent else None)
-            agent_name = normalize_agent_name(agent_id, agent.get("name") if agent else None)
-            
-            # Separate tasks: assigned to me vs others
-            assigned_to_me = []
-            other_tasks = []
-            
-            for t in external_tasks:
-                _apply_master_task_metadata(t, project_token=project_token)
-                tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
-                status_lower = (t.get("status") or "").lower()
+            # If the task explicitly has the "BLOCKED" tag or status, skip it
+            task_tags = [str(tag).lower() for tag in (t.get("tags") or [])]
+            if status_lower == "blocked" or "blocked" in task_tags:
+                skip_reasons["explicitly_blocked"] += 1
+                continue
 
-                # Skip if completed or already claimed
-                if _task_status_is_done(status_lower) or tid in claimed_task_ids:
-                    skip_reasons["completed_or_claimed"] += 1
+            # Integration gate: if blocked, only allow fix tasks
+            if integration_blocked:
+                task_name = (t.get("taskName") or t.get("title") or "").lower()
+                if "fix" not in task_name and "bug" not in task_name.lower():
+                    skip_reasons["integration_gate"] += 1
                     continue
-                
-                # If the task explicitly has the "BLOCKED" tag or status, skip it
-                task_tags = [str(tag).lower() for tag in (t.get("tags") or [])]
-                if status_lower == "blocked" or "blocked" in task_tags:
-                    skip_reasons["explicitly_blocked"] += 1
+
+            if current_sprint_id:
+                task_sprint_id = t.get("sprint") or t.get("sprint_id")
+                if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
+                    skip_reasons["sprint_mismatch"] += 1
                     continue
 
-                # If not assigned to me and assigned to someone else, skip
-                if t not in assigned_to_me:
-                    assigned_agent = str(t.get("assigned_agent") or "").strip()
-                    assigned_username = str(t.get("assignee") or "").strip()
-                    if assigned_agent or assigned_username:
-                        continue  # Skip tasks assigned to other agents
-                    
-                    # If we fall through here, it means the task is OPEN (no assignee).
-                    # Thus, the agent is allowed to process and claim it!
+            if live_mem:
+                task_deps = t.get("dependencies", [])
+                if not task_deps:
+                    linked = t.get("linked_tasks", [])
+                    if linked:
+                        task_deps = [str(lt) for lt in linked]
 
-                # Integration gate: if blocked, only allow fix tasks
-                if integration_blocked:
-                    task_name = (t.get("taskName") or t.get("title") or "").lower()
-                    if "fix" not in task_name and "bug" not in task_name.lower():
-                        skip_reasons["integration_gate"] += 1
-                        continue
+                if task_deps:
+                    live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
 
-                if current_sprint_id:
-                    task_sprint_id = t.get("sprint") or t.get("sprint_id")
-                    if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
-                        skip_reasons["sprint_mismatch"] += 1
-                        continue
+                if not live_mem.check_task_dependencies(tid):
+                    blocking = live_mem.get_blocking_tasks(tid)
+                    logger.info(
+                        f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
+                    )
+                    skip_reasons["dependency_blocked"] += 1
+                    continue
 
-                if live_mem:
-                    task_deps = t.get("dependencies", [])
-                    if not task_deps:
-                        linked = t.get("linked_tasks", [])
-                        if linked:
-                            task_deps = [str(lt) for lt in linked]
+                blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+                if blocked:
+                    logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                    skip_reasons["conflict_blocked"] += 1
+                    continue
 
-                    if task_deps:
-                        live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+            # ── Step 3: Serial opt-in — atomically claim via external API ──
+            try:
+                from task_service import task_service
+                effective_token = task_token or get_project_task_token(project_token)
+                await task_service.opt_in_task(
+                    {"task_id": int(tid), "username": agent_username},
+                    task_token=effective_token,
+                )
+                logger.info(f"[{agent_id}] ✅ Serial opt-in succeeded for task {tid}")
+            except Exception as opt_err:
+                logger.info(f"[{agent_id}] Opt-in failed for task {tid} (another agent may have claimed it): {opt_err}")
+                skip_reasons["opt_in_failed"] += 1
+                continue
 
-                    if not live_mem.check_task_dependencies(tid):
-                        blocking = live_mem.get_blocking_tasks(tid)
-                        logger.info(
-                            f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
-                        )
-                        skip_reasons["dependency_blocked"] += 1
-                        continue
-
-                    blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
-                    if blocked:
-                        logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
-                        skip_reasons["conflict_blocked"] += 1
-                        continue
-
-                claimed_task_ids.add(tid)
-                for lt in (t.get("linked_tasks") or []):
-                    claimed_task_ids.add(str(lt))
-                agent = project_agents.get(agent_id)
-                if agent:
-                    reserved_task = _apply_master_task_metadata(dict(t), project_token=project_token)
-                    if project_token:
-                        reserved_task.setdefault("_project_token", project_token)
-                    agent["current_task"] = reserved_task
-                    agent["resume_pending_task"] = True
-                return t, skip_reasons
-
-            return None, skip_reasons
-
-        task, skip_reasons = _try_pick_task()
-        if task:
-            return task
+            # Opt-in succeeded — claim locally
+            claimed_task_ids.add(tid)
+            for lt in (t.get("linked_tasks") or []):
+                claimed_task_ids.add(str(lt))
+            if agent:
+                reserved_task = _apply_master_task_metadata(dict(t), project_token=project_token)
+                if project_token:
+                    reserved_task.setdefault("_project_token", project_token)
+                agent["current_task"] = reserved_task
+                agent["resume_pending_task"] = True
+            return t
 
         logger.info(
             f"[{agent_id}] No eligible task found from {len(external_tasks)} fetched task(s). "
-            f"Skip summary: {skip_reasons}. Claimed ids remaining: {len(claimed_task_ids)}"
+            f"Skip summary: {skip_reasons}. Claimed ids remaining: {len(claimed_task_ids)}. "
+            f"Master supervisor will assign if agent stays idle."
         )
         return None
 
@@ -10947,11 +11208,12 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
             
             username = build_external_agent_username(agent_id, agent.get("name"))
-            opt_in_ok = await _opt_in_task(task, username, task_token=task_token)
+            # Opt-in already happened inside _pick_next_task (serial opt-in).
+            # Just log confirmation here.
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"API: task opt-in {'ok' if opt_in_ok else 'failed'}"
+                "message": f"API: task opt-in already completed during serial task pick (agent: {username})"
             })
 
             clock_in_ok = await _post_timer_log(task, "clock_in", task_token=task_token)

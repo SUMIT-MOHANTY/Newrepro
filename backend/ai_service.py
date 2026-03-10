@@ -3,6 +3,7 @@ AI Service for BRD Analysis
 Supports OpenAI-compatible APIs (OpenAI, NVIDIA, Azure, local LLMs, etc.)
 """
 import httpx
+import json
 from typing import Optional
 from config import settings
 import logging
@@ -10,6 +11,61 @@ import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+# ── JSON Extraction Helpers ────────────────────────────────────────────────
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+
+    # Prefer fenced JSON blocks
+    fenced_regex = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+    last_valid = None
+    for match in fenced_regex.finditer(text):
+        candidate = match.group(1).strip()
+        if not (candidate.startswith("{") and candidate.endswith("}")):
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                last_valid = parsed
+        except Exception:
+            continue
+    if last_valid is not None:
+        return last_valid
+
+    # Fallback: find a trailing JSON object
+    trimmed = text.strip()
+    for i in range(len(trimmed) - 1, -1, -1):
+        if trimmed[i] != "{":
+            continue
+        candidate = trimmed[i:].strip()
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _has_architecture_block(text: str) -> bool:
+    parsed = _extract_json_object(text)
+    if not isinstance(parsed, dict):
+        return False
+    architecture = parsed.get("architecture")
+    return isinstance(architecture, dict)
+
+
+def _build_architecture_repair_prompt(previous_response: str) -> str:
+    return (
+        "Your previous response is missing or contains an invalid JSON block with an 'architecture' object.\n"
+        "Return the FULL response again with the SAME HTML report body, and end with ONE valid JSON block in a "
+        "```json``` fence that includes: title, metrics, questions, prerequisites, user_flow, "
+        "implementation_structure, and architecture (nodes + edges).\n\n"
+        "Previous response:\n\n"
+        f"{previous_response}"
+    )
 
 # BRD Analysis System Prompt
 BRD_ANALYSIS_PROMPT = """You are an expert Senior Business Analyst and Technical Architect.
@@ -413,6 +469,23 @@ async def analyze_document(
 
                 if use_brn_llama:
                     content = data.get('response', data.get('text', data.get('content', '')))
+                    if not _has_architecture_block(content):
+                        repair_prompt = _build_architecture_repair_prompt(content)
+                        repair_payload = {
+                            "model": model_name,
+                            "prompt": f"{BRD_ANALYSIS_PROMPT}\n\n{repair_prompt}",
+                            "stream": False,
+                            "agent_id": settings.brn_agent_id,
+                            "platform_id": settings.brn_platform_id,
+                            "max_tokens": settings.brn_max_tokens,
+                            "temperature": settings.brn_temperature,
+                        }
+                        repair_response = await client.post(url, json=repair_payload, headers=brn_headers)
+                        repair_response.raise_for_status()
+                        repair_data = repair_response.json()
+                        repaired_content = repair_data.get('response', repair_data.get('text', repair_data.get('content', '')))
+                        if _has_architecture_block(repaired_content):
+                            content = repaired_content
                     return {
                         "status": "success",
                         "analysis": content,
@@ -433,6 +506,28 @@ async def analyze_document(
                         if think_match and not reasoning_from_api:
                             reasoning_from_api = think_match.group(1).strip()
                         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+                    if not _has_architecture_block(content):
+                        repair_prompt = _build_architecture_repair_prompt(content)
+                        repair_payload = {
+                            "model": model_name,
+                            "messages": [
+                                {"role": "system", "content": BRD_ANALYSIS_PROMPT},
+                                {"role": "user", "content": repair_prompt}
+                            ],
+                            "stream": False,
+                            "chat_template_kwargs": {
+                                "thinking": False
+                            }
+                        }
+                        repair_response = await client.post(url, json=repair_payload, headers=openai_headers)
+                        repair_response.raise_for_status()
+                        repair_data = repair_response.json()
+                        if "choices" in repair_data and len(repair_data["choices"]) > 0:
+                            repair_message = repair_data["choices"][0].get("message", {})
+                            repaired_content = repair_message.get("content", "")
+                            if _has_architecture_block(repaired_content):
+                                content = repaired_content
                     
                     return {
                         "status": "success",
