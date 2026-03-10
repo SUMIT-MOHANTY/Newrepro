@@ -30,7 +30,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
                             >
                                 {/* Indicator Circle */}
                                 <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold transition-all duration-300 flex-shrink-0
-                                    ${done ? 'bg-gradient-to-br from-app-primary to-app-primary text-app-bg-card shadow-md shadow-app-primary-ring'
+                                    ${done ? 'bg-gradient-to-br from-app-primary to-app-primary text-white shadow-md shadow-app-primary-ring'
                                         : active ? 'bg-app-bg-card border-2 border-app-primary text-app-primary shadow-lg shadow-app-primary-light ring-4 ring-app-primary-light'
                                             : 'bg-app-bg-muted border border-app-border text-app-text-light group-hover:border-app-border group-hover:text-app-text-muted'}`}
                                 >
@@ -1053,7 +1053,7 @@ const GovernanceResult = ({ result, onBack }) => {
                 ══════════════════════════════════════════════ */}
                 <div className="flex flex-col lg:flex-row gap-4 mb-6">
                     {/* LEFT: Hero Banner */}
-                    <div className={`relative rounded-2xl overflow-hidden bg-gradient-to-br ${theme.gradient} text-app-bg-card p-6 sm:p-8 shadow-lg flex-1`}>
+                    <div className={`relative rounded-2xl overflow-hidden bg-gradient-to-br ${theme.gradient} text-white p-6 sm:p-8 shadow-lg flex-1`}>
                         <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center gap-5">
                             {/* Score ring */}
                             <div className="bg-app-bg-card/20 backdrop-blur-sm rounded-2xl p-3 flex-shrink-0">
@@ -1061,19 +1061,19 @@ const GovernanceResult = ({ result, onBack }) => {
                             </div>
 
                             <div className="flex-1 min-w-0">
-                                <p className="text-app-bg-card/70 text-xs font-semibold uppercase tracking-widest mb-1">Governance Result</p>
+                                <p className="text-white/70 text-xs font-semibold uppercase tracking-widest mb-1">Governance Result</p>
                                 <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-1 truncate">
                                     {theme.emoji} {theme.label}
                                 </h1>
-                                <p className="text-app-bg-card/80 text-sm mb-3 line-clamp-2">{classification_description}</p>
+                                <p className="text-white/80 text-sm mb-3 line-clamp-2">{classification_description}</p>
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card text-xs font-bold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-bold px-3 py-1 rounded-full">
                                         {project_name}
                                     </span>
-                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card text-xs font-semibold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
                                         Score: {weighted_score}/10
                                     </span>
-                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card text-xs font-semibold px-3 py-1 rounded-full">
+                                    <span className="bg-app-bg-card/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">
                                         {weighted_score <= 3.5 ? 'Low Governance' : weighted_score <= 6.5 ? 'Moderate Governance' : 'High Governance'}
                                     </span>
                                 </div>
@@ -1279,7 +1279,7 @@ const GovernanceResult = ({ result, onBack }) => {
                                 sessionStorage.setItem('shouldStartAnalysis', 'true');
                                 window.location.href = `/a/${result.project_token}`;
                             }}
-                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-app-bg-card bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
+                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
                         >
                             <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
                         </button>

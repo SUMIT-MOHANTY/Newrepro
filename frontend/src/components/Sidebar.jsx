@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
+import logo from '../assets/logo.png';
 import { API_ENDPOINTS } from '../config';
 
 export default function Sidebar({
@@ -19,6 +20,7 @@ export default function Sidebar({
     handleLogout,
     handleDeleteProject,
     deletingProjectKey,
+    isDarkMode = false,
 }) {
     const navigate = useNavigate();
     const location = useLocation();
@@ -85,9 +87,13 @@ export default function Sidebar({
                 <div className="h-16 flex items-center px-2 border-b border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
                     <div className="flex items-center justify-between w-full">
                         <div className="flex items-center min-w-0">
-                            <img src={bourntecLogo} alt="App Logo" className="h-5 w-auto object-contain shrink-0" />
+                            <img
+                                src={isDarkMode ? bourntecLogo : logo}
+                                alt="App Logo"
+                                className="h-5 w-auto object-contain shrink-0"
+                            />
                             <div className="h-5 w-0.5 bg-app-bg-card mx-3 shrink-0 rounded-full"></div>
-                            <span className="text-sm font-bold text-app-bg-card tracking-tight whitespace-nowrap truncate">DSuite</span>
+                            <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">DSuite</span>
                         </div>
                         <button
                             type="button"
@@ -103,7 +109,7 @@ export default function Sidebar({
                 <div className="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar">
                     <button
                         onClick={handleNewProject}
-                        className="flex items-center w-full px-4 py-3 mb-6 text-sm font-bold text-app-bg-card bg-app-primary rounded-lg hover:bg-app-primary-hover shadow-lg shadow-app-primary-dark/20 transition-all active:scale-95"
+                        className="flex items-center w-full px-4 py-3 mb-6 text-sm font-bold text-white bg-app-primary rounded-lg hover:bg-app-primary-hover shadow-lg shadow-app-primary-dark/20 transition-all active:scale-95"
                     >
                         <Plus className="w-5 h-5 mr-2" />
                         New Project
@@ -158,7 +164,7 @@ export default function Sidebar({
                 <div className="p-4 border-t border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
                     <button
                         onClick={() => setCurrentView('statusDashboard')}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark' : 'text-app-border hover:bg-app-text-label hover:text-app-bg-card'}`}
+                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard' ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark' : 'text-app-border hover:bg-app-text-label hover:text-white'}`}
                     >
                         <Activity className="w-4 h-4 mr-3" />
                         Status Dashboard

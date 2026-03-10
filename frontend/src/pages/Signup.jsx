@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, User, Building2, Loader2, ArrowRight, Lock } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
+import bourntecLogo from '../assets/bourntec_logo.png';
 
 const Signup = ({ isModal = false, onClose, onSwitch }) => {
     const [firstName, setFirstName] = useState('');
@@ -39,9 +40,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                 throw new Error(errorData.detail || 'Signup failed');
             }
 
-            const registrationMessage = 'Registration successful. Check your email for the generated password, then sign in.';
             if (isModal && onClose) onClose();
-            navigate('/login', { state: { registrationMessage } });
+            navigate('/login');
         } catch (err) {
             setError(err.message);
         } finally {
@@ -64,7 +64,7 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                     </button>
                 )}
                 <h2 className="text-2xl font-bold text-app-text-main tracking-tight mb-2">Register Organization</h2>
-                <p className="text-app-text-muted text-sm">Create your admin account. A random password will be emailed to you.</p>
+                <p className="text-app-text-muted text-sm">Create your admin account. You’ll use the password you set here to sign in.</p>
             </div>
 
             {/* Form Section */}
@@ -183,7 +183,7 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                     <button
                         type="submit"
                         disabled={isLoading}
-                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-app-bg-card bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
+                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-white bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
                     >
                         {isLoading ? (
                             <>
@@ -226,7 +226,11 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
         <div className="min-h-screen bg-gradient-to-br from-app-bg-page to-app-bg-muted relative">
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center space-x-4 z-10">
-                <img src={logo} alt="DSuite Logo" className="h-10 w-auto object-contain" />
+                <img
+                    src={typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? bourntecLogo : logo}
+                    alt="DSuite Logo"
+                    className="h-10 w-auto object-contain"
+                />
                 <div className="h-8 w-px bg-app-border"></div>
                 <span className="text-xl font-bold text-app-text-main tracking-tight">DSuite</span>
             </div>

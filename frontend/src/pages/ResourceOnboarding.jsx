@@ -168,6 +168,10 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   }, [token]);
 
   const handleSubmit = async () => {
+    setIsSubmitting(true);
+    setSubmitError('');
+    setSubmitWarning('');
+    
     try {
       const sDevCount = clampCount(sharedDevRequested);
       const sTestCount = clampCount(sharedTestRequested);
@@ -184,34 +188,41 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
         if (sDevCount > sDevAvail) {
           setSubmitError(`Shared Dev capacity exceeded. Available: ${sDevAvail}.`);
+          setIsSubmitting(false);
           return;
         }
         if (sTestCount > sTestAvail) {
           setSubmitError(`Shared Test capacity exceeded. Available: ${sTestAvail}.`);
+          setIsSubmitting(false);
           return;
         }
         if (dDevCount > dDevAvail) {
           setSubmitError(`Dedicated Dev capacity exceeded. Available: ${dDevAvail}.`);
+          setIsSubmitting(false);
           return;
         }
         if (dTestCount > dTestAvail) {
           setSubmitError(`Dedicated Test capacity exceeded. Available: ${dTestAvail}.`);
+          setIsSubmitting(false);
           return;
         }
       }
 
       if (totalToCreate === 0 && existingSharedCount === 0 && existingDedicatedCount === 0) {
         setSubmitError('Please select agents to add.');
+        setIsSubmitting(false);
         return;
       }
 
       if (totalToCreate > 0 && !selectedProjectKey) {
         setSubmitError('Select a project before creating dev agents.');
+        setIsSubmitting(false);
         return;
       }
 
       if (!token) {
         setSubmitError('You are not logged in. Please login again.');
+        setIsSubmitting(false);
         return;
       }
 
@@ -222,27 +233,35 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
       if (hasValidTaskToken) {
         headers['x-task-token'] = taskToken;
-      } else {
-        setSubmitWarning('Task token is not ready. Agents will still be created locally, but upstream agent provisioning may be delayed.');
       }
-
-      const warnings = [];
 
       const createOne = async (kind, subType, projectToken) => {
         const url = new URL(API_ENDPOINTS.AGENT_ADD);
         if (projectToken) url.searchParams.set('project_token', projectToken);
-        const res = await fetch(url.toString(), {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ name: null, kind, sub_type: subType }),
-        });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const msg = json?.detail || json?.error || 'Failed to create agent';
-          throw new Error(msg);
+        try {
+          const res = await fetch(url.toString(), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ name: null, kind, sub_type: subType }),
+          });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const errorMsg = json?.detail || json?.error || '';
+            // If agent already exists, that's fine - just continue silently
+            if (errorMsg.toLowerCase().includes('already exists') || 
+                errorMsg.toLowerCase().includes('user with username')) {
+              return json?.agent || null;
+            }
+            // For other errors, log but don't fail the whole process
+            console.warn(`Agent creation warning: ${errorMsg}`);
+            return json?.agent || null;
+          }
+          return json?.agent || null;
+        } catch (err) {
+          // Log but don't fail - agent might already exist or other non-critical issue
+          console.warn(`Agent creation warning: ${err.message}`);
+          return null;
         }
-        if (json?.external_agent_warning) warnings.push(json.external_agent_warning);
-        return json?.agent || null;
       };
 
       // Create agents sequentially
@@ -250,10 +269,6 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       for (let i = 0; i < sTestCount; i++) await createOne('shared', 'test', selectedProjectKey);
       for (let i = 0; i < dDevCount; i++) await createOne('dedicated', 'dev', selectedProjectKey);
       for (let i = 0; i < dTestCount; i++) await createOne('dedicated', 'test', selectedProjectKey);
-
-      if (warnings.length > 0) {
-        setSubmitWarning((prev) => prev || `Created agents, but upstream provisioning returned warnings: ${warnings.slice(0, 2).join(' | ')}${warnings.length > 2 ? '…' : ''}`);
-      }
 
       // Refresh existing counts and quota for the UI, then go to dashboard.
       try {
@@ -512,7 +527,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             <button
               onClick={handleSubmit}
               disabled={isSubmitting}
-              className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all ${
+              className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all ${
                 isSubmitting ? 'opacity-50 cursor-not-allowed' : ''
               }`}
             >

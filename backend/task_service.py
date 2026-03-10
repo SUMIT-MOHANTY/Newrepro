@@ -274,6 +274,10 @@ class TaskManagementService:
         print("Tasks list API Response:", response)
         return response
 
+    async def get_total_tasks(self, task_token: Optional[str] = None) -> dict:
+        """Fetch all tasks (unpaginated total list) from the external task management API."""
+        return await self._make_request("GET", "/api/agent/tasks-total-list", task_token=task_token)
+
     async def get_project_info(self, task_token: Optional[str] = None) -> dict:
         """Fetch project info (deadline, wallet, team) from the external task management API."""
         return await self._make_request("GET", "/api/agent/project-info/", task_token=task_token)

@@ -1668,7 +1668,7 @@ const Dashboard = ({
             let aiReasoning = '';
             let buffer = '';
 
-            setProjectState(taskKey, { progress: 85, progressMessage: 'Generating professional analysis report...' });
+            setProjectState(taskKey, { progress: 85, progressMessage: 'Generating analysis report...' });
 
 
             while (true) {
@@ -2599,11 +2599,11 @@ const Dashboard = ({
                                 <form onSubmit={handleUpload} className="space-y-6">
 
                                     {selectedProject ? (
-                                        <div className="rounded-xl border border-emerald-200 bg-app-status-successBg p-4">
+                                        <div className="rounded-xl border border-emerald-300/70 bg-app-status-successBg/90 p-4 shadow-sm shadow-emerald-900/20">
                                             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                                 <div>
-                                                    <p className="text-sm font-semibold text-emerald-900">Selected Project</p>
-                                                    <p className="text-xs text-emerald-800 mt-1">
+                                                    <p className="text-sm font-semibold text-app-text-main">Selected Project</p>
+                                                    <p className="text-xs text-app-text-label mt-1">
                                                         {selectedProject.name}
                                                         {selectedProject.classification && selectedProject.classification !== 'N/A' && (
                                                             <> • {selectedProject.classification}</>
@@ -2612,7 +2612,7 @@ const Dashboard = ({
                                                             <> • Score {selectedProject.weightedScore}/10</>
                                                         )}
                                                     </p>
-                                                    <p className="text-xs text-emerald-800 mt-1">
+                                                    <p className="text-xs text-app-text-label mt-1">
                                                         Status: {selectedProject.status === 'analysis_complete'
                                                             ? 'Analysis Complete (Locked)'
                                                             : selectedProject.status === 'screening_complete'
@@ -2625,24 +2625,17 @@ const Dashboard = ({
                                                         </p>
                                                     )}
                                                     {selectedProject.latestDocument && (
-                                                        <p className="text-xs text-emerald-800 mt-1">
+                                                    <p className="text-xs text-app-text-label mt-1">
                                                             Latest document: {selectedProject.latestDocument.filename} ({new Date(selectedProject.latestDocument.upload_date).toLocaleString()})
                                                         </p>
                                                     )}
                                                 </div>
                                                 <div className="flex flex-col items-start sm:items-end gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={goToGovernanceAssessment}
-                                                        className="text-xs font-semibold text-emerald-900 hover:text-app-status-success"
-                                                    >
-                                                        Change Governance
-                                                    </button>
                                                     {selectedProject.latestDocument && hasCompletedDocumentAnalysis(selectedProject.latestDocument) && (
                                                         <button
                                                             type="button"
                                                             onClick={handleViewLatestProjectAnalysis}
-                                                            className="text-xs font-semibold text-emerald-900 hover:text-app-status-success"
+                                                            className="text-xs font-semibold text-app-status-success hover:text-app-status-success/80"
                                                         >
                                                             View Latest Analysis
                                                         </button>
@@ -2660,15 +2653,15 @@ const Dashboard = ({
                                                 </div>
                                             </div>
                                             {revisionUnlocked && (
-                                                <div className="mt-3 rounded-lg border border-app-primary-ring bg-app-primary-light p-3">
-                                                    <p className="text-xs font-semibold text-app-primary-dark">Revision unlocked for this upload</p>
-                                                    <p className="text-xs text-app-primary-dark mt-1">Reason: {revisionReason}</p>
+                                                <div className="mt-3 rounded-lg border border-app-primary-ring/80 bg-app-primary-light/90 p-3">
+                                                    <p className="text-xs font-semibold text-app-primary">Revision unlocked for this upload</p>
+                                                    <p className="text-xs text-app-text-label mt-1">Reason: {revisionReason}</p>
                                                 </div>
                                             )}
                                         </div>
                                     ) : (
-                                        <div className="rounded-xl border border-amber-200 bg-app-status-warningBg p-4">
-                                            <p className="text-sm font-semibold text-amber-900">Select a project from the left panel to continue.</p>
+                                        <div className="rounded-xl border border-amber-300/80 bg-app-status-warningBg/90 p-4">
+                                            <p className="text-sm font-semibold text-app-status-warning">Select a project from the left panel to continue.</p>
                                         </div>
                                     )}
 
@@ -2803,7 +2796,7 @@ const Dashboard = ({
                                                         type="button"
                                                         onClick={handleFetchUrlRequirements}
                                                         disabled={!urlInput.trim() || !selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
-                                                        className="px-4 py-2.5 bg-app-text-main text-app-bg-card text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
+                                                        className="px-4 py-2.5 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
                                                     >
                                                         {urlFetching ? 'Fetching...' : 'Fetch URL'}
                                                     </button>
@@ -2948,7 +2941,7 @@ const Dashboard = ({
                                                     <button
                                                         type="button"
                                                         onClick={() => { setRepoLinkProvider('github'); setAzureLinkError(''); }}
-                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                     >
                                                         <span className="flex items-center gap-1">
                                                             <GitHubIcon className="w-4 h-4" />
@@ -2958,7 +2951,7 @@ const Dashboard = ({
                                                     <button
                                                         type="button"
                                                         onClick={() => { setRepoLinkProvider('azure-devops'); setGithubLinkError(''); setIsOAuthRepoSelected(false); }}
-                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                     >
                                                         <span className="flex items-center gap-1">
                                                             <AzureDevOpsIcon className="w-4 h-4" />
@@ -2971,14 +2964,14 @@ const Dashboard = ({
                                                         <button
                                                             type="button"
                                                             onClick={() => { setGithubAuthMode('pat'); setGithubLinkError(''); }}
-                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                         >
                                                             Use PAT
                                                         </button>
                                                         <button
                                                             type="button"
                                                             onClick={() => { setGithubAuthMode('basic'); setGithubLinkError(''); }}
-                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-app-bg-card' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
                                                         >
                                                             Username + Password
                                                         </button>
@@ -3055,7 +3048,7 @@ const Dashboard = ({
                                                             type="button"
                                                             onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
                                                             disabled={repoLinkProvider === 'azure-devops' ? (!azureLinkUrl || azureLinkParsing || azureProjectReposLoading) : (!githubLinkUrl || githubLinkParsing)}
-                                                            className="flex-1 px-4 py-2 bg-app-text-main text-app-bg-card text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
+                                                            className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
                                                         >
                                                             {(repoLinkProvider === 'azure-devops' ? (azureLinkParsing || azureProjectReposLoading) : githubLinkParsing) ? (
                                                                 <><span className="animate-spin w-3.5 h-3.5 border-2 border-app-bg-card border-t-transparent rounded-full mr-2"></span> Loading...</>
@@ -3157,17 +3150,9 @@ const Dashboard = ({
 
                                     <div className="flex justify-end gap-3 pt-6">
                                         <button
-                                            type="button"
-                                            onClick={goToGovernanceAssessment}
-                                            className="inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-app-text-label bg-app-bg-muted hover:bg-app-bg-hover transition-all transform active:scale-95 shadow-md"
-                                        >
-                                            <Zap className="w-4 h-4 mr-2" />
-                                            Change Governance
-                                        </button>
-                                        <button
                                             type="submit"
                                             disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-app-bg-card transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
                                                 ? 'bg-app-border cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
@@ -3221,7 +3206,7 @@ const Dashboard = ({
                                     <div className="bg-gradient-to-r from-app-status-warningBg to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                                         <div className="flex items-center gap-3">
                                             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-app-status-warning flex items-center justify-center shadow-lg shadow-amber-200">
-                                                <KeyRound className="w-5 h-5 text-app-bg-card" />
+                                                <KeyRound className="w-5 h-5 text-white" />
                                             </div>
                                             <div>
                                                 <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
@@ -3230,7 +3215,7 @@ const Dashboard = ({
                                         </div>
                                         <button
                                             onClick={() => navigate('/prerequisites')}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
                                         >
                                             <KeyRound className="w-4 h-4" />
                                             Review Prerequisites
@@ -3240,7 +3225,7 @@ const Dashboard = ({
                                     <div className="bg-gradient-to-r from-sky-50 to-app-primary-light rounded-xl shadow-sm border border-sky-200/70 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                                         <div className="flex items-center gap-3">
                                             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-sky-500 to-app-primary flex items-center justify-center shadow-lg shadow-sky-200">
-                                                <CheckCircle2 className="w-5 h-5 text-app-bg-card" />
+                                                <CheckCircle2 className="w-5 h-5 text-white" />
                                             </div>
                                             <div>
                                                 <h3 className="text-sm font-bold text-sky-950">Governance Assessment</h3>
@@ -3249,7 +3234,7 @@ const Dashboard = ({
                                         </div>
                                         <button
                                             onClick={goToGovernanceAssessment}
-                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-sky-600 to-app-primary rounded-lg shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                            className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-sky-600 to-app-primary rounded-lg shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
                                         >
                                             <CheckCircle2 className="w-4 h-4" />
                                             Complete Governance
@@ -3406,7 +3391,7 @@ const Dashboard = ({
                                                     <button
                                                         onClick={handleRefineAnalysis}
                                                         disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                                        className={`w-full mt-4 py-2.5 text-xs font-bold text-app-bg-card rounded-lg shadow-sm transition-all ${processing
+                                                        className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
                                                             ? 'bg-app-text-light cursor-not-allowed'
                                                             : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
                                                             }`}

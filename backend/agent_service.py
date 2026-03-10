@@ -816,6 +816,12 @@ CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
 - Config files go where the tech spec specifies
 - DO NOT create files directly in `/workspace/` root unless the tech spec says so
 
+CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
+- The Master Agent publishes a canonical project tree and workspace contract for this project.
+- Create/modify files ONLY inside that canonical structure and allowed source roots.
+- DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`, `server/`) unless the canonical tree already includes them.
+- If you think a new top-level directory is required, STOP and instead extend the existing `backend/` or `frontend/` structure.
+
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
 - .pyc, .pyo, .pyd files (compiled Python)
@@ -845,6 +851,10 @@ CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
 - Config files go where the tech spec specifies
 - DO NOT create files directly in `/workspace/` root unless the tech spec says so
 
+CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
+- Create/modify files ONLY inside the canonical structure and allowed source roots.
+- DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
+
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
 - .pyc, .pyo, .pyd files (compiled Python)
@@ -871,6 +881,10 @@ CRITICAL: You MUST follow the Technical Specification's FILE STRUCTURE section!
 - Frontend files (React) go in the `frontend/` directory
 - Config files go where the tech spec specifies
 - DO NOT create files directly in `/workspace/` root unless the tech spec says so
+
+CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
+- Create/modify files ONLY inside the canonical structure and allowed source roots.
+- DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
 
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
@@ -1190,9 +1204,9 @@ async def _generate_dynamic_prompt(
 that a Coding Agent will receive. This prompt must be highly specific to the task at hand.
 
 THE TASK:
-  Title: {task_title}
-  Description: {task_desc}
-  Checklist: {checklist_text}
+Title: {task_title}
+Description: {task_desc}
+Checklist: {checklist_text}
 
 TECHNICAL SPECIFICATION (from Architect Agent):
 {tech_spec[:3000] if tech_spec else "Not available."}
@@ -1212,7 +1226,9 @@ Write a system prompt for the Coding Agent that:
 3. Tells it what files/symbols already exist (from KG) that it should import/reference
 4. Warns about any files being edited by other agents (avoid conflicts)
 5. Specifies the exact naming conventions to follow
-6. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
+6. **CRITICAL: MUST FOLLOW THE CANONICAL PROJECT TREE** - create files only within the established directory structure
+7. **CRITICAL: DO NOT create new top-level directories** - work within existing canonical structure
+8. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
 
 The prompt MUST include these code generation rules at the end:
 {_COMPACT_CODE_RULES}
@@ -2877,7 +2893,34 @@ def _list_changed_files_between_refs(container_name: str, base_ref: str, compare
         )
     if diff.returncode != 0:
         return []
-    return [line.strip() for line in (diff.stdout or "").splitlines() if line.strip()]
+    
+    # Clean and normalize paths from git diff output
+    cleaned_paths = []
+    for line in (diff.stdout or "").splitlines():
+        path = line.strip()
+        if not path:
+            continue
+        
+        # Remove quotes if present
+        path = path.strip('"').strip("'")
+        
+        # Handle rename indicators (old => new format)
+        if " => " in path:
+            # For renames, take the new path (after =>)
+            path = path.split(" => ", 1)[1].strip()
+        
+        # Remove any status suffixes like /r, /m, etc. that might come from git
+        # These are typically at the end of the line
+        if path.endswith(("/r", "/m", "/a", "/c", "/d")):
+            path = path[:-2]
+        
+        # Remove any trailing whitespace or special characters
+        path = path.strip().rstrip("/")
+        
+        if path:
+            cleaned_paths.append(path)
+    
+    return cleaned_paths
 
 
 def _check_path_ownership_gate(
@@ -9305,6 +9348,20 @@ async def ensure_master_workspace_note(
                 lines.append(f"├── {root_file}")
             workspace_tree = "\n".join(lines)
             workspace_tree_source = "workspace_contract"
+
+        # Ensure the workspace contract reflects the Master Agent's canonical tree.
+        # This makes the canonical structure the source of truth for merge gating.
+        try:
+            if ctx_mgr and effective_project and workspace_tree:
+                refreshed_contract = ctx_mgr.update_workspace_contract_from_canonical_tree(
+                    effective_project,
+                    workspace_tree,
+                )
+                if isinstance(refreshed_contract, dict) and refreshed_contract.get("status") == "ready":
+                    workspace_contract = refreshed_contract
+                    workspace_contract_signature = _workspace_contract_signature(workspace_contract)
+        except Exception as exc:
+            logger.warning("[%s] Failed to refresh workspace contract from canonical tree: %s", effective_project, exc)
 
         architecture_overview = _extract_markdown_section(
             tech_spec,

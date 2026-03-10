@@ -498,7 +498,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             onClick={() => setFilter('all')}
             className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
               filter === 'all'
-                ? 'bg-app-primary text-app-bg-card'
+                ? 'bg-app-primary text-white'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
             }`}
           >
@@ -508,7 +508,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             onClick={() => setFilter('shared')}
             className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
               filter === 'shared'
-                ? 'bg-app-primary text-app-bg-card'
+                ? 'bg-app-primary text-white'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
             }`}
           >
@@ -518,7 +518,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
             onClick={() => setFilter('dedicated')}
             className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
               filter === 'dedicated'
-                ? 'bg-app-primary text-app-bg-card'
+                ? 'bg-app-primary text-white'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
             }`}
           >
@@ -630,13 +630,13 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                           {useLogo && logoSrc ? (
                             <img src={logoSrc} alt={agent.name || getNeutralAgentName(agent)} className="w-full h-full object-contain" />
                           ) : isGitManager ? (
-                            <GitBranch className="w-5 h-5 text-app-bg-card" />
+                            <GitBranch className="w-5 h-5 text-white" />
                           ) : isMasterAgent ? (
-                            <Bot className="w-5 h-5 text-app-bg-card" />
+                            <Bot className="w-5 h-5 text-white" />
                           ) : isTestAgent ? (
-                            <Activity className="w-5 h-5 text-app-bg-card" />
+                            <Activity className="w-5 h-5 text-white" />
                           ) : isDeployAgent ? (
-                            <Globe className="w-5 h-5 text-app-bg-card" />
+                            <Globe className="w-5 h-5 text-white" />
                           ) : (
                             getStatusIcon(agent.status)
                           )}
