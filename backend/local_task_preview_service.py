@@ -210,7 +210,7 @@ def _build_analysis_context(
     prerequisites: List[Dict[str, Any]],
     custom_rules: Optional[str],
     *,
-    max_chars: int = 8000,
+    max_chars: int = 128000,
 ) -> str:
     """
     Build the analysis context string for downstream AI calls.
@@ -936,7 +936,7 @@ async def build_local_task_plan_preview(
         analysis_report,
         prerequisites,
         custom_rules,
-        max_chars=8000,
+        max_chars=128000,
     )
     
     # Derive project_type from analysis if not explicitly overriden
