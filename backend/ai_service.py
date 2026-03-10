@@ -4,7 +4,7 @@ Supports OpenAI-compatible APIs (OpenAI, NVIDIA, Azure, local LLMs, etc.)
 """
 import httpx
 import json
-from typing import Optional
+from typing import Optional, List
 from config import settings
 import logging
 import re
@@ -68,7 +68,30 @@ def _build_architecture_repair_prompt(previous_response: str) -> str:
     )
 
 # BRD Analysis System Prompt
-BRD_ANALYSIS_PROMPT = """You are an expert Senior Business Analyst and Technical Architect.
+PREREQUISITE_CATEGORIES: List[tuple[str, str]] = [
+    ("credentials", "API keys, authentication tokens, OAuth secrets, SSL certificates, SSH keys, SSO/LDAP access"),
+    ("apis", "Third-party API integrations, payment gateways, webhooks, callback URLs"),
+    ("infrastructure", "CI/CD pipelines, Docker/Kubernetes, SMTP/email, domain/DNS, firewalls, monitoring/logging"),
+    ("databases", "Database credentials, connection strings, cache servers (Redis/Memcache)"),
+    ("cloud", "AWS/Azure/GCP accounts, S3/blob storage, CDN, cloud subscriptions"),
+    ("dependencies", "Private package registries, licensed libraries, SDK access"),
+]
+
+def _build_prerequisite_section() -> str:
+    """Construct the prerequisite description block dynamically from ``PREREQUISITE_CATEGORIES``.
+    This makes the prompt generic and easy to adjust via configuration.
+    """
+    lines = [
+        "# 5. Prerequisites & Credentials",
+        "Identify ALL prerequisites, credentials, infrastructure, external services, and access requirements that must be arranged BEFORE development can begin. Be thorough and specific. For each prerequisite, classify it into one of these categories:",
+    ]
+    for cat, desc in PREREQUISITE_CATEGORIES:
+        lines.append(f"- **{cat}**: {desc}")
+    lines.append("")
+    lines.append("List each prerequisite in a clear bullet format with its category and priority (high/medium/low).")
+    return "\n".join(lines)
+
+BRD_ANALYSIS_PROMPT = f"""You are an expert Senior Business Analyst and Technical Architect.
 Analyze the provided Business Requirement Document (BRD) or client requirements.
 
 Your analysis must include the following sections exactly:
@@ -80,7 +103,6 @@ Briefly summarize the project scope and primary objectives.
 - **Functional Requirements**: Core features and user interactions.
 - **Non-Functional Requirements**: Performance, security, scalability, and compliance needs.
 
-
 # 3. Feasibility Analysis
 Assess the technical viability of the project.
 - **Complexity Assessment**: Low/Medium/High with reasoning.
@@ -91,16 +113,7 @@ Assess the technical viability of the project.
 - **Missing Elements**: What is not defined but should be?
 - **Business Risks**: Potential pitfalls.
 
-# 5. Prerequisites & Credentials
-Identify ALL prerequisites, credentials, infrastructure, external services, and access requirements that must be arranged BEFORE development can begin. Be thorough and specific. For each prerequisite, classify it into one of these categories:
-- **credentials**: API keys, authentication tokens, OAuth secrets, SSL certificates, SSH keys, SSO/LDAP access
-- **apis**: Third-party API integrations, payment gateways, webhooks, callback URLs
-- **infrastructure**: CI/CD pipelines, Docker/Kubernetes, SMTP/email, domain/DNS, firewalls, monitoring/logging
-- **databases**: Database credentials, connection strings, cache servers (Redis/Memcache)
-- **cloud**: AWS/Azure/GCP accounts, S3/blob storage, CDN, cloud subscriptions
-- **dependencies**: Private package registries, licensed libraries, SDK access
-
-List each prerequisite in a clear bullet format with its category and priority (high/medium/low).
+{_build_prerequisite_section()}
 
 # 6. Go / No-Go Recommendation
 **Verdict: [GO / NO-GO / PROCEED WITH CAUTION]**
@@ -113,27 +126,15 @@ Output format rules for the main report body (everything before the final JSON b
 - Do NOT wrap the HTML content in code fences.
 
 Finally, output a SINGLE JSON block containing the key metrics, targeted questions, prerequisites, AND a detailed application architecture diagram.
-All targeted questions must appear ONLY in the final JSON `questions` array.
-Do not include or repeat questions anywhere else in the response body.
-The `questions` array should include at least 5-7 specific technical questions, covering:
-- **User Volume & Scale**
-- **Security & Compliance**
-- **Data Strategy**
-- **Integrations**
-- **Platform/Device Support**
-- **Reporting & Analytics**
-- Any ambiguities in business logic or user flows
-The JSON must follow this exact structure:
-```json
-{
+{{
   "title": "A concise, one-sentence summary title for the project",
-  "metrics": {
+  "metrics": {{
     "deployment": "Cloud / On-prem / Hybrid (extracted from requirements)",
     "resources": "Estimated team size (e.g., '3-5 Developers')",
     "complexity": "Low / Medium / High",
     "timeline": "Estimated duration (e.g., '3-4 Months')",
     "project_type": "greenfield / brownfield / modernization (Identify based on whether it's a new build, extension of current app, or tech stack upgrade)"
-  },
+  }},
 
   "questions": [
     "How many concurrent users are expected?",
@@ -141,37 +142,37 @@ The JSON must follow this exact structure:
     "Question 3"
   ],
   "prerequisites": [
-    {
+    {{
       "name": "Short descriptive name (e.g., 'AWS S3 Bucket Access')",
       "description": "Detailed description of what is needed and why",
       "category": "one of: credentials, apis, infrastructure, databases, cloud, dependencies",
       "priority": "high / medium / low"
-    }
+    }}
   ],
 
   "user_flow": "A user journey diagram definition describing the end-to-end flow through the application for the primary user types (public users, internal operators, admins, etc.). Derive this ONLY from the business / functional requirements and roles described in the BRD. The flow MUST: (1) start from the primary actor(s), (2) include authentication if the system requires login, (3) include each major feature or workflow (such as performing a calculation, submitting a form, placing an order), (4) include viewing results/confirmation, and (5) include end-of-session actions such as logout/exit where applicable. Steps should align with the architecture modules (for example: Edge/WAF → Frontend → API Gateway → Auth Service → Domain Services → Databases/Ledger). If the BRD does not provide enough detail, fall back to a standard web flow and explicitly note this assumption in the HTML report.",
 
   "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree (for example: 'myproject/', '├── app/', '│   ├── api/', ...).",
 
-  "architecture": {
+  "architecture": {{
     "nodes": [
-      {
+      {{
         "id": "string-unique-node-id",
         "label": "Short name (e.g., 'API Gateway', 'XYZ Service', 'Ledger DB')",
         "layer": "frontend | backend | service | data | integration | infra",
         "type": "service | database | queue | cache | external | ui",
         "cluster": "Logical module / bounded context for visual grouping (e.g., 'Edge', 'Frontend', 'Banking', 'Insurance', 'Ledger & Reporting')"
-      }
+      }}
     ],
     "edges": [
-      {
+      {{
         "from": "source-node-id",
         "to": "target-node-id",
         "description": "short text describing the interaction (e.g., 'HTTPS JSON API', 'writes ledger events')"
-      }
+      }}
     ]
-  }
-}
+  }}
+}}
 ```
 Ensure the JSON is valid and enclosed in a json code block at the very end of your response."""
 
@@ -1400,6 +1401,7 @@ async def generate_all_tasks(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     project_type: str = "greenfield",
+    process_mode: Optional[str] = None,
 ) -> list:
     """
     Generate all tasks for the project in a single LLM call.
@@ -1416,6 +1418,7 @@ async def generate_all_tasks(
         return []
 
     current_date = datetime.now().strftime("%Y-%m-%d")
+    normalized_mode = str(process_mode or "").strip().lower() or "unspecified"
 
     text_content = (
         f"PROJECT CONSTRAINTS:\n"
@@ -1424,6 +1427,14 @@ async def generate_all_tasks(
         f"- Project Deadline: {project_deadline}\n"
         f"- TOTAL Project Wallet: {project_wallet}\n"
         f"- Available Agents: {json.dumps(agents)}\n"
+        f"- Execution Mode (process_mode): {normalized_mode}\n"
+        f"\n"
+        f"EXECUTION MODE RULES (MUST FOLLOW):\n"
+        f"- ai_first: schedule assumes AI-only execution speed.\n"
+        f"- coexistence: schedule assumes AI + human work simultaneously (fastest calendar duration).\n"
+        f"- developer_only: schedule assumes human-only execution speed.\n"
+        f"- ai_assist: schedule MUST follow human-only calendar timing.\n"
+        f"- vibe_coding: schedule assumes AI-only execution speed.\n"
         f"BRD ANALYSIS REPORT:\n"
         f"{analysis_report}\n\n"
         f"{'CUSTOM RULES TO FOLLOW:' + chr(10) + custom_rules + chr(10) + chr(10) if custom_rules else ''}"

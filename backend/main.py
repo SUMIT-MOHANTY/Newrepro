@@ -36,7 +36,7 @@ import rag_service
 import context_manager
 import email_service
 import knowledge_graph_service as kg_service
-from local_task_preview_service import build_local_task_plan_preview
+from local_task_preview_service import build_local_task_plan_preview, _normalize_project_dates, _format_date
 from database import engine, get_db, SessionLocal
 from config import settings
 
@@ -5252,10 +5252,22 @@ async def get_agent_project_info(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None)
 ):
-    """Fetch project info (deadline, wallet, team) from the external task management API."""
+    """Fetch project info (deadline, wallet, team) from the external task management API.
+
+    If no external project exists yet for this application, we return an empty
+    object instead of treating it as an error. This avoids breaking frontend
+    flows before the first bootstrap.
+    """
     try:
         info = await task_service.get_project_info(task_token=x_task_token)
         return info
+    except TaskServiceHTTPError as e:
+        # Upstream 404 -> "No project associated with this application"
+        # is a valid state before bootstrap. Surface an empty response
+        # so the frontend can treat it as "no project yet" instead of error.
+        if e.status_code == 404:
+            return {}
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -5340,6 +5352,193 @@ class AutoGenerateRequest(BaseModel):
     custom_rules: Optional[str] = None
     project_type: Optional[str] = "greenfield"
     process_mode: Optional[str] = None
+
+
+class ProjectBootstrapRequest(BaseModel):
+    project_token: str
+    project_name: Optional[str] = None
+    prerequisites: Optional[List[Dict[str, Any]]] = None
+    custom_rules: Optional[str] = None
+    project_type: Optional[str] = "greenfield"
+    process_mode: Optional[str] = None
+
+
+@app.post("/api/agent/project-bootstrap/")
+async def bootstrap_agent_project(
+    request: ProjectBootstrapRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Create or update the external task project during the prerequisites step.
+    The project deadline is derived STRICTLY from the selected process_mode by
+    building a local plan preview and taking its mode-based project_deadline.
+    """
+    try:
+        existing_project_info: Optional[Dict[str, Any]] = None
+        try:
+            existing_project_info = await task_service.get_project_info(task_token=x_task_token)
+        except Exception:
+            existing_project_info = None
+
+        gov_response = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == request.project_token,
+            models.GovernanceResponse.owner_id == current_user.id,
+        ).first()
+
+        project_name = (
+            str(request.project_name or "").strip()
+            or (gov_response.project_name if gov_response else None)
+            or request.project_token
+            or "Untitled Project"
+        )
+
+        # If this project was created as a frontend "draft" (no governance submit yet),
+        # there may be no GovernanceResponse row. We still need a row to persist
+        # the generated external task credentials (client_id/client_secret) so
+        # the frontend can fetch a task token and project info immediately.
+        if not gov_response:
+            gov_response = models.GovernanceResponse(
+                owner_id=current_user.id,
+                project_token=request.project_token,
+                project_name=project_name,
+                answers={},
+                classification="N/A",
+                recommendation="Created during task project bootstrap.",
+            )
+            db.add(gov_response)
+            db.commit()
+            db.refresh(gov_response)
+
+        # Reuse the same analysis harvesting as auto-generate (governance + documents)
+        import json as json_mod
+
+        analysis_payload: Dict[str, Any] = {}
+        analysis_report = str(gov_response.recommendation or "").strip() if gov_response else ""
+        user_documents = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id
+        ).order_by(models.Document.upload_date.desc()).all()
+
+        for doc in user_documents:
+            if not doc.analysis_result:
+                continue
+            try:
+                parsed = json_mod.loads(doc.analysis_result)
+            except (TypeError, ValueError):
+                continue
+
+            gov_ctx = parsed.get("governanceContext") or {}
+            proj_meta = parsed.get("projectMeta") or {}
+            doc_result_id = proj_meta.get("governance_result_id") or gov_ctx.get("result_id")
+            doc_token_id = proj_meta.get("project_token") or gov_ctx.get("project_token")
+            doc_project_name = str(
+                proj_meta.get("project_name") or gov_ctx.get("project_name") or ""
+            ).strip()
+
+            matches_project = False
+            if gov_response and doc_result_id is not None and str(doc_result_id) == str(gov_response.id):
+                matches_project = True
+            elif doc_token_id and str(doc_token_id) == str(request.project_token):
+                matches_project = True
+            elif project_name and doc_project_name and doc_project_name.lower() == str(project_name).strip().lower():
+                matches_project = True
+
+            if not matches_project:
+                continue
+
+            analysis_payload = parsed
+            parsed_analysis = str(parsed.get("analysis") or "").strip()
+            if parsed_analysis:
+                analysis_report = parsed_analysis
+            break
+
+        reporter_name = " ".join(
+            part for part in [current_user.first_name, current_user.last_name] if str(part or "").strip()
+        ).strip() or current_user.email
+
+        # Bypass expensive task preview generation in project bootstrap
+        # to prevent users waiting 1-2 minutes for prerequisites -> task creation step
+        _, project_deadline_date = _normalize_project_dates(analysis_payload)
+        mode_deadline = _format_date(project_deadline_date)
+
+        if not mode_deadline:
+            raise HTTPException(status_code=500, detail="Failed to derive mode-based project deadline.")
+
+        # If a project already exists in the external system, update its deadline
+        # instead of creating a new project.
+        if existing_project_info:
+            # Preserve the current status from the external project if available,
+            # because the upstream API expects both deadline and status together.
+            existing_status = None
+            if isinstance(existing_project_info, dict):
+                project_block = existing_project_info.get("project") or existing_project_info
+                if isinstance(project_block, dict):
+                    existing_status = project_block.get("status")
+
+            update_payload = {
+                "deadline": mode_deadline,
+                "status": existing_status or "in_progress",
+            }
+            await task_service.update_project_status(update_payload, task_token=x_task_token)
+            return {
+                "status": "success",
+                "created": False,
+                "project_deadline": mode_deadline,
+                "project": existing_project_info,
+            }
+
+        create_payload = {
+            "name": project_name,
+            "deadline": mode_deadline,
+            "project_wallet": 1000,
+            "team": [24],
+            "project_token": request.project_token,
+        }
+        # Use x_task_token if provided; otherwise fall back to server-side task service credentials.
+        created_project = await task_service.create_project(create_payload, task_token=x_task_token)
+
+        # After creation, explicitly update the deadline using the same mode-based
+        # value to guard against any upstream defaults overriding our payload.
+        created_status = None
+        if isinstance(created_project, dict):
+            project_block = created_project.get("project_application") or created_project.get("project") or created_project
+            if isinstance(project_block, dict):
+                created_status = project_block.get("status")
+
+        update_payload = {
+            "deadline": mode_deadline,
+            "status": created_status or "in_progress",
+        }
+        try:
+            await task_service.update_project_status(update_payload, task_token=x_task_token)
+        except Exception:
+            # Best-effort: ignore update failures here, the create call already
+            # succeeded and the local preview still has the correct deadline.
+            pass
+
+        # Persist credentials (best-effort) if present
+        if (
+            gov_response
+            and isinstance(created_project, dict)
+            and isinstance(created_project.get("project_application"), dict)
+        ):
+            app_data = created_project.get("project_application") or {}
+            if app_data.get("client_id") and app_data.get("client_secret"):
+                gov_response.client_id = app_data.get("client_id")
+                gov_response.client_secret = app_data.get("client_secret")
+                db.commit()
+
+        return {
+            "status": "success",
+            "created": True,
+            "project_deadline": mode_deadline,
+            "project": created_project,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to bootstrap project: {e}")
 
 
 
@@ -5742,11 +5941,13 @@ async def auto_generate_project_tasks(
             or "Untitled Project"
         )
         project_info: Dict[str, Any] = {}
+        project_exists = True
         try:
             fetched_project_info = await task_service.get_project_info(task_token=x_task_token)
             if isinstance(fetched_project_info, dict):
                 project_info = fetched_project_info
         except Exception as e:
+            project_exists = False
             logger.warning(
                 "Failed to fetch project info for auto-generate plan %s: %s",
                 request.project_token,
@@ -5842,6 +6043,51 @@ async def auto_generate_project_tasks(
             project_type=request.project_type or "greenfield",
             process_mode=request.process_mode,
         )
+
+        # -----------------------------------------------------------------
+        # Project must be created DURING task-creation, and its deadline must
+        # strictly follow the selected process_mode (derived by the preview).
+        # -----------------------------------------------------------------
+        if not project_exists:
+            try:
+                mode_deadline = (
+                    preview_payload.get("project_deadline")
+                    if isinstance(preview_payload, dict)
+                    else None
+                )
+                mode_deadline = str(mode_deadline or "").strip() or None
+                if not mode_deadline:
+                    mode_deadline = analysis_payload.get("project_deadline") or analysis_payload.get("deadline")
+                mode_deadline = str(mode_deadline or "").strip() or datetime.utcnow().strftime("%Y-%m-%d")
+
+                create_payload = {
+                    "name": project_name,
+                    "deadline": mode_deadline,
+                    "project_wallet": 1000,
+                    "team": [24],
+                    "project_token": request.project_token,
+                }
+                created_project = await task_service.create_project(create_payload, task_token=x_task_token)
+
+                # If upstream returns credentials, persist to GovernanceResponse (best-effort)
+                if (
+                    gov_response
+                    and isinstance(created_project, dict)
+                    and isinstance(created_project.get("project_application"), dict)
+                ):
+                    app_data = created_project.get("project_application") or {}
+                    if app_data.get("client_id") and app_data.get("client_secret"):
+                        gov_response.client_id = app_data.get("client_id")
+                        gov_response.client_secret = app_data.get("client_secret")
+                        db.commit()
+
+                project_exists = True
+            except Exception as e:
+                logger.warning(
+                    "Auto-generate could not create missing project %s: %s",
+                    request.project_token,
+                    e,
+                )
 
 
         created_sprints_list = (

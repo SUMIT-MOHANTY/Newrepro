@@ -7,57 +7,8 @@ import {
     Lock, FileKey, Cloud, Package, Info, Sparkles, Loader2
 } from 'lucide-react';
 
-const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
-
-function decodeJwtExpiry(token) {
-    try {
-        const parts = token.split('.');
-        if (parts.length < 2) return null;
-        const payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-        const padded = payloadB64 + '='.repeat((4 - (payloadB64.length % 4)) % 4);
-        const payload = JSON.parse(atob(padded));
-        return typeof payload.exp === 'number' ? payload.exp : null;
-    } catch {
-        return null;
-    }
-}
-
-function readTaskTokenCache() {
-    try {
-        const raw = localStorage.getItem(TASK_TOKEN_STORAGE_KEY);
-        if (!raw) return {};
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-        return {};
-    }
-}
-
-function getCachedTaskToken(projectKey) {
-    if (!projectKey) return null;
-    const cache = readTaskTokenCache();
-    const entry = cache[projectKey];
-    if (!entry || !entry.token) return null;
-    if (entry.expiresAt) {
-        const now = Math.floor(Date.now() / 1000);
-        if (entry.expiresAt <= now) {
-            delete cache[projectKey];
-            localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
-            return null;
-        }
-    }
-    return entry.token;
-}
-
-function cacheTaskToken(projectKey, token) {
-    if (!projectKey || !token) return;
-    const cache = readTaskTokenCache();
-    cache[projectKey] = {
-        token,
-        expiresAt: decodeJwtExpiry(token),
-    };
-    localStorage.setItem(TASK_TOKEN_STORAGE_KEY, JSON.stringify(cache));
-}
+import { getCachedTaskToken, setCachedTaskToken as cacheTaskToken } from '../utils/tokenCache';
+import { upsertDraftProject } from '../utils/draftProjects';
 
 /* ─────────────────────────────────────────────────────────
    CATEGORY CONFIG — icon + colour for each prerequisite type
@@ -315,15 +266,6 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
         }
     });
 
-    // If nothing was found, add generic ones based on common project needs
-    if (items.length === 0) {
-        items.push(
-            { id: 1, name: 'Environment Configuration', description: 'Set up development, staging, and production environments.', category: 'infrastructure', priority: 'high', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
-            { id: 2, name: 'Access Credentials', description: 'Provide necessary credentials for services identified in the BRD.', category: 'credentials', priority: 'high', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
-            { id: 3, name: 'Third-Party Integrations', description: 'Confirm access to external APIs and services mentioned in the requirements.', category: 'apis', priority: 'medium', fieldType: 'text', provided: false, containsSecret: false, userValue: '', userFileName: '' },
-        );
-    }
-
     return items;
 };
 
@@ -565,21 +507,38 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     );
 
     const prefetchTaskToken = useCallback(async () => {
-        if (!selectedProjectKey || !selectedProject?.client_id || !selectedProject?.client_secret) {
-            return null;
-        }
+        if (!selectedProjectKey) return null;
 
         const cachedToken = getCachedTaskToken(selectedProjectKey);
         if (cachedToken) {
             return cachedToken;
         }
 
+        // Prefer project-specific credentials if present; otherwise fall back to org/default creds.
+        // IMPORTANT: we should not cache a token obtained via org/default creds under the project key,
+        // because later the project may receive its own client_id/client_secret (from bootstrap),
+        // and TaskCreation would keep using the cached org token -> "random" project/task data.
+        const projectClientId = selectedProject?.client_id;
+        const projectClientSecret = selectedProject?.client_secret;
+        const usingProjectCredentials = Boolean(projectClientId && projectClientSecret);
+
+        const clientId =
+            projectClientId ||
+            import.meta.env.VITE_TASK_API_CLIENT_ID ||
+            "org_1_596a6282";
+        const clientSecret =
+            projectClientSecret ||
+            import.meta.env.VITE_TASK_API_CLIENT_SECRET ||
+            "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E";
+
+        if (!clientId || !clientSecret) return null;
+
         const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                client_id: selectedProject.client_id,
-                client_secret: selectedProject.client_secret,
+                client_id: clientId,
+                client_secret: clientSecret,
             }),
         });
         if (!res.ok) {
@@ -588,7 +547,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
         const data = await res.json().catch(() => ({}));
         if (data?.access) {
-            cacheTaskToken(selectedProjectKey, data.access);
+            // Cache only if token was obtained with project-specific credentials.
+            if (usingProjectCredentials) {
+                cacheTaskToken(selectedProjectKey, data.access);
+            }
             return data.access;
         }
         return null;
@@ -986,6 +948,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 progress,
                 totalItems,
                 providedCount,
+                // Persist all items with their provided flag so UI can be restored fully.
                 items: prerequisites.map((p) => sanitizePrerequisiteForAiPayload(p)),
             };
 
@@ -1021,8 +984,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             // Save selected execution mode
             saveProcessModeForProject(selectedProjectKey, processMode);
 
+            let resolvedTaskToken = null;
             try {
-                await prefetchTaskToken();
+                resolvedTaskToken = await prefetchTaskToken();
             } catch (prefetchError) {
                 console.error('Task token prefetch failed', prefetchError);
             }
@@ -1032,6 +996,58 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
                 return; // Stop execution here so it doesn't clear the submitting state right away
             } else {
+                // Bootstrap/create the external task project HERE (prerequisites step),
+                // using a mode-derived project deadline.
+                const taskToken = resolvedTaskToken || getCachedTaskToken(selectedProjectKey);
+                const bootstrapRes = await fetch(API_ENDPOINTS.AGENT_PROJECT_BOOTSTRAP, {
+                    method: 'POST',
+                    headers: (() => {
+                        const headers = {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${token}`,
+                        };
+                        if (taskToken) headers['x-task-token'] = taskToken;
+                        return headers;
+                    })(),
+                    body: JSON.stringify({
+                        project_token: selectedProjectKey,
+                        project_name: projectName,
+                        // Only send prerequisites that the user has actually marked as provided/checked.
+                        prerequisites: prerequisites
+                            .filter((p) => p.provided)
+                            .map((p) => sanitizePrerequisiteForAiPayload(p)),
+                        custom_rules: customRules,
+                        process_mode: processMode,
+                    }),
+                });
+                const bootstrapJson = await bootstrapRes.json().catch(() => ({}));
+                if (!bootstrapRes.ok) {
+                    throw new Error(bootstrapJson?.detail || 'Failed to create project during prerequisites.');
+                }
+
+                // If bootstrap returned external task credentials, persist them into the draft project
+                // immediately so TaskCreation can resolve a project-specific task token without relogin.
+                try {
+                    const appData =
+                        bootstrapJson?.project?.project_application ||
+                        bootstrapJson?.project_application ||
+                        bootstrapJson?.project?.projectApplication ||
+                        null;
+                    const clientId = typeof appData?.client_id === 'string' ? appData.client_id : '';
+                    const clientSecret = typeof appData?.client_secret === 'string' ? appData.client_secret : '';
+                    if (clientId && clientSecret) {
+                        upsertDraftProject({
+                            key: selectedProjectKey,
+                            projectToken: selectedProjectKey,
+                            name: projectName,
+                            client_id: clientId,
+                            client_secret: clientSecret,
+                        });
+                    }
+                } catch {
+                    // ignore draft persistence failures
+                }
+
                 setSubmitted(true);
                 // After a brief success animation, redirect to Task Creation
                 setTimeout(() => {
