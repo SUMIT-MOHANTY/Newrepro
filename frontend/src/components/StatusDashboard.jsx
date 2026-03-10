@@ -210,6 +210,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [agentQuotaError, setAgentQuotaError] = useState('');
     const [sharedAgentsToAdd, setSharedAgentsToAdd] = useState('');
     const [dedicatedAgentsToAdd, setDedicatedAgentsToAdd] = useState('');
+    const [sharedTestAgentsToAdd, setSharedTestAgentsToAdd] = useState('');
+    const [dedicatedTestAgentsToAdd, setDedicatedTestAgentsToAdd] = useState('');
     const [isAddingAgents, setIsAddingAgents] = useState(false);
     const [addAgentModalError, setAddAgentModalError] = useState('');
 
@@ -794,6 +796,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const handleAddAgent = () => {
         setSharedAgentsToAdd('');
         setDedicatedAgentsToAdd('');
+        setSharedTestAgentsToAdd('');
+        setDedicatedTestAgentsToAdd('');
         setAddAgentModalError('');
         setAgentQuotaError('');
         setShowAddAgentModal(true);
@@ -816,23 +820,60 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     };
 
     const submitAddAgent = async () => {
-        const sharedAvailable = Number(agentQuota?.shared_available ?? 0);
-        const dedicatedAvailable = Number(agentQuota?.dedicated_available ?? 0);
-        const sharedInput = String(sharedAgentsToAdd).trim() || '0';
-        const dedicatedInput = String(dedicatedAgentsToAdd).trim() || '0';
-        const sharedCount = clampAgentCount(Number(sharedInput), sharedAvailable);
-        const dedicatedCount = clampAgentCount(Number(dedicatedInput), dedicatedAvailable);
+        // Use dev/test-specific quotas and current project usage, similar to ResourceOnboarding / AgentsPage
+        const sharedDevQuota = Number(agentQuota?.shared_dev_quota ?? 0);
+        const dedicatedDevQuota = Number(agentQuota?.dedicated_dev_quota ?? 0);
+        const sharedTestQuota = Number(agentQuota?.shared_test_quota ?? 0);
+        const dedicatedTestQuota = Number(agentQuota?.dedicated_test_quota ?? 0);
+
+        const sharedDevUsed = agents.filter(
+            (a) => a.id?.startsWith('shared_') && (!a.sub_type || a.sub_type === 'dev')
+        ).length;
+        const dedicatedDevUsed = agents.filter(
+            (a) => a.id?.startsWith('dedicated_') && (!a.sub_type || a.sub_type === 'dev')
+        ).length;
+        const sharedTestUsed = agents.filter(
+            (a) => a.id?.startsWith('shared_') && a.sub_type === 'test'
+        ).length;
+        const dedicatedTestUsed = agents.filter(
+            (a) => a.id?.startsWith('dedicated_') && a.sub_type === 'test'
+        ).length;
+
+        const sharedDevAvailable = Math.max(0, sharedDevQuota - sharedDevUsed);
+        const dedicatedDevAvailable = Math.max(0, dedicatedDevQuota - dedicatedDevUsed);
+        const sharedTestAvailable = Math.max(0, sharedTestQuota - sharedTestUsed);
+        const dedicatedTestAvailable = Math.max(0, dedicatedTestQuota - dedicatedTestUsed);
+
+        const sharedDevInput = String(sharedAgentsToAdd).trim() || '0';
+        const dedicatedDevInput = String(dedicatedAgentsToAdd).trim() || '0';
+        const sharedTestInput = String(sharedTestAgentsToAdd).trim() || '0';
+        const dedicatedTestInput = String(dedicatedTestAgentsToAdd).trim() || '0';
+
+        const sharedDevCount = clampAgentCount(Number(sharedDevInput), sharedDevAvailable);
+        const dedicatedDevCount = clampAgentCount(Number(dedicatedDevInput), dedicatedDevAvailable);
+        const sharedTestCount = clampAgentCount(Number(sharedTestInput), sharedTestAvailable);
+        const dedicatedTestCount = clampAgentCount(Number(dedicatedTestInput), dedicatedTestAvailable);
 
         if (!selectedProjectKey) {
             setAddAgentModalError('Select a project before adding agents.');
             return;
         }
-        if (sharedCount === 0 && dedicatedCount === 0) {
-            setAddAgentModalError('Enter at least one shared or dedicated agent to add.');
+        if (
+            sharedDevCount === 0 &&
+            dedicatedDevCount === 0 &&
+            sharedTestCount === 0 &&
+            dedicatedTestCount === 0
+        ) {
+            setAddAgentModalError('Enter at least one shared or dedicated dev/test agent to add.');
             return;
         }
-        if (sharedCount > sharedAvailable || dedicatedCount > dedicatedAvailable) {
-            setAddAgentModalError('Requested count exceeds available organization capacity.');
+        if (
+            sharedDevCount > sharedDevAvailable ||
+            dedicatedDevCount > dedicatedDevAvailable ||
+            sharedTestCount > sharedTestAvailable ||
+            dedicatedTestCount > dedicatedTestAvailable
+        ) {
+            setAddAgentModalError('Requested count exceeds available dev/test organization capacity.');
             return;
         }
 
@@ -845,13 +886,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             };
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
-            const createOne = async (kind) => {
+            const createOne = async (kind, subType) => {
                 const url = new URL(API_ENDPOINTS.AGENT_ADD);
                 url.searchParams.set('project_token', selectedProjectKey);
                 const res = await fetch(url.toString(), {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ kind }),
+                    // New system expects sub_type for capacity accounting – we create Dev/Test agents here.
+                    body: JSON.stringify({ kind, sub_type: subType }),
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
@@ -861,12 +903,20 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             };
 
             const createdAgentIds = [];
-            for (let i = 0; i < sharedCount; i += 1) {
-                const createdId = await createOne('shared');
+            for (let i = 0; i < sharedDevCount; i += 1) {
+                const createdId = await createOne('shared', 'dev');
                 if (createdId) createdAgentIds.push(createdId);
             }
-            for (let i = 0; i < dedicatedCount; i += 1) {
-                const createdId = await createOne('dedicated');
+            for (let i = 0; i < dedicatedDevCount; i += 1) {
+                const createdId = await createOne('dedicated', 'dev');
+                if (createdId) createdAgentIds.push(createdId);
+            }
+            for (let i = 0; i < sharedTestCount; i += 1) {
+                const createdId = await createOne('shared', 'test');
+                if (createdId) createdAgentIds.push(createdId);
+            }
+            for (let i = 0; i < dedicatedTestCount; i += 1) {
+                const createdId = await createOne('dedicated', 'test');
                 if (createdId) createdAgentIds.push(createdId);
             }
 
@@ -894,6 +944,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             setShowAddAgentModal(false);
             setSharedAgentsToAdd('');
             setDedicatedAgentsToAdd('');
+            setSharedTestAgentsToAdd('');
+            setDedicatedTestAgentsToAdd('');
             fetchAgents();
             fetchTasks(false, 1, true);
             refreshRoadmap();
@@ -1504,6 +1556,43 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             value: dashboardData?.sales?.booked_revenue || 'Backend field needed',
         },
     ];
+
+    // Dev/Test-agent specific remaining capacity for the Add Agents modal
+    const sharedDevAvailableForModal = useMemo(() => {
+        if (!agentQuota) return 0;
+        const sharedDevQuota = Number(agentQuota.shared_dev_quota ?? 0);
+        const sharedDevUsed = agents.filter(
+            (a) => a.id?.startsWith('shared_') && (!a.sub_type || a.sub_type === 'dev')
+        ).length;
+        return Math.max(0, sharedDevQuota - sharedDevUsed);
+    }, [agentQuota, agents]);
+
+    const dedicatedDevAvailableForModal = useMemo(() => {
+        if (!agentQuota) return 0;
+        const dedicatedDevQuota = Number(agentQuota.dedicated_dev_quota ?? 0);
+        const dedicatedDevUsed = agents.filter(
+            (a) => a.id?.startsWith('dedicated_') && (!a.sub_type || a.sub_type === 'dev')
+        ).length;
+        return Math.max(0, dedicatedDevQuota - dedicatedDevUsed);
+    }, [agentQuota, agents]);
+
+    const sharedTestAvailableForModal = useMemo(() => {
+        if (!agentQuota) return 0;
+        const sharedTestQuota = Number(agentQuota.shared_test_quota ?? 0);
+        const sharedTestUsed = agents.filter(
+            (a) => a.id?.startsWith('shared_') && a.sub_type === 'test'
+        ).length;
+        return Math.max(0, sharedTestQuota - sharedTestUsed);
+    }, [agentQuota, agents]);
+
+    const dedicatedTestAvailableForModal = useMemo(() => {
+        if (!agentQuota) return 0;
+        const dedicatedTestQuota = Number(agentQuota.dedicated_test_quota ?? 0);
+        const dedicatedTestUsed = agents.filter(
+            (a) => a.id?.startsWith('dedicated_') && a.sub_type === 'test'
+        ).length;
+        return Math.max(0, dedicatedTestQuota - dedicatedTestUsed);
+    }, [agentQuota, agents]);
 
     return (
         <div className="w-full h-full bg-app-bg-page flex flex-col font-sans overflow-y-auto relative">
@@ -2820,7 +2909,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             </div>
                             <div className="p-6">
                                 <p className="text-sm text-app-text-muted mb-5 font-medium">
-                                    Add shared and dedicated dev agents for the current project. Master Agent and Git Manager stay available by default.
+                                    Add shared and dedicated Dev and Test agents for the current project. Master Agent and Git Manager stay available by default.
                                 </p>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2828,7 +2917,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <div className="flex items-center justify-between gap-3 mb-2">
                                             <div>
                                                 <p className="text-sm font-bold text-emerald-900">Shared Dev Agents</p>
-                                                <p className="text-[11px] text-app-status-success">Available capacity: {agentQuotaLoading ? '...' : Number(agentQuota?.shared_available ?? 0)}</p>
+                                                <p className="text-[11px] text-app-status-success">
+                                                    Available capacity: {agentQuotaLoading ? '...' : sharedDevAvailableForModal}
+                                                </p>
                                             </div>
                                             <Users className="w-5 h-5 text-app-status-success" />
                                         </div>
@@ -2836,7 +2927,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <input
                                             type="number"
                                             min="0"
-                                            max={Number(agentQuota?.shared_available ?? 0)}
+                                            max={sharedDevAvailableForModal}
                                             value={sharedAgentsToAdd}
                                             onChange={(e) => {
                                                 const val = e.target.value;
@@ -2850,7 +2941,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 if (val === '') {
                                                     setSharedAgentsToAdd('');
                                                 } else {
-                                                    const num = clampAgentCount(Number(val), Number(agentQuota?.shared_available ?? 0));
+                                                    const num = clampAgentCount(Number(val), sharedDevAvailableForModal);
                                                     setSharedAgentsToAdd(num.toString());
                                                 }
                                             }}
@@ -2863,7 +2954,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <div className="flex items-center justify-between gap-3 mb-2">
                                             <div>
                                                 <p className="text-sm font-bold text-app-primary-dark">Dedicated Dev Agents</p>
-                                                <p className="text-[11px] text-app-primary-hover">Available capacity: {agentQuotaLoading ? '...' : Number(agentQuota?.dedicated_available ?? 0)}</p>
+                                                <p className="text-[11px] text-app-primary-hover">
+                                                    Available capacity: {agentQuotaLoading ? '...' : dedicatedDevAvailableForModal}
+                                                </p>
                                             </div>
                                             <Bot className="w-5 h-5 text-app-primary" />
                                         </div>
@@ -2871,7 +2964,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <input
                                             type="number"
                                             min="0"
-                                            max={Number(agentQuota?.dedicated_available ?? 0)}
+                                            max={dedicatedDevAvailableForModal}
                                             value={dedicatedAgentsToAdd}
                                             onChange={(e) => {
                                                 const val = e.target.value;
@@ -2885,8 +2978,79 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 if (val === '') {
                                                     setDedicatedAgentsToAdd('');
                                                 } else {
-                                                    const num = clampAgentCount(Number(val), Number(agentQuota?.dedicated_available ?? 0));
+                                                    const num = clampAgentCount(Number(val), dedicatedDevAvailableForModal);
                                                     setDedicatedAgentsToAdd(num.toString());
+                                                }
+                                            }}
+                                            placeholder="0"
+                                            className="w-full px-4 py-3 border border-app-primary-ring rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main font-bold"
+                                        />
+                                    </div>
+                                    <div className="rounded-xl border border-emerald-200 bg-app-status-successBg/40 p-4">
+                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                            <div>
+                                                <p className="text-sm font-bold text-emerald-900">Shared Test Agents</p>
+                                                <p className="text-[11px] text-app-status-success">
+                                                    Available capacity: {agentQuotaLoading ? '...' : sharedTestAvailableForModal}
+                                                </p>
+                                            </div>
+                                            <Users className="w-5 h-5 text-app-status-success" />
+                                        </div>
+                                        <label className="block text-[10px] font-bold text-emerald-800 mb-2 uppercase tracking-widest">How many to add</label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max={sharedTestAvailableForModal}
+                                            value={sharedTestAgentsToAdd}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '' || /^\d+$/.test(val)) {
+                                                    setSharedTestAgentsToAdd(val);
+                                                }
+                                            }}
+                                            onBlur={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '') {
+                                                    setSharedTestAgentsToAdd('');
+                                                } else {
+                                                    const num = clampAgentCount(Number(val), sharedTestAvailableForModal);
+                                                    setSharedTestAgentsToAdd(num.toString());
+                                                }
+                                            }}
+                                            placeholder="0"
+                                            className="w-full px-4 py-3 border border-emerald-200 rounded-xl focus:ring-4 focus:ring-app-status-successBg focus:border-emerald-400 text-sm bg-app-bg-card text-app-text-main font-bold"
+                                        />
+                                    </div>
+
+                                    <div className="rounded-xl border border-app-primary-ring bg-app-primary-light/60 p-4">
+                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                            <div>
+                                                <p className="text-sm font-bold text-app-primary-dark">Dedicated Test Agents</p>
+                                                <p className="text-[11px] text-app-primary-hover">
+                                                    Available capacity: {agentQuotaLoading ? '...' : dedicatedTestAvailableForModal}
+                                                </p>
+                                            </div>
+                                            <Bot className="w-5 h-5 text-app-primary" />
+                                        </div>
+                                        <label className="block text-[10px] font-bold text-app-primary-dark mb-2 uppercase tracking-widest">How many to add</label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max={dedicatedTestAvailableForModal}
+                                            value={dedicatedTestAgentsToAdd}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '' || /^\d+$/.test(val)) {
+                                                    setDedicatedTestAgentsToAdd(val);
+                                                }
+                                            }}
+                                            onBlur={(e) => {
+                                                const val = e.target.value;
+                                                if (val === '') {
+                                                    setDedicatedTestAgentsToAdd('');
+                                                } else {
+                                                    const num = clampAgentCount(Number(val), dedicatedTestAvailableForModal);
+                                                    setDedicatedTestAgentsToAdd(num.toString());
                                                 }
                                             }}
                                             placeholder="0"
