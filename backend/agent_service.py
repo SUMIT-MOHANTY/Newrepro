@@ -5548,10 +5548,13 @@ async def _restore_persisted_agent_assignments(
     if not target_agent_ids:
         return {"count": 0, "recovered": []}
 
+    now = time.time()
+    last_restore_at = restore_meta.get("completed_at", 0)
     if (
         not force
         and str(restore_meta.get("task_token") or "").strip() == str(effective_token or "").strip()
         and restore_meta.get("completed") is True
+        and (now - last_restore_at < 120)  # 2 minutes cache
     ):
         return {
             "count": 0,
@@ -13885,16 +13888,28 @@ async def repair_preview(
                 }
                 
                 create_res = await task_service.create_task(bug_payload, task_token=effective_token)
-                ext_task_id = str(create_res.get("id") or create_res.get("task_id") or uuid.uuid4().hex[:8])
+                ext_task_id_raw = create_res.get("id") or create_res.get("task_id") or create_res.get("taskId")
+                ext_task_id = str(ext_task_id_raw or uuid.uuid4().hex[:8])
                 task["id"] = ext_task_id
                 
+                # Normalize username for the external API (e.g., agent_05 -> agent5)
+                # This ensures the external system recognizes the assigned worker.
+                ext_username = build_external_agent_username(repair_owner)
+                
                 # Assign it formally
-                await task_service.assign_task(ext_task_id, [repair_owner], task_token=effective_token)
+                await task_service.assign_task(ext_task_id, [ext_username], task_token=effective_token)
+                
+                # Explicitly transition status to "In Progress" so it shows as "started" in the dashboard
+                try:
+                    if ext_task_id_raw:
+                        await task_service.update_task(int(ext_task_id_raw), {"taskStatus": "In Progress"}, task_token=effective_token)
+                except Exception as e_status:
+                    _master_log(f"⚠️ Could not transition task {ext_task_id} status: {e_status}")
                 
                 # Opt-in automatically so the agent "starts" working in the system
-                await task_service.opt_in_task({"task_id": ext_task_id, "username": repair_owner}, task_token=effective_token)
+                await task_service.opt_in_task({"task_id": ext_task_id, "username": ext_username}, task_token=effective_token)
                 
-                _master_log(f"🛠️ Created, assigned, and opted-in BUG task {ext_task_id} to {repair_owner} for deployment repair.")
+                _master_log(f"🛠️ Created, assigned, and opted-in BUG task {ext_task_id} to {ext_username} for deployment repair.")
             except Exception as e_task:
                 _master_log(f"⚠️ Failed to formalize BUG task startup: {e_task}")
 

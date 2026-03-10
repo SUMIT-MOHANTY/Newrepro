@@ -47,6 +47,9 @@ class TaskManagementService:
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
         self.token_expires_at: int = 0
+        self._tasks_cache: Dict[tuple, Any] = {}  # Keys: (task_token, page)
+        self._total_tasks_cache: Dict[str, Any] = {}  # Keys: task_token
+        self._cache_ttl = 120  # 2 minutes in seconds
 
     async def _get_access_token(self) -> str:
         """Fetch a new access token using client credentials."""
@@ -279,16 +282,36 @@ class TaskManagementService:
 
     async def get_tasks(self, page: int = None, task_token: Optional[str] = None) -> dict:
         """Fetch the list of generated tasks from the external task management API."""
+        cache_key = (task_token, page)
+        now = time.time()
+        
+        if cache_key in self._tasks_cache:
+            timestamp, data = self._tasks_cache[cache_key]
+            if now - timestamp < self._cache_ttl:
+                return data
+
         endpoint = "/api/agent/tasks-list"
         if page:
             endpoint += f"?page={page}"
         response = await self._make_request("GET", endpoint, task_token=task_token)
-        print("Tasks list API Response:", response)
+        
+        self._tasks_cache[cache_key] = (now, response)
         return response
 
     async def get_total_tasks(self, task_token: Optional[str] = None) -> dict:
         """Fetch all tasks (unpaginated total list) from the external task management API."""
-        return await self._make_request("GET", "/api/agent/tasks-total-list", task_token=task_token)
+        cache_key = task_token or "default"
+        now = time.time()
+        
+        if cache_key in self._total_tasks_cache:
+            timestamp, data = self._total_tasks_cache[cache_key]
+            if now - timestamp < self._cache_ttl:
+                return data
+
+        response = await self._make_request("GET", "/api/agent/tasks-total-list", task_token=task_token)
+        
+        self._total_tasks_cache[cache_key] = (now, response)
+        return response
 
     async def get_project_info(self, task_token: Optional[str] = None) -> dict:
         """Fetch project info (deadline, wallet, team) from the external task management API."""

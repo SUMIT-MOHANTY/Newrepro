@@ -5220,8 +5220,6 @@ async def get_external_agent_tasks(
         status_code = e.status_code if 400 <= e.status_code < 500 else 502
         raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {repr(e)}")
 
 @app.get("/api/agent/tasks-total-list/")
