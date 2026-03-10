@@ -5356,7 +5356,7 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
         normalized.sort(key=_task_sort_key)
         return normalized
     except Exception as e:
-        print(f"[agent_service] Failed to fetch external tasks: {e}")
+        logger.error(f"[agent_service] Failed to fetch external tasks: {e}")
         return []
 
 
@@ -5375,7 +5375,7 @@ async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, 
         task_token = task_token or get_project_task_token(project_token)
         await task_service.add_checklist_to_task(int(task_id), updated, task_token=task_token)
     except Exception as e:
-        print(f"[agent_service] Failed to update checklist for task {task_id}: {e}")
+        logger.error(f"[agent_service] Failed to update checklist for task {task_id}: {e}")
 
 
 def _normalize_task_id(task: Dict[str, Any]):

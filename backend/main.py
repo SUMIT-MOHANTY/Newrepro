@@ -60,6 +60,17 @@ logger = logging.getLogger(__name__)
 SSO_DEFAULT_SCOPES = "openid profile email"
 SSO_STATE_TTL_SECONDS = 1800
 SSO_STATE_CLOCK_SKEW_SECONDS = 300
+
+# Suppress frequent polling logs in uvicorn access logs
+class PollingFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        # Silence tasks-list and agent status polling
+        if "/api/agent/tasks-list/" in msg or "/status?project_token=" in msg:
+            return False
+        return True
+
+logging.getLogger("uvicorn.access").addFilter(PollingFilter())
 OAUTH_AUTH_CODE_TTL_SECONDS = 300
 OAUTH_ACCESS_TOKEN_TTL_SECONDS = 3600
 
@@ -2525,7 +2536,7 @@ async def get_project_roadmap_step(
 
             if all_page_results:
                 has_tasks = True
-                print(f"Roadmap: Detected {len(all_page_results)} tasks for project {identifier}, has_tasks=True")
+                # logger.info(f"Roadmap: Detected {len(all_page_results)} tasks for project {identifier}, has_tasks=True")
 
                 done_statuses = {"completed", "done", "closed", "complete", "resolved"}
 
@@ -2548,7 +2559,8 @@ async def get_project_roadmap_step(
                     for t in all_page_results
                 )
         except Exception as e:
-            print(f"Roadmap: Failed to check tasks for {identifier}: {e}")
+            # logger.warning(f"Roadmap: Failed to check tasks for {identifier}: {e}")
+            pass
             # If task check fails, keep the last known roadmap state.
             # But if we have a task token, assume tasks might exist and check stored step
             if x_task_token and stored_last_reached_step == TASK_CREATION_IDX:
@@ -2564,7 +2576,8 @@ async def get_project_roadmap_step(
             for a in runtime_agents
         )
     except Exception as e:
-        print(f"Roadmap: Failed to check agent runtime state for {identifier}: {e}")
+        # logger.warning(f"Roadmap: Failed to check agent runtime state for {identifier}: {e}")
+        pass
 
     # 5. Check preview deploy state to drive "Complete" activation/completion
     deploy_status = "none"
@@ -2578,7 +2591,8 @@ async def get_project_roadmap_step(
         deploy_success = deploy_status == "running"
         deploy_attempted = deploy_status in {"deploying", "running", "error"}
     except Exception as e:
-        print(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
+        # logger.warning(f"Roadmap: Failed to check deploy state for {identifier}: {e}")
+        pass
 
     # Backend roadmap progression:
     # Project Initiation -> Requirement Screening -> Governance -> Agent Analysis ->
@@ -2644,7 +2658,7 @@ async def get_project_roadmap_step(
         completed_indices = [idx for idx, status in enumerate(step_statuses) if status == "completed"]
         computed_step = completed_indices[-1] if completed_indices else 0
     
-    print(f"Roadmap: Project {identifier} - has_tasks={has_tasks}, computed_step={computed_step}, stored_step={stored_last_reached_step}, step_statuses={step_statuses}")
+    # logger.info(f"Roadmap: Project {identifier} - has_tasks={has_tasks}, computed_step={computed_step}, stored_step={stored_last_reached_step}, step_statuses={step_statuses}")
 
     # Use stored last reached step if it exists, otherwise use computed step
     # The stored step represents the furthest step the user has reached - NEVER go backwards
@@ -2723,7 +2737,7 @@ async def get_project_roadmap_step(
             }
             db.commit()
     except Exception as e:
-        print(f"Failed to save steps data to database: {e}")
+        logger.error(f"Failed to save steps data to database: {e}")
         db.rollback()
 
     return roadmap_data
