@@ -3,6 +3,7 @@ AI Service for BRD Analysis
 Supports OpenAI-compatible APIs (OpenAI, NVIDIA, Azure, local LLMs, etc.)
 """
 import httpx
+import json
 from typing import Optional, List
 from config import settings
 import logging
@@ -10,6 +11,61 @@ import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+# ── JSON Extraction Helpers ────────────────────────────────────────────────
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+
+    # Prefer fenced JSON blocks
+    fenced_regex = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+    last_valid = None
+    for match in fenced_regex.finditer(text):
+        candidate = match.group(1).strip()
+        if not (candidate.startswith("{") and candidate.endswith("}")):
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                last_valid = parsed
+        except Exception:
+            continue
+    if last_valid is not None:
+        return last_valid
+
+    # Fallback: find a trailing JSON object
+    trimmed = text.strip()
+    for i in range(len(trimmed) - 1, -1, -1):
+        if trimmed[i] != "{":
+            continue
+        candidate = trimmed[i:].strip()
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _has_architecture_block(text: str) -> bool:
+    parsed = _extract_json_object(text)
+    if not isinstance(parsed, dict):
+        return False
+    architecture = parsed.get("architecture")
+    return isinstance(architecture, dict)
+
+
+def _build_architecture_repair_prompt(previous_response: str) -> str:
+    return (
+        "Your previous response is missing or contains an invalid JSON block with an 'architecture' object.\n"
+        "Return the FULL response again with the SAME HTML report body, and end with ONE valid JSON block in a "
+        "```json``` fence that includes: title, metrics, questions, prerequisites, user_flow, "
+        "implementation_structure, and architecture (nodes + edges).\n\n"
+        "Previous response:\n\n"
+        f"{previous_response}"
+    )
 
 # BRD Analysis System Prompt
 PREREQUISITE_CATEGORIES: List[tuple[str, str]] = [
@@ -96,7 +152,7 @@ Finally, output a SINGLE JSON block containing the key metrics, targeted questio
 
   "user_flow": "A user journey diagram definition describing the end-to-end flow through the application for the primary user types (public users, internal operators, admins, etc.). Derive this ONLY from the business / functional requirements and roles described in the BRD. The flow MUST: (1) start from the primary actor(s), (2) include authentication if the system requires login, (3) include each major feature or workflow (such as performing a calculation, submitting a form, placing an order), (4) include viewing results/confirmation, and (5) include end-of-session actions such as logout/exit where applicable. Steps should align with the architecture modules (for example: Edge/WAF → Frontend → API Gateway → Auth Service → Domain Services → Databases/Ledger). If the BRD does not provide enough detail, fall back to a standard web flow and explicitly note this assumption in the HTML report.",
 
-  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree (for example: 'myproject/', '├── backend/', '│   ├── apps/', ...).",
+  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree (for example: 'myproject/', '├── app/', '│   ├── api/', ...).",
 
   "architecture": {{
     "nodes": [
@@ -414,6 +470,23 @@ async def analyze_document(
 
                 if use_brn_llama:
                     content = data.get('response', data.get('text', data.get('content', '')))
+                    if not _has_architecture_block(content):
+                        repair_prompt = _build_architecture_repair_prompt(content)
+                        repair_payload = {
+                            "model": model_name,
+                            "prompt": f"{BRD_ANALYSIS_PROMPT}\n\n{repair_prompt}",
+                            "stream": False,
+                            "agent_id": settings.brn_agent_id,
+                            "platform_id": settings.brn_platform_id,
+                            "max_tokens": settings.brn_max_tokens,
+                            "temperature": settings.brn_temperature,
+                        }
+                        repair_response = await client.post(url, json=repair_payload, headers=brn_headers)
+                        repair_response.raise_for_status()
+                        repair_data = repair_response.json()
+                        repaired_content = repair_data.get('response', repair_data.get('text', repair_data.get('content', '')))
+                        if _has_architecture_block(repaired_content):
+                            content = repaired_content
                     return {
                         "status": "success",
                         "analysis": content,
@@ -434,6 +507,28 @@ async def analyze_document(
                         if think_match and not reasoning_from_api:
                             reasoning_from_api = think_match.group(1).strip()
                         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+                    if not _has_architecture_block(content):
+                        repair_prompt = _build_architecture_repair_prompt(content)
+                        repair_payload = {
+                            "model": model_name,
+                            "messages": [
+                                {"role": "system", "content": BRD_ANALYSIS_PROMPT},
+                                {"role": "user", "content": repair_prompt}
+                            ],
+                            "stream": False,
+                            "chat_template_kwargs": {
+                                "thinking": False
+                            }
+                        }
+                        repair_response = await client.post(url, json=repair_payload, headers=openai_headers)
+                        repair_response.raise_for_status()
+                        repair_data = repair_response.json()
+                        if "choices" in repair_data and len(repair_data["choices"]) > 0:
+                            repair_message = repair_data["choices"][0].get("message", {})
+                            repaired_content = repair_message.get("content", "")
+                            if _has_architecture_block(repaired_content):
+                                content = repaired_content
                     
                     return {
                         "status": "success",
@@ -512,12 +607,12 @@ RULES:
 10. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
     - "foundation": Project setup, structure, API contracts, database schema, configuration files.
       For FULL-STACK projects (e.g., React + Flask), the **foundation phase MUST create**:
-        * `backend/` directory with: virtualenv, `requirements.txt`, `config.py`, app entry, API module layout
-        * `frontend/` directory with: `package.json`, bundler config (Vite/Next/etc.), `src/` with `components/` and `pages/`, main entry files
+        * Core application directories (e.g., backend logic, frontend scaffolding) appropriate for the stack.
+        * Core dependencies definition (`requirements.txt`, `package.json`, virtualenvs/bundler configs)
         * Root-level files: `.env.example`, `.gitignore`, `README.md`, (optionally) `docker-compose.yml`
     - "backend-core": Core backend features (auth system, base models, base API setup, middleware)
     - "backend-features": Feature-specific backend endpoints (books API, members API, transactions API)
-    - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the already-created `frontend/` structure
+    - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the foundation structure
     - "frontend-features": Feature-specific frontend components (Books UI, Members UI, Transactions UI)
     - "integration": Testing, bug fixes, deployment preparation, end-to-end integration
 11. **DEPENDENCIES**: List task IDs from prior tasks that must complete BEFORE a given task can start:

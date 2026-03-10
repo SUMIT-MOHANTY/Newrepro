@@ -81,8 +81,8 @@ async def _plan_assignments(state: AgentWorkflowState) -> Dict[str, Any]:
             "errors": errors,
         }
     assignments = [
-        {"agent_id": agent_id}
-        for agent_id, _task in claimed.get("assignments", [])
+        {"agent_id": agent_id, "assigned_task": task}
+        for agent_id, task in claimed.get("assignments", [])
     ]
     return {"assignments": assignments}
 
@@ -106,11 +106,11 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
         if agent_id and agent_id not in launched_agents:
             launched_agents.append(agent_id)
 
-    async def _run_one(agent_id: str) -> Dict[str, Any]:
+    async def _run_one(agent_id: str, assigned_task: dict = None) -> Dict[str, Any]:
         try:
             result = await agent_service.run_agent(
                 agent_id,
-                assigned_task=None,
+                assigned_task=assigned_task,
                 continuous=True,
                 ignore_running_check=True,
                 project_token=state.get("project_token"),
@@ -128,7 +128,9 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
                 "tasks_completed": 0,
             }
 
-    results = await asyncio.gather(*(_run_one(agent_id) for agent_id in launched_agents))
+    results = await asyncio.gather(
+        *(_run_one(entry.get("agent_id"), entry.get("assigned_task")) for entry in assignments)
+    )
     errors = [
         f"{item.get('agent_id')}: {item.get('error')}"
         for item in results

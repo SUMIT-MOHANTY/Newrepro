@@ -447,6 +447,18 @@ export default function AgentAnalysis({
 
             const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText);
 
+            if (!architecture && !analysisOptions.forceArchitectureRetry) {
+                setProgress(92);
+                setProgressMessage('Finalizing architecture diagram...');
+                await fetchAnalysisRef.current(
+                    { ...payload, stream: false },
+                    token,
+                    initialContext || result,
+                    { ...analysisOptions, forceArchitectureRetry: true }
+                );
+                return;
+            }
+
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
             const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result)?.filename;
@@ -1452,7 +1464,6 @@ export default function AgentAnalysis({
                 const arch = result.analysis.architecture || {};
                 const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
                 const edges = Array.isArray(arch.edges) ? arch.edges : [];
-                const layerOrder = ['frontend', 'backend', 'service', 'data', 'integration', 'infra'];
 
                 const rfNodes = layoutArchitectureGraph(nodes, edges, 'LR');
 
