@@ -1155,38 +1155,45 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
                 <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${cfg.accent}`}></div>
 
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-app-bg-page border border-app-border' : `bg-gradient-to-br ${cfg.gradient}`} flex items-center justify-center shadow-lg ${cfg.shadow} ${useLogo ? 'p-1.5' : ''}`}>
-            {useLogo && logoSrc ? (
-              <img src={logoSrc} alt={displayName} className="w-full h-full object-contain" />
-            ) : (
-              Icon
-            )}
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h4 className="text-sm font-bold text-app-text-main">
-                {displayName}
-              </h4>
-              {agentType && (
-                <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${
-                  isShared
-                    ? 'bg-app-status-successBg text-app-status-success border border-emerald-200'
-                    : 'bg-app-primary-light text-app-primary-hover border border-app-primary-ring'
-                }`}>
-                  {agentType}
-                </span>
-              )}
-            </div>
-            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
-            {!isSystemAgent && (
-              <p className="text-[10px] text-app-text-light">
-                Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
-              </p>
-            )}
-          </div>
-        </div>
+                <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-app-bg-page border border-app-border' : `bg-gradient-to-br ${cfg.gradient}`} flex items-center justify-center shadow-lg ${cfg.shadow} ${useLogo ? 'p-1.5' : ''}`}>
+                            {useLogo && logoSrc ? (
+                                <img src={logoSrc} alt={displayName} className="w-full h-full object-contain" />
+                            ) : (
+                                Icon
+                            )}
+                        </div>
+                        <div>
+                            <div className="flex items-center gap-2">
+                                <h4 className="text-sm font-bold text-app-text-main">
+                                    {displayName}
+                                </h4>
+                                {!isSystemAgent && agent.sub_type && (
+                                    <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${isTest
+                                        ? 'bg-orange-100 text-orange-600 border border-orange-200'
+                                        : 'bg-blue-100 text-blue-600 border border-blue-200'
+                                        }`}>
+                                        {agent.sub_type}
+                                    </span>
+                                )}
+                                {agentType && (
+                                    <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${isShared
+                                        ? 'bg-app-status-successBg text-app-status-success border border-emerald-200'
+                                        : 'bg-app-primary-light text-app-primary-hover border border-app-primary-ring'
+                                        }`}>
+                                        {agentType}
+                                    </span>
+                                )}
+                            </div>
+                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{!isSystemAgent && agent.sub_type && `${agent.sub_type} `}{getNeutralAgentLabel(agent)}</p>
+                            {!isSystemAgent && (
+                                <p className="text-[10px] text-app-text-light">
+                                    Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
+                                </p>
+                            )}
+                        </div>
+                    </div>
                     <div className="flex items-center gap-2">
                         <div className="flex items-center gap-1.5">
                             {isRunning && (
