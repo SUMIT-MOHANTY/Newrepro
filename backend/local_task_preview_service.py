@@ -190,7 +190,7 @@ def _derive_total_wallet(analysis_payload: Dict[str, Any], analysis_report: str)
     if "enterprise" in lower_analysis or "complex" in lower_analysis:
         base_wallet += 8
 
-    return max(20, min(base_wallet, 90))
+    return max(20, min(base_wallet, 250))
  
  
 def _derive_project_type(analysis_payload: Dict[str, Any]) -> str:
@@ -210,6 +210,7 @@ def _build_analysis_context(
     prerequisites: List[Dict[str, Any]],
     custom_rules: Optional[str],
     *,
+    analysis_payload: Optional[Dict[str, Any]] = None,
     max_chars: int = 128000,
 ) -> str:
     """
@@ -261,6 +262,12 @@ def _build_analysis_context(
 
     if custom_rules:
         parts.append(f"CUSTOM RULES TO FOLLOW:\n{custom_rules.strip()}")
+
+    if analysis_payload and isinstance(analysis_payload.get("extraction"), dict):
+        extraction = analysis_payload["extraction"]
+        processed_content = str(extraction.get("markdown") or extraction.get("html") or "").strip()
+        if processed_content:
+            parts.append(f"PROCESSED CONTENT/SOURCE MATERIAL:\n{processed_content}")
 
     return "\n\n".join(part for part in parts if part).strip()
 
@@ -936,6 +943,7 @@ async def build_local_task_plan_preview(
         analysis_report,
         prerequisites,
         custom_rules,
+        analysis_payload=analysis_payload,
         max_chars=0,
     )
     
