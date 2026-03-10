@@ -5224,6 +5224,29 @@ async def get_external_agent_tasks(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {repr(e)}")
 
+@app.get("/api/agent/tasks-total-list/")
+async def get_external_agent_total_tasks(
+    current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
+):
+    """
+    Fetch the list of all tasks from the external task management API.
+    """
+    try:
+        tasks = await task_service.get_total_tasks(task_token=x_task_token)
+        return tasks
+    except TaskServiceTimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except TaskServiceConnectionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except TaskServiceError as e:
+        status_code = e.status_code if 400 <= e.status_code < 500 else 502
+        raise HTTPException(status_code=status_code, detail=str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch total tasks: {repr(e)}")
+
 @app.get("/api/agent/project-info/")
 async def get_agent_project_info(
     current_user: models.User = Depends(auth.get_current_user),

@@ -567,7 +567,7 @@ export default function TaskCreation({
                     const headers = { 'Authorization': `Bearer ${token}` };
                     if (taskToken) headers['x-task-token'] = taskToken;
                     
-                    const tasksRes = await fetch(API_ENDPOINTS.AGENT_TASKS, { headers });
+                    const tasksRes = await fetch(API_ENDPOINTS.AGENT_TASKS_TOTAL, { headers });
                     if (tasksRes.ok) {
                         const tasksData = await tasksRes.json();
                         // Handle both array and paginated response formats
