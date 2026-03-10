@@ -1253,13 +1253,10 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
             detail="Organization already registered. Sign in with your admin account.",
         )
 
-    try:
-        email_service.ensure_email_delivery_configured()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-
-    generated_password = _generate_registration_password()
-    hashed_password = auth.get_password_hash(generated_password)
+    # For now, allow registration without enforcing SMTP configuration.
+    # If the client sends an explicit password, use it; otherwise fall back to a generated one.
+    raw_password = (user.password or "").strip() or _generate_registration_password()
+    hashed_password = auth.get_password_hash(raw_password)
     db_user = models.User(
         email=normalized_email,
         hashed_password=hashed_password,
@@ -1276,21 +1273,12 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
         email_service.send_organization_registration_password_email(
             recipient_email=normalized_email,
             organization_name=organization_name,
-            generated_password=generated_password,
+            generated_password=raw_password,
             first_name=(user.first_name or "").strip() or None,
         )
     except Exception:
+        # Log the failure but do not block registration when SMTP is not configured.
         logger.exception("Failed to deliver organization registration email to %s", normalized_email)
-        try:
-            db.delete(db_user)
-            db.commit()
-        except Exception:
-            db.rollback()
-            logger.exception("Failed to roll back user creation after email delivery failure for %s", normalized_email)
-        raise HTTPException(
-            status_code=503,
-            detail="Unable to deliver the generated password email. Please try again.",
-        )
 
     return db_user
 

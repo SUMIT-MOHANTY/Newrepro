@@ -512,7 +512,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             <button
               onClick={handleSubmit}
               disabled={isSubmitting}
-              className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all ${
+              className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all ${
                 isSubmitting ? 'opacity-50 cursor-not-allowed' : ''
               }`}
             >

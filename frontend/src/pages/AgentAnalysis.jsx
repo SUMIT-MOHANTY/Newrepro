@@ -392,7 +392,7 @@ export default function AgentAnalysis({
             let buffer = '';
 
             setProgress(85);
-            setProgressMessage('Generating professional analysis report...');
+            setProgressMessage('Generating  analysis report...');
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -546,7 +546,7 @@ export default function AgentAnalysis({
                 });
             } else {
                 setProgress(85);
-                setProgressMessage('Generating professional analysis report...');
+                setProgressMessage('Generating analysis report...');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: pendingRepoContext,
                     governanceContext: effectiveGovernanceContext,
@@ -1123,7 +1123,7 @@ export default function AgentAnalysis({
                     <p className="text-app-status-error font-semibold mb-4">{error}</p>
                     <button
                         onClick={() => navigate('/dashboard')}
-                        className="px-4 py-2 bg-app-primary text-app-bg-card rounded-lg hover:bg-app-primary-hover transition-colors"
+                        className="px-4 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors"
                     >
                         Go to Dashboard
                     </button>
@@ -1139,7 +1139,7 @@ export default function AgentAnalysis({
                     <p className="text-app-text-muted font-semibold mb-4">No analysis found for this project.</p>
                     <button
                         onClick={() => navigate('/dashboard')}
-                        className="px-4 py-2 bg-app-primary text-app-bg-card rounded-lg hover:bg-app-primary-hover transition-colors"
+                        className="px-4 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors"
                     >
                         Go to Dashboard
                     </button>
@@ -1188,7 +1188,7 @@ export default function AgentAnalysis({
                             <div className="bg-gradient-to-r from-app-status-warningBg to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
                                 <div className="flex items-center gap-3">
                                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-app-status-warning flex items-center justify-center shadow-lg shadow-amber-200">
-                                        <KeyRound className="w-5 h-5 text-app-bg-card" />
+                                        <KeyRound className="w-5 h-5 text-white" />
                                     </div>
                                     <div>
                                         <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
@@ -1197,7 +1197,7 @@ export default function AgentAnalysis({
                                 </div>
                                 <button
                                     onClick={() => navigate('/prerequisites')}
-                                    className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                    className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
                                 >
                                     <KeyRound className="w-4 h-4" />
                                     Review Prerequisites
@@ -1431,7 +1431,7 @@ export default function AgentAnalysis({
                                             <button
                                                 onClick={handleRefineAnalysis}
                                                 disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                                className={`w-full mt-4 py-2.5 text-xs font-bold text-app-bg-card rounded-lg shadow-sm transition-all ${processing
+                                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
                                                     ? 'bg-app-text-light cursor-not-allowed'
                                                     : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
                                                     }`}

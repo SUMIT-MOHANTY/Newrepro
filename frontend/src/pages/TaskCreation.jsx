@@ -15,7 +15,7 @@ import {
 import { API_ENDPOINTS } from '../config';
 import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
 
-const PLAN_CREATION_STEPS = ['Creating Sprint', 'Creating Milestone', 'Creating Tasks'];
+const PLAN_CREATION_STEPS = ['Creating Tasks'];
 const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
 const GENERATED_TASK_PLAN_STORAGE_KEY_PREFIX = 'task_creation_generated_plan_';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
@@ -929,7 +929,6 @@ export default function TaskCreation({
                 'X-Task-Token': taskToken,
             };
 
-            setCreationStageIndex(1);
             let prerequisites = null;
             try {
                 const saved = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
@@ -988,7 +987,7 @@ export default function TaskCreation({
                 setSuccess(`Generated ${createdCount} task preview item(s).`);
             }
             setLiveCreatedTaskCount(createdCount);
-            setCreationStageIndex(2);
+            setCreationStageIndex(1);
         } catch (e) {
             setError(e?.message || 'Task creation failed');
         } finally {
@@ -1093,7 +1092,7 @@ export default function TaskCreation({
                             </div>
                             <button
                                 onClick={handleStartProcess}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all"
+                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all"
                             >
                                 Start the Process
                                 <ArrowRight className="w-4 h-4" />

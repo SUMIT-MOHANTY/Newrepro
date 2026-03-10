@@ -1077,7 +1077,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     // ── Agent Card Config ────────────────────────────────────────────
     const agentConfig = {
         agent_01: {
-            icon: <CheckCircle className="w-5 h-5 text-app-bg-card" />,
+            icon: <CheckCircle className="w-5 h-5 text-white" />,
             gradient: 'from-emerald-400 to-app-status-success',
             shadow: 'shadow-emerald-200',
             accent: 'from-emerald-400 to-app-status-success',
@@ -1086,7 +1086,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             statLabels: { checks: 'Checks', coverage: 'Coverage', avg_time: 'Duration' },
         },
         agent_02: {
-            icon: <Shield className="w-5 h-5 text-app-bg-card" />,
+            icon: <Shield className="w-5 h-5 text-white" />,
             gradient: 'from-emerald-400 to-app-status-success',
             shadow: 'shadow-emerald-200',
             accent: 'from-emerald-400 to-app-status-success',
@@ -1095,7 +1095,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             statLabels: { risks: 'Risks', critical: 'Critical', avg_time: 'Duration' },
         },
         agent_03: {
-            icon: <GitBranch className="w-5 h-5 text-app-bg-card" />,
+            icon: <GitBranch className="w-5 h-5 text-white" />,
             gradient: 'from-app-primary to-app-primary',
             shadow: 'shadow-app-primary-ring',
             accent: 'from-app-primary to-app-primary',
@@ -1104,7 +1104,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             statLabels: { avg_time: 'Duration' },
         },
         agent_04: {
-            icon: <Bot className="w-5 h-5 text-app-bg-card" />,
+            icon: <Bot className="w-5 h-5 text-white" />,
             logo: masterLogo,
             gradient: 'from-app-bg-page to-app-bg-muted',
             shadow: 'shadow-app-bg-hover',
@@ -1206,7 +1206,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <button
                                         onClick={() => handleRunAgentClick(agent)}
                                         disabled={!canRun || runningAgent === agent.id}
-                                        className={`inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] font-bold text-app-bg-card rounded shadow-sm transition-all ${canRun
+                                        className={`inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] font-bold text-white rounded shadow-sm transition-all ${canRun
                                             ? `bg-gradient-to-r ${cfg.gradient} hover:shadow-md`
                                             : 'bg-app-border cursor-not-allowed'
                                             }`}
@@ -1217,7 +1217,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 ) : (
                                     <button
                                         onClick={() => handleResetAgent(agent.id)}
-                                        className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] font-bold text-app-bg-card bg-app-status-error hover:bg-app-status-error rounded shadow-sm"
+                                        className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] font-bold text-white bg-app-status-error hover:bg-app-status-error rounded shadow-sm"
                                         title="Stop agent"
                                     >
                                         <StopCircle className="w-2.5 h-2.5" /> Stop
@@ -1633,7 +1633,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         <button
                             type="button"
                             onClick={() => setShowModal(true)}
-                            className="inline-flex items-center gap-2 bg-gradient-to-r from-app-primary to-app-primary text-app-bg-card font-bold py-3.5 px-8 rounded-full shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 hover:-translate-y-0.5 transition-all w-full justify-center"
+                            className="inline-flex items-center gap-2 bg-gradient-to-r from-app-primary to-app-primary text-white font-bold py-3.5 px-8 rounded-full shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 hover:-translate-y-0.5 transition-all w-full justify-center"
                         >
                             <PlusCircle className="w-5 h-5" />
                             <span>Add New Project</span>
@@ -1748,7 +1748,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                     {selectedRole === 'sales' && (
                         <>
-                            <div className="rounded-2xl bg-gradient-to-r from-orange-500 to-app-status-warning text-app-bg-card p-6 shadow-lg">
+                            <div className="rounded-2xl bg-gradient-to-r from-orange-500 to-app-status-warning text-white p-6 shadow-lg">
                                 <p className="text-[11px] uppercase tracking-[0.2em] text-orange-100 font-bold mb-2">Commercial Snapshot</p>
                                 <h3 className="text-2xl font-bold">Sales Commitment Dashboard</h3>
                                 <p className="text-sm text-orange-100 mt-2">
@@ -2012,7 +2012,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     </div>
                                                     <div className="rounded-lg border border-black bg-black px-3 py-2 text-center">
                                                         <p className="text-[10px] uppercase tracking-widest font-bold text-app-bg-hover">Remaining</p>
-                                                        <p className="text-sm font-black text-app-bg-card">{workRemainingDisplay}%</p>
+                                                        <p className="text-sm font-black text-white">{workRemainingDisplay}%</p>
                                                     </div>
                                                 </div>
                                             </div>
@@ -2293,7 +2293,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                     disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0}
                                                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05').length === 0
                                                         ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
-                                                        : 'bg-gradient-to-r from-orange-500 to-app-status-warning text-app-bg-card shadow-md hover:shadow-lg hover:scale-105'
+                                                        : 'bg-gradient-to-r from-orange-500 to-app-status-warning text-white shadow-md hover:shadow-lg hover:scale-105'
                                                         }`}
                                                     title="Run all idle agents simultaneously"
                                                 >
@@ -2476,7 +2476,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <button
                                                                 onClick={handleDeployPreview}
                                                                 disabled={isDeploying}
-                                                                className="flex items-center justify-center gap-1.5 w-full max-w-[140px] py-1.5 rounded-lg bg-app-primary text-app-bg-card text-[10px] font-bold hover:bg-app-primary transition-colors disabled:opacity-50"
+                                                                className="flex items-center justify-center gap-1.5 w-full max-w-[140px] py-1.5 rounded-lg bg-app-primary text-white text-[10px] font-bold hover:bg-app-primary transition-colors disabled:opacity-50"
                                                             >
                                                                 {isDeploying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Rocket className="w-3 h-3" />}
                                                                 {isDeploying ? 'Deploying...' : 'Deploy Preview'}
@@ -2603,7 +2603,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <div className="px-6 py-4 border-b border-app-border-light flex items-center justify-between bg-gradient-to-r from-app-bg-page/80 to-app-bg-card">
                                     <div className="flex items-center gap-3">
                                         <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-app-primary to-purple-600 flex items-center justify-center shadow-lg shadow-app-primary-ring">
-                                            <ListTodo className="w-4 h-4 text-app-bg-card" />
+                                            <ListTodo className="w-4 h-4 text-white" />
                                         </div>
                                         <div>
                                             <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
@@ -2823,7 +2823,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()} placeholder="e.g. Customer Analytics Platform" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
                                 <div className="flex items-center gap-3">
                                     <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
-                                    <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                    <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
                                         Start track <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                                     </button>
                                 </div>
@@ -2878,7 +2878,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                 <div className="flex items-center gap-3">
                                     <button type="button" onClick={cancelEditingAgentName} disabled={isSavingAgentName} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors disabled:opacity-50">Cancel</button>
-                                    <button type="button" onClick={saveAgentName} disabled={isSavingAgentName || !editingAgentName.trim()} className="flex-1 py-3 px-4 font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2">
+                                    <button type="button" onClick={saveAgentName} disabled={isSavingAgentName || !editingAgentName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2">
                                         {isSavingAgentName ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : 'Save Changes'}
                                     </button>
                                 </div>
@@ -3084,7 +3084,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         type="button"
                                         onClick={submitAddAgent}
                                         disabled={isAddingAgents || agentQuotaLoading}
-                                        className="flex-1 py-3 px-4 font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                        className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                                     >
                                         {isAddingAgents ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlusCircle className="w-4 h-4" />}
                                         {isAddingAgents ? 'Adding...' : 'Add Agents'}
@@ -3167,7 +3167,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     } else {
                                         handleRunAgent(gitModalAgent.id, gitRepoUrl, gitToken);
                                     }
-                                }} disabled={gitModalAgent.id === '__run_all_setup__' ? (!agentsGitConfig.__global__?.git_repo_url?.trim() || !agentsGitConfig.__global__?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                }} disabled={gitModalAgent.id === '__run_all_setup__' ? (!agentsGitConfig.__global__?.git_repo_url?.trim() || !agentsGitConfig.__global__?.git_token?.trim()) : (!gitRepoUrl.trim() || !gitToken.trim())} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
                                     <Play className="w-4 h-4" /> {gitModalAgent.id === '__run_all_setup__' ? 'Start All Agents' : 'Start Agent'}
                                 </button>
                             </div>

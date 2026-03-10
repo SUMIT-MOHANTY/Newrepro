@@ -3,6 +3,7 @@ import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck } from 'lucide-react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import logo from '../assets/logo.png';
+import bourntecLogo from '../assets/bourntec_logo.png';
 
 const isAllowedNextUrl = (nextUrl) => {
     if (!nextUrl) return false;
@@ -28,8 +29,6 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     const [isLoading, setIsLoading] = useState(false);
     const [isSsoLoading, setIsSsoLoading] = useState(false);
     const navigate = useNavigate();
-    const location = useLocation();
-    const successMessage = location.state?.registrationMessage || '';
 
     const finishNavigate = (path) => {
         if (isModal && onClose) onClose();
@@ -124,12 +123,6 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
             {/* Form Section */}
             <div className="p-8">
-                {successMessage && (
-                    <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-lg">
-                        {successMessage}
-                    </div>
-                )}
-
                 {error && (
                     <div className="mb-6 p-4 bg-app-status-errorBg border border-app-status-errorBg text-app-status-error text-sm rounded-lg flex items-center">
                         <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -185,7 +178,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                     <button
                         type="submit"
                         disabled={isLoading || isSsoLoading}
-                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-app-bg-card bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
+                        className="w-full flex items-center justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-sm font-bold text-white bg-app-primary hover:bg-app-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-app-primary transition-all duration-200 transform hover:scale-[1.01] disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
                     >
                         {isLoading ? (
                             <>
@@ -255,7 +248,11 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
         <div className="min-h-screen bg-gradient-to-br from-app-bg-page to-app-bg-muted relative">
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center space-x-4 z-10">
-                <img src={logo} alt="DSuite Logo" className="h-10 w-auto object-contain" />
+                <img
+                    src={typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? bourntecLogo : logo}
+                    alt="DSuite Logo"
+                    className="h-10 w-auto object-contain"
+                />
                 <div className="h-8 w-px bg-app-border"></div>
                 <span className="text-xl font-bold text-app-text-main tracking-tight">DSuite</span>
             </div>

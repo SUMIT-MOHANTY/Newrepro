@@ -5,9 +5,11 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import {
     ArrowRight, Zap, CheckCircle, Shield, Workflow,
     FileText, FileCode, FileSpreadsheet, FileJson, File,
-    Database, Server, Layout, Code, Terminal, Cpu, Sparkles, Bot
+    Database, Server, Layout, Code, Terminal, Cpu, Sparkles, Bot,
+    Sun, Moon
 } from 'lucide-react';
 import Logo from '../assets/logo.png';
+import BourntecLogo from '../assets/bourntec_logo.png';
 import masterLogo from '../assets/logo1.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import kaktoxLogo from '../assets/Kaktox.png';
@@ -339,7 +341,7 @@ const Interactive3DScroll = () => {
                                 <span>STEP 0{i + 1}</span>
                                 <div className={`h-2.5 w-2.5 rounded-full bg-gradient-to-r ${step.color} shadow-[0_0_10px_rgba(255,255,255,0.5)]`}></div>
                             </div>
-                            <h2 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-app-bg-card tracking-tight leading-tight drop-shadow-lg">
+                            <h2 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white tracking-tight leading-tight drop-shadow-lg">
                                 {step.title}
                             </h2>
                             <p className="text-xl sm:text-2xl text-app-text-label leading-relaxed drop-shadow-md font-light">
@@ -432,7 +434,7 @@ const EfficiencySection = () => {
                                     <div className="h-8 w-full bg-app-bg-page rounded-xl overflow-hidden flex shadow-inner border border-app-border">
                                         <div className="h-full bg-gradient-to-r from-app-primary to-app-primary w-[80%] flex items-center justify-center relative shadow-[inset_0_2px_10px_rgba(0,0,0,0.1)]">
                                             <div className="absolute inset-0 opacity-20 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CjxyZWN0IHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCIgZmlsbD0ibm9uZSIvPgo8bGluZSB4MT0iMCIgeTE9IjIwIiB4Mj0iMjAiIHkyPSIwIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjUiLz4KPC9zdmc+')]"></div>
-                                            <span className="text-[10px] sm:text-xs font-bold text-app-bg-card relative z-10 flex items-center gap-1.5 drop-shadow-md">
+                                            <span className="text-[10px] sm:text-xs font-bold text-white relative z-10 flex items-center gap-1.5 drop-shadow-md">
                                                 <Zap className="w-3.5 h-3.5 fill-white" />
                                                 80% Agentic Pre-Work
                                             </span>
@@ -467,7 +469,7 @@ const LandingPage = () => {
             key: 'greenfield',
             title: 'Greenfield Development',
             subtitle: 'Build from scratch',
-            icon: <Zap className="h-5 w-5 text-app-bg-card" />,
+            icon: <Zap className="h-5 w-5 text-white" />,
             color: 'bg-app-status-success',
             ring: 'border-emerald-200',
             bg: 'bg-app-status-successBg/70',
@@ -493,7 +495,7 @@ const LandingPage = () => {
             key: 'brownfield',
             title: 'Brownfield Development',
             subtitle: 'Enhancement of existing systems',
-            icon: <Workflow className="h-5 w-5 text-app-bg-card" />,
+            icon: <Workflow className="h-5 w-5 text-white" />,
             color: 'bg-app-status-warning',
             ring: 'border-amber-200',
             bg: 'bg-app-status-warningBg/70',
@@ -520,7 +522,7 @@ const LandingPage = () => {
             key: 'modernization',
             title: 'Modernization / Re-engineering',
             subtitle: 'Legacy transformation',
-            icon: <Cpu className="h-5 w-5 text-app-bg-card" />,
+            icon: <Cpu className="h-5 w-5 text-white" />,
             color: 'bg-sky-600',
             ring: 'border-sky-200',
             bg: 'bg-sky-50/70',
@@ -549,7 +551,7 @@ const LandingPage = () => {
             key: 'developer',
             title: 'Developer Only',
             subtitle: 'Human-Led Development',
-            icon: <Code className="h-5 w-5 text-app-bg-card" />,
+            icon: <Code className="h-5 w-5 text-white" />,
             color: 'from-app-primary to-cyan-500',
             description: <>In this model, all work is performed manually by developers. <Sparkles className="inline h-4 w-4 mx-1 text-app-primary" />AI is only used as a reference tool.</>,
             brief: 'Teams follow a fully human-led delivery path where architecture decisions, coding standards, and validation gates are handled directly by engineers. This model minimizes automation risk and gives leadership complete visibility into every change before release. It is effective when accuracy, accountability, and auditability are more important than delivery speed.',
@@ -569,7 +571,7 @@ const LandingPage = () => {
             key: 'auto-complete',
             title: <><Sparkles className="inline h-5 w-5 mr-1.5 text-app-primary" />AI Assist Mode</>,
             subtitle: 'AI-Assisted Productivity',
-            icon: <Terminal className="h-5 w-5 text-app-bg-card" />,
+            icon: <Terminal className="h-5 w-5 text-white" />,
             color: 'from-app-primary to-violet-500',
             description: <><Sparkles className="inline h-4 w-4 mx-1 text-app-primary" />AI acts as a smart assistant, suggesting improvements and accelerating routine tasks while humans remain in full control.</>,
             brief: 'This mode improves day-to-day engineering throughput by automating routine drafting, code suggestions, and repetitive refinement work. Developers still make final decisions and keep ownership of quality, security, and release readiness. It provides quick productivity gains without requiring major process or governance changes.',
@@ -589,7 +591,7 @@ const LandingPage = () => {
             key: 'vibe',
             title: 'Vibe Coding Mode',
             subtitle: 'Intent-Driven Development',
-            icon: <FileCode className="h-5 w-5 text-app-bg-card" />,
+            icon: <FileCode className="h-5 w-5 text-white" />,
             color: 'from-fuchsia-600 to-pink-500',
             description: <>Teams describe desired outcomes, and <Sparkles className="inline h-4 w-4 mx-1 text-fuchsia-600" />AI generates structured outputs rapidly. Humans refine and validate.</>,
             brief: <>Vibe Coding is intent-first: teams define business outcomes and <Sparkles className="inline h-4 w-4 mx-1 text-fuchsia-600" />AI translates them into draft implementation paths quickly. This allows rapid concept testing, faster prototyping cycles, and accelerated early-stage feature development. Human review remains essential to align outputs with architecture standards and governance expectations.</>,
@@ -609,7 +611,7 @@ const LandingPage = () => {
             key: 'coexistence',
             title: 'Co-Existence Mode',
             subtitle: 'Human + AI Collaboration Model',
-            icon: <CheckCircle className="h-5 w-5 text-app-bg-card" />,
+            icon: <CheckCircle className="h-5 w-5 text-white" />,
             color: 'from-app-status-success to-teal-500',
             description: <>Humans and <Sparkles className="inline h-4 w-4 mx-1 text-app-status-success" />AI actively collaborate. AI handles repetitive and analytical tasks while humans focus on strategy, architecture, and decision-making.</>,
             brief: <>Co-Existence combines human judgment with <Sparkles className="inline h-4 w-4 mx-1 text-app-status-success" />AI execution in a shared workflow. AI accelerates analysis, drafting, and repetitive implementation tasks while people guide architecture, prioritization, and final sign-off decisions. This balance supports sustainable scale in enterprise engineering without sacrificing control or quality.</>,
@@ -630,7 +632,7 @@ const LandingPage = () => {
             key: 'sandbox',
             title: <><Bot className="inline h-5 w-5 mr-1.5 text-sky-600" />AI First Mode</>,
             subtitle: 'Fully Autonomous AI Environment',
-            icon: <Shield className="h-5 w-5 text-app-bg-card" />,
+            icon: <Shield className="h-5 w-5 text-white" />,
             color: 'from-sky-600 to-cyan-500',
             description: <><Sparkles className="inline h-4 w-4 mx-1 text-sky-600" />AI independently builds, tests, and iterates with minimal human involvement.</>,
             brief: <>Sandbox mode runs autonomous <Sparkles className="inline h-4 w-4 mx-1 text-sky-600" />AI workflows inside a separate, isolated environment to reduce impact on core systems. It enables rapid experimentation, repeated test cycles, and controlled iteration at high speed. This is suited for internal innovation tracks where strong monitoring and clear boundaries are already in place.</>,
@@ -654,7 +656,7 @@ const LandingPage = () => {
             {
                 role: 'Project Lead',
                 persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-app-bg-card" />,
+                icon: <Workflow className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Breaks tickets into manual implementation plans',
                     'Reviews design and architecture decisions before coding',
@@ -666,7 +668,7 @@ const LandingPage = () => {
             {
                 role: 'Developers',
                 persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-app-bg-card" />,
+                icon: <Code className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Implement code manually and validate correctness',
                     'Own quality, edge-case handling, and optimization',
@@ -678,7 +680,7 @@ const LandingPage = () => {
             {
                 role: 'Product Manager (Optional)',
                 persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-app-bg-card" />,
+                icon: <FileText className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Validates implementation against business requirements',
                     'Ensures acceptance criteria are testable and complete',
@@ -692,7 +694,7 @@ const LandingPage = () => {
             {
                 role: 'Project Lead',
                 persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-app-bg-card" />,
+                icon: <Workflow className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Creates guided prompts from tickets and user stories',
                     <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-app-primary" />Reviews AI suggestions for architecture fit</>,
@@ -704,7 +706,7 @@ const LandingPage = () => {
             {
                 role: 'Developers',
                 persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-app-bg-card" />,
+                icon: <Code className="h-4 w-4 text-white" />,
                 responsibilities: [
                     <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-app-primary" />Use AI suggestions and manually validate every change</>,
                     'Handle final refinement and reliability hardening',
@@ -716,7 +718,7 @@ const LandingPage = () => {
             {
                 role: 'Product Manager (Optional)',
                 persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-app-bg-card" />,
+                icon: <FileText className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Checks feature intent against business value',
                     'Validates acceptance criteria in proposed output',
@@ -730,7 +732,7 @@ const LandingPage = () => {
             {
                 role: 'Project Lead',
                 persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-app-bg-card" />,
+                icon: <Workflow className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Creates outcome-focused prompts from tickets and stories',
                     'Reviews generated AAPs for technical accuracy',
@@ -742,7 +744,7 @@ const LandingPage = () => {
             {
                 role: 'Developers',
                 persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-app-bg-card" />,
+                icon: <Code className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Review generated code for quality and correctness',
                     'Handle final 20% refinement (edge cases, optimizations)',
@@ -754,7 +756,7 @@ const LandingPage = () => {
             {
                 role: 'Product Manager (Optional)',
                 persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-app-bg-card" />,
+                icon: <FileText className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Validates that AAPs align with business requirements',
                     'Ensures acceptance criteria are met in the plan',
@@ -768,7 +770,7 @@ const LandingPage = () => {
             {
                 role: 'Project Lead',
                 persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-app-bg-card" />,
+                icon: <Workflow className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Creates prompts from tickets and user stories',
                     'Reviews and approves AAPs for technical accuracy',
@@ -780,7 +782,7 @@ const LandingPage = () => {
             {
                 role: 'Developers',
                 persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-app-bg-card" />,
+                icon: <Code className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Review generated code for quality and correctness',
                     'Handle final 20% refinement (edge cases, optimizations)',
@@ -792,7 +794,7 @@ const LandingPage = () => {
             {
                 role: 'Product Manager (Optional)',
                 persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-app-bg-card" />,
+                icon: <FileText className="h-4 w-4 text-white" />,
                 responsibilities: [
                     'Validates that AAPs align with business requirements',
                     'Ensures acceptance criteria are met in the plan',
@@ -864,6 +866,7 @@ const LandingPage = () => {
         setIsSignupOpen(false);
     };
 
+    // Keep body scroll lock in sync with auth modals
     useEffect(() => {
         const ctx = gsap.context(() => {
             // Hero Animations
@@ -902,6 +905,22 @@ const LandingPage = () => {
         };
     }, [isLoginOpen, isSignupOpen]);
 
+    // Local theme state for public pages, synced with <html class="dark"> and localStorage
+    const [isDarkMode, setIsDarkMode] = useState(() => {
+        return typeof window !== 'undefined' && localStorage.getItem('theme') === 'dark';
+    });
+
+    useEffect(() => {
+        if (typeof document === 'undefined') return;
+        if (isDarkMode) {
+            document.documentElement.classList.add('dark');
+            localStorage.setItem('theme', 'dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+            localStorage.setItem('theme', 'light');
+        }
+    }, [isDarkMode]);
+
     return (
         <div className="min-h-screen text-app-text-main font-sans overflow-x-hidden relative">
             <BackgroundMarquee />
@@ -911,11 +930,23 @@ const LandingPage = () => {
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="flex justify-between items-center h-16">
                         <div className="flex items-center gap-3">
-                            <img src={Logo} alt="DSuite" className="h-10 w-auto" />
+                            <img
+                                src={isDarkMode ? BourntecLogo : Logo}
+                                alt="DSuite"
+                                className="h-10 w-auto"
+                            />
                             <div className="h-6 w-px bg-app-bg-hover"></div>
                             <span className="text-xl font-bold tracking-tight text-app-text-main">DSuite</span>
                         </div>
                         <div className="flex items-center gap-4">
+                            <button
+                                type="button"
+                                onClick={() => setIsDarkMode((prev) => !prev)}
+                                className="p-2 rounded-md text-app-text-label hover:text-app-text-main hover:bg-app-bg-page border border-transparent hover:border-app-border-light transition-colors cursor-pointer"
+                                aria-label="Toggle theme"
+                            >
+                                {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                            </button>
                             <button
                                 onClick={openLogin}
                                 className="text-app-text-label hover:text-app-text-main font-medium transition-colors cursor-pointer bg-transparent border-0"
@@ -924,7 +955,7 @@ const LandingPage = () => {
                             </button>
                             <button
                                 onClick={openSignup}
-                                className="hidden sm:inline-flex bg-app-primary hover:bg-app-primary-hover text-app-bg-card px-5 py-2.5 rounded-lg font-semibold transition-transform hover:scale-105 shadow-md shadow-app-primary/20 cursor-pointer border-0"
+                                className="hidden sm:inline-flex bg-app-primary hover:bg-app-primary-hover text-white px-5 py-2.5 rounded-lg font-semibold transition-transform hover:scale-105 shadow-md shadow-app-primary/20 cursor-pointer border-0"
                             >
                                 Get Started
                             </button>
@@ -946,7 +977,7 @@ const LandingPage = () => {
                         <div className="flex flex-col sm:flex-row gap-4 pt-4 justify-center lg:justify-start">
                             <button
                                 onClick={openSignup}
-                                className="inline-flex justify-center items-center px-8 py-4 text-base font-bold text-app-bg-card bg-app-primary rounded-xl hover:bg-app-primary-hover transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 cursor-pointer border-0"
+                                className="inline-flex justify-center items-center px-8 py-4 text-base font-bold text-white bg-app-primary rounded-xl hover:bg-app-primary-hover transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 cursor-pointer border-0"
                             >
                                 Start Analysis
                                 <ArrowRight className="ml-2 h-5 w-5" />

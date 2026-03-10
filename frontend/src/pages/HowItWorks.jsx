@@ -1,9 +1,10 @@
-import { ArrowRight, FileText, Sparkles, Workflow, Zap, Activity, CheckCircle, Database, Code, Shield, Volume2, VolumeX } from 'lucide-react';
+import { ArrowRight, FileText, Sparkles, Workflow, Zap, Activity, CheckCircle, Database, Code, Shield, Volume2, VolumeX, Sun, Moon } from 'lucide-react';
 import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import gsap from 'gsap';
 
 import Logo from '../assets/logo.png';
+import BourntecLogo from '../assets/bourntec_logo.png';
 import CloudSpxLogo from '../assets/spx-logo 3.png';
 import Logo1 from '../assets/logo1.png';
 import KaktoxLogo from '../assets/Kaktox.png';
@@ -1042,19 +1043,46 @@ const ProcessCard = ({ number, title, text, image, imageBg, reverse = false }) =
 
 
 const HowItWorks = () => {
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    return typeof window !== 'undefined' && localStorage.getItem('theme') === 'dark';
+  });
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
+    }
+  }, [isDarkMode]);
+
   return (
     <div className="min-h-screen bg-app-bg-page text-app-text-main font-sans">
       <nav className="w-full bg-app-bg-card/90 backdrop-blur-md z-40 border-b border-app-border-light sticky top-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <Link to="/" className="flex items-center gap-3">
-              <img src={Logo} alt="DSuite" className="h-9 w-auto" />
+              <img
+                src={isDarkMode ? BourntecLogo : Logo}
+                alt="DSuite"
+                className="h-9 w-auto"
+              />
               <div className="h-6 w-px bg-app-bg-hover" />
               <span className="text-lg font-bold tracking-tight text-app-text-main">
                 DSuite
               </span>
             </Link>
             <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setIsDarkMode((prev) => !prev)}
+                className="p-2 rounded-md text-app-text-label hover:text-app-text-main hover:bg-app-bg-page border border-transparent hover:border-app-border-light transition-colors cursor-pointer"
+                aria-label="Toggle theme"
+              >
+                {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
               <Link to="/" className="text-sm font-medium text-app-text-label hover:text-app-text-main transition-colors">
                 Back to home
               </Link>
@@ -1076,7 +1104,11 @@ const HowItWorks = () => {
         <div className="max-w-4xl mx-auto text-center relative z-10">
           <div className="inline-flex items-center justify-center p-3 sm:p-4 bg-app-primary-light rounded-2xl mb-8 border border-app-primary-light shadow-inner">
             <div className="flex items-center justify-center gap-3">
-              <img src={Logo} alt="DSuite" className="h-9 w-auto" />
+              <img
+                src={isDarkMode ? BourntecLogo : Logo}
+                alt="DSuite"
+                className="h-9 w-auto"
+              />
               <div className="h-6 w-px bg-app-primary-ring" />
               <span className="text-xl font-bold tracking-tight text-app-text-main">
                 DSuite
