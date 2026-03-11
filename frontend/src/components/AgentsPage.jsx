@@ -412,7 +412,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                 <div className="p-1 rounded-lg bg-emerald-500/20"><Users className="w-3.5 h-3.5 text-emerald-400" /></div>
                 <span className="text-xs font-bold text-app-text-main">Dev Capacity</span>
               </div>
-              
+
               <div className="space-y-3 mb-3">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold text-emerald-400">Shared Dev</span>
@@ -432,7 +432,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                 </div>
               </div>
 
-              <button type="button" 
+              <button type="button"
                 onClick={async () => {
                   if (sharedDevToAdd > 0) await increaseQuota('shared', 'dev', sharedDevToAdd);
                   if (dedicatedDevToAdd > 0) await increaseQuota('dedicated', 'dev', dedicatedDevToAdd);
@@ -470,7 +470,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                 </div>
               </div>
 
-              <button type="button" 
+              <button type="button"
                 onClick={async () => {
                   if (sharedTestToAdd > 0) await increaseQuota('shared', 'test', sharedTestToAdd);
                   if (dedicatedTestToAdd > 0) await increaseQuota('dedicated', 'test', dedicatedTestToAdd);
@@ -482,11 +482,11 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
               </button>
             </div>
           </div>
-          ) : (
-            <div className="p-2 rounded-lg bg-app-bg-muted/50 border border-app-border-light">
-              <p className="text-xs text-app-text-muted">Capacity not available.</p>
-            </div>
-          )}
+        ) : (
+          <div className="p-2 rounded-lg bg-app-bg-muted/50 border border-app-border-light">
+            <p className="text-xs text-app-text-muted">Capacity not available.</p>
+          </div>
+        )}
       </div>
 
       {/* Filter Buttons */}
@@ -496,31 +496,28 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
           <span className="text-sm font-medium text-app-text-muted mr-2">Filter:</span>
           <button
             onClick={() => setFilter('all')}
-            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
-              filter === 'all'
+            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'all'
                 ? 'bg-app-primary text-white'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
-            }`}
+              }`}
           >
             All ({totalAgents})
           </button>
           <button
             onClick={() => setFilter('shared')}
-            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
-              filter === 'shared'
+            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'shared'
                 ? 'bg-app-primary text-white'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
-            }`}
+              }`}
           >
             Shared ({sharedAgents.length})
           </button>
           <button
             onClick={() => setFilter('dedicated')}
-            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${
-              filter === 'dedicated'
+            className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'dedicated'
                 ? 'bg-app-primary text-white'
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
-            }`}
+              }`}
           >
             Dedicated ({dedicatedAgents.length})
           </button>
@@ -609,85 +606,82 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                       {/* Top accent bar */}
                       <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accentColor}`}></div>
 
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        {/* Agent Icon/Logo */}
-                        <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-app-bg-page border border-app-border' : `bg-gradient-to-br ${
-                          isGitManager ? 'from-app-primary to-app-primary' :
-                          isMasterAgent ? 'from-fuchsia-500 to-app-status-error' :
-                          isTestAgent ? 'from-app-status-warning to-orange-600' :
-                          isDeployAgent ? 'from-violet-500 to-purple-600' :
-                          isShared ? 'from-emerald-400 to-app-status-success' :
-                          'from-app-primary to-app-primary'
-                        }`} flex items-center justify-center shadow-lg ${
-                          isGitManager ? 'shadow-app-primary-ring' :
-                          isMasterAgent ? 'shadow-app-bg-hover' :
-                          isTestAgent ? 'shadow-app-bg-hover' :
-                          isDeployAgent ? 'shadow-app-bg-hover' :
-                          isShared ? 'shadow-emerald-200' :
-                          'shadow-app-primary-ring'
-                        } ${useLogo ? 'p-1.5' : ''}`}>
-                          {useLogo && logoSrc ? (
-                            <img src={logoSrc} alt={agent.name || getNeutralAgentName(agent)} className="w-full h-full object-contain" />
-                          ) : isGitManager ? (
-                            <GitBranch className="w-5 h-5 text-white" />
-                          ) : isMasterAgent ? (
-                            <Bot className="w-5 h-5 text-white" />
-                          ) : isTestAgent ? (
-                            <Activity className="w-5 h-5 text-white" />
-                          ) : isDeployAgent ? (
-                            <Globe className="w-5 h-5 text-white" />
-                          ) : (
-                            getStatusIcon(agent.status)
-                          )}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-sm font-bold text-app-text-main">
-                              {agent.name || getNeutralAgentName(agent)}
-                            </h4>
-                            {(isShared || isDedicated) && (
-                              <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${
-                                isShared
-                                  ? 'bg-app-status-successBg text-app-status-success border border-emerald-200'
-                                  : 'bg-app-primary-light text-app-primary-hover border border-app-primary-ring'
-                              }`}>
-                                {isShared ? 'Shared' : 'Dedicated'}
-                              </span>
+                      <div className="flex items-start justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                          {/* Agent Icon/Logo */}
+                          <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-app-bg-page border border-app-border' : `bg-gradient-to-br ${isGitManager ? 'from-app-primary to-app-primary' :
+                              isMasterAgent ? 'from-fuchsia-500 to-app-status-error' :
+                                isTestAgent ? 'from-app-status-warning to-orange-600' :
+                                  isDeployAgent ? 'from-violet-500 to-purple-600' :
+                                    isShared ? 'from-emerald-400 to-app-status-success' :
+                                      'from-app-primary to-app-primary'
+                            }`} flex items-center justify-center shadow-lg ${isGitManager ? 'shadow-app-primary-ring' :
+                              isMasterAgent ? 'shadow-app-bg-hover' :
+                                isTestAgent ? 'shadow-app-bg-hover' :
+                                  isDeployAgent ? 'shadow-app-bg-hover' :
+                                    isShared ? 'shadow-emerald-200' :
+                                      'shadow-app-primary-ring'
+                            } ${useLogo ? 'p-1.5' : ''}`}>
+                            {useLogo && logoSrc ? (
+                              <img src={logoSrc} alt={agent.name || getNeutralAgentName(agent)} className="w-full h-full object-contain" />
+                            ) : isGitManager ? (
+                              <GitBranch className="w-5 h-5 text-white" />
+                            ) : isMasterAgent ? (
+                              <Bot className="w-5 h-5 text-white" />
+                            ) : isTestAgent ? (
+                              <Activity className="w-5 h-5 text-white" />
+                            ) : isDeployAgent ? (
+                              <Globe className="w-5 h-5 text-white" />
+                            ) : (
+                              getStatusIcon(agent.status)
                             )}
                           </div>
-                          <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-app-text-main">
+                                {agent.name || getNeutralAgentName(agent)}
+                              </h4>
+                              {(isShared || isDedicated) && (
+                                <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${isShared
+                                    ? 'bg-app-status-successBg text-app-status-success border border-emerald-200'
+                                    : 'bg-app-primary-light text-app-primary-hover border border-app-primary-ring'
+                                  }`}>
+                                  {isShared ? 'Shared' : 'Dedicated'}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1.5">
-                          {isRunning && (
-                            <span className="relative flex h-2.5 w-2.5">
-                              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full bg-${finalStatusColor}-400 opacity-75`}></span>
-                              <span className={`relative inline-flex rounded-full h-2.5 w-2.5 bg-${finalStatusColor}-500`}></span>
-                            </span>
-                          )}
-                          <span className={`text-[10px] font-bold text-${finalStatusColor}-${isIdle ? '500' : '600'}`}>
-                            {agent.status?.toUpperCase() || 'IDLE'}
-                          </span>
-                        </div>
-                        {/* Delete Button - Only for dedicated agents */}
-                        {isDedicated && (
-                          <button
-                            onClick={() => handleDeleteAgent(agent.id)}
-                            disabled={deletingId === agent.id}
-                            className="p-1.5 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-app-status-error/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Delete dedicated agent"
-                          >
-                            {deletingId === agent.id ? (
-                              <RefreshCw className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-4 h-4" />
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5">
+                            {isRunning && (
+                              <span className="relative flex h-2.5 w-2.5">
+                                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full bg-${finalStatusColor}-400 opacity-75`}></span>
+                                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 bg-${finalStatusColor}-500`}></span>
+                              </span>
                             )}
-                          </button>
-                        )}
+                            <span className={`text-[10px] font-bold text-${finalStatusColor}-${isIdle ? '500' : '600'}`}>
+                              {agent.status?.toUpperCase() || 'IDLE'}
+                            </span>
+                          </div>
+                          {/* Delete Button - Only for dedicated agents */}
+                          {isDedicated && (
+                            <button
+                              onClick={() => handleDeleteAgent(agent.id)}
+                              disabled={deletingId === agent.id}
+                              className="p-1.5 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-app-status-error/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Delete dedicated agent"
+                            >
+                              {deletingId === agent.id ? (
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
 
                       {/* Progress indicator if running */}
                       {isRunning && agent.progress > 0 && (
@@ -716,7 +710,7 @@ export default function AgentsPage({ selectedProjectKey, setSelectedProjectKey, 
                       {agent.last_run && (
                         <div className="mt-2 text-xs text-app-text-muted flex items-center">
                           <Clock className="w-3 h-3 mr-1" />
-                          Last run: {new Date(agent.last_run).toLocaleString()}
+                          Last run: {new Date(agent.last_run).toLocaleString('en-IN')}
                         </div>
                       )}
                     </div>
