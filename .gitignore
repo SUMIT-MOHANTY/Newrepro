@@ -22,3 +22,4 @@ frontend/dist/
 backend/.env.example
 frontend/package-lock.json
 backend/rag_storage/
+backend/storage/project_configs/2/0cb47f14-7ace-44bd-b33e-329eab43d8d1/project_config.json

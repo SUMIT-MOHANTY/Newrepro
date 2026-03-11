@@ -44,7 +44,7 @@ function extractEntityName(item, key) {
 
 function getErrorMessage(errorPayload, fallback) {
     if (!errorPayload) return fallback;
-    
+
     // Extract error message from various possible formats
     let errorMessage = '';
     if (typeof errorPayload.detail === 'string') {
@@ -56,16 +56,16 @@ function getErrorMessage(errorPayload, fallback) {
     } else {
         return fallback;
     }
-    
+
     // Convert technical error messages to user-friendly ones
     if (errorMessage.toLowerCase().includes('already exists')) {
         // Extract entity type and name if possible
         const sprintMatch = errorMessage.match(/sprint.*?"([^"]+)"|sprint.*?name\s+["']([^"']+)["']/i);
         const milestoneMatch = errorMessage.match(/milestone.*?"([^"]+)"|milestone.*?name\s+["']([^"']+)["']/i);
-        
+
         if (sprintMatch) {
             const sprintName = sprintMatch[1] || sprintMatch[2];
-            return sprintName 
+            return sprintName
                 ? `A sprint named "${sprintName}" already exists in this project. The system will use the existing sprint.`
                 : 'A sprint with this name already exists in this project. The system will use the existing sprint.';
         } else if (milestoneMatch) {
@@ -77,7 +77,7 @@ function getErrorMessage(errorPayload, fallback) {
             return 'This item already exists in the project. The system will continue with the existing item.';
         }
     }
-    
+
     return errorMessage || fallback;
     return fallback;
 }
@@ -103,6 +103,52 @@ function sanitizePrerequisiteForAiPayload(item = {}) {
     }
 
     return safe;
+}
+
+function normalizePrerequisiteKey(name) {
+    const raw = String(name || '').trim();
+    if (!raw) return '';
+    return raw
+        .toLowerCase()
+        .replace(/[^\w]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+}
+
+function buildPrerequisitesObjectFromStorage(projectKey) {
+    if (!projectKey) return [];
+    try {
+        const saved = localStorage.getItem(`prerequisites_completed_${projectKey}`);
+        if (!saved) return [];
+        const parsed = JSON.parse(saved);
+        const items = Array.isArray(parsed?.items) ? parsed.items : [];
+        return items
+            .filter((item) => item && item.provided)
+            .map((item) => sanitizePrerequisiteForAiPayload(item))
+            .filter((item) => item.name || item.description);
+    } catch {
+        return [];
+    }
+}
+
+function readRepoLinkUrlForProject(projectKey) {
+    if (!projectKey) return '';
+    const storageKey = `repo_context_meta_${projectKey}`;
+    const raw = sessionStorage.getItem(storageKey) || localStorage.getItem(storageKey);
+    if (!raw) return '';
+    try {
+        const parsed = JSON.parse(raw);
+        return String(parsed?.url || '').trim();
+    } catch {
+        return '';
+    }
+}
+
+function parseJsonSafely(value) {
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
 }
 
 function readProcessModeMap() {
@@ -406,7 +452,7 @@ export default function TaskCreation({
         const draftProject = getDraftProject(selectedProjectKey);
         const clientId = selectedProject?.client_id || draftProject?.client_id;
         const clientSecret = selectedProject?.client_secret || draftProject?.client_secret;
-        
+
         if (!clientId || !clientSecret) {
             // Fall back to cached token if we have one but no credentials to refresh with.
             if (cachedToken) return cachedToken;
@@ -460,7 +506,7 @@ export default function TaskCreation({
     const hasCredentials = useMemo(() => {
         return !!(selectedProject?.client_id || draftProject?.client_id);
     }, [selectedProject?.client_id, draftProject?.client_id]);
-    
+
     const { data: projectInfo = null, isFetching: isLoadingProjectInfo } = useQuery({
         queryKey: ['projectInfo', selectedProjectKey, taskToken, hasCredentials],
         queryFn: async () => {
@@ -521,26 +567,26 @@ export default function TaskCreation({
                 try {
                     const headers = { 'Authorization': `Bearer ${token}` };
                     if (taskToken) headers['x-task-token'] = taskToken;
-                    
+
                     const tasksRes = await fetch(API_ENDPOINTS.AGENT_TASKS_TOTAL, { headers });
                     if (tasksRes.ok) {
                         const tasksData = await tasksRes.json();
                         // Handle both array and paginated response formats
-                        const tasksList = Array.isArray(tasksData) 
-                            ? tasksData 
+                        const tasksList = Array.isArray(tasksData)
+                            ? tasksData
                             : (Array.isArray(tasksData?.results) ? tasksData.results : []);
-                        
+
                         if (tasksList.length > 0) {
                             // Group tasks by sprint and milestone for display
                             const sprintsMap = new Map();
                             const milestonesMap = new Map();
-                            
+
                             tasksList.forEach((task) => {
                                 const sprintId = extractEntityId(task, 'sprint');
                                 const milestoneId = extractEntityId(task, 'milestone');
                                 const sprintName = extractEntityName(task, 'sprint');
                                 const milestoneName = extractEntityName(task, 'milestone');
-                                
+
                                 if (sprintId != null) {
                                     const sprint = task.sprint;
                                     if (sprint && typeof sprint === 'object') {
@@ -555,7 +601,7 @@ export default function TaskCreation({
                                         });
                                     }
                                 }
-                                
+
                                 if (milestoneId != null) {
                                     const milestone = task.milestone;
                                     if (milestone && typeof milestone === 'object') {
@@ -571,7 +617,7 @@ export default function TaskCreation({
                                     }
                                 }
                             });
-                            
+
                             // Build the plan structure from backend data
                             backendTasks = {
                                 tasks: tasksList,
@@ -579,7 +625,7 @@ export default function TaskCreation({
                                 milestones: Array.from(milestonesMap.values()),
                                 project_deadline: projectInfo?.project?.deadline || projectInfo?.deadline || projectDeadline || '',
                             };
-                            
+
                             // Save to localStorage for offline access
                             writeGeneratedTaskPlan(selectedProjectKey, backendTasks);
                         }
@@ -589,10 +635,10 @@ export default function TaskCreation({
                     console.warn('Failed to fetch tasks from backend, using localStorage:', fetchError);
                 }
             }
-            
+
             // Use backend data if available, otherwise fallback to localStorage
             const planToUse = backendTasks || readGeneratedTaskPlan(selectedProjectKey);
-            
+
             if (planToUse) {
                 hydrateGeneratedPlan(planToUse);
                 return {
@@ -603,7 +649,7 @@ export default function TaskCreation({
                     projectDeadline: planToUse?.project_deadline || '',
                 };
             }
-            
+
             return {
                 sprints: [],
                 milestones: [],
@@ -633,14 +679,14 @@ export default function TaskCreation({
             setHasCompletedInitialBootstrap(true);
             return;
         }
-        
+
         const hasClientCredentials = selectedProject?.client_id && selectedProject?.client_secret;
-        
+
         // Determine what we're waiting for:
         const waitingForToken = hasClientCredentials && isResolvingTaskToken;
         const waitingForProjectInfo = hasClientCredentials && taskToken && isLoadingProjectInfo;
         const waitingForData = isLoading;
-        
+
         // If we're not waiting for anything, check if we can complete bootstrap
         if (!waitingForToken && !waitingForData) {
             if (hasClientCredentials) {
@@ -723,12 +769,70 @@ export default function TaskCreation({
         try {
             // First, try to resolve task token from existing credentials
             let taskToken = await resolveTaskToken();
-            
+
             // Project creation is handled inside the backend auto-generate endpoint.
             // This ensures the project deadline is derived strictly from the selected process_mode.
             if (!taskToken) {
                 throw new Error('Task token is required. Please ensure the project has been created in the task management system with valid credentials.');
             }
+
+            // Save project-config for this project (multipart) before generating tasks.
+            try {
+                const latestDoc = selectedProject?.latestDocument || null;
+                const fullAnalysedObj = latestDoc?.analysis_result
+                    ? (parseJsonSafely(latestDoc.analysis_result) || {})
+                    : {};
+                const analysedObj = fullAnalysedObj.analysis
+                    ? { analysis: fullAnalysedObj.analysis }
+                    : fullAnalysedObj;
+                if (fullAnalysedObj.governanceContext) {
+                    analysedObj.governanceContext = fullAnalysedObj.governanceContext;
+                }
+
+                const prerequisitesObj = buildPrerequisitesObjectFromStorage(selectedProjectKey);
+                const repoLinkUrl = readRepoLinkUrlForProject(selectedProjectKey);
+
+                const inputText =
+                    String(latestDoc?.full_content || '').trim()
+                    || String(latestDoc?.content_preview || '').trim();
+
+                const formData = new FormData();
+                formData.append('mode', processMode || 'ai_first');
+                formData.append('project_token', selectedProjectKey);
+                formData.append('prerequisites', JSON.stringify(prerequisitesObj || {}));
+                formData.append('analysed_file', JSON.stringify(analysedObj || {}));
+                if (repoLinkUrl) formData.append('repo_link_url', repoLinkUrl);
+
+                if (inputText) {
+                    const blob = new Blob([inputText], { type: 'text/plain' });
+                    const filenameBase = String(latestDoc?.filename || 'requirements').replace(/[^\w.-]+/g, '_');
+                    formData.append('input_file', blob, `${filenameBase || 'requirements'}.txt`);
+                }
+
+                const cfgRes = await fetch(API_ENDPOINTS.AGENT_PROJECT_CONFIG, {
+                    method: 'PUT',
+                    headers: {
+                        ...buildHeaders(),
+                        'X-Task-Token': taskToken,
+                    },
+                    body: formData,
+                });
+
+                if (!cfgRes.ok) {
+                    const cfgJson = await cfgRes.json().catch(() => ({}));
+                    console.warn('Project config save failed:', cfgJson);
+                    throw new Error(getErrorMessage(cfgJson, 'Failed to save project config'));
+                }
+                const cfgJson = await cfgRes.json().catch(() => ({}));
+                setSuccess(cfgJson?.message || 'Project config saved.');
+            } catch (cfgErr) {
+                console.warn('Project config save error:', cfgErr);
+                throw cfgErr;
+            }
+
+            // NOTE: Keep the existing task generation logic in code, but do NOT call it for now.
+            // Return early after saving project config.
+            return;
 
             const headers = {
                 ...buildHeaders(),
@@ -847,9 +951,9 @@ export default function TaskCreation({
     };
 
     const showInitialProjectLoader = Boolean(selectedProjectKey) && (
-        !hasCompletedInitialBootstrap || 
-        isLoading || 
-        isResolvingTaskToken || 
+        !hasCompletedInitialBootstrap ||
+        isLoading ||
+        isResolvingTaskToken ||
         isLoadingProjectInfo
     );
 
@@ -863,13 +967,13 @@ export default function TaskCreation({
                         </div>
                         <h3 className="mt-4 text-lg font-extrabold text-app-text-main">Loading Task Creation</h3>
                         <p className="mt-2 text-sm text-app-text-label">
-                            {isResolvingTaskToken || isLoadingProjectInfo 
+                            {isResolvingTaskToken || isLoadingProjectInfo
                                 ? <>Fetching project information for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
                                 : <>Loading the local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
                             }
                         </p>
                         <p className="mt-1 text-xs text-app-text-muted">
-                            {isResolvingTaskToken || isLoadingProjectInfo 
+                            {isResolvingTaskToken || isLoadingProjectInfo
                                 ? 'Please wait while we fetch the project details...'
                                 : 'The page will open as soon as the saved preview is ready.'
                             }
@@ -895,11 +999,11 @@ export default function TaskCreation({
                                 <p className="text-xs text-app-text-muted mt-1">
                                     Mode: <span className="font-semibold text-app-text-main">
                                         {processMode === 'ai_first' ? 'AI-First' :
-                                         processMode === 'coexistence' ? 'Coexistence' :
-                                         processMode === 'developer_only' ? 'Developer Only' :
-                                         processMode === 'ai_assist' ? 'AI Assist' :
-                                         processMode === 'vibe_coding' ? 'Vibe Coding' :
-                                         processMode}
+                                            processMode === 'coexistence' ? 'Coexistence' :
+                                                processMode === 'developer_only' ? 'Developer Only' :
+                                                    processMode === 'ai_assist' ? 'AI Assist' :
+                                                        processMode === 'vibe_coding' ? 'Vibe Coding' :
+                                                            processMode}
                                     </span>
                                 </p>
                                 {processMode === 'ai_assist' && (
@@ -931,7 +1035,7 @@ export default function TaskCreation({
                             <span>Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span></span>
                             <div className="flex items-center gap-2">
                                 <span className="text-[10px] uppercase font-bold text-app-text-muted">Strategy:</span>
-                                <select 
+                                <select
                                     value={projectType}
                                     onChange={(e) => setProjectType(e.target.value)}
                                     className="bg-app-bg-card border border-app-border rounded px-2 py-0.5 text-xs font-semibold text-app-primary-hover focus:outline-none focus:ring-1 focus:ring-app-primary"

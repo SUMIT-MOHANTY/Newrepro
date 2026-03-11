@@ -7,6 +7,7 @@ import html as html_lib
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 import ipaddress
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional, List, Dict, Any
@@ -6319,6 +6320,114 @@ async def auto_generate_project_tasks(
         _raise_task_service_http_exception(e, "Failed to upload generated task batch")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate local task preview: {e}")
+
+
+@app.put("/api/agent/project-config/")
+async def put_agent_project_config(
+    request: Request,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Persist per-project config used by the agent pipeline.
+
+    Supports:
+    - multipart/form-data: mode, prerequisites (JSON string), analysed_file (JSON string), input_file (binary), repo_link_url, project_token (optional)
+    - application/json: { mode, prerequisites, analysed_file, repo_link_url, project_token? }
+    """
+    import json as json_mod
+
+    content_type = str(request.headers.get("content-type") or "").lower()
+
+    mode: str = ""
+    prerequisites_obj: Any = None
+    analysed_obj: Any = None
+    repo_link_url: Optional[str] = None
+    project_token: Optional[str] = None
+    upload: Optional[UploadFile] = None
+
+    if "application/json" in content_type:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        mode = str(payload.get("mode") or "").strip()
+        prerequisites_obj = payload.get("prerequisites")
+        analysed_obj = payload.get("analysed_file")
+        repo_link_url = str(payload.get("repo_link_url") or "").strip() or None
+        project_token = str(payload.get("project_token") or "").strip() or None
+    else:
+        form = await request.form()
+        mode = str(form.get("mode") or "").strip()
+        repo_link_url = str(form.get("repo_link_url") or "").strip() or None
+        project_token = str(form.get("project_token") or "").strip() or None
+
+        prereq_raw = form.get("prerequisites")
+        analysed_raw = form.get("analysed_file")
+        upload = form.get("input_file")
+
+        if prereq_raw is not None and str(prereq_raw).strip():
+            try:
+                prerequisites_obj = json_mod.loads(str(prereq_raw))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid prerequisites JSON string")
+
+        if analysed_raw is not None and str(analysed_raw).strip():
+            try:
+                analysed_obj = json_mod.loads(str(analysed_raw))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid analysed_file JSON string")
+
+        if upload is not None and not isinstance(upload, UploadFile):
+            upload = None
+
+    if not mode:
+        raise HTTPException(status_code=400, detail="mode is required")
+
+    if isinstance(analysed_obj, dict):
+        new_obj = {}
+        if "analysis" in analysed_obj:
+            new_obj["analysis"] = analysed_obj.get("analysis")
+        if "governanceContext" in analysed_obj:
+            new_obj["governanceContext"] = analysed_obj.get("governanceContext")
+        
+        if new_obj:
+            analysed_obj = new_obj
+
+    safe_project = project_token or "default"
+    base_dir = Path(__file__).resolve().parent / "storage" / "project_configs" / str(current_user.id) / safe_project
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    config_payload = {
+        "mode": mode,
+        "prerequisites": prerequisites_obj if prerequisites_obj is not None else {},
+        "analysed_file": analysed_obj if analysed_obj is not None else {},
+        "repo_link_url": repo_link_url,
+        "project_token": safe_project,
+        "owner_id": current_user.id,
+        "saved_at": datetime.utcnow().isoformat(),
+    }
+
+    (base_dir / "project_config.json").write_text(
+        json_mod.dumps(config_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    saved_input_filename: Optional[str] = None
+    if upload is not None and getattr(upload, "filename", None):
+        content = await upload.read()
+        if content:
+            original_name = str(upload.filename)
+            suffix = Path(original_name).suffix or ".bin"
+            saved_input_filename = f"input_file{suffix}"
+            (base_dir / saved_input_filename).write_bytes(content)
+
+    return {
+        "status": "ok",
+        "message": "Project config saved",
+        "project_token": safe_project,
+        "mode": mode,
+        "repo_link_url": repo_link_url,
+        "saved_input_file": saved_input_filename,
+    }
 
 
 if __name__ == "__main__":
