@@ -82,9 +82,9 @@ const styles = {
 /**
  * RoadmapHeader — Railway-track dotted stepper.
  */
-const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null, activeStepCompleted = false, selectedProjectKey = null }) => {
+const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, activeStepIndex = null, activeStepCompleted = false, selectedProjectKey = null, rbac = null }) => {
     const navigate = useNavigate();
-    
+
     if (!steps.length) return null;
 
     const baseStatuses =
@@ -128,15 +128,28 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Complete': '/status-dashboard',
     };
 
-    const handleStepClick = (stepLabel, stepIndex) => {
+    const handleStepClick = (stepLabel) => {
         if (!selectedProjectKey) return;
-        
+
         const route = STEP_ROUTES[stepLabel];
         if (!route) return;
-        
+
+        if (!canAccess(route)) {
+            // Do not navigate if no access
+            return;
+        }
+
         // Navigate to the route for the selected project
         // Note: If navigating to Agent Analysis without flag set, the page will show appropriate message
         navigate(route);
+    };
+
+    const canAccess = (path) => {
+        if (!path) return true; // No route means not clickable anyway
+        if (rbac?.is_org_admin) return true;
+        const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : null;
+        if (!allowed) return true; // if RBAC not loaded, don't block UI
+        return allowed.some((p) => p === path || (p && path.startsWith(p + '/')));
     };
 
     // percentage of the track that is "filled"
@@ -157,20 +170,33 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
                 <div style={styles.stepsRow}>
                     {steps.map((step, index) => {
                         const status = statuses[index];
+                        const stepRoute = STEP_ROUTES[step];
+                        const hasAccess = canAccess(stepRoute);
+
+                        // If no access and it's active or pending, make it 'locked'
+                        let renderStatus = status;
+                        if (!hasAccess) {
+                            if (status === 'active' || status === 'completedActive') {
+                                renderStatus = 'lockedActive';
+                            } else if (status === 'pending') {
+                                renderStatus = 'locked';
+                            }
+                        }
+
                         const StepIcon = STEP_ICONS[step] || Circle;
                         const labelPosition = index % 2 === 0 ? 'top' : 'bottom';
-                        // Make all steps clickable if a project is selected
-                        const isClickable = Boolean(selectedProjectKey);
+                        // Make all steps clickable if a project is selected and user has access
+                        const isClickable = Boolean(selectedProjectKey) && hasAccess;
                         return (
                             <StepNode
                                 key={index}
                                 index={index}
                                 label={step}
-                                status={status}
+                                status={renderStatus}
                                 icon={StepIcon}
                                 labelPosition={labelPosition}
                                 clickable={isClickable}
-                                onClick={() => handleStepClick(step, index)}
+                                onClick={() => handleStepClick(step)}
                             />
                         );
                     })}
@@ -240,6 +266,27 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             stepColor: '#16a34a',
             glowGreen: true,
         },
+        locked: {
+            dotSize: 28,
+            bg: '#f3f4f6',
+            border: '2px dashed #9ca3af',
+            iconColor: '#9ca3af',
+            shadow: 'none',
+            labelWeight: '400',
+            labelColor: '#9ca3af',
+            stepColor: '#9ca3af',
+        },
+        lockedActive: {
+            dotSize: 38,
+            bg: '#fef3c7',
+            border: '3px dashed #f59e0b',
+            iconColor: '#d97706',
+            shadow: '0 0 0 6px rgba(245,158,11,.18)',
+            labelWeight: '700',
+            labelColor: '#111827',
+            stepColor: '#d97706',
+            message: "Pending on other roles",
+        },
     };
 
     const c = cfgMap[status] || cfgMap.pending;
@@ -277,6 +324,11 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             {status === 'failed' && (
                 <p style={{ fontSize: '9px', color: '#ef4444', margin: '2px 0 0', fontWeight: 600 }}>
                     Failed
+                </p>
+            )}
+            {(status === 'lockedActive' || status === 'locked') && (
+                <p style={{ fontSize: '9px', color: '#d97706', margin: '2px 0 0', fontWeight: 600 }}>
+                    {status === 'lockedActive' ? 'Pending on others' : 'No Access'}
                 </p>
             )}
         </div>

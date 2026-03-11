@@ -50,6 +50,7 @@ export default function AppLayout({ children }) {
     const location = useLocation();
 
     const [user, setUser] = useState(null);
+    const [rbac, setRbac] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [projects, setProjects] = useState([]);
     const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
@@ -190,6 +191,55 @@ export default function AppLayout({ children }) {
             .then(data => setUser(data))
             .catch(() => handleLogout());
     }, [handleLogout, navigate]);
+
+    // Fetch RBAC info once user is loaded
+    useEffect(() => {
+        if (!user) return;
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        fetch(API_ENDPOINTS.ORG_RBAC_ME, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error('Unauthorized');
+                return res.json();
+            })
+            .then((data) => setRbac(data))
+            .catch(() => setRbac({ is_org_admin: !!user?.is_org_admin, allowed_paths: [], role_name: null }));
+    }, [user]);
+
+    const [hasAccessError, setHasAccessError] = useState(false);
+
+    // Enforce RBAC on navigation
+    useEffect(() => {
+        if (!user) return;
+        if (!rbac) return;
+
+        // Always allow public-ish authenticated edge pages handled elsewhere
+        const path = location.pathname || '/';
+        if (path === '/app' || path.startsWith('/app/')) {
+            setHasAccessError(false);
+            return; // AppPreview is intentionally public-ish
+        }
+
+        if (rbac?.is_org_admin) {
+            setHasAccessError(false);
+            return;
+        }
+
+        const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : [];
+
+        // Normalize path for RBAC
+        let rbacPath = path;
+        if (path.startsWith('/a/')) {
+            rbacPath = '/dashboard';
+        }
+
+        const isAllowed = allowed.some((p) => p === rbacPath || (p && rbacPath.startsWith(p + '/')));
+
+        // Instead of blind redirection to status-dashboard ("On Flight"), we show a No Access message via state
+        setHasAccessError(!isAllowed);
+    }, [location.pathname, rbac, user]);
 
     const fetchPluginClients = useCallback(() => {
         const token = localStorage.getItem('token');
@@ -344,39 +394,39 @@ export default function AppLayout({ children }) {
         }
     }, [location.pathname, selectedProjectKey, refetchRoadmapData]);
     const lastNavigatedProjectRef = React.useRef(null);
-    
-  // Navigate to the appropriate page based on roadmap step when project is selected
-  useEffect(() => {
-    if (!selectedProjectKey || isNewProjectMode) return;
 
-    // FIRST: Check if governance was all skipped (score 5) - if so, block ALL navigation
-    // This check now relies on roadmapDataResult.classification from the backend
-    const isAllSkippedCase = roadmapDataResult &&
-      roadmapDataResult.weighted_score === 5.0 &&
-      roadmapDataResult.classification === 'ENTERPRISE';
+    // Navigate to the appropriate page based on roadmap step when project is selected
+    useEffect(() => {
+        if (!selectedProjectKey || isNewProjectMode) return;
 
-    // If all skipped, block ALL routes except governance-related pages
-    if (isAllSkippedCase) {
-      const allowedRoutes = ['/new-project/governance', '/new-project', '/dashboard'];
-      const isAllowedRoute = allowedRoutes.some(route => location.pathname.startsWith(route));
+        // FIRST: Check if governance was all skipped (score 5) - if so, block ALL navigation
+        // This check now relies on roadmapDataResult.classification from the backend
+        const isAllSkippedCase = roadmapDataResult &&
+            roadmapDataResult.weighted_score === 5.0 &&
+            roadmapDataResult.classification === 'ENTERPRISE';
 
-      if (!isAllowedRoute) {
-        // Redirect to governance page if trying to access any other route
-        navigate('/new-project/governance', { replace: true });
-        lastNavigatedProjectRef.current = selectedProjectKey; // Prevent re-navigation loop
-      }
-      return; // Stop here - don't process roadmap navigation
-    }
+        // If all skipped, block ALL routes except governance-related pages
+        if (isAllSkippedCase) {
+            const allowedRoutes = ['/new-project/governance', '/new-project', '/dashboard'];
+            const isAllowedRoute = allowedRoutes.some(route => location.pathname.startsWith(route));
 
-    // Continue with normal roadmap navigation only if NOT all skipped
-    if (!roadmapDataResult) return;
-        
+            if (!isAllowedRoute) {
+                // Redirect to governance page if trying to access any other route
+                navigate('/new-project/governance', { replace: true });
+                lastNavigatedProjectRef.current = selectedProjectKey; // Prevent re-navigation loop
+            }
+            return; // Stop here - don't process roadmap navigation
+        }
+
+        // Continue with normal roadmap navigation only if NOT all skipped
+        if (!roadmapDataResult) return;
+
         // Skip if we already navigated for this project
         if (lastNavigatedProjectRef.current === selectedProjectKey) return;
-        
+
         const stepLabel = roadmapDataResult.current_step_label;
         if (!stepLabel) return;
-        
+
         // Map step label to route
         const stepLabelToRoute = {
             'Project Initiation': '/new-project',
@@ -389,16 +439,16 @@ export default function AppLayout({ children }) {
             'On Flight': '/status-dashboard',
             'Complete': '/status-dashboard',
         };
-        
+
         const targetRoute = stepLabelToRoute[stepLabel];
         if (!targetRoute) return;
-        
+
         // Special handling for Agent Analysis: Don't auto-navigate unless user clicked "Proceed to Agent Analysis"
         // This prevents auto-redirect when viewing Governance score page
         if (targetRoute === '/agent-analysis') {
             const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
             const isOnGovernancePage = location.pathname === '/new-project/governance' || location.pathname.startsWith('/new-project/governance');
-            
+
             // Don't auto-navigate to Agent Analysis if:
             // 1. User is on Governance page (viewing score)
             // 2. Flag is not set (user hasn't clicked "Proceed to Agent Analysis")
@@ -406,19 +456,19 @@ export default function AppLayout({ children }) {
                 return; // Stay on current page, don't navigate
             }
         }
-        
+
         // Special handling for Prerequisites: Don't auto-navigate from Agent Analysis page
         // User should manually click "Review Prerequisites" button to navigate
         if (targetRoute === '/prerequisites') {
             const isOnAgentAnalysisPage = location.pathname === '/agent-analysis' || location.pathname.startsWith('/agent-analysis');
-            
+
             // Don't auto-navigate to Prerequisites if user is on Agent Analysis page
             // Let them manually click the button to navigate
             if (isOnAgentAnalysisPage) {
                 return; // Stay on Agent Analysis page, don't auto-navigate
             }
         }
-        
+
         // Navigate if:
         // 1. We're on a project URL (/a/{token}) - redirect to step page
         // 2. We're not on the correct step page already
@@ -426,13 +476,13 @@ export default function AppLayout({ children }) {
         const isOnProjectUrl = location.pathname.startsWith('/a/');
         const isOnTargetRoute = location.pathname.startsWith(targetRoute);
         const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins'].includes(location.pathname);
-        
+
         if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage) {
             lastNavigatedProjectRef.current = selectedProjectKey;
             navigate(targetRoute);
         }
     }, [selectedProjectKey, roadmapDataResult, isNewProjectMode, location.pathname, navigate]);
-    
+
     // Reset navigation tracking when project changes
     useEffect(() => {
         lastNavigatedProjectRef.current = null;
@@ -446,13 +496,13 @@ export default function AppLayout({ children }) {
         const persistedDraftProject = getDraftProject(selectedProjectKey);
         if (!projectFromList) return persistedDraftProject || null;
         if (!persistedDraftProject) return projectFromList;
-        
+
         // Prioritize backend credentials over draft - backend is source of truth
         const backendClientId = projectFromList.client_id || null;
         const backendClientSecret = projectFromList.client_secret || null;
         const finalClientId = (backendClientId && backendClientId.trim()) ? backendClientId : (persistedDraftProject?.client_id || null);
         const finalClientSecret = (backendClientSecret && backendClientSecret.trim()) ? backendClientSecret : (persistedDraftProject?.client_secret || null);
-        
+
         return {
             ...persistedDraftProject,
             ...projectFromList,
@@ -664,7 +714,7 @@ export default function AppLayout({ children }) {
             }
             return hasSelectedProjectGovernance ? agentIdx : reqIdx;
         }
-        
+
         // Agent Analysis page should always show Agent Analysis as active
         if (path === '/agent-analysis') {
             const agentIdx = idx('Agent Analysis') ?? 3;
@@ -716,7 +766,7 @@ export default function AppLayout({ children }) {
         if (!project) return;
         setIsNewProjectMode(false);
         setSelectedProjectKey(project.key);
-        
+
         // Fetch roadmap data to determine which page to navigate to
         try {
             // Prefer the project token if it exists – the backend uses this to locate the project
@@ -724,7 +774,7 @@ export default function AppLayout({ children }) {
             const roadmapResponse = await fetchRoadmapStep(identifier);
             if (roadmapResponse && roadmapResponse.current_step_label) {
                 const stepLabel = roadmapResponse.current_step_label;
-                
+
                 // Map step label to route (same mapping as before)
                 const stepLabelToRoute = {
                     'Project Initiation': '/new-project',
@@ -749,7 +799,7 @@ export default function AppLayout({ children }) {
         } catch (error) {
             console.error('Failed to fetch roadmap for navigation:', error);
         }
-        
+
         // Fallback – navigate to the generic project URL (uses token if available)
         const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
         if (location.pathname !== targetPath) {
@@ -786,7 +836,7 @@ export default function AppLayout({ children }) {
         }
     }, [fetchPluginClients]);
 
-    if (!user) {
+    if (!user || !rbac) {
         return (
             <div className="flex items-center justify-center min-h-screen bg-app-bg-muted">
                 <div className="text-app-text-label">Loading...</div>
@@ -807,6 +857,7 @@ export default function AppLayout({ children }) {
         roadmapData, fetchRoadmapData,
         isNewProjectMode, setIsNewProjectMode,
         selectedRole, setSelectedRole,
+        rbac,
     };
 
     return (
@@ -828,6 +879,7 @@ export default function AppLayout({ children }) {
                 launchingPluginId={launchingPluginId}
                 handleOpenPlugin={handleOpenPlugin}
                 isDarkMode={isDarkMode}
+                rbac={rbac}
             />
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
@@ -849,22 +901,22 @@ export default function AppLayout({ children }) {
                                 <h1 className="text-lg md:text-2xl lg:text-3xl font-bold tracking-wide truncate">
                                     {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
                                         currentView === 'organizationAdmin' ? 'Organization Admin' :
-                                        currentView === 'governance' ? 'Project Setup & Governance' :
-                                            currentView === 'prerequisites' ? 'Prerequisite Classification' :
-                                                currentView === 'taskCreation' ? 'Task Creation Planner' :
-                                                    currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
-                                                        currentView === 'agentAnalysis' ? 'Agent Analysis' :
-                                                            'Requirements Analyzer'}
+                                            currentView === 'governance' ? 'Project Setup & Governance' :
+                                                currentView === 'prerequisites' ? 'Prerequisite Classification' :
+                                                    currentView === 'taskCreation' ? 'Task Creation Planner' :
+                                                        currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
+                                                            currentView === 'agentAnalysis' ? 'Agent Analysis' :
+                                                                'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-white/60 mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
                                         currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
-                                        currentView === 'governance' ? 'Project initiation and late-stage governance review' :
-                                            currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
-                                                currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
-                                                    currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
-                                                        currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
-                                                            'Project Insight & AI Assessment'}
+                                            currentView === 'governance' ? 'Project initiation and late-stage governance review' :
+                                                currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
+                                                    currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
+                                                        currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
+                                                            currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
+                                                                'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 
@@ -917,7 +969,7 @@ export default function AppLayout({ children }) {
                             >
                                 {isDarkMode ? <Sun className="w-4 h-4 md:w-5 md:h-5" /> : <Moon className="w-4 h-4 md:w-5 md:h-5" />}
                             </button>
-                            
+
                             {/* Settings Button (Global) */}
                             {/* <button
                                 type="button"
@@ -931,8 +983,8 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-{/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
-{roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
+                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
+                {roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
                     <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                         <RoadmapHeader
                             steps={roadmapDataForView.steps || []}
@@ -946,54 +998,77 @@ export default function AppLayout({ children }) {
                     </div>
                 )}
 
-            <div className="flex-1 h-full overflow-hidden">
-                {typeof children === 'function'
-                    ? children(layoutProps)
-                    : React.Children.map(children, child =>
-                        React.isValidElement(child)
-                            ? React.cloneElement(child, layoutProps)
-                            : child
-                    )
-                }
-            </div>
-        </div>
-
-        {/* Global AI Config Modal - available on all pages */}
-        {showSettings && (
-            <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-                {/* Backdrop with blur */}
-                <div
-                    className="absolute inset-0 bg-black/70 backdrop-blur-md"
-                    onClick={() => setShowSettings(false)}
-                />
-                {/* Modal Content */}
-                <div className="relative z-[301] bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
-                    <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
-                        <h2 className="font-bold text-lg text-app-text-main flex items-center">
-                            <Settings className="w-5 h-5 mr-2 text-app-primary" />
-                            AI Configuration
-                        </h2>
-                        <button
-                            onClick={() => setShowSettings(false)}
-                            className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
-                        >
-                            ✕
-                        </button>
-                    </div>
-                    <div className="p-6">
-                        <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
-                    </div>
-                    <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
-                        <button
-                            onClick={() => setShowSettings(false)}
-                            className="px-5 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover font-medium text-sm transition-colors shadow-md active:scale-95"
-                        >
-                            Done
-                        </button>
-                    </div>
+                <div className="flex-1 h-full overflow-hidden">
+                    {hasAccessError ? (
+                        <div className="flex flex-col items-center justify-center h-full text-center px-4 bg-app-bg-page relative z-[200]">
+                            <div className="w-20 h-20 mb-6 bg-app-status-errorBg text-app-status-error flex items-center justify-center rounded-2xl shadow-sm border border-red-200">
+                                <span className="font-extrabold text-3xl">!</span>
+                            </div>
+                            <h2 className="text-2xl font-bold text-app-text-main mb-3">No Access</h2>
+                            <p className="text-app-text-light max-w-md">
+                                You don't have permission to access the <strong>{
+                                    currentView === 'statusDashboard' ? 'Project Status Dashboard' :
+                                        currentView === 'organizationAdmin' ? 'Organization Admin' :
+                                            currentView === 'governance' ? 'Project Setup & Governance' :
+                                                currentView === 'prerequisites' ? 'Prerequisite Classification' :
+                                                    currentView === 'taskCreation' ? 'Task Creation Planner' :
+                                                        currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
+                                                            currentView === 'agentAnalysis' ? 'Agent Analysis' :
+                                                                'Requirements Analyzer'
+                                }</strong> section.
+                                <br />
+                                <br />
+                                This section is pending action by someone with the appropriate role, or you are not authorized to view it.
+                            </p>
+                        </div>
+                    ) : (
+                        typeof children === 'function'
+                            ? children(layoutProps)
+                            : React.Children.map(children, child =>
+                                React.isValidElement(child)
+                                    ? React.cloneElement(child, layoutProps)
+                                    : child
+                            )
+                    )}
                 </div>
             </div>
-        )}
-    </div>
+
+            {/* Global AI Config Modal - available on all pages */}
+            {showSettings && (
+                <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+                    {/* Backdrop with blur */}
+                    <div
+                        className="absolute inset-0 bg-black/70 backdrop-blur-md"
+                        onClick={() => setShowSettings(false)}
+                    />
+                    {/* Modal Content */}
+                    <div className="relative z-[301] bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
+                        <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
+                            <h2 className="font-bold text-lg text-app-text-main flex items-center">
+                                <Settings className="w-5 h-5 mr-2 text-app-primary" />
+                                AI Configuration
+                            </h2>
+                            <button
+                                onClick={() => setShowSettings(false)}
+                                className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        <div className="p-6">
+                            <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
+                        </div>
+                        <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
+                            <button
+                                onClick={() => setShowSettings(false)}
+                                className="px-5 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover font-medium text-sm transition-colors shadow-md active:scale-95"
+                            >
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }

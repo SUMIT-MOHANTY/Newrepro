@@ -20,6 +20,7 @@ export default function Sidebar({
     handleDeleteProject,
     deletingProjectKey,
     isDarkMode = false,
+    rbac,
 }) {
     const navigate = useNavigate();
     const location = useLocation();
@@ -67,6 +68,20 @@ export default function Sidebar({
         }
     };
 
+    const canAccess = (path) => {
+        if (!path) return true;
+        if (rbac?.is_org_admin) return true;
+        const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : null;
+        if (!allowed) return true; // if RBAC not loaded, don't block UI
+
+        let rbacPath = path;
+        if (path.startsWith('/a/')) {
+            rbacPath = '/dashboard';
+        }
+
+        return allowed.some((p) => p === rbacPath || (p && rbacPath.startsWith(p + '/')));
+    };
+
     return (
         <>
             {isSidebarOpen && (
@@ -106,13 +121,15 @@ export default function Sidebar({
                 </div>
 
                 <div className="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar">
-                    <button
-                        onClick={handleNewProject}
-                        className="flex items-center w-full px-4 py-3 mb-6 text-sm font-bold text-white bg-app-primary rounded-lg hover:bg-app-primary-hover shadow-lg shadow-app-primary-dark/20 transition-all active:scale-95"
-                    >
-                        <Plus className="w-5 h-5 mr-2" />
-                        New Project
-                    </button>
+                    {canAccess('/new-project') && (
+                        <button
+                            onClick={handleNewProject}
+                            className="flex items-center w-full px-4 py-3 mb-6 text-sm font-bold text-white bg-app-primary rounded-lg hover:bg-app-primary-hover shadow-lg shadow-app-primary-dark/20 transition-all active:scale-95"
+                        >
+                            <Plus className="w-5 h-5 mr-2" />
+                            New Project
+                        </button>
+                    )}
 
                     <div className="mb-6">
                         <h3 className="text-xs font-semibold text-app-text-muted uppercase tracking-wider mb-3 px-2">Projects</h3>
@@ -161,50 +178,56 @@ export default function Sidebar({
                 </div>
 
                 <div className="p-4 border-t border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
-                    <button
-                        onClick={() => setCurrentView('statusDashboard')}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard'
-                            ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark'
-                            : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                    >
-                        <Activity className="w-4 h-4 mr-3" />
-                        Status Dashboard
-                    </button>
-                    {user?.is_org_admin && (
+                    {canAccess('/status-dashboard') && (
                         <button
-onClick={() => {
-                            setCurrentView('organizationAdmin');
-                        }}
+                            onClick={() => setCurrentView('statusDashboard')}
+                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard'
+                                ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark'
+                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                        >
+                            <Activity className="w-4 h-4 mr-3" />
+                            Status Dashboard
+                        </button>
+                    )}
+                    {user?.is_org_admin && canAccess('/organization-admin') && (
+                        <button
+                            onClick={() => {
+                                setCurrentView('organizationAdmin');
+                            }}
                             className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin'
                                 ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
                                 : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
                         >
                             <ShieldCheck className="w-4 h-4 mr-3" />
-                            SSO Configuration
+                            Organization Admin
                         </button>
                     )}
-                    <button
-                        onClick={() => {
-                            navigate('/agents');
-                        }}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents')
-                            ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                            : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                    >
-                        <Users className="w-4 h-4 mr-3" />
-                        Agents
-                    </button>
-                    <button
-                        onClick={() => {
-                            navigate('/plugins');
-                        }}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins')
-                            ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                            : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                    >
-                        <Globe className="w-4 h-4 mr-3" />
-                        Plugins
-                    </button>
+                    {canAccess('/agents') && (
+                        <button
+                            onClick={() => {
+                                navigate('/agents');
+                            }}
+                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents')
+                                ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                        >
+                            <Users className="w-4 h-4 mr-3" />
+                            Agents
+                        </button>
+                    )}
+                    {canAccess('/plugins') && (
+                        <button
+                            onClick={() => {
+                                navigate('/plugins');
+                            }}
+                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins')
+                                ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                        >
+                            <Globe className="w-4 h-4 mr-3" />
+                            Plugins
+                        </button>
+                    )}
                     <button
                         onClick={() => setShowSettings(true)}
                         className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}
