@@ -298,7 +298,7 @@ class TaskManagementService:
             "task_id": task_id,
             "username": primary_assignee
         }
-        return await self._make_request("POST", f"/api/agent/task-assign-in/{task_id}/", task_token=task_token, json=payload)
+        return await self._make_request("POST", "/api/agent/task-assign-in/", task_token=task_token, json=payload)
 
     async def update_task_tags(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update tags for a task (e.g., adding 'blocked')."""
