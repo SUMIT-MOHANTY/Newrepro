@@ -18,12 +18,93 @@ class User(Base):
     github_username = Column(String, nullable=True)
     azure_devops_token = Column(String, nullable=True)
     azure_devops_username = Column(String, nullable=True)
+    last_login = Column(DateTime, nullable=True)
 
     documents = relationship("Document", back_populates="owner")
     governance_responses = relationship("GovernanceResponse", back_populates="owner")
     agent_credentials = relationship("AgentCredential", back_populates="owner")
     organization_sso_settings = relationship("OrganizationSSOSetting", back_populates="admin_user")
     oauth_authorization_codes = relationship("OAuthAuthorizationCode", back_populates="user")
+    organization_role_mappings = relationship("UserOrganizationRole", back_populates="user")
+    password_resets = relationship("PasswordReset", back_populates="user")
+
+class PasswordReset(Base):
+    __tablename__ = "password_resets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    token_hash = Column(String, index=True, unique=True, nullable=False)
+    expires_at = Column(DateTime, index=True, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="password_resets")
+
+class OrganizationRole(Base):
+    __tablename__ = "organization_roles"
+    __table_args__ = (
+        UniqueConstraint("organization_name", "name", name="uq_org_role_name"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_name = Column(String, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    is_system = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    permissions = relationship("OrganizationRolePermission", back_populates="role", cascade="all, delete-orphan")
+    user_mappings = relationship("UserOrganizationRole", back_populates="role")
+    invites = relationship("OrganizationInvite", back_populates="role")
+
+class OrganizationRolePermission(Base):
+    __tablename__ = "organization_role_permissions"
+    __table_args__ = (
+        UniqueConstraint("role_id", "path", name="uq_role_permission_path"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    role_id = Column(Integer, ForeignKey("organization_roles.id"), index=True, nullable=False)
+    path = Column(String, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    role = relationship("OrganizationRole", back_populates="permissions")
+
+class UserOrganizationRole(Base):
+    __tablename__ = "user_organization_roles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "organization_name", name="uq_user_org_role"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    organization_name = Column(String, index=True, nullable=False)
+    role_id = Column(Integer, ForeignKey("organization_roles.id"), index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="organization_role_mappings")
+    role = relationship("OrganizationRole", back_populates="user_mappings")
+
+class OrganizationInvite(Base):
+    __tablename__ = "organization_invites"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_org_invite_token_hash"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_name = Column(String, index=True, nullable=False)
+    email = Column(String, index=True, nullable=True)
+    role_id = Column(Integer, ForeignKey("organization_roles.id"), index=True, nullable=False)
+    token_hash = Column(String, index=True, nullable=False)
+    expires_at = Column(DateTime, index=True, nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    accepted_by_user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    role = relationship("OrganizationRole", back_populates="invites")
 
 class OAuthClient(Base):
     __tablename__ = "oauth_clients"

@@ -1901,7 +1901,7 @@ const Dashboard = ({
             const bottomMargin = 14;
             const topBandHeight = 22;
             const contentWidth = pageWidth - marginX * 2;
-            const generatedAt = new Date().toLocaleString();
+            const generatedAt = new Date().toLocaleString('en-IN');
             let cursorY = 0;
 
             const setTextHex = (hex) => {
@@ -2595,8 +2595,8 @@ const Dashboard = ({
                                                         </p>
                                                     )}
                                                     {selectedProject.latestDocument && (
-                                                    <p className="text-xs text-app-text-label mt-1">
-                                                            Latest document: {selectedProject.latestDocument.filename} ({new Date(selectedProject.latestDocument.upload_date).toLocaleString()})
+                                                        <p className="text-xs text-app-text-label mt-1">
+                                                            Latest document: {selectedProject.latestDocument.filename} ({new Date(selectedProject.latestDocument.upload_date).toLocaleString('en-IN')})
                                                         </p>
                                                     )}
                                                 </div>

@@ -95,6 +95,38 @@ def migrate():
         else:
             print("[OK] azure_devops_tenant_id column already exists")
 
+        # Table: users
+        result = conn.execute(text("PRAGMA table_info(users)"))
+        user_columns = [row[1] for row in result.fetchall()]
+        print(f"Current columns in users: {user_columns}")
+
+        if 'last_login' not in user_columns:
+            print("Adding last_login column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN last_login DATETIME"))
+            conn.commit()
+            print("[OK] last_login column added to users")
+        else:
+            print("[OK] last_login column already exists in users")
+
+        # Table: password_resets
+        print("Ensuring password_resets table exists...")
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS password_resets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token_hash VARCHAR NOT NULL,
+                expires_at DATETIME NOT NULL,
+                used_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_password_resets_token_hash ON password_resets (token_hash)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_password_resets_user_id ON password_resets (user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_password_resets_expires_at ON password_resets (expires_at)"))
+        conn.commit()
+        print("[OK] password_resets table ensured")
+
         print("\nMigration completed successfully!")
 
 if __name__ == "__main__":

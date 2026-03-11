@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -99,6 +99,92 @@ class OrganizationAgentQuotaIncreaseRequest(BaseModel):
     kind: str          # "shared" | "dedicated"
     sub_type: Optional[str] = None  # "dev" | "test" — tracks sub_type quota
     amount: int = 1
+
+# ===== ORG RBAC + INVITES =====
+
+class OrganizationPage(BaseModel):
+    path: str
+    label: str
+
+class OrganizationRoleUpsert(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    allowed_paths: list[str] = Field(default_factory=list)
+
+class OrganizationRoleResponse(BaseModel):
+    id: int
+    organization_name: str
+    name: str
+    description: Optional[str] = None
+    allowed_paths: list[str] = Field(default_factory=list)
+    is_system: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class OrganizationInviteCreate(BaseModel):
+    email: Optional[EmailStr] = None
+    role_id: int
+    expires_in_days: int = 7
+
+class OrganizationInviteResponse(BaseModel):
+    id: int
+    organization_name: str
+    email: Optional[EmailStr] = None
+    role_id: int
+    role_name: str
+    invite_url: str
+    expires_at: datetime
+    accepted_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+class OrganizationInvitePreviewResponse(BaseModel):
+    organization_name: str
+    email: Optional[EmailStr] = None
+    role_name: str
+    expires_at: datetime
+    accepted_at: Optional[datetime] = None
+
+class OrganizationInviteAcceptRequest(BaseModel):
+    token: str
+    email: EmailStr
+    password: str = Field(..., min_length=6)
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
+class OrganizationInviteAcceptResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    organization_name: str
+    role_name: str
+    allowed_paths: list[str] = Field(default_factory=list)
+
+class OrganizationRbacMeResponse(BaseModel):
+    is_org_admin: bool = False
+    organization_name: Optional[str] = None
+    role_name: Optional[str] = None
+    allowed_paths: list[str] = Field(default_factory=list)
+
+class OrganizationUserResponse(BaseModel):
+    id: int
+    email: EmailStr
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    role_name: Optional[str] = None
+    last_login: Optional[datetime] = None
+    is_org_admin: bool = False
+
+    class Config:
+        from_attributes = True
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=6)
+
+    class Config:
+        from_attributes = True
 
 class DocumentBase(BaseModel):
     filename: str

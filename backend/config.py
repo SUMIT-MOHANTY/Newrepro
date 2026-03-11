@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = False
     smtp_timeout_seconds: int = 20
     
+    # Microsoft OAuth for SMTP
+    microsoft_tenant_id: Optional[str] = None
+    microsoft_client_id: Optional[str] = None
+    microsoft_client_secret: Optional[str] = None
+
+
     # Database
     database_url: str = "sqlite:///./app.db"
     
