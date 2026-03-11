@@ -1386,7 +1386,7 @@ def _org_user_ids_subquery(db: Session, organization_name: str):
         return None
     return db.query(models.User.id).filter(
         func.lower(models.User.organization_name) == org.lower()
-    ).subquery()
+    ).scalar_subquery()
 
 # --- Organization RBAC + Invites ---
 
