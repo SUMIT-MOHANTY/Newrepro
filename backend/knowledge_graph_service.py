@@ -227,8 +227,14 @@ def clone_repository(
 
     # Inject token into URL for private repos
     clone_url = repo_url
-    if token and "github.com" in repo_url:
-        clone_url = repo_url.replace("https://", f"https://{token}@")
+    if token:
+        # Check if Azure DevOps URL
+        if "dev.azure.com" in repo_url or "visualstudio.com" in repo_url:
+            # Azure DevOps uses PAT authentication format
+            clone_url = repo_url.replace("https://", f"https://:{token}@", 1)
+        elif "github.com" in repo_url:
+            # GitHub uses token-only format
+            clone_url = repo_url.replace("https://", f"https://{token}@", 1)
 
     logger.info(f"Cloning {repo_url} (branch={branch}) into {target_dir}")
     if gitpython is not None:

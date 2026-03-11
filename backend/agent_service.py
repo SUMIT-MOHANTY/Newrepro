@@ -2264,13 +2264,35 @@ def _branch_name_for_task(task: Dict[str, Any]) -> str:
     return f"{base}-{suffix}"
 
 
+def _is_azure_devops_url(repo_url: str) -> bool:
+    """Check if the repository URL is from Azure DevOps."""
+    repo_url = repo_url.strip().lower()
+    return "dev.azure.com" in repo_url or "visualstudio.com" in repo_url
+
+
 def _build_git_auth_url(repo_url: str, token: str) -> str:
     """Insert token into HTTPS git URL for authentication."""
     repo_url = repo_url.strip()
     if not token:
         return repo_url
-    if repo_url.startswith("https://"):
-        return repo_url.replace("https://", f"https://{token.strip()}@", 1)
+    
+    token = token.strip()
+    
+    # Azure DevOps uses different auth format than GitHub
+    if _is_azure_devops_url(repo_url):
+        # For Azure DevOps, use PAT authentication
+        # Format: https://:PAT@dev.azure.com/org/project/_git/repo
+        # or https://PAT@dev.azure.com/org/project/_git/repo
+        if repo_url.startswith("https://"):
+            # Remove any existing credentials
+            repo_url = repo_url.replace("https://", "https://", 1)
+            # Insert token with colon prefix (standard Basic Auth format for Azure DevOps)
+            return repo_url.replace("https://", f"https://:{token}@", 1)
+    else:
+        # GitHub and other providers
+        if repo_url.startswith("https://"):
+            return repo_url.replace("https://", f"https://{token}@", 1)
+    
     return repo_url
 
 
@@ -4002,7 +4024,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
         # Clone repo
         auth_url = _build_git_auth_url(repo_url, token)
         clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+            ["docker", "exec", container_name, "git", "clone", clone_url, "/workspace"],
             capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
@@ -4423,14 +4445,30 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             capture_output=True, text=True, timeout=10,
         )
 
+        # 2.5. Configure git credential helper for Azure DevOps PAT authentication
+        if token and ("dev.azure.com" in repo_url or "visualstudio.com" in repo_url):
+            # Use credential.helper store instead of embedding in URL
+            subprocess.run(
+                ["docker", "exec", container_name, "git", "config", "--global", "credential.helper", "store"],
+                capture_output=True, text=True, timeout=10,
+            )
+            # Save credentials to ~/.git-credentials (empty username for Azure DevOps)
+            subprocess.run(
+                ["docker", "exec", "-e", f"PAT={token}", container_name, "sh", "-c",
+                 "echo 'https://:$PAT@dev.azure.com' >> ~/.git-credentials && echo 'https://:$PAT@*.visualstudio.com' >> ~/.git-credentials"],
+                capture_output=True, text=True, timeout=10,
+            )
+
         # 3. Clone repo into /workspace/
-        auth_url = _build_git_auth_url(repo_url, token)
+        # For Azure DevOps, use the original URL without embedded credentials
+        # Credentials are handled by credential.helper
+        clone_url = repo_url
         subprocess.run(
             ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/* /workspace/.* 2>/dev/null || true"],
             capture_output=True, text=True, timeout=10,
         )
         clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+            ["docker", "exec", container_name, "git", "clone", clone_url, "/workspace"],
             capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
@@ -13569,16 +13607,60 @@ async def deploy_preview(
             raise RuntimeError(toolchain_result.get("error", "Preview runtime toolchain verification failed"))
 
         # 2. Clone the repo (agent/integration branch)
-        auth_url = git_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
+        auth_url = _build_git_auth_url(git_repo_url, git_token)
         _log(f"Cloning {GIT_INTEGRATION_BRANCH} branch...")
+        
+        # Configure Git for better performance with large repos
+        subprocess.run(
+            ["docker", "exec", "-w", "/", container_name,
+             "git", "config", "--global", "http.postBuffer", "524288000"],
+            capture_output=True, text=True, timeout=10,
+        )
+        subprocess.run(
+            ["docker", "exec", "-w", "/", container_name,
+             "git", "config", "--global", "http.lowSpeedLimit", "0"],
+            capture_output=True, text=True, timeout=10,
+        )
+        subprocess.run(
+            ["docker", "exec", "-w", "/", container_name,
+             "git", "config", "--global", "http.lowSpeedTime", "999999"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
         clone = subprocess.run(
             ["docker", "exec", "-w", "/", container_name,
              "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+             "--single-branch", "--no-tags",
+             "-c", "http.postBuffer=524288000",
+             "-c", "pack.windowMemory=256m",
+             "-c", "pack.packSizeLimit=256m",
              auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=600,  # Increased to 10 minutes
         )
         if clone.returncode != 0:
-            raise RuntimeError(f"Git clone failed: {clone.stderr}")
+            error_msg = clone.stderr or clone.stdout or "git clone failed"
+            _log(f"⚠️ Initial clone failed: {error_msg[:500]}")
+            
+            # Retry with even more aggressive settings
+            _log("🔄 Retrying clone with minimal history...")
+            subprocess.run(
+                ["docker", "exec", "-w", "/", container_name, "sh", "-c", "rm -rf /workspace/*"],
+                capture_output=True, text=True, timeout=10,
+            )
+            clone_retry = subprocess.run(
+                ["docker", "exec", "-w", "/", container_name,
+                 "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+                 "--single-branch", "--no-tags",
+                 "-c", "core.compression=0",
+                 "-c", "pack.windowMemory=512m",
+                 auth_url, "/workspace"],
+                capture_output=True, text=True, timeout=900,  # 15 minutes for retry
+            )
+            if clone_retry.returncode != 0:
+                raise RuntimeError(f"Git clone failed after retry: {clone_retry.stderr}")
+            _log("✅ Clone successful on retry!")
+        else:
+            _log("✅ Clone successful!")
 
         # 3. Detect the project stack
         _log("Detecting project tech stack...")
@@ -13623,6 +13705,14 @@ async def deploy_preview(
              "apt-get update -qq && apt-get install -y -qq git procps > /dev/null 2>&1 || true"],
             capture_output=True, text=True, timeout=120,
         )
+        
+        # Configure Git for better performance
+        subprocess.run(
+            ["docker", "exec", container_name,
+             "git", "config", "--global", "http.postBuffer", "524288000"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
         # Clear workspace and clone
         subprocess.run(
             ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/*"],
@@ -13631,8 +13721,10 @@ async def deploy_preview(
         clone2 = subprocess.run(
             ["docker", "exec", "-w", "/", container_name,
              "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+             "--single-branch", "--no-tags",
+             "-c", "http.postBuffer=524288000",
              auth_url, "/workspace"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=600,  # Increased to 10 minutes
         )
         if clone2.returncode != 0:
             raise RuntimeError(f"Git clone into preview container failed: {clone2.stderr}")
