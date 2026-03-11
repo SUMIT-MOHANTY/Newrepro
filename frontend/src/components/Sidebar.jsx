@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { X, Plus, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe } from 'lucide-react';
+import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
 
@@ -211,8 +211,8 @@ export default function Sidebar({
                                 ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
                                 : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
                         >
-                            <ShieldCheck className="w-4 h-4 mr-3" />
-                            Governance Mgmt
+                            <FileCheck className="w-4 h-4 mr-3" />
+                            Governance
                         </button>
                     )}
                     {canAccess('/agents') && (

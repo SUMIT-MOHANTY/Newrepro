@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 _project_contexts: Dict[str, Dict[str, Any]] = {}
 _agent_notes_context_cache: Dict[str, Dict[str, Any]] = {}
 _AGENT_NOTES_CONTEXT_CACHE_TTL_SECONDS = 10.0
+_FRONTEND_EXTENSIONS = {".css", ".scss", ".html", ".jsx", ".tsx", ".vue", ".svelte"}
+
 
 _WORKSPACE_CONTRACT_SOURCE_PRIORITY = {
     "insufficient": 0,
@@ -125,7 +127,7 @@ def _is_frontend_like_path(path: str) -> bool:
     if "frontend" in norm or "/ui/" in norm or "/components/" in norm or "/pages/" in norm or "/styles" in norm:
         return True
     _, ext = os.path.splitext(norm)
-    return ext in {".css", ".scss", ".html", ".jsx", ".tsx", ".vue", ".svelte"}
+    return ext in _FRONTEND_EXTENSIONS
 
 
 def _collect_repo_file_paths(repo_path: Optional[str]) -> List[str]:
