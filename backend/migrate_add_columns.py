@@ -95,6 +95,33 @@ def migrate():
         else:
             print("[OK] azure_devops_tenant_id column already exists")
 
+        # Table: agents
+        result = conn.execute(text("PRAGMA table_info(agents)"))
+        agent_columns = [row[1] for row in result.fetchall()]
+        if 'project_token' not in agent_columns:
+            print("Adding project_token column to agents...")
+            conn.execute(text("ALTER TABLE agents ADD COLUMN project_token VARCHAR"))
+            conn.commit()
+            print("[OK] project_token column added to agents")
+
+        # Table: agent_credentials
+        result = conn.execute(text("PRAGMA table_info(agent_credentials)"))
+        cred_columns = [row[1] for row in result.fetchall()]
+        if 'project_token' not in cred_columns:
+            print("Adding project_token column to agent_credentials...")
+            conn.execute(text("ALTER TABLE agent_credentials ADD COLUMN project_token VARCHAR"))
+            conn.commit()
+            print("[OK] project_token column added to agent_credentials")
+
+        # Table: organization_agent_mappings
+        result = conn.execute(text("PRAGMA table_info(organization_agent_mappings)"))
+        mapping_columns = [row[1] for row in result.fetchall()]
+        if 'agent_kind' not in mapping_columns:
+            print("Adding agent_kind column to organization_agent_mappings...")
+            conn.execute(text("ALTER TABLE organization_agent_mappings ADD COLUMN agent_kind VARCHAR"))
+            conn.commit()
+            print("[OK] agent_kind column added to organization_agent_mappings")
+
         # Table: users
         result = conn.execute(text("PRAGMA table_info(users)"))
         user_columns = [row[1] for row in result.fetchall()]
@@ -107,6 +134,42 @@ def migrate():
             print("[OK] last_login column added to users")
         else:
             print("[OK] last_login column already exists in users")
+
+        if 'first_name' not in user_columns:
+            print("Adding first_name column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN first_name VARCHAR"))
+            conn.commit()
+            print("[OK] first_name column added to users")
+
+        if 'last_name' not in user_columns:
+            print("Adding last_name column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN last_name VARCHAR"))
+            conn.commit()
+            print("[OK] last_name column added to users")
+
+        if 'organization_name' not in user_columns:
+            print("Adding organization_name column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN organization_name VARCHAR"))
+            conn.commit()
+            print("[OK] organization_name column added to users")
+
+        if 'is_org_admin' not in user_columns:
+            print("Adding is_org_admin column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_org_admin BOOLEAN DEFAULT 0"))
+            conn.commit()
+            print("[OK] is_org_admin column added to users")
+
+        if 'azure_devops_token' not in user_columns:
+            print("Adding azure_devops_token column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN azure_devops_token VARCHAR"))
+            conn.commit()
+            print("[OK] azure_devops_token column added to users")
+
+        if 'azure_devops_username' not in user_columns:
+            print("Adding azure_devops_username column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN azure_devops_username VARCHAR"))
+            conn.commit()
+            print("[OK] azure_devops_username column added to users")
 
         # Table: password_resets
         print("Ensuring password_resets table exists...")
