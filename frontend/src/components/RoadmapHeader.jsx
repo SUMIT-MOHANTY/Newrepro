@@ -134,13 +134,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         const route = STEP_ROUTES[stepLabel];
         if (!route) return;
 
-        if (!canAccess(route)) {
-            // Do not navigate if no access
-            return;
-        }
-
         // Navigate to the route for the selected project
-        // Note: If navigating to Agent Analysis without flag set, the page will show appropriate message
+        // Note: AppLayout will enforce RBAC and display the "No Access" visual directly.
         navigate(route);
     };
 
@@ -185,8 +180,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
 
                         const StepIcon = STEP_ICONS[step] || Circle;
                         const labelPosition = index % 2 === 0 ? 'top' : 'bottom';
-                        // Make all steps clickable if a project is selected and user has access
-                        const isClickable = Boolean(selectedProjectKey) && hasAccess;
+                        // Allow clicking on locked nodes so the user can navigate there and see the formal "No Access" page
+                        const isClickable = Boolean(selectedProjectKey);
                         return (
                             <StepNode
                                 key={index}

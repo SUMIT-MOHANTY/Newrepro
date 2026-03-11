@@ -208,38 +208,23 @@ export default function AppLayout({ children }) {
             .catch(() => setRbac({ is_org_admin: !!user?.is_org_admin, allowed_paths: [], role_name: null }));
     }, [user]);
 
-    const [hasAccessError, setHasAccessError] = useState(false);
+    // Evaluate RBAC access synchronously to prevent render flashes
+    const hasAccessError = useMemo(() => {
+        if (!user || !rbac) return false;
 
-    // Enforce RBAC on navigation
-    useEffect(() => {
-        if (!user) return;
-        if (!rbac) return;
-
-        // Always allow public-ish authenticated edge pages handled elsewhere
         const path = location.pathname || '/';
-        if (path === '/app' || path.startsWith('/app/')) {
-            setHasAccessError(false);
-            return; // AppPreview is intentionally public-ish
-        }
-
-        if (rbac?.is_org_admin) {
-            setHasAccessError(false);
-            return;
-        }
+        if (path === '/app' || path.startsWith('/app/')) return false;
+        if (rbac?.is_org_admin) return false;
 
         const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : [];
-
-        // Normalize path for RBAC
         let rbacPath = path;
         if (path.startsWith('/a/')) {
             rbacPath = '/dashboard';
         }
 
         const isAllowed = allowed.some((p) => p === rbacPath || (p && rbacPath.startsWith(p + '/')));
-
-        // Instead of blind redirection to status-dashboard ("On Flight"), we show a No Access message via state
-        setHasAccessError(!isAllowed);
-    }, [location.pathname, rbac, user]);
+        return !isAllowed;
+    }, [user, rbac, location.pathname]);
 
     const fetchPluginClients = useCallback(() => {
         const token = localStorage.getItem('token');
