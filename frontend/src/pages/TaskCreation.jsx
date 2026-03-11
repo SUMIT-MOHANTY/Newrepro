@@ -785,9 +785,7 @@ export default function TaskCreation({
                 const analysedObj = fullAnalysedObj.analysis
                     ? { analysis: fullAnalysedObj.analysis }
                     : fullAnalysedObj;
-                if (fullAnalysedObj.governanceContext) {
-                    analysedObj.governanceContext = fullAnalysedObj.governanceContext;
-                }
+                const governanceObj = fullAnalysedObj.governanceContext || {};
 
                 const prerequisitesObj = buildPrerequisitesObjectFromStorage(selectedProjectKey);
                 const repoLinkUrl = readRepoLinkUrlForProject(selectedProjectKey);
@@ -801,6 +799,7 @@ export default function TaskCreation({
                 formData.append('project_token', selectedProjectKey);
                 formData.append('prerequisites', JSON.stringify(prerequisitesObj || {}));
                 formData.append('analysed_file', JSON.stringify(analysedObj || {}));
+                formData.append('governance', JSON.stringify(governanceObj));
                 if (repoLinkUrl) formData.append('repo_link_url', repoLinkUrl);
 
                 if (inputText) {

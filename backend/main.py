@@ -6341,6 +6341,7 @@ async def put_agent_project_config(
     mode: str = ""
     prerequisites_obj: Any = None
     analysed_obj: Any = None
+    governance_obj: Any = None
     repo_link_url: Optional[str] = None
     project_token: Optional[str] = None
     upload: Optional[UploadFile] = None
@@ -6352,6 +6353,7 @@ async def put_agent_project_config(
         mode = str(payload.get("mode") or "").strip()
         prerequisites_obj = payload.get("prerequisites")
         analysed_obj = payload.get("analysed_file")
+        governance_obj = payload.get("governance")
         repo_link_url = str(payload.get("repo_link_url") or "").strip() or None
         project_token = str(payload.get("project_token") or "").strip() or None
     else:
@@ -6362,6 +6364,7 @@ async def put_agent_project_config(
 
         prereq_raw = form.get("prerequisites")
         analysed_raw = form.get("analysed_file")
+        governance_raw = form.get("governance")
         upload = form.get("input_file")
 
         if prereq_raw is not None and str(prereq_raw).strip():
@@ -6376,6 +6379,12 @@ async def put_agent_project_config(
             except Exception:
                 raise HTTPException(status_code=400, detail="Invalid analysed_file JSON string")
 
+        if governance_raw is not None and str(governance_raw).strip():
+            try:
+                governance_obj = json_mod.loads(str(governance_raw))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid governance JSON string")
+
         if upload is not None and not isinstance(upload, UploadFile):
             upload = None
 
@@ -6386,8 +6395,6 @@ async def put_agent_project_config(
         new_obj = {}
         if "analysis" in analysed_obj:
             new_obj["analysis"] = analysed_obj.get("analysis")
-        if "governanceContext" in analysed_obj:
-            new_obj["governanceContext"] = analysed_obj.get("governanceContext")
         
         if new_obj:
             analysed_obj = new_obj
@@ -6400,6 +6407,7 @@ async def put_agent_project_config(
         "mode": mode,
         "prerequisites": prerequisites_obj if prerequisites_obj is not None else {},
         "analysed_file": analysed_obj if analysed_obj is not None else {},
+        "governance": governance_obj if governance_obj is not None else {},
         "repo_link_url": repo_link_url,
         "project_token": safe_project,
         "owner_id": current_user.id,
