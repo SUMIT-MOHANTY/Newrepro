@@ -4,6 +4,7 @@ import secrets
 import re
 import uuid
 import html as html_lib
+import hashlib
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 import ipaddress
@@ -344,7 +345,68 @@ async def login_for_access_token(
     access_token = auth.create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
+    user.last_login = datetime.utcnow()
+    db.add(user)
+    db.commit()
     return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/auth/forgot-password")
+async def forgot_password(
+    payload: schemas.PasswordResetRequest,
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(func.lower(models.User.email) == payload.email.lower()).first()
+    if user:
+        token = secrets.token_urlsafe(32)
+        token_hash = _hash_invite_token(token)
+        expires_at = datetime.utcnow() + timedelta(hours=1)
+        
+        # Deactivate any previous unused reset tokens for this user
+        db.query(models.PasswordReset).filter(
+            models.PasswordReset.user_id == user.id,
+            models.PasswordReset.used_at == None
+        ).update({"expires_at": datetime.utcnow()}, synchronize_session=False)
+        
+        reset = models.PasswordReset(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=expires_at
+        )
+        db.add(reset)
+        db.commit()
+        
+        reset_url = f"{settings.frontend_url.rstrip('/')}/reset-password?token={token}"
+        try:
+            email_service.send_password_reset_email(user.email, reset_url)
+        except Exception:
+            logger.exception("Failed to send password reset email to %s", user.email)
+            
+    return {"message": "If your email is registered, you will receive a reset link shortly."}
+
+@app.post("/auth/reset-password")
+async def reset_password(
+    payload: schemas.PasswordResetConfirm,
+    db: Session = Depends(get_db)
+):
+    token_hash = _hash_invite_token(payload.token)
+    reset = db.query(models.PasswordReset).filter(
+        models.PasswordReset.token_hash == token_hash,
+        models.PasswordReset.used_at == None,
+        models.PasswordReset.expires_at > datetime.utcnow()
+    ).first()
+    
+    if not reset:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+    
+    user = db.query(models.User).filter(models.User.id == reset.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    
+    user.hashed_password = auth.get_password_hash(payload.new_password)
+    reset.used_at = datetime.utcnow()
+    db.commit()
+    
+    return {"message": "Password has been reset successfully."}
 
 def _normalized_text(value: Optional[str]) -> str:
     if not isinstance(value, str):
@@ -742,6 +804,8 @@ async def sso_callback(
         )
         db.add(user)
 
+    user.last_login = datetime.utcnow()
+    db.add(user)
     db.commit()
     db.refresh(user)
 
@@ -1313,6 +1377,469 @@ def _require_organization(current_user: models.User) -> str:
         raise HTTPException(status_code=400, detail="Organization not configured for this account")
     return organization_name
 
+# --- Org-scoped project visibility ---
+
+def _org_user_ids_subquery(db: Session, organization_name: str):
+    org = _normalized_text(organization_name)
+    if not org:
+        return None
+    return db.query(models.User.id).filter(
+        func.lower(models.User.organization_name) == org.lower()
+    ).subquery()
+
+# --- Organization RBAC + Invites ---
+
+ORG_MANAGED_PAGES: list[schemas.OrganizationPage] = [
+    schemas.OrganizationPage(path="/status-dashboard", label="Status Dashboard"),
+    schemas.OrganizationPage(path="/dashboard", label="Requirements Analyzer"),
+    schemas.OrganizationPage(path="/new-project", label="New Project (wizard)"),
+    schemas.OrganizationPage(path="/new-project/governance", label="Governance"),
+    schemas.OrganizationPage(path="/agent-analysis", label="Agent Analysis"),
+    schemas.OrganizationPage(path="/prerequisites", label="Prerequisites"),
+    schemas.OrganizationPage(path="/task-creation", label="Task Creation"),
+    schemas.OrganizationPage(path="/resource-onboarding", label="Resource Onboarding"),
+    schemas.OrganizationPage(path="/agents", label="Agents"),
+    schemas.OrganizationPage(path="/plugins", label="Plugins"),
+    schemas.OrganizationPage(path="/organization-admin", label="Organization Admin"),
+]
+
+def _hash_invite_token(token: str) -> str:
+    normalized = _normalized_text(token)
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+def _ensure_default_rbac_roles(db: Session, organization_name: str) -> None:
+    """
+    Ensure an org has a baseline 'Member' role used for non-admin accounts.
+    Org admins (User.is_org_admin) are treated as super-admins regardless of role assignments.
+    """
+    org = _normalized_text(organization_name)
+    if not org:
+        return
+    existing = db.query(models.OrganizationRole).filter(
+        func.lower(models.OrganizationRole.organization_name) == org.lower()
+    ).first()
+    if existing:
+        return
+
+    # Default member role: all authenticated pages except organization admin.
+    member_paths = [p.path for p in ORG_MANAGED_PAGES if p.path != "/organization-admin"]
+    member = models.OrganizationRole(
+        organization_name=org,
+        name="Member",
+        description="Default role for organization members.",
+        is_system=True,
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    for path in member_paths:
+        db.add(models.OrganizationRolePermission(role_id=member.id, path=path))
+    db.commit()
+
+def _role_to_response(role: models.OrganizationRole) -> schemas.OrganizationRoleResponse:
+    allowed_paths = sorted({(perm.path or "").strip() for perm in (role.permissions or []) if (perm.path or "").strip()})
+    return schemas.OrganizationRoleResponse(
+        id=role.id,
+        organization_name=role.organization_name,
+        name=role.name,
+        description=role.description,
+        allowed_paths=allowed_paths,
+        is_system=bool(role.is_system),
+        created_at=getattr(role, "created_at", None),
+        updated_at=getattr(role, "updated_at", None),
+    )
+
+def _get_user_allowed_paths(db: Session, user: models.User) -> tuple[Optional[str], list[str]]:
+    """
+    Returns (role_name, allowed_paths).
+    - Org admins: all managed pages
+    - Non-admins: role-mapped allowed paths; if missing, assign default 'Member' role
+    """
+    org = _normalized_text(getattr(user, "organization_name", None))
+    if not org:
+        return None, []
+
+    if bool(getattr(user, "is_org_admin", False)):
+        return "Admin", [p.path for p in ORG_MANAGED_PAGES]
+
+    _ensure_default_rbac_roles(db, org)
+    mapping = db.query(models.UserOrganizationRole).filter(
+        models.UserOrganizationRole.user_id == user.id,
+        func.lower(models.UserOrganizationRole.organization_name) == org.lower(),
+    ).first()
+
+    if not mapping:
+        member = db.query(models.OrganizationRole).filter(
+            func.lower(models.OrganizationRole.organization_name) == org.lower(),
+            func.lower(models.OrganizationRole.name) == "member",
+        ).first()
+        if member:
+            mapping = models.UserOrganizationRole(user_id=user.id, organization_name=org, role_id=member.id)
+            db.add(mapping)
+            db.commit()
+            db.refresh(mapping)
+
+    if not mapping:
+        return None, []
+
+    role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == mapping.role_id).first()
+    if not role:
+        return None, []
+
+    allowed_paths = sorted({(perm.path or "").strip() for perm in (role.permissions or []) if (perm.path or "").strip()})
+    return role.name, allowed_paths
+
+@app.get("/organization/rbac/pages", response_model=list[schemas.OrganizationPage])
+def list_org_pages(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+):
+    # Admin UI helper (no authz beyond being logged in)
+    return ORG_MANAGED_PAGES
+
+@app.get("/organization/rbac/me", response_model=schemas.OrganizationRbacMeResponse)
+def organization_rbac_me(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    org = _normalized_text(getattr(current_user, "organization_name", None)) or None
+    role_name, allowed_paths = _get_user_allowed_paths(db, current_user)
+    return schemas.OrganizationRbacMeResponse(
+        is_org_admin=bool(getattr(current_user, "is_org_admin", False)),
+        organization_name=org,
+        role_name=role_name,
+        allowed_paths=allowed_paths,
+    )
+
+@app.get("/organization/rbac/roles", response_model=list[schemas.OrganizationRoleResponse])
+def list_org_roles(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    _ensure_default_rbac_roles(db, organization_name)
+    roles = db.query(models.OrganizationRole).filter(
+        func.lower(models.OrganizationRole.organization_name) == organization_name.lower()
+    ).order_by(models.OrganizationRole.name.asc()).all()
+    return [_role_to_response(r) for r in roles]
+
+@app.post("/organization/rbac/roles", response_model=schemas.OrganizationRoleResponse)
+def create_org_role(
+    payload: schemas.OrganizationRoleUpsert,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    _ensure_default_rbac_roles(db, organization_name)
+    role = models.OrganizationRole(
+        organization_name=organization_name,
+        name=_normalized_text(payload.name),
+        description=_normalized_text(payload.description) or None,
+        is_system=False,
+    )
+    db.add(role)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Role name already exists for this organization.")
+    db.refresh(role)
+
+    allowed = sorted({p for p in (payload.allowed_paths or []) if _normalized_text(p)})
+    managed_paths = {p.path for p in ORG_MANAGED_PAGES}
+    for path in allowed:
+        if path not in managed_paths:
+            continue
+        db.add(models.OrganizationRolePermission(role_id=role.id, path=path))
+    db.commit()
+    db.refresh(role)
+    return _role_to_response(role)
+
+@app.put("/organization/rbac/roles/{role_id}", response_model=schemas.OrganizationRoleResponse)
+def update_org_role(
+    role_id: int,
+    payload: schemas.OrganizationRoleUpsert,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    role = db.query(models.OrganizationRole).filter(
+        models.OrganizationRole.id == role_id,
+        func.lower(models.OrganizationRole.organization_name) == organization_name.lower(),
+    ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found.")
+    if role.is_system:
+        # allow updating permissions/description, but keep the name stable
+        role.description = _normalized_text(payload.description) or None
+    else:
+        role.name = _normalized_text(payload.name) or role.name
+        role.description = _normalized_text(payload.description) or None
+
+    # Replace permissions
+    db.query(models.OrganizationRolePermission).filter(models.OrganizationRolePermission.role_id == role.id).delete()
+    managed_paths = {p.path for p in ORG_MANAGED_PAGES}
+    allowed = sorted({p for p in (payload.allowed_paths or []) if _normalized_text(p)})
+    for path in allowed:
+        if path not in managed_paths:
+            continue
+        db.add(models.OrganizationRolePermission(role_id=role.id, path=path))
+    db.add(role)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Unable to update role (possible duplicate name).")
+    db.refresh(role)
+    return _role_to_response(role)
+
+@app.delete("/organization/rbac/roles/{role_id}")
+def delete_org_role(
+    role_id: int,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    role = db.query(models.OrganizationRole).filter(
+        models.OrganizationRole.id == role_id,
+        func.lower(models.OrganizationRole.organization_name) == organization_name.lower(),
+    ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found.")
+    if role.is_system:
+        raise HTTPException(status_code=400, detail="System roles cannot be deleted.")
+
+    in_use = db.query(models.UserOrganizationRole).filter(models.UserOrganizationRole.role_id == role.id).first()
+    if in_use:
+        raise HTTPException(status_code=400, detail="Role is assigned to one or more users.")
+
+    db.delete(role)
+    db.commit()
+    return {"ok": True}
+
+@app.get("/organization/invites", response_model=list[schemas.OrganizationInviteResponse])
+def list_org_invites(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    invites = db.query(models.OrganizationInvite).join(models.OrganizationRole).filter(
+        func.lower(models.OrganizationInvite.organization_name) == organization_name.lower()
+    ).order_by(models.OrganizationInvite.created_at.desc()).limit(100).all()
+
+    response: list[schemas.OrganizationInviteResponse] = []
+    for inv in invites:
+        role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == inv.role_id).first()
+        response.append(
+            schemas.OrganizationInviteResponse(
+                id=inv.id,
+                organization_name=inv.organization_name,
+                email=inv.email,
+                role_id=inv.role_id,
+                role_name=role.name if role else "Unknown",
+                invite_url="",  # do not re-emit token links from the list
+                expires_at=inv.expires_at,
+                accepted_at=inv.accepted_at,
+                created_at=inv.created_at,
+            )
+        )
+    return response
+
+@app.get("/organization/users", response_model=list[schemas.OrganizationUserResponse])
+def list_org_users(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    users = db.query(models.User).filter(
+        func.lower(models.User.organization_name) == organization_name.lower()
+    ).all()
+    
+    response = []
+    for user in users:
+        # Get role from mapping
+        mapping = db.query(models.UserOrganizationRole).filter(
+            models.UserOrganizationRole.user_id == user.id,
+            func.lower(models.UserOrganizationRole.organization_name) == organization_name.lower()
+        ).first()
+        
+        role_name = "Organization Admin" if user.is_org_admin else "No Role Assigned"
+        if mapping:
+            role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == mapping.role_id).first()
+            if role:
+                role_name = role.name
+        
+        response.append(schemas.OrganizationUserResponse(
+            id=user.id,
+            email=user.email,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            role_name=role_name,
+            last_login=user.last_login,
+            is_org_admin=user.is_org_admin
+        ))
+    return response
+
+@app.get("/organization/invites/preview", response_model=schemas.OrganizationInvitePreviewResponse)
+def preview_org_invite(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    token_hash = _hash_invite_token(token)
+    if not token_hash:
+        raise HTTPException(status_code=400, detail="Invalid invite token.")
+
+    invite = db.query(models.OrganizationInvite).filter(models.OrganizationInvite.token_hash == token_hash).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+
+    role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == invite.role_id).first()
+    role_name = role.name if role else "Unknown"
+
+    return schemas.OrganizationInvitePreviewResponse(
+        organization_name=invite.organization_name,
+        email=invite.email,
+        role_name=role_name,
+        expires_at=invite.expires_at,
+        accepted_at=invite.accepted_at,
+    )
+
+@app.post("/organization/invites", response_model=schemas.OrganizationInviteResponse)
+def create_org_invite(
+    payload: schemas.OrganizationInviteCreate,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    _ensure_default_rbac_roles(db, organization_name)
+    role = db.query(models.OrganizationRole).filter(
+        models.OrganizationRole.id == payload.role_id,
+        func.lower(models.OrganizationRole.organization_name) == organization_name.lower(),
+    ).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found for this organization.")
+
+    expires_days = payload.expires_in_days if isinstance(payload.expires_in_days, int) else 7
+    expires_days = max(1, min(30, expires_days))
+    expires_at = datetime.utcnow() + timedelta(days=expires_days)
+
+    token = secrets.token_urlsafe(32)
+    token_hash = _hash_invite_token(token)
+    invite = models.OrganizationInvite(
+        organization_name=organization_name,
+        email=_normalized_text(str(payload.email or "")).lower() or None,
+        role_id=role.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+        created_by_user_id=current_user.id,
+    )
+    db.add(invite)
+    db.commit()
+    db.refresh(invite)
+
+    invite_url = f"{settings.frontend_url.rstrip('/')}/invite?token={token}"
+
+    if invite.email:
+        try:
+            email_service.send_organization_invite_email(
+                recipient_email=invite.email,
+                organization_name=organization_name,
+                role_name=role.name,
+                invite_url=invite_url,
+            )
+        except Exception:
+            logger.exception("Failed to deliver organization invite email to %s", invite.email)
+
+    # Also notify the admin who created the link so they can forward it
+    try:
+        email_service.send_invite_notification_to_admin(
+            admin_email=current_user.email,
+            organization_name=organization_name,
+            invitee_email=invite.email,
+            role_name=role.name,
+            invite_url=invite_url,
+        )
+    except Exception:
+        logger.exception("Failed to deliver admin notification for invite creation to %s", current_user.email)
+
+    return schemas.OrganizationInviteResponse(
+        id=invite.id,
+        organization_name=invite.organization_name,
+        email=invite.email,
+        role_id=role.id,
+        role_name=role.name,
+        invite_url=invite_url,
+        expires_at=invite.expires_at,
+        accepted_at=invite.accepted_at,
+        created_at=invite.created_at,
+    )
+
+@app.post("/organization/invites/accept", response_model=schemas.OrganizationInviteAcceptResponse)
+def accept_org_invite(
+    payload: schemas.OrganizationInviteAcceptRequest,
+    db: Session = Depends(get_db),
+):
+    token_hash = _hash_invite_token(payload.token)
+    if not token_hash:
+        raise HTTPException(status_code=400, detail="Invalid invite token.")
+
+    invite = db.query(models.OrganizationInvite).filter(models.OrganizationInvite.token_hash == token_hash).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    if invite.accepted_at is not None:
+        raise HTTPException(status_code=400, detail="Invite link already used.")
+    if invite.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invite link expired.")
+
+    requested_email = payload.email.strip().lower()
+    if invite.email and invite.email.strip().lower() != requested_email:
+        raise HTTPException(status_code=400, detail="This invite link is restricted to a different email address.")
+
+    existing_user = db.query(models.User).filter(func.lower(models.User.email) == requested_email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered. Please sign in instead.")
+
+    role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == invite.role_id).first()
+    if not role:
+        raise HTTPException(status_code=400, detail="Invite role is no longer available.")
+
+    raw_password = payload.password
+    hashed_password = auth.get_password_hash(raw_password)
+    user = models.User(
+        email=requested_email,
+        hashed_password=hashed_password,
+        first_name=_normalized_text(payload.first_name) or None,
+        last_name=_normalized_text(payload.last_name) or None,
+        organization_name=invite.organization_name,
+        is_org_admin=False,
+        last_login=datetime.utcnow(),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    mapping = models.UserOrganizationRole(
+        user_id=user.id,
+        organization_name=invite.organization_name,
+        role_id=role.id,
+    )
+    db.add(mapping)
+    invite.accepted_at = datetime.utcnow()
+    invite.accepted_by_user_id = user.id
+    db.add(invite)
+    db.commit()
+
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = auth.create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
+    role_name, allowed_paths = _get_user_allowed_paths(db, user)
+    return schemas.OrganizationInviteAcceptResponse(
+        access_token=access_token,
+        organization_name=invite.organization_name,
+        role_name=role_name or role.name,
+        allowed_paths=allowed_paths,
+    )
+
 def _bootstrap_org_agent_mappings_if_missing(
     db: Session,
     organization_name: str,
@@ -1827,7 +2354,26 @@ def get_user_history(
     limit: int = 20,
 ):
     """Retrieve user's document history."""
-    return db.query(models.Document).filter(models.Document.owner_id == current_user.id).order_by(models.Document.upload_date.desc()).offset(skip).limit(limit).all()
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if not organization_name:
+        return (
+            db.query(models.Document)
+            .filter(models.Document.owner_id == current_user.id)
+            .order_by(models.Document.upload_date.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    org_user_ids = _org_user_ids_subquery(db, organization_name)
+    return (
+        db.query(models.Document)
+        .filter(models.Document.owner_id.in_(org_user_ids))
+        .order_by(models.Document.upload_date.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 @app.post("/history", response_model=schemas.Document)
 def save_document_history(
@@ -2124,9 +2670,22 @@ async def get_governance_history(
     """
     Get submission history for the current user.
     """
-    responses = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    ).order_by(models.GovernanceResponse.submission_date.desc()).all()
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if not organization_name:
+        responses = (
+            db.query(models.GovernanceResponse)
+            .filter(models.GovernanceResponse.owner_id == current_user.id)
+            .order_by(models.GovernanceResponse.submission_date.desc())
+            .all()
+        )
+    else:
+        org_user_ids = _org_user_ids_subquery(db, organization_name)
+        responses = (
+            db.query(models.GovernanceResponse)
+            .filter(models.GovernanceResponse.owner_id.in_(org_user_ids))
+            .order_by(models.GovernanceResponse.submission_date.desc())
+            .all()
+        )
     
     return {
         "total_submissions": len(responses),
@@ -2157,9 +2716,16 @@ async def get_governance_result(
     Get a specific governance scoring result (by token or numeric id).
     Includes the original question answers for editing purposes.
     """
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if not organization_name:
+        query = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id == current_user.id
+        )
+    else:
+        org_user_ids = _org_user_ids_subquery(db, organization_name)
+        query = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id.in_(org_user_ids)
+        )
     
     if identifier.isdigit():
         response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
@@ -2454,9 +3020,16 @@ async def get_project_roadmap_step(
     ]
 
     # 1. Check governance response exists for this user
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if not organization_name:
+        query = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id == current_user.id
+        )
+    else:
+        org_user_ids = _org_user_ids_subquery(db, organization_name)
+        query = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id.in_(org_user_ids)
+        )
     if identifier.isdigit():
         governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:

@@ -1001,10 +1001,7 @@ export default function AppLayout({ children }) {
                                                             currentView === 'agentAnalysis' ? 'Agent Analysis' :
                                                                 'Requirements Analyzer'
                                 }</strong> section.
-                                <br />
-                                <br />
-                                This section is pending action by someone with the appropriate role, or you are not authorized to view it.
-                            </p>
+                                <br />                          </p>
                         </div>
                     ) : (
                         typeof children === 'function'

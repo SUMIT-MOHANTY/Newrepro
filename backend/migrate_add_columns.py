@@ -95,6 +95,19 @@ def migrate():
         else:
             print("[OK] azure_devops_tenant_id column already exists")
 
+        # Table: users
+        result = conn.execute(text("PRAGMA table_info(users)"))
+        user_columns = [row[1] for row in result.fetchall()]
+        print(f"Current columns in users: {user_columns}")
+
+        if 'last_login' not in user_columns:
+            print("Adding last_login column to users...")
+            conn.execute(text("ALTER TABLE users ADD COLUMN last_login DATETIME"))
+            conn.commit()
+            print("[OK] last_login column added to users")
+        else:
+            print("[OK] last_login column already exists in users")
+
         print("\nMigration completed successfully!")
 
 if __name__ == "__main__":

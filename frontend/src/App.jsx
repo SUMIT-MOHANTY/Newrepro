@@ -17,6 +17,9 @@ import AppPreview from './pages/AppPreview';
 import AppLayout from './components/AppLayout';
 import AgentsPage from './components/AgentsPage';
 import Plugins from './pages/Plugins';
+import InviteSignup from './pages/InviteSignup';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 
 function App() {
   return (
@@ -25,6 +28,9 @@ function App() {
         {/* Public routes — no sidebar/navbar */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/invite" element={<InviteSignup />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/" element={<LandingPage />} />
         <Route path="/how-it-works" element={<HowItWorks />} />
         <Route path="/github/callback" element={<GitHubCallback />} />
@@ -82,19 +88,19 @@ function App() {
             {(layoutProps) => <TaskCreation {...layoutProps} />}
           </AppLayout>
         } />
-<Route path="/agent-analysis" element={
-  <AppLayout>
-    {(layoutProps) => <AgentAnalysis {...layoutProps} />}
-  </AppLayout>
-} />
-<Route path="/plugins" element={
-  <AppLayout>
-    {(layoutProps) => <Plugins {...layoutProps} />}
-  </AppLayout>
-} />
-<Route path="/app/:projectId" element={
-  <AppPreview />
-} />
+        <Route path="/agent-analysis" element={
+          <AppLayout>
+            {(layoutProps) => <AgentAnalysis {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/plugins" element={
+          <AppLayout>
+            {(layoutProps) => <Plugins {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/app/:projectId" element={
+          <AppPreview />
+        } />
       </Routes>
     </Router>
   );

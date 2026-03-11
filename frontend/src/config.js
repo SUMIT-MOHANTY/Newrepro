@@ -14,8 +14,18 @@ export const API_ENDPOINTS = {
     USERS: `${API_BASE_URL}/users/`,
     USERS_ME: `${API_BASE_URL}/users/me`,
     ORG_SSO_SETTINGS: `${API_BASE_URL}/organization/sso-settings`,
+    ORG_RBAC_PAGES: `${API_BASE_URL}/organization/rbac/pages`,
+    ORG_RBAC_ME: `${API_BASE_URL}/organization/rbac/me`,
+    ORG_RBAC_ROLES: `${API_BASE_URL}/organization/rbac/roles`,
+    ORG_RBAC_ROLE: (roleId) => `${API_BASE_URL}/organization/rbac/roles/${roleId}`,
+    ORG_INVITES: `${API_BASE_URL}/organization/invites`,
+    ORG_USERS: `${API_BASE_URL}/organization/users`,
+    ORG_INVITE_PREVIEW: `${API_BASE_URL}/organization/invites/preview`,
+    ORG_INVITE_ACCEPT: `${API_BASE_URL}/organization/invites/accept`,
     ORG_AGENT_QUOTA: `${API_BASE_URL}/organization/agent-quota`,
     ORG_AGENT_QUOTA_INCREASE: `${API_BASE_URL}/organization/agent-quota/increase`,
+    FORGOT_PASSWORD: `${API_BASE_URL}/auth/forgot-password`,
+    RESET_PASSWORD: `${API_BASE_URL}/auth/reset-password`,
 
     // Documents
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,
