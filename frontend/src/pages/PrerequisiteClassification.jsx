@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import {
-    KeyRound, CheckCircle2, Circle, AlertCircle, ArrowRight,
+    KeyRound, CheckCircle2, Circle, AlertCircle, AlertTriangle, ArrowRight,
     ChevronLeft, Database, Globe, Server,
     Lock, FileKey, Cloud, Package, Info, Sparkles, Loader2
 } from 'lucide-react';
@@ -1443,6 +1443,27 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <p className="text-sm text-app-text-muted mb-4">
                                 Provide one global repository (GitHub or Azure DevOps) here. All agents in this project will use these credentials. PAT is optional for public repositories.
                             </p>
+                            
+                            {/* Warning if repo URL provided but no PAT - MOVED TO TOP */}
+                            {globalGitRepoUrl && !globalGitToken && !hasSavedGlobalGitToken && (
+                                <div className="mb-4 p-4 rounded-lg border border-amber-500/50 bg-amber-500/10">
+                                    <div className="flex items-start gap-3">
+                                        <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                                        <div className="text-sm text-amber-200">
+                                            <p className="font-semibold mb-2 text-base">⚠️ No PAT Provided</p>
+                                            <p className="leading-relaxed">
+                                                You haven't entered a Personal Access Token. This will work for <span className="font-semibold text-amber-300">public repositories</span> only.
+                                            </p>
+                                            <p className="mt-2 leading-relaxed">
+                                                If your repository is <span className="font-semibold text-amber-300">private</span>, agents will fail to clone with authentication errors. 
+                                                <br/>
+                                                <strong>Add your PAT below before running agents to avoid failures.</strong>
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            
                             {shouldShowRepoSuggestion && (
                                 <div className="mb-4 rounded-xl border border-app-primary-ring bg-app-primary-light/80 p-4">
                                     <p className="text-sm font-semibold text-app-primary-dark">Repository detected from analysis</p>
