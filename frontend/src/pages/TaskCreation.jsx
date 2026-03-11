@@ -329,7 +329,6 @@ export default function TaskCreation({
     const [milestones, setMilestones] = useState([]);
     const [tasks, setTasks] = useState([]);
     const [generatedTaskPlan, setGeneratedTaskPlan] = useState(null);
-    const [taskTotalCount, setTaskTotalCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [error, setError] = useState('');
@@ -337,6 +336,12 @@ export default function TaskCreation({
     const [creationStageIndex, setCreationStageIndex] = useState(0);
     const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
     const [projectType, setProjectType] = useState('greenfield');
+    const [pagination, setPagination] = useState({
+        count: 0,
+        next: null,
+        previous: null,
+        currentPage: 1
+    });
     const autoStartRunKeysRef = useRef(new Set());
 
     const [customRules, setCustomRules] = useState(() => {
@@ -381,13 +386,25 @@ export default function TaskCreation({
 
     const hydrateGeneratedPlan = useCallback((payload) => {
         const nextPayload = payload && typeof payload === 'object' ? payload : null;
-        const nextTasks = Array.isArray(nextPayload?.tasks) ? nextPayload.tasks : [];
+
+        // Handle both flat array and paginated response (results field)
+        const nextTasks = Array.isArray(nextPayload?.tasks)
+            ? nextPayload.tasks
+            : (Array.isArray(nextPayload?.results) ? nextPayload.results : []);
+
         const nextSprints = Array.isArray(nextPayload?.sprints) ? nextPayload.sprints : [];
         const nextMilestones = Array.isArray(nextPayload?.milestones) ? nextPayload.milestones : [];
 
+        const paginationInfo = nextPayload?.pagination || {
+            count: nextPayload?.count || nextTasks.length || 0,
+            next: nextPayload?.next || null,
+            previous: nextPayload?.previous || null,
+            currentPage: nextPayload?.pagination?.currentPage || 1
+        };
+
         setGeneratedTaskPlan(nextPayload);
         setTasks(nextTasks);
-        setTaskTotalCount(nextTasks.length);
+        setPagination(paginationInfo);
         setSprints(
             nextSprints.map((sprint) => ({
                 ...sprint,
@@ -416,7 +433,6 @@ export default function TaskCreation({
         setMilestones([]);
         setTasks([]);
         setGeneratedTaskPlan(null);
-        setTaskTotalCount(0);
         setError('');
         setSuccess('');
         setTaskToken(null);
@@ -553,7 +569,7 @@ export default function TaskCreation({
         }
     }, [projectInfo]);
 
-    const loadData = useCallback(async () => {
+    const loadData = useCallback(async (page = 1) => {
         if (!selectedProjectKey) {
             setHasCompletedInitialBootstrap(true);
             return null;
@@ -568,13 +584,26 @@ export default function TaskCreation({
                     const headers = { 'Authorization': `Bearer ${token}` };
                     if (taskToken) headers['x-task-token'] = taskToken;
 
-                    const tasksRes = await fetch(API_ENDPOINTS.AGENT_TASKS_TOTAL, { headers });
+                    // Always include the page parameter to ensure consistency with backend expectations
+                    // and to follow the "fixed" pattern requested.
+                    const url = new URL(API_ENDPOINTS.AGENT_TASKS_TOTAL);
+                    url.searchParams.set('page', page);
+                    const urlToFetch = url.toString();
+
+                    const tasksRes = await fetch(urlToFetch, { headers });
                     if (tasksRes.ok) {
                         const tasksData = await tasksRes.json();
                         // Handle both array and paginated response formats
                         const tasksList = Array.isArray(tasksData)
                             ? tasksData
                             : (Array.isArray(tasksData?.results) ? tasksData.results : []);
+
+                        setPagination({
+                            count: tasksData.count || tasksList.length || 0,
+                            next: tasksData.next || null,
+                            previous: tasksData.previous || null,
+                            currentPage: page,
+                        });
 
                         if (tasksList.length > 0) {
                             // Group tasks by sprint and milestone for display
@@ -624,6 +653,12 @@ export default function TaskCreation({
                                 sprints: Array.from(sprintsMap.values()),
                                 milestones: Array.from(milestonesMap.values()),
                                 project_deadline: projectInfo?.project?.deadline || projectInfo?.deadline || projectDeadline || '',
+                                pagination: {
+                                    count: tasksData.count || tasksList.length || 0,
+                                    next: tasksData.next || null,
+                                    previous: tasksData.previous || null,
+                                    currentPage: page,
+                                }
                             };
 
                             // Save to localStorage for offline access
@@ -645,7 +680,6 @@ export default function TaskCreation({
                     sprints: Array.isArray(planToUse?.sprints) ? planToUse.sprints : [],
                     milestones: Array.isArray(planToUse?.milestones) ? planToUse.milestones : [],
                     tasks: Array.isArray(planToUse?.tasks) ? planToUse.tasks : [],
-                    taskTotalCount: Array.isArray(planToUse?.tasks) ? planToUse.tasks.length : 0,
                     projectDeadline: planToUse?.project_deadline || '',
                 };
             }
@@ -654,7 +688,6 @@ export default function TaskCreation({
                 sprints: [],
                 milestones: [],
                 tasks: [],
-                taskTotalCount: 0,
                 projectDeadline: '',
             };
         } catch (e) {
@@ -1117,7 +1150,7 @@ export default function TaskCreation({
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-sm font-bold text-app-text-main">Tasks Grouped by Sprint / Milestone</h3>
                             <button
-                                onClick={loadData}
+                                onClick={() => loadData(1)}
                                 disabled={isLoading}
                                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold bg-app-bg-muted text-app-text-main hover:bg-app-bg-hover"
                             >
@@ -1170,6 +1203,39 @@ export default function TaskCreation({
                                         </div>
                                     </div>
                                 ))}
+
+                                {pagination.count > 0 && (
+                                    <div className="mt-6 flex items-center justify-between border-t border-app-border-light pt-4 px-1">
+                                        <div className="text-xs text-app-text-muted">
+                                            Showing <span className="font-semibold text-app-text-main">{tasks.length}</span> of <span className="font-semibold text-app-text-main">{pagination.count}</span> tasks
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={() => loadData(pagination.currentPage - 1)}
+                                                disabled={!pagination.previous || isLoading}
+                                                className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all ${!pagination.previous || isLoading
+                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-50'
+                                                    : 'border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95'
+                                                    }`}
+                                            >
+                                                Previous
+                                            </button>
+                                            <div className="flex items-center justify-center min-w-[2rem] h-8 rounded-lg bg-app-primary-light text-app-primary-hover text-xs font-extrabold">
+                                                {pagination.currentPage}
+                                            </div>
+                                            <button
+                                                onClick={() => loadData(pagination.currentPage + 1)}
+                                                disabled={!pagination.next || isLoading}
+                                                className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all ${!pagination.next || isLoading
+                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-50'
+                                                    : 'border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95'
+                                                    }`}
+                                            >
+                                                Next
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

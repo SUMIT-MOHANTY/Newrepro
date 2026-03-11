@@ -327,9 +327,9 @@ class TaskManagementService:
         self._tasks_cache[cache_key] = (now, response)
         return response
 
-    async def get_total_tasks(self, task_token: Optional[str] = None) -> dict:
+    async def get_total_tasks(self, page: int = None, task_token: Optional[str] = None) -> dict:
         """Fetch all tasks (unpaginated total list) from the external task management API."""
-        cache_key = task_token or "default"
+        cache_key = (task_token, page) if page else (task_token or "default")
         now = time.time()
         
         if cache_key in self._total_tasks_cache:
@@ -337,7 +337,10 @@ class TaskManagementService:
             if now - timestamp < self._cache_ttl:
                 return data
 
-        response = await self._make_request("GET", "/api/agent/tasks-total-list", task_token=task_token)
+        endpoint = "/api/agent/tasks-total-list"
+        if page:
+            endpoint += f"?page={page}"
+        response = await self._make_request("GET", endpoint, task_token=task_token)
         
         self._total_tasks_cache[cache_key] = (now, response)
         return response

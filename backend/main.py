@@ -6015,13 +6015,14 @@ async def get_external_agent_tasks(
 @app.get("/api/agent/tasks-total-list/")
 async def get_external_agent_total_tasks(
     current_user: models.User = Depends(auth.get_current_user),
+    page: int = None,
     x_task_token: Optional[str] = Header(None)
 ):
     """
     Fetch the list of all tasks from the external task management API.
     """
     try:
-        tasks = await task_service.get_total_tasks(task_token=x_task_token)
+        tasks = await task_service.get_total_tasks(page=page, task_token=x_task_token)
         return tasks
     except TaskServiceTimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))
