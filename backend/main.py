@@ -1402,6 +1402,7 @@ ORG_MANAGED_PAGES: list[schemas.OrganizationPage] = [
     schemas.OrganizationPage(path="/agents", label="Agents"),
     schemas.OrganizationPage(path="/plugins", label="Plugins"),
     schemas.OrganizationPage(path="/organization-admin", label="Organization Admin"),
+    schemas.OrganizationPage(path="/governance-management", label="Governance Management"),
 ]
 
 def _hash_invite_token(token: str) -> str:
@@ -1618,6 +1619,76 @@ def delete_org_role(
     db.delete(role)
     db.commit()
     return {"ok": True}
+
+@app.post("/organization/rbac/request-access")
+async def request_access(
+    request: schemas.AccessRequest,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    if not current_user.organization_name:
+        raise HTTPException(status_code=400, detail="User not associated with an organization")
+    
+    # Super admins as recipients
+    admins = db.query(models.User).filter(
+        models.User.organization_name == current_user.organization_name,
+        models.User.is_org_admin == True
+    ).all()
+    
+    # Find roles that have this path
+    roles_with_access = db.query(models.OrganizationRole).join(models.OrganizationRolePermission).filter(
+        models.OrganizationRole.organization_name == current_user.organization_name,
+        models.OrganizationRolePermission.path == request.path
+    ).all()
+    
+    role_ids = [r.id for r in roles_with_access]
+    users_with_roles = []
+    if role_ids:
+        users_with_roles = db.query(models.User).join(models.UserOrganizationRole).filter(
+            models.UserOrganizationRole.role_id.in_(role_ids)
+        ).all()
+    
+    # Combine recipients
+    recipients = {u.email for u in admins} | {u.email for u in users_with_roles}
+    
+    if not recipients:
+        raise HTTPException(status_code=404, detail="No authorized users found to receive this request")
+
+    requester_name = f"{current_user.first_name or ''} {current_user.last_name or ''}".strip() or current_user.email
+    
+    sent_count = 0
+    for email in recipients:
+        try:
+            email_service.send_access_request_email(
+                recipient_email=email,
+                requester_name=requester_name,
+                requester_email=current_user.email,
+                organization_name=current_user.organization_name,
+                section_name=request.section_name
+            )
+            sent_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send access request email to {email}: {e}")
+            
+    return {"status": "success", "message": f"Access request sent to {sent_count} administrators"}
+
+@app.get("/organization/rbac/page-access-info")
+def get_page_access_info(
+    path: str,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    if not current_user.organization_name:
+        raise HTTPException(status_code=400, detail="User not associated with an organization")
+    
+    # Find roles in this org that have this path permission
+    roles = db.query(models.OrganizationRole).join(models.OrganizationRolePermission).filter(
+        models.OrganizationRole.organization_name == current_user.organization_name,
+        models.OrganizationRolePermission.path == path
+    ).all()
+    
+    role_names = [r.name for r in roles]
+    return {"path": path, "role_names": role_names}
 
 @app.get("/organization/invites", response_model=list[schemas.OrganizationInviteResponse])
 def list_org_invites(
@@ -2540,16 +2611,134 @@ def _apply_all_skipped_override(scoring_result: Dict[str, Any]) -> Dict[str, Any
     }
 
 @app.get("/governance/questions")
-async def get_governance_questions():
+async def get_governance_questions(db: Session = Depends(get_db)):
     """
-    Get all 17 governance questionnaire questions.
-    No authentication required for viewing questions.
+    Get all active governance questions from database.
     """
+    questions = db.query(models.GovernanceQuestion)\
+        .filter(models.GovernanceQuestion.is_active == True)\
+        .order_by(models.GovernanceQuestion.order)\
+        .all()
+    
+    # Map to the format expected by the frontend
+    formatted_questions = []
+    for q in questions:
+        # Load options
+        options = []
+        for opt in q.options:
+            options.append({
+                "label": opt.label,
+                "score": opt.score
+            })
+            
+        formatted_questions.append({
+            "id": q.id,
+            "dimension": q.dimension,
+            "question": q.question_text,
+            "options": options
+        })
+
     return {
-        "total_questions": len(governance_scoring.GOVERNANCE_QUESTIONS),
-        "questions": governance_scoring.GOVERNANCE_QUESTIONS,
+        "total_questions": len(formatted_questions),
+        "questions": formatted_questions,
         "dimension_weights": governance_scoring.DIMENSION_WEIGHTS,
     }
+
+@app.get("/governance/questions/all", response_model=list[schemas.GovernanceQuestion])
+async def get_all_governance_questions(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    
+    return db.query(models.GovernanceQuestion).order_by(models.GovernanceQuestion.order).all()
+
+@app.post("/governance/questions", response_model=schemas.GovernanceQuestion)
+async def create_governance_question(
+    question: schemas.GovernanceQuestionCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    
+    db_question = models.GovernanceQuestion(
+        dimension=question.dimension,
+        question_text=question.question_text,
+        order=question.order,
+        is_active=question.is_active
+    )
+    db.add(db_question)
+    db.flush()
+    
+    for opt in question.options:
+        db_opt = models.GovernanceQuestionOption(
+            question_id=db_question.id,
+            label=opt.label,
+            score=opt.score
+        )
+        db.add(db_opt)
+    
+    db.commit()
+    db.refresh(db_question)
+    return db_question
+
+@app.put("/governance/questions/{question_id}", response_model=schemas.GovernanceQuestion)
+async def update_governance_question(
+    question_id: int,
+    question_update: schemas.GovernanceQuestionUpdate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    
+    db_question = db.query(models.GovernanceQuestion).filter(models.GovernanceQuestion.id == question_id).first()
+    if not db_question:
+        raise HTTPException(status_code=404, detail="Question not found")
+    
+    if question_update.dimension is not None:
+        db_question.dimension = question_update.dimension
+    if question_update.question_text is not None:
+        db_question.question_text = question_update.question_text
+    if question_update.order is not None:
+        db_question.order = question_update.order
+    if question_update.is_active is not None:
+        db_question.is_active = question_update.is_active
+    
+    if question_update.options is not None:
+        # Delete old options
+        db.query(models.GovernanceQuestionOption).filter(models.GovernanceQuestionOption.question_id == question_id).delete()
+        # Add new options
+        for opt in question_update.options:
+            db_opt = models.GovernanceQuestionOption(
+                question_id=question_id,
+                label=opt.label,
+                score=opt.score
+            )
+            db.add(db_opt)
+    
+    db.commit()
+    db.refresh(db_question)
+    return db_question
+
+@app.delete("/governance/questions/{question_id}")
+async def delete_governance_question(
+    question_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    
+    db_question = db.query(models.GovernanceQuestion).filter(models.GovernanceQuestion.id == question_id).first()
+    if not db_question:
+        raise HTTPException(status_code=404, detail="Question not found")
+    
+    db.delete(db_question)
+    db.commit()
+    return {"detail": "Question deleted"}
 
 
 @app.post("/governance/submit", response_model=schemas.GovernanceResult)
@@ -2567,8 +2756,19 @@ async def submit_governance_response(
     for answer in request.answers:
         answers_dict[answer.question_id] = answer.score
     
+    # Fetch questions from DB for scoring
+    db_questions = db.query(models.GovernanceQuestion).filter(models.GovernanceQuestion.is_active == True).all()
+    questions_list = []
+    for q in db_questions:
+        questions_list.append({
+            "id": q.id,
+            "dimension": q.dimension,
+            "question": q.question_text,
+            "options": [{"label": opt.label, "score": opt.score} for opt in q.options]
+        })
+    
     # Perform complete scoring
-    scoring_result = governance_scoring.score_governance_response(answers_dict)
+    scoring_result = governance_scoring.score_governance_response(answers_dict, questions=questions_list)
 
     if _all_answers_skipped_from_submission(request.answers):
         scoring_result = _apply_all_skipped_override(scoring_result)

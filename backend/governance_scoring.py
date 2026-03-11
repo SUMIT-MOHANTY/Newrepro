@@ -230,19 +230,21 @@ HARD_STOPS = [
 ]
 
 
-def calculate_dimension_score(dimension_name: str, answers: dict) -> float:
+def calculate_dimension_score(dimension_name: str, answers: dict, questions: list = None) -> float:
     """
     Calculate the score for a single dimension.
     
     Args:
         dimension_name: Name of the dimension
         answers: Dict mapping question_id -> score
+        questions: Optional list of dynamic questions
     
     Returns:
         Dimension score (0-10), normalized
     """
     # Get all questions for this dimension
-    dimension_questions = [q for q in GOVERNANCE_QUESTIONS if q["dimension"] == dimension_name]
+    active_questions = questions if questions is not None else GOVERNANCE_QUESTIONS
+    dimension_questions = [q for q in active_questions if q["dimension"] == dimension_name]
     
     if not dimension_questions:
         return 0.0
@@ -329,12 +331,13 @@ def check_hard_stops(answers: dict) -> list[str]:
     return triggered
 
 
-def score_governance_response(answers: dict) -> dict:
+def score_governance_response(answers: dict, questions: list = None) -> dict:
     """
     Complete governance scoring calculation.
     
     Args:
         answers: Dict mapping question_id -> score
+        questions: Optional list of dynamic questions
     
     Returns:
         Complete scoring result with all metrics
@@ -342,7 +345,7 @@ def score_governance_response(answers: dict) -> dict:
     # Calculate dimension scores
     dimension_scores = {}
     for dimension in DIMENSION_WEIGHTS.keys():
-        dimension_scores[dimension] = calculate_dimension_score(dimension, answers)
+        dimension_scores[dimension] = calculate_dimension_score(dimension, answers, questions)
     
     # Calculate weighted score
     weighted_score = calculate_weighted_score(dimension_scores)

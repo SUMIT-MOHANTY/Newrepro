@@ -208,6 +208,43 @@ class GovernanceRevisionReason(BaseModel):
 
 # ===== GOVERNANCE QUESTIONNAIRE =====
 
+class GovernanceQuestionOptionBase(BaseModel):
+    label: str
+    score: int
+
+class GovernanceQuestionOptionCreate(GovernanceQuestionOptionBase):
+    pass
+
+class GovernanceQuestionOption(GovernanceQuestionOptionBase):
+    id: int
+    question_id: int
+
+    class Config:
+        from_attributes = True
+
+class GovernanceQuestionBase(BaseModel):
+    dimension: str
+    question_text: str
+    order: int = 0
+    is_active: bool = True
+
+class GovernanceQuestionCreate(GovernanceQuestionBase):
+    options: list[GovernanceQuestionOptionCreate]
+
+class GovernanceQuestionUpdate(BaseModel):
+    dimension: Optional[str] = None
+    question_text: Optional[str] = None
+    order: Optional[int] = None
+    is_active: Optional[bool] = None
+    options: Optional[list[GovernanceQuestionOptionCreate]] = None
+
+class GovernanceQuestion(GovernanceQuestionBase):
+    id: int
+    options: list[GovernanceQuestionOption]
+
+    class Config:
+        from_attributes = True
+
 class GovernanceAnswer(BaseModel):
     """Single answer to a governance question"""
     question_id: int  # 1-17
@@ -265,3 +302,6 @@ class GovernanceResult(BaseModel):
     
     class Config:
         from_attributes = True
+class AccessRequest(BaseModel):
+    path: str
+    section_name: str

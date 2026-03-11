@@ -636,3 +636,114 @@ def send_invite_notification_to_admin(
         invite_url=invite_url,
     )
     _send_email_message(message)
+
+
+def _build_access_request_email(
+    recipient_email: str,
+    requester_name: str,
+    requester_email: str,
+    organization_name: str,
+    section_name: str,
+) -> EmailMessage:
+    app_name = str(settings.smtp_from_name or "").strip() or "Dsuite"
+    subject = f"Access Request: {section_name} - {organization_name}"
+    
+    text_body = (
+        f"Hello,\n\n"
+        f"A user has requested access to the '{section_name}' section in the {organization_name} organization.\n\n"
+        f"Requester Details:\n"
+        f"Name: {requester_name}\n"
+        f"Email: {requester_email}\n\n"
+        f"Please review their access permissions in the Organization Admin panel.\n\n"
+        f"Best regards,\n"
+        f"The {app_name} Team"
+    )
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{subject}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0f1117;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0f1117;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background-color:#16181f;border-radius:16px;overflow:hidden;border:1px solid #2a2d3a;">
+          <tr>
+            <td style="background:linear-gradient(135deg,#1a1f35 0%,#0f1117 60%,#0d1a2e 100%);padding:40px 40px 32px;text-align:center;border-bottom:1px solid #2a2d3a;">
+              <table cellpadding="0" cellspacing="0" border="0" align="center" style="margin-bottom:16px;">
+                <tr>
+                  <td style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);border-radius:12px;padding:10px 20px;">
+                    <span style="color:#ffffff;font-size:18px;font-weight:800;letter-spacing:-0.5px;">{app_name}</span>
+                  </td>
+                </tr>
+              </table>
+              <h1 style="margin:0;color:#f8fafc;font-size:22px;font-weight:700;letter-spacing:-0.5px;line-height:1.2;">Access Request</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 40px;">
+              <p style="margin:0 0 20px;color:#94a3b8;font-size:15px;line-height:1.6;">
+                A user has requested access to the <strong style="color:#e2e8f0;">{section_name}</strong> section.
+              </p>
+              <div style="background-color:#0f1117;border-radius:12px;border:1px solid #2a2d3a;padding:24px;margin-bottom:24px;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td style="padding-bottom:12px;">
+                      <span style="display:block;color:#475569;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Organization</span>
+                      <span style="color:#e2e8f0;font-size:14px;font-weight:600;">{organization_name}</span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding-bottom:12px;">
+                      <span style="display:block;color:#475569;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Requester Name</span>
+                      <span style="color:#e2e8f0;font-size:14px;font-weight:600;">{requester_name}</span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <span style="display:block;color:#475569;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Requester Email</span>
+                      <span style="color:#e2e8f0;font-size:14px;font-weight:600;">{requester_email}</span>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+              <p style="margin:0;color:#94a3b8;font-size:14px;line-height:1.6;">
+                Best regards,<br>
+                <strong style="color:#e2e8f0;">The {app_name} Team</strong>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = _from_header()
+    message["To"] = recipient_email
+    message.set_content(text_body)
+    message.add_alternative(html_body, subtype="html")
+    return message
+
+
+def send_access_request_email(
+    recipient_email: str,
+    requester_name: str,
+    requester_email: str,
+    organization_name: str,
+    section_name: str,
+) -> None:
+    ensure_email_delivery_configured()
+    message = _build_access_request_email(
+        recipient_email=recipient_email,
+        requester_name=requester_name,
+        requester_email=requester_email,
+        organization_name=organization_name,
+        section_name=section_name,
+    )
+    _send_email_message(message)

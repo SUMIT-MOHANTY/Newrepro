@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
-import { Menu, Settings, Moon, Sun } from 'lucide-react';
+import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -141,6 +141,10 @@ export default function AppLayout({ children }) {
         }
     }, [selectedProjectKey]);
 
+    const [requestingAccess, setRequestingAccess] = useState(false);
+    const [requestSuccess, setRequestSuccess] = useState(false);
+    const [authorizedRoles, setAuthorizedRoles] = useState([]);
+
     const invalidateProjects = useInvalidateProjects();
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
@@ -150,7 +154,53 @@ export default function AppLayout({ children }) {
                     : location.pathname === '/task-creation' ? 'taskCreation'
                         : location.pathname === '/resource-onboarding' ? 'resourceOnboarding'
                             : location.pathname === '/agent-analysis' ? 'agentAnalysis'
-                                : 'main';
+                                : location.pathname === '/governance-management' ? 'governanceManagement'
+                                    : location.pathname === '/agents' ? 'agents'
+                                        : location.pathname === '/plugins' ? 'plugins'
+                                            : 'main';
+
+    const getViewLabel = useCallback((view) => {
+        switch (view) {
+            case 'statusDashboard': return 'Project Status Dashboard';
+            case 'organizationAdmin': return 'Organization Admin';
+            case 'governance': return 'Project Setup & Governance';
+            case 'prerequisites': return 'Prerequisite Classification';
+            case 'taskCreation': return 'Task Creation Planner';
+            case 'resourceOnboarding': return 'Resource Onboarding';
+            case 'agentAnalysis': return 'Agent Analysis';
+            case 'governanceManagement': return 'Governance Management';
+            case 'agents': return 'Agents';
+            case 'plugins': return 'Plugins';
+            default: return 'Requirements Analyzer';
+        }
+    }, []);
+
+    const handleRequestAccess = async () => {
+        if (!user || requestingAccess) return;
+        setRequestingAccess(true);
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch(API_ENDPOINTS.ORG_RBAC_REQUEST_ACCESS, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    path: location.pathname,
+                    section_name: getViewLabel(currentView)
+                })
+            });
+            if (response.ok) {
+                setRequestSuccess(true);
+                setTimeout(() => setRequestSuccess(false), 5000);
+            }
+        } catch (error) {
+            console.error('Failed to request access:', error);
+        } finally {
+            setRequestingAccess(false);
+        }
+    };
 
     const setCurrentView = useCallback((view) => {
         if (view === 'statusDashboard') {
@@ -225,6 +275,18 @@ export default function AppLayout({ children }) {
         const isAllowed = allowed.some((p) => p === rbacPath || (p && rbacPath.startsWith(p + '/')));
         return !isAllowed;
     }, [user, rbac, location.pathname]);
+
+    // Fetch roles that have access to current page
+    useEffect(() => {
+        if (!hasAccessError || !user) return;
+        const token = localStorage.getItem('token');
+        fetch(API_ENDPOINTS.ORG_RBAC_PAGE_ACCESS_INFO(location.pathname), {
+            headers: { Authorization: `Bearer ${token}` }
+        })
+            .then(res => res.json())
+            .then(data => setAuthorizedRoles(data.role_names || []))
+            .catch(err => console.error('Failed to fetch role info:', err));
+    }, [hasAccessError, location.pathname, user]);
 
     const fetchPluginClients = useCallback(() => {
         const token = localStorage.getItem('token');
@@ -905,103 +967,142 @@ export default function AppLayout({ children }) {
                                 </h2>
                             </div>
 
-                            {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'main') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
-                                <div className="flex flex-row gap-3 ml-4 shrink-0 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
-                                    {currentView === 'statusDashboard' && (
-                                        <>
-                                            <div className="w-48">
-                                                <RoleDropdown
-                                                    roles={DASHBOARD_ROLES}
-                                                    selectedRole={selectedRole}
-                                                    onSelect={(roleValue) => setSelectedRole(roleValue)}
-                                                    theme="dark"
-                                                />
-                                            </div>
-                                            <div className="w-px h-5 bg-white/20"></div>
-                                        </>
-                                    )}
-                                    <div className="w-48 sm:w-56">
-                                        <ProjectDropdown
-                                            projects={projects}
-                                            selectedKey={selectedProjectKey}
-                                            onSelect={(proj) => {
-                                                if (!proj?.key || proj.key === selectedProjectKey) return;
-                                                handleSelectProject(proj);
-                                            }}
-                                            theme="dark"
-                                        />
+                            {/* Right-side Controls Group */}
+                            <div className="flex items-center gap-4 ml-4 shrink-0">
+                                {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'governance' || currentView === 'taskCreation' || currentView === 'resourceOnboarding' || currentView === 'agentAnalysis' || currentView === 'main') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
+                                    <div className="flex flex-row-reverse gap-3 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
+                                        <div className="w-48 sm:w-56">
+                                            <ProjectDropdown
+                                                projects={projects}
+                                                selectedKey={selectedProjectKey}
+                                                onSelect={(proj) => {
+                                                    if (!proj?.key || proj.key === selectedProjectKey) return;
+                                                    handleSelectProject(proj);
+                                                }}
+                                                theme="dark"
+                                            />
+                                        </div>
+                                        {currentView === 'statusDashboard' && (
+                                            <>
+                                                <div className="w-px h-5 bg-white/20"></div>
+                                                <div className="w-48">
+                                                    <RoleDropdown
+                                                        roles={DASHBOARD_ROLES}
+                                                        selectedRole={selectedRole}
+                                                        onSelect={(roleValue) => setSelectedRole(roleValue)}
+                                                        theme="dark"
+                                                    />
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
-                                </div>
-                            )}
+                                )}
 
-                            {/* Status Pipeline graphic top right - ONLY shown on statusDashboard */}
-                            {/* {currentView === 'statusDashboard' && (
-                                <div className="text-[9px] md:text-xs font-bold text-app-text-label flex items-center space-x-1.5 bg-app-bg-card px-2 md:px-3 py-1.5 rounded-full shadow-md border border-app-border-light whitespace-nowrap ml-4 shrink-0 hidden sm:flex">
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-text-light rounded-full mr-1"></span><span className="hidden md:inline">KICK-OFF</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-orange-200 rounded-full mr-1"></span><span className="hidden md:inline">PREPARE</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-yellow-400 rounded-full mr-1"></span><span className="hidden md:inline">INTERVIEW</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-primary rounded-full mr-1"></span><span className="hidden md:inline">APPRAISED</span></div>
-                                    <div className="flex items-center"><span className="w-2.5 h-2.5 md:w-3 md:h-3 bg-app-status-success rounded-full"></span></div>
-                                </div>
-                            )} */}
-
-                            {/* Theme Toggle Button */}
-                            <button
-                                type="button"
-                                onClick={() => setIsDarkMode(!isDarkMode)}
-                                className="p-1.5 md:p-2 ml-4 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0 cursor-pointer"
-                                aria-label="Toggle Dark Mode"
-                            >
-                                {isDarkMode ? <Sun className="w-4 h-4 md:w-5 md:h-5" /> : <Moon className="w-4 h-4 md:w-5 md:h-5" />}
-                            </button>
-
-                            {/* Settings Button (Global) */}
-                            {/* <button
-                                type="button"
-                                onClick={() => setShowSettings(true)}
-                                className="p-1.5 md:p-2 ml-4 rounded-md text-app-border hover:text-app-bg-card hover:bg-app-bg-card/10 transition-colors border border-transparent hover:border-app-bg-card/20 flex-shrink-0"
-                                aria-label="Open settings"
-                            >
-                                <Settings className="w-4 h-4 md:w-5 md:h-5" />
-                            </button> */}
+                                {/* Theme Toggle Button */}
+                                <button
+                                    type="button"
+                                    onClick={() => setIsDarkMode(!isDarkMode)}
+                                    className="p-1.5 md:p-2 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0 cursor-pointer"
+                                    aria-label="Toggle Dark Mode"
+                                >
+                                    {isDarkMode ? <Sun className="w-4 h-4 md:w-5 md:h-5" /> : <Moon className="w-4 h-4 md:w-5 md:h-5" />}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </header>
 
                 {/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
-                {roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
-                    <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
-                        <RoadmapHeader
-                            steps={roadmapDataForView.steps || []}
-                            currentStep={roadmapDataForView.current_step || 0}
-                            stepStatuses={roadmapDataForView.step_statuses || null}
-                            failedStep={roadmapDataForView.failed_step ?? null}
-                            activeStepIndex={forcedRoadmapStepIndex}
-                            activeStepCompleted={forcedStepCompleted}
-                            selectedProjectKey={selectedProjectKey}
-                        />
-                    </div>
-                )}
+                {
+                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
+                        <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
+                            <RoadmapHeader
+                                steps={roadmapDataForView.steps || []}
+                                currentStep={roadmapDataForView.current_step || 0}
+                                stepStatuses={roadmapDataForView.step_statuses || null}
+                                failedStep={roadmapDataForView.failed_step ?? null}
+                                activeStepIndex={forcedRoadmapStepIndex}
+                                activeStepCompleted={forcedStepCompleted}
+                                selectedProjectKey={selectedProjectKey}
+                            />
+                        </div>
+                    )
+                }
 
-                <div className="flex-1 h-full overflow-hidden">
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                     {hasAccessError ? (
-                        <div className="flex flex-col items-center justify-center h-full text-center px-4 bg-app-bg-page relative z-[200]">
-                            <div className="w-20 h-20 mb-6 bg-app-status-errorBg text-app-status-error flex items-center justify-center rounded-2xl shadow-sm border border-red-200">
-                                <span className="font-extrabold text-3xl">!</span>
+                        <div className="flex flex-col items-center justify-center h-full text-center px-6 bg-app-bg-page relative z-[200] animate-in fade-in duration-500">
+                            <div className="w-24 h-24 mb-8 bg-app-status-errorBg text-app-status-error flex items-center justify-center rounded-3xl shadow-lg border border-red-200/50 relative overflow-hidden group">
+                                <div className="absolute inset-0 bg-red-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                                <Lock className="w-10 h-10 relative z-10" />
+                                <ShieldAlert className="w-6 h-6 absolute top-3 right-3 text-red-400 animate-pulse" />
                             </div>
-                            <h2 className="text-2xl font-bold text-app-text-main mb-3">No Access</h2>
-                            <p className="text-app-text-light max-w-md">
-                                You don't have permission to access the <strong>{
-                                    currentView === 'statusDashboard' ? 'Project Status Dashboard' :
-                                        currentView === 'organizationAdmin' ? 'Organization Admin' :
-                                            currentView === 'governance' ? 'Project Setup & Governance' :
-                                                currentView === 'prerequisites' ? 'Prerequisite Classification' :
-                                                    currentView === 'taskCreation' ? 'Task Creation Planner' :
-                                                        currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
-                                                            currentView === 'agentAnalysis' ? 'Agent Analysis' :
-                                                                'Requirements Analyzer'
-                                }</strong> section.
-                                <br />                          </p>
+
+                            <h2 className="text-3xl font-black text-app-text-main mb-4 tracking-tight">Access Restricted</h2>
+
+                            <div className="max-w-md space-y-6">
+                                <p className="text-app-text-light leading-relaxed">
+                                    You don't have access to the <span className="text-app-primary font-bold px-2 py-1 bg-app-primary/5 rounded-lg border border-app-primary/10">{getViewLabel(currentView)}</span> section.
+                                </p>
+
+                                <div className="py-8 px-6 bg-app-bg-card border border-app-border rounded-2xl shadow-xl relative group">
+                                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-4 py-1 bg-app-primary text-white text-[10px] font-black uppercase tracking-widest rounded-full shadow-lg">
+                                        Action Required
+                                    </div>
+
+                                    <p className="text-sm text-app-text-label mb-4 font-bold leading-relaxed">
+                                        Request these roles to proceed with this step:
+                                    </p>
+
+                                    {authorizedRoles.length > 0 && (
+                                        <div className="mb-6 p-4 bg-app-bg-muted/50 rounded-xl border border-app-border-light text-left">
+                                            <div className="flex flex-wrap gap-2">
+                                                {authorizedRoles.map(role => (
+                                                    <span key={role} className="text-[11px] font-bold text-app-primary bg-app-primary/10 px-2 py-0.5 rounded border border-app-primary/20">
+                                                        {role}
+                                                    </span>
+                                                ))}
+                                                <span className="text-[11px] font-bold text-app-status-error bg-app-status-errorBg px-2 py-0.5 rounded border border-app-status-error/20">
+                                                    Org Admin
+                                                </span>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <p className="text-xs text-app-text-muted mb-6 leading-loose">
+                                        Click below to notify users holding these roles that you need action to continue the project workflow.
+                                    </p>
+
+                                    <button
+                                        onClick={handleRequestAccess}
+                                        disabled={requestingAccess || requestSuccess}
+                                        className={`w-full flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-bold transition-all transform active:scale-95 shadow-xl ${requestSuccess
+                                            ? 'bg-app-status-successBg text-app-status-success border border-app-status-success/30 cursor-default'
+                                            : 'bg-app-primary hover:bg-app-primary-hover text-white hover:shadow-app-primary/20'
+                                            } ${requestingAccess ? 'opacity-70 cursor-wait' : ''}`}
+                                    >
+                                        {requestingAccess ? (
+                                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                        ) : requestSuccess ? (
+                                            <>
+                                                <CheckCircle className="w-5 h-5" />
+                                                Request Sent Successfully
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Mail className="w-5 h-5" />
+                                                Send Request to Admin
+                                            </>
+                                        )}
+                                    </button>
+
+                                    {requestSuccess && (
+                                        <p className="mt-4 text-[11px] font-bold text-app-status-success animate-in fade-in slide-in-from-top-2">
+                                            Administrators have been notified via email.
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
                         </div>
                     ) : (
                         typeof children === 'function'
@@ -1013,44 +1114,46 @@ export default function AppLayout({ children }) {
                             )
                     )}
                 </div>
-            </div>
+            </div >
 
             {/* Global AI Config Modal - available on all pages */}
-            {showSettings && (
-                <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-                    {/* Backdrop with blur */}
-                    <div
-                        className="absolute inset-0 bg-black/70 backdrop-blur-md"
-                        onClick={() => setShowSettings(false)}
-                    />
-                    {/* Modal Content */}
-                    <div className="relative z-[301] bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
-                        <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
-                            <h2 className="font-bold text-lg text-app-text-main flex items-center">
-                                <Settings className="w-5 h-5 mr-2 text-app-primary" />
-                                AI Configuration
-                            </h2>
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
-                            >
-                                ✕
-                            </button>
-                        </div>
-                        <div className="p-6">
-                            <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
-                        </div>
-                        <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="px-5 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover font-medium text-sm transition-colors shadow-md active:scale-95"
-                            >
-                                Done
-                            </button>
+            {
+                showSettings && (
+                    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+                        {/* Backdrop with blur */}
+                        <div
+                            className="absolute inset-0 bg-black/70 backdrop-blur-md"
+                            onClick={() => setShowSettings(false)}
+                        />
+                        {/* Modal Content */}
+                        <div className="relative z-[301] bg-app-bg-card rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
+                            <div className="p-5 border-b border-app-border-light flex justify-between items-center bg-app-bg-page/50">
+                                <h2 className="font-bold text-lg text-app-text-main flex items-center">
+                                    <Settings className="w-5 h-5 mr-2 text-app-primary" />
+                                    AI Configuration
+                                </h2>
+                                <button
+                                    onClick={() => setShowSettings(false)}
+                                    className="text-app-text-light hover:text-app-text-label transition-colors text-xl leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-app-bg-muted"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            <div className="p-6">
+                                <AIConfig config={aiConfig} onConfigChange={setAiConfig} />
+                            </div>
+                            <div className="p-4 bg-app-bg-page border-t border-app-border-light flex justify-end">
+                                <button
+                                    onClick={() => setShowSettings(false)}
+                                    className="px-5 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover font-medium text-sm transition-colors shadow-md active:scale-95"
+                                >
+                                    Done
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
-        </div>
+                )
+            }
+        </div >
     );
 }

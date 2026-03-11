@@ -301,3 +301,27 @@ class GovernanceResponse(Base):
     steps_data = Column(JSON, nullable=True)
 
     owner = relationship("User", back_populates="governance_responses")
+
+class GovernanceQuestion(Base):
+    __tablename__ = "governance_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dimension = Column(String, index=True, nullable=False)
+    question_text = Column(String, nullable=False)
+    order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    options = relationship("GovernanceQuestionOption", back_populates="question", cascade="all, delete-orphan")
+
+class GovernanceQuestionOption(Base):
+    __tablename__ = "governance_question_options"
+
+    id = Column(Integer, primary_key=True, index=True)
+    question_id = Column(Integer, ForeignKey("governance_questions.id"), index=True, nullable=False)
+    label = Column(String, nullable=False)
+    score = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    question = relationship("GovernanceQuestion", back_populates="options")

@@ -13,6 +13,7 @@ import SsoCallback from './pages/SsoCallback';
 import LandingPage from './pages/LandingPage';
 import HowItWorks from './pages/HowItWorks';
 import OrganizationAdmin from './pages/OrganizationAdmin';
+import GovernanceManagement from './pages/GovernanceManagement';
 import AppPreview from './pages/AppPreview';
 import AppLayout from './components/AppLayout';
 import AgentsPage from './components/AgentsPage';
@@ -96,6 +97,11 @@ function App() {
         <Route path="/plugins" element={
           <AppLayout>
             {(layoutProps) => <Plugins {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/governance-management" element={
+          <AppLayout>
+            {(layoutProps) => <GovernanceManagement {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/app/:projectId" element={

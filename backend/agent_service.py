@@ -13620,7 +13620,7 @@ async def deploy_preview(
         _log("Cloning code into preview container...")
         subprocess.run(
             ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1 || true"],
+             "apt-get update -qq && apt-get install -y -qq git procps > /dev/null 2>&1 || true"],
             capture_output=True, text=True, timeout=120,
         )
         # Clear workspace and clone
@@ -13868,6 +13868,16 @@ async def repair_preview(
     })
 
     async def _repair_bg():
+        # Master Agent reference for live logging in the repair background task
+        master_agent = project_agents.get(MASTER_AGENT_ID)
+        def _master_log(msg: str):
+            if master_agent:
+                master_agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"🕵️ [Preview-Audit] {msg}"
+                })
+
         try:
             import uuid
             task = {

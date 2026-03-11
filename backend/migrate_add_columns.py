@@ -127,6 +127,39 @@ def migrate():
         conn.commit()
         print("[OK] password_resets table ensured")
 
+        # Table: governance_questions
+        print("Ensuring governance_questions table exists...")
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS governance_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dimension VARCHAR NOT NULL,
+                question_text VARCHAR NOT NULL,
+                "order" INTEGER DEFAULT 0,
+                is_active BOOLEAN DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_governance_questions_dimension ON governance_questions (dimension)"))
+        conn.commit()
+        print("[OK] governance_questions table ensured")
+
+        # Table: governance_question_options
+        print("Ensuring governance_question_options table exists...")
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS governance_question_options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question_id INTEGER NOT NULL,
+                label VARCHAR NOT NULL,
+                score INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(question_id) REFERENCES governance_questions(id)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_governance_question_options_question_id ON governance_question_options (question_id)"))
+        conn.commit()
+        print("[OK] governance_question_options table ensured")
+
         print("\nMigration completed successfully!")
 
 if __name__ == "__main__":

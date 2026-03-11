@@ -18,6 +18,8 @@ export const API_ENDPOINTS = {
     ORG_RBAC_ME: `${API_BASE_URL}/organization/rbac/me`,
     ORG_RBAC_ROLES: `${API_BASE_URL}/organization/rbac/roles`,
     ORG_RBAC_ROLE: (roleId) => `${API_BASE_URL}/organization/rbac/roles/${roleId}`,
+    ORG_RBAC_REQUEST_ACCESS: `${API_BASE_URL}/organization/rbac/request-access`,
+    ORG_RBAC_PAGE_ACCESS_INFO: (path) => `${API_BASE_URL}/organization/rbac/page-access-info?path=${path}`,
     ORG_INVITES: `${API_BASE_URL}/organization/invites`,
     ORG_USERS: `${API_BASE_URL}/organization/users`,
     ORG_INVITE_PREVIEW: `${API_BASE_URL}/organization/invites/preview`,
@@ -47,6 +49,10 @@ export const API_ENDPOINTS = {
     GOVERNANCE_REVISION_REASON: (id) => `${API_BASE_URL}/governance/${id}/revision-reason`,
     GOVERNANCE_ROADMAP_STEP: (id) => `${API_BASE_URL}/governance/${id}/roadmap-step`,
     GOVERNANCE_PREREQUISITES_COMPLETE: (id) => `${API_BASE_URL}/governance/${id}/prerequisites-complete`,
+    GOVERNANCE_QUESTION_ALL: `${API_BASE_URL}/governance/questions/all`,
+    GOVERNANCE_QUESTION_CREATE: `${API_BASE_URL}/governance/questions`,
+    GOVERNANCE_QUESTION_UPDATE: (id) => `${API_BASE_URL}/governance/questions/${id}`,
+    GOVERNANCE_QUESTION_DELETE: (id) => `${API_BASE_URL}/governance/questions/${id}`,
 
     // GitHub
     GITHUB_AUTH_URL: `${API_BASE_URL}/github/auth-url`,
