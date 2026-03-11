@@ -23,3 +23,4 @@ backend/.env.example
 frontend/package-lock.json
 backend/rag_storage/
 backend/storage/project_configs/2/0cb47f14-7ace-44bd-b33e-329eab43d8d1/project_config.json
+backend/storage/project_configs/2/511685f5-bded-4e36-9dc4-48018e01b565/project_config.json

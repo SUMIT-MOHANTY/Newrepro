@@ -69,11 +69,11 @@ def _build_architecture_repair_prompt(previous_response: str) -> str:
 
 # BRD Analysis System Prompt
 PREREQUISITE_CATEGORIES: List[tuple[str, str]] = [
-    ("credentials", "API keys, authentication tokens, OAuth secrets, SSL certificates, SSH keys, SSO/LDAP access"),
-    ("apis", "Third-party API integrations, payment gateways, webhooks, callback URLs"),
-    ("infrastructure", "CI/CD pipelines, Docker/Kubernetes, SMTP/email, domain/DNS, firewalls, monitoring/logging"),
-    ("databases", "Database credentials, connection strings, cache servers (Redis/Memcache)"),
-    ("cloud", "AWS/Azure/GCP accounts, S3/blob storage, CDN, cloud subscriptions"),
+    ("credentials", "API keys, authentication tokens"),
+    ("apis", "Third-party API integrations"),
+    ("infrastructure", ""),
+    ("databases", "Database credentials, connection strings"),
+    ("cloud", "cloud accounts,CDN, cloud subscriptions"),
     ("dependencies", "Private package registries, licensed libraries, SDK access"),
 ]
 
@@ -599,6 +599,7 @@ RULES:
 6. Ensure tasks follow a logical sequence from project start to completion (e.g., setup before features, features before testing).
 7. **Complexity-based Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
 8. **Smart Budgeting**: You MUST complete the entire project development within the total project wallet. Allocate points smartly so that high-priority/complex tasks get sufficient budget while still leaving enough for the remaining development.
+13. **MASSIVE PARALLELISM & MACHINE SPEED**: For `ai_first` mode, you are simulating a swarm of AI agents. You MUST ignore human constraints (8-hour workdays, sleep, weekends). Do NOT schedule tasks purely sequentially. Multiple complex tasks can run simultaneously 24/7. A 50-100 task project should be completed in **2-5 calendar DAYS**. Your deadlines must look like 'Today + 1 day', 'Today + 2 days', etc. DO NOT extend project timelines into months unless explicitly forced by external human dependencies.
 9. **Placeholder Handling for Missing Prerequisites**: If the PREREQUISITES section lists items marked as [NOT YET PROVIDED], you MUST include in the relevant task descriptions:
     - Use environment variables with placeholder defaults (e.g., `API_KEY=your-api-key-here`) so the app can still run.
     - Use mock/stub services where applicable (e.g., mock SMTP, in-memory cache instead of Redis, local file storage instead of S3).
@@ -1427,17 +1428,15 @@ async def generate_all_tasks(
         f"- Project Deadline: {project_deadline}\n"
         f"- TOTAL Project Wallet: {project_wallet}\n"
         f"- Available Agents: {json.dumps(agents)}\n"
-        f"- Execution Mode (process_mode): {normalized_mode}\n"
-        f"\n"
-        f"EXECUTION MODE RULES (MUST FOLLOW):\n"
-        f"- ai_first: schedule assumes AI-only execution speed.\n"
-        f"- coexistence: schedule assumes AI + human work simultaneously (fastest calendar duration).\n"
-        f"- developer_only: schedule assumes human-only execution speed.\n"
-        f"- ai_assist: schedule MUST follow human-only calendar timing.\n"
-        f"- vibe_coding: schedule assumes AI-only execution speed.\n"
+        f"- Execution Mode (process_mode): {normalized_mode}\n\n"
+        f"EXECUTION MODE RULES (CRITICAL FOR CALENDAR DEADLINES):\n"
+        f"- ai_first: High-speed Agentic workflows running 24/7. This is 'machine-speed'. A 100-task project should finish in 3-5 DAYS TOTAL. DO NOT use human months. Parallel execution is mandatory.\n"
+        f"- vibe_coding: Prototyping speed. Developer + AI in high-sync. Expect 2x-3x human speed.\n"
+        f"- developer_only: Standard human industrial calendar. Traditional project timelines apply (months).\n"
+        f"- ai_assist: Standard human industrial calendar. AI helps with quality, but the project pace follows human developer availability.\n"
+        f"- coexistence: Hybrid speed. Human-driven with AI acceleration. Faster than human-only, but still anchored to a human calendar.\n"
         f"BRD ANALYSIS REPORT:\n"
         f"{analysis_report}\n\n"
-        f"{'CUSTOM RULES TO FOLLOW:' + chr(10) + custom_rules + chr(10) + chr(10) if custom_rules else ''}"
         f"Generate the FULL list of tasks. "
         f"The total wallet for all combined tasks must NOT exceed {project_wallet}. "
     )
