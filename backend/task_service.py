@@ -359,6 +359,10 @@ class TaskManagementService:
         """Update project deadline/status in external task management API."""
         return await self._make_request("PUT", "/api/agent/project/update/", task_token=task_token, json=payload)
 
+    async def update_project_config(self, payload: dict, task_token: Optional[str] = None) -> dict:
+        """Update project configuration in external task management API."""
+        return await self._make_request("PUT", "/api/agent/project-config/", task_token=task_token, json=payload)
+
     async def add_checklist_to_task(self, task_id: Any, checklist_items: list, task_token: Optional[str] = None) -> dict:
         """Add checklist items to a task via the external task management API."""
         normalized_task_id = str(task_id).strip()

@@ -6326,6 +6326,7 @@ async def auto_generate_project_tasks(
 async def put_agent_project_config(
     request: Request,
     current_user: models.User = Depends(auth.get_current_user),
+    x_task_token: Optional[str] = Header(None)
 ):
     """
     Persist per-project config used by the agent pipeline.
@@ -6427,10 +6428,16 @@ async def put_agent_project_config(
             suffix = Path(original_name).suffix or ".bin"
             saved_input_filename = f"input_file{suffix}"
             (base_dir / saved_input_filename).write_bytes(content)
+    try:
+        if x_task_token:
+            from task_service import task_service
+            await task_service.update_project_config(config_payload, task_token=x_task_token)
+    except Exception as e:
+        logger.warning("Failed to sync project config to upstream: %s", e)
 
     return {
         "status": "ok",
-        "message": "Project config saved",
+        "message": "Task creation started and will shortly appear here in the list",
         "project_token": safe_project,
         "mode": mode,
         "repo_link_url": repo_link_url,

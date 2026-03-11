@@ -823,7 +823,7 @@ export default function TaskCreation({
                     throw new Error(getErrorMessage(cfgJson, 'Failed to save project config'));
                 }
                 const cfgJson = await cfgRes.json().catch(() => ({}));
-                setSuccess(cfgJson?.message || 'Project config saved.');
+                setSuccess(cfgJson?.message || 'Task creation started and will shortly appear here in the list.');
             } catch (cfgErr) {
                 console.warn('Project config save error:', cfgErr);
                 throw cfgErr;
