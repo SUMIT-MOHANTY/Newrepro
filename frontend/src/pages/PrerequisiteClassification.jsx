@@ -1441,7 +1441,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="mb-6 pb-6 border-b border-app-border-light">
                             <h3 className="text-base font-bold text-app-text-main mb-1">Git Configuration</h3>
                             <p className="text-sm text-app-text-muted mb-4">
-                                Provide one global repository and PAT (GitHub or Azure DevOps) here. All agents in this project will use these credentials.
+                                Provide one global repository (GitHub or Azure DevOps) here. All agents in this project will use these credentials. PAT is optional for public repositories.
                             </p>
                             {shouldShowRepoSuggestion && (
                                 <div className="mb-4 rounded-xl border border-app-primary-ring bg-app-primary-light/80 p-4">
@@ -1499,15 +1499,15 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         type="password"
                                         value={globalGitToken}
                                         onChange={(e) => setGlobalGitToken(e.target.value)}
-                                        placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'ghp_...'}
+                                        placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'Optional for public repos (ghp_... or Azure PAT)'}
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
                                     <p className="text-xs text-app-text-muted mt-2">
                                         {hasSavedGlobalGitToken
                                             ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
                                             : repoProvider === 'azure-devops'
-                                                ? 'Use an Azure DevOps PAT with Code access so agents can clone/push to this repository.'
-                                                : 'Use a GitHub PAT with repo scope so agents can clone/push to this repository.'}
+                                                ? 'Azure DevOps PAT with Code access (optional for public repos).'
+                                                : 'GitHub PAT with repo scope (optional for public repos).'}
                                     </p>
                                 </div>
                                 {isLoadingGitConfig && (

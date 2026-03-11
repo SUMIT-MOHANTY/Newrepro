@@ -5078,16 +5078,18 @@ async def deploy_preview(
             project_token=project_token,
         )
 
+    # Try to get credentials from request first, then fall back to saved credentials
     if not git_repo_url or not git_token:
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         if global_cred:
             git_repo_url = git_repo_url or global_cred.git_repo_url
             git_token = git_token or global_cred.git_token
 
-    if not git_repo_url or not git_token:
+    # Only require git_repo_url - token is optional for public repos
+    if not git_repo_url:
         raise HTTPException(
             status_code=400,
-            detail="Git repo URL and token are required. Configure global Git credentials first."
+            detail="Git repo URL is required. Token is optional for public repositories."
         )
 
     result = await agent_service.deploy_preview(
@@ -5123,16 +5125,18 @@ async def fix_preview(
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
 
+    # Try to get credentials from request first, then fall back to saved credentials
     if not git_repo_url or not git_token:
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         if global_cred:
             git_repo_url = git_repo_url or global_cred.git_repo_url
             git_token = git_token or global_cred.git_token
 
-    if not git_repo_url or not git_token:
+    # Only require git_repo_url - token is optional for public repos
+    if not git_repo_url:
         raise HTTPException(
             status_code=400,
-            detail="Git repo URL and token are required. Configure global Git credentials first."
+            detail="Git repo URL is required. Token is optional for public repositories."
         )
 
     result = await agent_service.repair_preview(
