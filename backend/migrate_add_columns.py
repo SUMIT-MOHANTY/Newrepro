@@ -160,6 +160,46 @@ def migrate():
         conn.commit()
         print("[OK] governance_question_options table ensured")
 
+        # Seed default governance questions if empty
+        result = conn.execute(text("SELECT count(*) FROM governance_questions"))
+        count = result.fetchone()[0]
+        if count == 0:
+            print("Seeding default governance questions...")
+            try:
+                import sys
+                import os
+                sys.path.append(os.getcwd())
+                from governance_scoring import GOVERNANCE_QUESTIONS
+                
+                for q_data in GOVERNANCE_QUESTIONS:
+                    res = conn.execute(text("""
+                        INSERT INTO governance_questions (id, dimension, question_text, "order", is_active)
+                        VALUES (:id, :dimension, :question_text, :order, :is_active)
+                    """), {
+                        "id": q_data["id"],
+                        "dimension": q_data["dimension"],
+                        "question_text": q_data["question"],
+                        "order": q_data["id"],
+                        "is_active": 1
+                    })
+                    q_id = q_data["id"]
+                    
+                    for opt_data in q_data["options"]:
+                        conn.execute(text("""
+                            INSERT INTO governance_question_options (question_id, label, score)
+                            VALUES (:question_id, :label, :score)
+                        """), {
+                            "question_id": q_id,
+                            "label": opt_data["label"],
+                            "score": opt_data["score"]
+                        })
+                conn.commit()
+                print("[OK] Governance questions seeded")
+            except Exception as e:
+                print(f"[ERROR] Failed to seed governance questions: {e}")
+        else:
+            print(f"[OK] Governance questions already exist (count: {count})")
+
         print("\nMigration completed successfully!")
 
 if __name__ == "__main__":

@@ -3237,7 +3237,38 @@ async def get_project_roadmap_step(
         governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
 
     if not governance:
-        raise HTTPException(status_code=404, detail="Project not found")
+        # Check if user (or org) has uploaded any documents for this "virtual" project token.
+        # This allows the roadmap to progress even before the GovernanceResponse record is created.
+        if organization_name:
+            org_user_ids = _org_user_ids_subquery(db, organization_name)
+            doc_query = db.query(models.Document).filter(models.Document.owner_id.in_(org_user_ids))
+        else:
+            doc_query = db.query(models.Document).filter(models.Document.owner_id == current_user.id)
+            
+        token_pattern = f'%"project_token": "{identifier}"%'
+        doc_with_token = doc_query.filter(models.Document.analysis_result.like(token_pattern)).first()
+        
+        has_analysis = _doc_has_completed_analysis(doc_with_token) if doc_with_token else False
+        
+        # If BRD analyzed -> Governance (2) is active.
+        # If BRD uploaded but not analyzed -> Screening (1) is active.
+        # Otherwise -> Initiation (0) is active.
+        step_idx = 2 if has_analysis else 1 if doc_with_token else 0
+        
+        statuses = ["completed" if i < step_idx else "active" if i == step_idx else "pending" for i in range(len(STEP_LABELS))]
+        
+        return {
+            "result_id": None,
+            "project_token": identifier,
+            "project_name": "New Project",
+            "current_step": step_idx,
+            "current_step_label": STEP_LABELS[step_idx],
+            "total_steps": len(STEP_LABELS),
+            "steps": STEP_LABELS,
+            "step_statuses": statuses,
+            "failed_step": None,
+            "classification": "N/A",
+        }
 
     # Refresh the governance object to ensure we have the latest steps_data
     db.refresh(governance)
@@ -4673,6 +4704,40 @@ def _ensure_default_oauth_clients(db: Session) -> None:
     db.commit()
 
 
+def _ensure_default_governance_questions(db: Session) -> None:
+    """Ensure basic governance questions exist in database."""
+    count = db.query(models.GovernanceQuestion).count()
+    if count > 0:
+        return
+
+    print("Seeding default governance questions...")
+    try:
+        from governance_scoring import GOVERNANCE_QUESTIONS
+        for q_data in GOVERNANCE_QUESTIONS:
+            # We use the specific ID if provided to keep scoring in sync
+            db_question = models.GovernanceQuestion(
+                id=q_data["id"],
+                dimension=q_data["dimension"],
+                question_text=q_data["question"],
+                order=q_data["id"],
+                is_active=True
+            )
+            db.add(db_question)
+            db.flush()
+
+            for opt_data in q_data["options"]:
+                db_option = models.GovernanceQuestionOption(
+                    question_id=db_question.id,
+                    label=opt_data["label"],
+                    score=opt_data["score"]
+                )
+                db.add(db_option)
+        db.commit()
+        print("[OK] Governance questions seeded")
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] Failed to seed governance questions: {e}")
+
 # Seed sample tasks on startup
 def _startup_init() -> None:
     agent_service.seed_sample_tasks()
@@ -4683,6 +4748,7 @@ def _startup_init() -> None:
         _ensure_user_organization_columns()
         _ensure_default_oauth_clients(db)
         _ensure_default_agents(db)
+        _ensure_default_governance_questions(db)
         agents = db.query(models.Agent).filter(models.Agent.project_token.is_(None)).all()
         agent_service.initialize_agents_from_records(_runtime_agent_records(agents, None))
     finally:
