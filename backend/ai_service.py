@@ -10,6 +10,8 @@ import logging
 import re
 from datetime import datetime, timedelta
 
+import llm_gateway
+
 logger = logging.getLogger(__name__)
 
 # ── JSON Extraction Helpers ────────────────────────────────────────────────
@@ -236,31 +238,14 @@ async def analyze_document(
     governance_context: Optional[Dict[str, Any]] = None,
 ) -> Union[Dict[str, Any], AsyncGenerator[str, None]]:
     """
-    Analyze a document using an OpenAI-compatible API.
-    
-    Args:
-        document_content: The extracted text/markdown from the document
-        api_url: Custom API URL (uses settings default if not provided)
-        api_key: API key (uses settings default if not provided)
-        model: Model name (uses settings default if not provided)
-        stream: Whether to stream the response
-        user_feedback: Optional user clarifications/answers to refine the analysis
-        image_paths: Optional list of local file paths to images extracted from the document
-        governance_context: Optional governance questionnaire context from frontend
-    
-    Returns:
-        If stream=False: dict with analysis results or error
-        If stream=True: async generator yielding partial response chunks
+    Analyze a document using the configured AI provider (BRN Llama or OpenAI-compatible).
+    Routes through llm_gateway based on USE_BRN_LLAMA setting.
     """
-    use_brn_llama = bool(getattr(settings, "use_brn_llama", False))
-    url = api_url or (settings.brn_llama_url if use_brn_llama else settings.ai_api_url)
-    key = api_key or settings.ai_api_key
-    model_name = model or (settings.brn_model if use_brn_llama else settings.ai_model)
-
-    if not use_brn_llama and (not key or key == "your-api-key-here"):
+    if not llm_gateway.check_api_key(api_key):
         error = "API key not configured. Please set AI_API_KEY in your environment or provide it in the request."
         return {"status": "error", "error": error}
-    
+
+    model_name = llm_gateway.resolve_model(model)
     governance_text = _format_governance_context(governance_context)
 
     # Construct the base text content
@@ -285,267 +270,86 @@ async def analyze_document(
 
     if image_paths and len(image_paths) > 0:
         import base64
-        # If images exist, construct a multimodal message list
         content_blocks = [{"type": "text", "text": text_content}]
-        
         for img_path in image_paths:
             try:
                 with open(img_path, "rb") as img_file:
                     base64_image = base64.b64encode(img_file.read()).decode('utf-8')
-                    # Add image block
                     content_blocks.append({
                         "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{base64_image}"
-                        }
+                        "image_url": {"url": f"data:image/png;base64,{base64_image}"}
                     })
                     print(f"Successfully encoded and included image: {img_path}")
             except Exception as e:
                 print(f"Warning: Failed to encode image {img_path}: {e}")
-        
         final_user_content = content_blocks
 
-    # Prepare request payloads
-    openai_payload = {
-        "model": model_name,
-        "messages": [
-            {
-                "role": "system",
-                "content": BRD_ANALYSIS_PROMPT
-            },
-            {
-                "role": "user",
-                "content": final_user_content
-            }
-        ],
-        "stream": stream,
-        "chat_template_kwargs": {
-            "thinking": False
-        }
-    }
-
-    if isinstance(final_user_content, list):
-        brn_user_prompt = "\n\n".join(
-            block.get("text", "")
-            for block in final_user_content
-            if isinstance(block, dict) and block.get("type") == "text"
-        ).strip()
-    else:
-        brn_user_prompt = str(final_user_content)
-    brn_prompt = f"{BRD_ANALYSIS_PROMPT}\n\n{brn_user_prompt}"
-
-    brn_payload = {
-        "model": model_name,
-        "prompt": brn_prompt,
-        "stream": False,
-        "agent_id": settings.brn_agent_id,
-        "platform_id": settings.brn_platform_id,
-        "max_tokens": settings.brn_max_tokens,
-        "temperature": settings.brn_temperature,
-    }
-
-    openai_headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}"
-    }
-    brn_headers = {
-        "Content-Type": "application/json"
-    }
+    messages = [
+        {"role": "system", "content": BRD_ANALYSIS_PROMPT},
+        {"role": "user", "content": final_user_content},
+    ]
 
     try:
-        client = httpx.AsyncClient(timeout=120.0)
-        
         if stream:
-            if use_brn_llama:
-                async def stream_response():
-                    try:
-                        response = await client.post(url, json=brn_payload, headers=brn_headers)
-                        response.raise_for_status()
-                        data = response.json()
-                        content = data.get('response', data.get('text', data.get('content', '')))
-                        response_chunk = {
-                            "choices": [{
-                                "delta": {
-                                    "content": content if content else None,
-                                    "reasoning_content": None
-                                }
-                            }]
-                        }
-                        yield f"data: {json.dumps(response_chunk)}\n\n"
-                        yield "data: [DONE]\n\n"
-                    except Exception as e:
-                        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                    finally:
-                        await client.aclose()
-                return stream_response()
-
+            # Use llm_gateway streaming
             async def stream_response():
-                try:
-                    # State machine to handle <think> tags embedded in content
-                    # Some models (e.g. minimax-m2.5) put reasoning inside <think> in content
-                    _inside_think = False
-                    _think_buffer = ""
-
-                    async with client.stream("POST", url, json=openai_payload, headers=openai_headers) as response:
-                        response.raise_for_status()
-                        async for line in response.aiter_lines():
-                            if line.startswith("data: "):
-                                data_str = line[6:]
-                                if data_str.strip() == "[DONE]":
-                                    break
-                                try:
-                                    data_json = json.loads(data_str)
-                                    if "choices" in data_json and len(data_json["choices"]) > 0:
-                                        delta = data_json["choices"][0].get("delta", {})
-                                        
-                                        raw_content = delta.get("content") or ""
-                                        reasoning = delta.get("reasoning_content") or ""
-                                        
-                                        # Handle <think> tags inside content
-                                        clean_content = ""
-                                        if raw_content:
-                                            if _inside_think:
-                                                # Check if </think> appears in this chunk
-                                                end_idx = raw_content.find("</think>")
-                                                if end_idx != -1:
-                                                    # Think block ends here
-                                                    _think_buffer += raw_content[:end_idx]
-                                                    reasoning += _think_buffer
-                                                    _think_buffer = ""
-                                                    _inside_think = False
-                                                    # Content after </think> is real content
-                                                    clean_content = raw_content[end_idx + len("</think>"):]
-                                                else:
-                                                    # Still inside think block
-                                                    _think_buffer += raw_content
-                                            else:
-                                                # Check if <think> starts in this chunk
-                                                start_idx = raw_content.find("<think>")
-                                                if start_idx != -1:
-                                                    # Content before <think> is real
-                                                    clean_content = raw_content[:start_idx]
-                                                    remaining = raw_content[start_idx + len("<think>"):]
-                                                    # Check if </think> is also in this chunk
-                                                    end_idx = remaining.find("</think>")
-                                                    if end_idx != -1:
-                                                        reasoning += remaining[:end_idx]
-                                                        clean_content += remaining[end_idx + len("</think>"):]
-                                                    else:
-                                                        _inside_think = True
-                                                        _think_buffer = remaining
-                                                else:
-                                                    clean_content = raw_content
-                                        
-                                        # Only yield if there's actual content or reasoning
-                                        if clean_content or reasoning:
-                                            response_chunk = {
-                                                "choices": [{
-                                                    "delta": {
-                                                        "content": clean_content if clean_content else None,
-                                                        "reasoning_content": reasoning if reasoning else None
-                                                    }
-                                                }]
-                                            }
-                                            yield f"data: {json.dumps(response_chunk)}\n\n"
-                                except json.JSONDecodeError:
-                                    continue
-                except Exception as e:
-                     # yield error formatted as JSON
-                     yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                finally:
-                    await client.aclose()
-            
+                async for chunk in llm_gateway.call_llm_streaming(
+                    messages=messages,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    timeout=120.0,
+                ):
+                    yield chunk
             return stream_response()
-            
         else:
-            # Non-streaming implementation
-            try:
-                if use_brn_llama:
-                    response = await client.post(url, json=brn_payload, headers=brn_headers)
-                else:
-                    response = await client.post(url, json=openai_payload, headers=openai_headers)
-                response.raise_for_status()
-                
-                data = response.json()
+            # Non-streaming: use llm_gateway
+            data = await llm_gateway.call_llm(
+                messages=messages,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+                timeout=120.0,
+            )
+            content = llm_gateway.extract_content_from_response(data)
+            reasoning_from_api = llm_gateway.extract_reasoning_from_response(data)
 
-                if use_brn_llama:
-                    content = data.get('response', data.get('text', data.get('content', '')))
-                    if not _has_architecture_block(content):
-                        repair_prompt = _build_architecture_repair_prompt(content)
-                        repair_payload = {
-                            "model": model_name,
-                            "prompt": f"{BRD_ANALYSIS_PROMPT}\n\n{repair_prompt}",
-                            "stream": False,
-                            "agent_id": settings.brn_agent_id,
-                            "platform_id": settings.brn_platform_id,
-                            "max_tokens": settings.brn_max_tokens,
-                            "temperature": settings.brn_temperature,
-                        }
-                        repair_response = await client.post(url, json=repair_payload, headers=brn_headers)
-                        repair_response.raise_for_status()
-                        repair_data = repair_response.json()
-                        repaired_content = repair_data.get('response', repair_data.get('text', repair_data.get('content', '')))
-                        if _has_architecture_block(repaired_content):
-                            content = repaired_content
-                    return {
-                        "status": "success",
-                        "analysis": content,
-                        "reasoning": None,
-                        "model": data.get("model", model_name),
-                        "usage": data.get("usage", {})
-                    }
+            # Clean up <think> blocks from content if present
+            if "<think>" in content:
+                think_match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+                if think_match and not reasoning_from_api:
+                    reasoning_from_api = think_match.group(1).strip()
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
-                # Extract the assistant's response
-                if "choices" in data and len(data["choices"]) > 0:
-                    message = data["choices"][0].get("message", {})
-                    content = message.get("content", "")
-                    reasoning_from_api = message.get("reasoning_content", "")
-                    
-                    # Clean up <think> blocks from content if present
-                    if "<think>" in content:
-                        think_match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
-                        if think_match and not reasoning_from_api:
-                            reasoning_from_api = think_match.group(1).strip()
-                        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            # Repair architecture block if missing
+            if not _has_architecture_block(content):
+                repair_prompt = _build_architecture_repair_prompt(content)
+                repair_messages = [
+                    {"role": "system", "content": BRD_ANALYSIS_PROMPT},
+                    {"role": "user", "content": repair_prompt},
+                ]
+                try:
+                    repair_data = await llm_gateway.call_llm(
+                        messages=repair_messages,
+                        api_url=api_url,
+                        api_key=api_key,
+                        model=model,
+                        timeout=120.0,
+                    )
+                    repaired_content = llm_gateway.extract_content_from_response(repair_data)
+                    if _has_architecture_block(repaired_content):
+                        content = repaired_content
+                except Exception:
+                    pass  # Keep original content if repair fails
 
-                    if not _has_architecture_block(content):
-                        repair_prompt = _build_architecture_repair_prompt(content)
-                        repair_payload = {
-                            "model": model_name,
-                            "messages": [
-                                {"role": "system", "content": BRD_ANALYSIS_PROMPT},
-                                {"role": "user", "content": repair_prompt}
-                            ],
-                            "stream": False,
-                            "chat_template_kwargs": {
-                                "thinking": False
-                            }
-                        }
-                        repair_response = await client.post(url, json=repair_payload, headers=openai_headers)
-                        repair_response.raise_for_status()
-                        repair_data = repair_response.json()
-                        if "choices" in repair_data and len(repair_data["choices"]) > 0:
-                            repair_message = repair_data["choices"][0].get("message", {})
-                            repaired_content = repair_message.get("content", "")
-                            if _has_architecture_block(repaired_content):
-                                content = repaired_content
-                    
-                    return {
-                        "status": "success",
-                        "analysis": content,
-                        "reasoning": reasoning_from_api if reasoning_from_api else None,
-                        "model": data.get("model", model_name),
-                        "usage": data.get("usage", {})
-                    }
-                else:
-                    return {
-                        "status": "error",
-                        "error": "No response from AI model",
-                        "raw_response": data
-                    }
-            finally:
-                await client.aclose()
-                
+            return {
+                "status": "success",
+                "analysis": content,
+                "reasoning": reasoning_from_api if reasoning_from_api else None,
+                "model": data.get("model", model_name),
+                "usage": data.get("usage", {})
+            }
+
     except httpx.TimeoutException:
         error = "Request timed out. The document may be too large or the API is slow."
         if stream:
@@ -568,19 +372,19 @@ async def analyze_document(
 
 async def get_ai_config() -> dict:
     """Get current AI configuration (without exposing the full API key)."""
-    use_brn_llama = bool(getattr(settings, "use_brn_llama", False))
+    use_brn = llm_gateway.is_brn_llama_enabled()
     key = settings.ai_api_key
     masked_key = None
     if key and key != "your-api-key-here":
         masked_key = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "***"
     
     return {
-        "provider": "brn_llama" if use_brn_llama else "nvidia_openai_compatible",
-        "use_brn_llama": use_brn_llama,
-        "api_url": settings.brn_llama_url if use_brn_llama else settings.ai_api_url,
-        "api_key_configured": True if use_brn_llama else bool(key and key != "your-api-key-here"),
-        "api_key_masked": None if use_brn_llama else masked_key,
-        "model": settings.brn_model if use_brn_llama else settings.ai_model
+        "provider": "brn_llama" if use_brn else "nvidia_openai_compatible",
+        "use_brn_llama": use_brn,
+        "api_url": llm_gateway.resolve_url(),
+        "api_key_configured": llm_gateway.check_api_key(),
+        "api_key_masked": None if use_brn else masked_key,
+        "model": llm_gateway.resolve_model()
     }
 
 FULL_PROJECT_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
@@ -1189,11 +993,7 @@ async def generate_checklists_for_tasks(
     Returns:
         Dict mapping task_id (str) -> list of checklist items
     """
-    url = api_url or settings.ai_api_url
-    key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
-
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured.")
 
     tasks_summary = json.dumps(
@@ -1216,46 +1016,31 @@ async def generate_checklists_for_tasks(
         f"Generate detailed, contextually relevant checklists for each task above."
     )
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": CHECKLIST_GENERATION_PROMPT},
-            {"role": "user", "content": text_content},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": CHECKLIST_GENERATION_PROMPT},
+        {"role": "user", "content": text_content},
+    ]
 
     logger.info(f"Generating checklists for {len(tasks_with_ids)} tasks")
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                # Clean response
-                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
-                content = content.replace("```json", "").replace("```", "").strip()
-                # Extract JSON object
-                start_idx = content.find("{")
-                end_idx = content.rfind("}")
-                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                    content = content[start_idx:end_idx + 1]
-                checklists = json.loads(content)
-                if not isinstance(checklists, dict):
-                    raise ValueError("LLM did not return a dict for checklists")
-                logger.info(f"Generated checklists for {len(checklists)} tasks")
-                return checklists
-            else:
-                raise Exception("No response from AI model for checklist generation")
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=300.0,
+        )
+        content = content.replace("```json", "").replace("```", "").strip()
+        start_idx = content.find("{")
+        end_idx = content.rfind("}")
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            content = content[start_idx:end_idx + 1]
+        checklists = json.loads(content)
+        if not isinstance(checklists, dict):
+            raise ValueError("LLM did not return a dict for checklists")
+        logger.info(f"Generated checklists for {len(checklists)} tasks")
+        return checklists
 
     except Exception as e:
         logger.error(f"Checklist generation failed: {str(e)}")
@@ -1284,11 +1069,7 @@ async def generate_task_batch(
     Checklists are generated synchronously within the task object.
     """
 
-    url = api_url or settings.ai_api_url
-    key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
-
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured.")
 
     if remaining_wallet <= 0:
@@ -1332,47 +1113,33 @@ async def generate_task_batch(
         f"CUSTOM_RULES:\n{custom_rules or 'None'}\n"
     )
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": BATCH_TASK_PROMPT},
-            {"role": "user", "content": text_content},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": BATCH_TASK_PROMPT},
+        {"role": "user", "content": text_content},
+    ]
 
     logger.info(f"[Batch {batch_number}] Requesting next architectural batch. Remaining wallet: {remaining_wallet}")
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            logger.info(f"[Batch {batch_number}] LLM response status: {response.status_code}")
-            response.raise_for_status()
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=300.0,
+        )
+        tasks = _parse_llm_task_response(content)
 
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                tasks = _parse_llm_task_response(content)
+        if not tasks:
+            logger.info(f"[Batch {batch_number}] LLM returned empty — task generation complete.")
+            return []
 
-                if not tasks:
-                    logger.info(f"[Batch {batch_number}] LLM returned empty — task generation complete.")
-                    return []
-
-                tasks = _normalize_generated_tasks(tasks, remaining_wallet)
-                logger.info(
-                    f"[Batch {batch_number}] Generated {len(tasks)} tasks (with checklists), "
-                    f"batch wallet: {sum(t.get('wallet', 0) for t in tasks)}"
-                )
-                return tasks
-            else:
-                raise Exception("No response from AI model")
-
+        tasks = _normalize_generated_tasks(tasks, remaining_wallet)
+        logger.info(
+            f"[Batch {batch_number}] Generated {len(tasks)} tasks (with checklists), "
+            f"batch wallet: {sum(t.get('wallet', 0) for t in tasks)}"
+        )
+        return tasks
 
     except httpx.HTTPStatusError as e:
         import traceback
@@ -1407,11 +1174,7 @@ async def generate_all_tasks(
     """
     Generate all tasks for the project in a single LLM call.
     """
-    url = api_url or settings.ai_api_url
-    key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
-
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured.")
 
     if project_wallet <= 0:
@@ -1441,47 +1204,34 @@ async def generate_all_tasks(
         f"The total wallet for all combined tasks must NOT exceed {project_wallet}. "
     )
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": FULL_PROJECT_TASK_PROMPT},
-            {"role": "user", "content": text_content},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": FULL_PROJECT_TASK_PROMPT},
+        {"role": "user", "content": text_content},
+    ]
 
     logger.info(f"Requesting full task generation. Total wallet: {project_wallet}")
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            logger.info(f"LLM response status: {response.status_code}")
-            response.raise_for_status()
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=300.0,
+        )
+        tasks = _parse_llm_task_response(content)
 
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                tasks = _parse_llm_task_response(content)
+        if not tasks:
+            logger.info("LLM returned empty — task generation failed or complete.")
+            return []
 
-                if not tasks:
-                    logger.info("LLM returned empty — task generation failed or complete.")
-                    return []
+        tasks = _normalize_generated_tasks(tasks, project_wallet)
 
-                tasks = _normalize_generated_tasks(tasks, project_wallet)
-
-                logger.info(
-                    f"Generated {len(tasks)} tasks, "
-                    f"total wallet allocated: {sum(t.get('wallet', 0) for t in tasks)}"
-                )
-                return tasks
-            else:
-                raise Exception("No response from AI model")
+        logger.info(
+            f"Generated {len(tasks)} tasks, "
+            f"total wallet allocated: {sum(t.get('wallet', 0) for t in tasks)}"
+        )
+        return tasks
 
     except httpx.HTTPStatusError as e:
         import traceback
@@ -1617,12 +1367,9 @@ async def generate_sprint_milestone_plan(
     model: Optional[str] = None,
 ) -> dict:
     """Generate one sprint and one milestone plan from BRD context."""
-    url = api_url or settings.ai_api_url
-    key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
 
     default_plan = _default_sprint_milestone_plan(project_name, project_deadline)
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key(api_key):
         return default_plan
 
     text_content = (
@@ -1632,36 +1379,26 @@ async def generate_sprint_milestone_plan(
         "Create one practical initial sprint and one milestone."
     )
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": SPRINT_MILESTONE_PROMPT},
-            {"role": "user", "content": text_content},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": SPRINT_MILESTONE_PROMPT},
+        {"role": "user", "content": text_content},
+    ]
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            if "choices" not in data or not data["choices"]:
-                return default_plan
-            content = data["choices"][0].get("message", {}).get("content", "")
-            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-            content = content.replace("```json", "").replace("```", "").strip()
-            start = content.find("{")
-            end = content.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                return default_plan
-            parsed = json.loads(content[start:end + 1])
-            return _normalize_plan_dates(parsed, project_deadline)
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=120.0,
+        )
+        content = content.replace("```json", "").replace("```", "").strip()
+        start = content.find("{")
+        end = content.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return default_plan
+        parsed = json.loads(content[start:end + 1])
+        return _normalize_plan_dates(parsed, project_deadline)
     except Exception as e:
         logger.warning(f"Sprint/milestone AI planning failed, using defaults: {e}")
         return default_plan
@@ -1679,11 +1416,7 @@ async def generate_tasks_for_project(
     project_type: str = "greenfield",
 ) -> list:
     """Legacy: generates all tasks in a single LLM call. Use generate_task_batch for incremental generation."""
-    url = api_url or settings.ai_api_url
-    key = api_key or settings.ai_api_key
-    model_name = model or settings.ai_model
-
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured.")
 
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -1699,57 +1432,44 @@ async def generate_tasks_for_project(
         f"{analysis_report}\n"
     )
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": TASK_GENERATION_PROMPT},
-            {"role": "user", "content": text_content},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
+    messages = [
+        {"role": "system", "content": TASK_GENERATION_PROMPT},
+        {"role": "user", "content": text_content},
+    ]
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
-
-    logger.info(f"Starting Architectural Task Generation with model '{model_name}'")
+    logger.info(f"Starting Architectural Task Generation with model '{llm_gateway.resolve_model(model)}'")
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            logger.info(f"Received LLM response with status {response.status_code}")
-            response.raise_for_status()
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=300.0,
+        )
+        tasks = _parse_llm_task_response(content)
 
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                tasks = _parse_llm_task_response(content)
-                
-                # Normalize fields if LLM used alternate architect names
-                for t in tasks:
-                    if "Title" in t and "taskName" not in t:
-                        t["taskName"] = t.pop("Title")
-                    if "WalletScore" in t and "wallet" not in t:
-                        t["wallet"] = t.pop("WalletScore")
-                    
-                    # Ensure checklist is normalized
-                    raw_checklist = t.get("checklist", [])
-                    if isinstance(raw_checklist, list):
-                        normalized_checklist = []
-                        for item in raw_checklist:
-                            if isinstance(item, str):
-                                normalized_checklist.append({"text": item, "completed": False})
-                            elif isinstance(item, dict):
-                                text_val = item.get("text") or item.get("step") or str(item)
-                                normalized_checklist.append({"text": text_val, "completed": False})
-                        t["checklist"] = normalized_checklist
+        # Normalize fields if LLM used alternate architect names
+        for t in tasks:
+            if "Title" in t and "taskName" not in t:
+                t["taskName"] = t.pop("Title")
+            if "WalletScore" in t and "wallet" not in t:
+                t["wallet"] = t.pop("WalletScore")
 
-                tasks = _normalize_task_wallets(tasks, project_wallet)
-                return tasks
-            else:
-                raise Exception("No response from AI model")
+            # Ensure checklist is normalized
+            raw_checklist = t.get("checklist", [])
+            if isinstance(raw_checklist, list):
+                normalized_checklist = []
+                for item in raw_checklist:
+                    if isinstance(item, str):
+                        normalized_checklist.append({"text": item, "completed": False})
+                    elif isinstance(item, dict):
+                        text_val = item.get("text") or item.get("step") or str(item)
+                        normalized_checklist.append({"text": text_val, "completed": False})
+                t["checklist"] = normalized_checklist
+
+        tasks = _normalize_task_wallets(tasks, project_wallet)
+        return tasks
 
     except httpx.HTTPStatusError as e:
         import traceback

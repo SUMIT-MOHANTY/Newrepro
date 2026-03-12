@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, List
 import numpy as np
 
 from config import settings
+import llm_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,12 @@ async def _llm_model_func(
 ) -> str:
     """
     Custom LLM function for LightRAG that uses our existing
-    OpenAI-compatible API (NVIDIA, Azure, local LLMs, etc.).
+    AI API (BRN Llama or OpenAI-compatible, based on USE_BRN_LLAMA).
     """
     from lightrag.llm.openai import openai_complete_if_cache
 
     # Strip /chat/completions from the URL to get the base URL
-    base_url = settings.ai_api_url
+    base_url = llm_gateway.resolve_url()
     if base_url.endswith("/chat/completions"):
         base_url = base_url[: -len("/chat/completions")]
     elif base_url.endswith("/v1/chat/completions"):
@@ -43,11 +44,11 @@ async def _llm_model_func(
 
     try:
         return await openai_complete_if_cache(
-            settings.ai_model,
+            llm_gateway.resolve_model(),
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages or [],
-            api_key=settings.ai_api_key,
+            api_key=llm_gateway.resolve_key() or "dummy",
             base_url=base_url,
             **kwargs,
         )
@@ -60,14 +61,14 @@ async def _llm_model_func(
 async def _embedding_func_impl(texts: list) -> np.ndarray:
     """
     Custom embedding function for LightRAG.
-    Uses the same OpenAI-compatible API for embeddings.
+    Uses the same AI API for embeddings.
     Falls back to a simple hash-based embedding if a dedicated
     embedding endpoint isn't available.
     """
     try:
         from lightrag.llm.openai import openai_embed
 
-        base_url = settings.ai_api_url
+        base_url = llm_gateway.resolve_url()
         if base_url.endswith("/chat/completions"):
             base_url = base_url[: -len("/chat/completions")]
         elif base_url.endswith("/v1/chat/completions"):
@@ -76,7 +77,7 @@ async def _embedding_func_impl(texts: list) -> np.ndarray:
         result = await openai_embed.func(
             texts,
             model="text-embedding-ada-002",
-            api_key=settings.ai_api_key,
+            api_key=llm_gateway.resolve_key() or "dummy",
             base_url=base_url,
         )
         return result
