@@ -37,9 +37,9 @@ RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || echo "No requi
 # Expose common ports
 EXPOSE 5000 8000 3000 8080 8501
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5000/ || curl -f http://localhost:8000/ || exit 1
+# Health check that accepts any HTTP response (even 500 errors mean the server is running)
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -s http://localhost:5000/ > /dev/null || curl -s http://localhost:8000/ > /dev/null || curl -s http://localhost:3000/ > /dev/null || exit 1
 
 # Create entrypoint script that auto-detects and runs the app
 RUN echo '#!/bin/bash\n\
@@ -72,8 +72,15 @@ if grep -qi "from django\\|import django" /app/$PYTHON_FILE; then\n\
     echo "✅ Django detected - running instantly"\n\
     python $PYTHON_FILE\n\
 elif grep -qi "from flask\\|Flask(" /app/$PYTHON_FILE; then\n\
-    echo "✅ Flask detected - running instantly"\n\
-    python $PYTHON_FILE\n\
+    echo "✅ Flask detected - running with host binding"\n\
+    export FLASK_RUN_HOST=0.0.0.0\n\
+    export FLASK_RUN_PORT=${PORT:-5000}\n\
+    if grep -qi "app\\.run(" /app/$PYTHON_FILE; then\n\
+        python $PYTHON_FILE\n\
+    else\n\
+        export FLASK_APP=$PYTHON_FILE\n\
+        flask run --host=0.0.0.0 --port=${PORT:-5000}\n\
+    fi\n\
 elif grep -qi "from fastapi\\|FastAPI(" /app/$PYTHON_FILE; then\n\
     echo "✅ FastAPI detected - running instantly"\n\
     python $PYTHON_FILE\n\
