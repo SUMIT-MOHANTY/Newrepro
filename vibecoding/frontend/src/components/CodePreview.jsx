@@ -1,5 +1,8 @@
 import React, { useRef } from 'react';
 import { Eye, Code, Copy, Check, RefreshCw, Download, Sparkles } from 'lucide-react';
+import { Button } from './ui/button';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
+import { cn } from '@/lib/utils';
 
 const CodePreview = ({ 
   previewCode, 
@@ -51,12 +54,16 @@ const CodePreview = ({
   return (
     <div className="flex-1 flex flex-col">
       {/* Tab Bar */}
-      <div className={`flex items-center gap-2 px-6 py-2 border-b ${
+      <div className={cn(
+        'flex items-center gap-2 px-6 py-2 border-b',
         darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-gray-50 border-gray-200'
-      }`}>
-        <button
+      )}>
+        <Button
           onClick={() => setActiveTab('preview')}
-          className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+          variant={activeTab === 'preview' ? 'default' : 'ghost'}
+          size="sm"
+          className={cn(
+            'rounded-md text-sm',
             activeTab === 'preview'
               ? darkMode
                 ? 'bg-[#1e1e1e] text-white border border-[#3e3e42]'
@@ -64,16 +71,17 @@ const CodePreview = ({
               : darkMode
                 ? 'text-[#cccccc] hover:text-white hover:bg-[#2d2d30]'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-          }`}
+          )}
         >
-          <div className="flex items-center gap-2">
-            <Eye className="w-4 h-4" />
-            Preview
-          </div>
-        </button>
-        <button
+          <Eye className="w-4 h-4 mr-2" />
+          Preview
+        </Button>
+        <Button
           onClick={() => setActiveTab('code')}
-          className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+          variant={activeTab === 'code' ? 'default' : 'ghost'}
+          size="sm"
+          className={cn(
+            'rounded-md text-sm',
             activeTab === 'code'
               ? darkMode
                 ? 'bg-[#1e1e1e] text-white border border-[#3e3e42]'
@@ -81,73 +89,83 @@ const CodePreview = ({
               : darkMode
                 ? 'text-[#cccccc] hover:text-white hover:bg-[#2d2d30]'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-          }`}
+          )}
         >
-          <div className="flex items-center gap-2">
-            <Code className="w-4 h-4" />
-            Code
-          </div>
-        </button>
+          <Code className="w-4 h-4 mr-2" />
+          Code
+        </Button>
         
         {previewCode && (
           <div className="ml-auto flex items-center gap-2">
             {/* Version Selector */}
             {codeVersions && codeVersions.length > 1 && (
               <div className="flex items-center gap-2">
-                <span className={`text-xs ${
+                <span className={cn(
+                  'text-xs',
                   darkMode ? 'text-[#858585]' : 'text-gray-500'
-                }`}>Version:</span>
-                <select
-                  value={selectedVersion || ''}
-                  onChange={(e) => onLoadVersion(Number(e.target.value))}
-                  className={`px-2 py-1 rounded-md text-xs transition-colors ${
+                )}>Version:</span>
+                <Select value={String(selectedVersion || '')} onValueChange={(val) => onLoadVersion(Number(val))}>
+                  <SelectTrigger className={cn(
+                    'w-[180px] px-2 py-1 rounded-md text-xs',
                     darkMode 
                       ? 'bg-[#2d2d30] text-[#cccccc] border border-[#3e3e42] hover:bg-[#3e3e42]' 
                       : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {codeVersions.map((version, idx) => (
-                    <option key={version.id} value={version.id}>
-                      v{codeVersions.length - idx} - {new Date(version.timestamp).toLocaleTimeString()}
-                    </option>
-                  ))}
-                </select>
+                  )}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {codeVersions.map((version, idx) => (
+                      <SelectItem key={version.id} value={String(version.id)}>
+                        v{codeVersions.length - idx} - {new Date(version.timestamp).toLocaleTimeString()}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
             
-            <button
+            <Button
               onClick={onCopyCode}
-              className={`p-2 rounded-md transition-colors ${
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'rounded-md',
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-              }`}
+              )}
               title="Copy Code"
             >
               {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={onRefreshPreview}
-              className={`p-2 rounded-md transition-colors ${
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'rounded-md',
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-              }`}
+              )}
               title="Refresh"
             >
               <RefreshCw className="w-4 h-4" />
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={onDownloadCode}
-              className={`p-2 rounded-md transition-colors ${
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'rounded-md',
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-              }`}
+              )}
               title="Download"
             >
               <Download className="w-4 h-4" />
-            </button>
+            </Button>
           </div>
         )}
       </div>

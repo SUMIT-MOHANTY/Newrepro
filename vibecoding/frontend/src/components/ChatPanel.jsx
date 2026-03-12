@@ -1,5 +1,7 @@
 import React, { useRef } from 'react';
 import { Sparkles, Bot, RefreshCw, MoreHorizontal } from 'lucide-react';
+import { Button } from './ui/button';
+import { cn } from '@/lib/utils';
 import ChatMessage from './ChatMessage';
 import ChatInput from './ChatInput';
 
@@ -30,49 +32,61 @@ const ChatPanel = ({
   }, [messages]);
 
   return (
-    <div className={`w-[380px] flex flex-col border-l ${
+    <div className={cn(
+      'w-[380px] flex flex-col h-screen border-l',
       darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-white border-gray-200'
-    }`}>
+    )}>
       {/* Chat Header */}
       <div className={`flex items-center justify-between px-4 py-3 border-b ${
         darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
       }`}>
         <div className="flex items-center gap-2">
-          <div className={`p-2 rounded-lg ${
+          <div className={cn(
+            'p-2 rounded-lg',
             darkMode ? 'bg-[#0e639c]' : 'bg-blue-500'
-          }`}>
+          )}>
             <Sparkles className="w-4 h-4 text-white" />
           </div>
           <div>
-            <span className={`text-sm font-semibold block ${
+            <span className={cn(
+              'text-sm font-semibold block',
               darkMode ? 'text-[#cccccc]' : 'text-gray-900'
-            }`}>AI Assistant</span>
-            <span className={`text-xs ${
+            )}>AI Assistant</span>
+            <span className={cn(
+              'text-xs',
               darkMode ? 'text-[#858585]' : 'text-gray-500'
-            }`}>{messages.length} messages</span>
+            )}>{messages.length} messages</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
           {messages.length > 0 && (
-            <button 
+            <Button
               onClick={onClearHistory}
-              className={`p-2 rounded-lg transition-colors ${
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'rounded-lg',
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#858585] hover:text-[#cccccc]' 
                   : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
-              }`}
+              )}
               title="Clear history"
             >
               <RefreshCw className="w-4 h-4" />
-            </button>
+            </Button>
           )}
-          <button className={`p-2 rounded-lg transition-colors ${
-            darkMode 
-              ? 'hover:bg-[#2d2d30] text-[#cccccc]' 
-              : 'hover:bg-gray-100 text-gray-600'
-          }`}>
+          <Button 
+            variant="ghost" 
+            size="icon"
+            className={cn(
+              'rounded-lg',
+              darkMode 
+                ? 'hover:bg-[#2d2d30] text-[#cccccc]' 
+                : 'hover:bg-gray-100 text-gray-600'
+            )}
+          >
             <MoreHorizontal className="w-4 h-4" />
-          </button>
+          </Button>
         </div>
       </div>
 
