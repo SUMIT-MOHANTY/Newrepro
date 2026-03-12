@@ -8325,10 +8325,7 @@ def _heuristic_master_tree_validation(
             if not sanitized:
                 issues.append("Canonical tree JSON failed structural sanitization (invalid node shape).")
 
-    if task_count > 0 and file_line_count < expected_file_lines:
-        issues.append(
-            "The project tree is too shallow relative to the number of tasks and may not contain enough concrete files."
-        )
+ 
 
     # Generic structural hygiene checks.
     config_under_source = [

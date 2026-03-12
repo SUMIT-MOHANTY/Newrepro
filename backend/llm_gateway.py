@@ -229,9 +229,10 @@ async def call_llm(
         Raw response dict from the API (format varies per provider).
         Use extract_content_from_response() to get the text.
     """
-    use_brn = is_brn_llama_enabled() and not api_url
     url = resolve_url(api_url)
     model_name = resolve_model(model)
+    # Determine format based on whether the URL is the BRN one
+    use_brn = (url == settings.brn_llama_url)
 
     if use_brn:
         payload = _build_brn_payload_from_messages(messages, model_name, stream=False, **extra)
@@ -250,6 +251,20 @@ async def call_llm(
                     import asyncio
                     await asyncio.sleep(retry_delay * attempt)
                 response = await client.post(url, json=payload, headers=headers)
+                if response.status_code >= 400:
+                    prompt_text = str(payload.get("prompt", ""))
+                    prompt_preview = prompt_text[:500] + "..." if len(prompt_text) > 500 else prompt_text
+                    
+                    # Save full prompt to a temp file for debugging
+                    import tempfile
+                    try:
+                        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', prefix='brn_error_', delete=False) as f:
+                            json.dump(payload, f, indent=2)
+                            temp_path = f.name
+                        logger.error(f"HTTPError: {response.status_code} - {response.text}\nPayload size: {len(str(payload))}\nPrompt Preview: {prompt_preview}\nFull payload saved to: {temp_path}")
+                    except Exception as log_err:
+                        logger.error(f"HTTPError: {response.status_code} - {response.text} - Payload size: {len(str(payload))} (Failed to save full payload: {log_err})")
+
                 response.raise_for_status()
                 data = response.json()
                 last_err = None
@@ -316,9 +331,10 @@ async def call_llm_streaming(
     - BRN Llama streaming with Anthropic-style response
     - OpenAI-compatible SSE streaming
     """
-    use_brn = is_brn_llama_enabled() and not api_url
     url = resolve_url(api_url)
     model_name = resolve_model(model)
+    # Determine format based on whether the URL is the BRN one
+    use_brn = (url == settings.brn_llama_url)
 
     client = httpx.AsyncClient(timeout=timeout)
 
@@ -330,6 +346,21 @@ async def call_llm_streaming(
 
             try:
                 async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code >= 400:
+                        body = await response.aread()
+                        resp_text = body.decode(errors='replace')
+                        prompt_text = str(payload.get("prompt", ""))
+                        prompt_preview = prompt_text[:500] + "..." if len(prompt_text) > 500 else prompt_text
+                        
+                        import tempfile
+                        try:
+                            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', prefix='brn_stream_error_', delete=False) as f:
+                                json.dump(payload, f, indent=2)
+                                temp_path = f.name
+                            logger.error(f"HTTPError (Stream Init): {response.status_code} - {resp_text}\nPayload size: {len(str(payload))}\nPrompt Preview: {prompt_preview}\nFull payload saved to: {temp_path}")
+                        except Exception as log_err:
+                            logger.error(f"HTTPError (Stream Init): {response.status_code} - {resp_text} - Payload size: {len(str(payload))} (Failed to save full payload: {log_err})")
+
                     response.raise_for_status()
 
                     # Check content type to determine if it's truly streaming
@@ -379,6 +410,8 @@ async def call_llm_streaming(
                 logger.warning(f"BRN streaming failed ({stream_err}), falling back to non-streaming")
                 payload["stream"] = False
                 response = await client.post(url, json=payload, headers=headers)
+                if response.status_code >= 400:
+                    logger.error(f"HTTPError: {response.status_code} - {response.text} - Payload size: {len(str(payload))}")
                 response.raise_for_status()
                 data = response.json()
                 content = extract_content_from_response(data)
