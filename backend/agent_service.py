@@ -21,6 +21,7 @@ from typing import Optional, Dict, Any, List
 from config import settings
 import httpx
 import logging
+import llm_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -952,11 +953,11 @@ async def _generate_technical_spec(
 
     All coding agents then reference this spec as ground truth.
     """
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         return {"status": "skipped", "reason": "no_api_key", "spec": ""}
 
     stack_profile = _infer_project_stack(
@@ -1069,33 +1070,19 @@ For YOUR project, output the exact directory tree with:
 Be extremely specific. Every field name, endpoint, and type must be exact so agents can reference them.
 Do NOT use vague descriptions like "appropriate fields" — name every field explicitly."""
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": TECH_SPEC_ARCHITECT_SYSTEM_PROMPT},
-            {"role": "user", "content": architect_prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": TECH_SPEC_ARCHITECT_SYSTEM_PROMPT},
+        {"role": "user", "content": architect_prompt},
+    ]
 
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-
-        if "choices" in data and len(data["choices"]) > 0:
-            spec_text = data["choices"][0].get("message", {}).get("content", "")
-            # Strip <think> blocks from models that embed reasoning in content
-            spec_text = _re.sub(r'<think>.*?</think>', '', spec_text, flags=_re.DOTALL).strip()
-            spec_text = _re.sub(r'<think>.*', '', spec_text, flags=_re.DOTALL).strip()
-        else:
-            spec_text = ""
+        spec_text = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=180.0
+        )
 
         spec_record = {
             "status": "generated",
@@ -1166,14 +1153,14 @@ async def _generate_dynamic_prompt(
 
     Falls back to the static prompt if the AI call fails.
     """
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
     # Fallback to static prompt
     static_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         return static_prompt
 
     task_title = task.get("title", "Untitled")
@@ -1217,33 +1204,21 @@ The prompt MUST include these code generation rules at the end:
 Write ONLY the system prompt text. Do not include any meta-commentary."""
 
     try:
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": "You are a prompt engineering expert. Write precise, actionable system prompts for coding agents."},
-                {"role": "user", "content": manager_prompt},
-            ],
-            "stream": False,
-            "chat_template_kwargs": {"thinking": False},
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        }
+        messages = [
+            {"role": "system", "content": "You are a prompt engineering expert. Write precise, actionable system prompts for coding agents."},
+            {"role": "user", "content": manager_prompt},
+        ]
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-
-        if "choices" in data and len(data["choices"]) > 0:
-            dynamic_prompt = data["choices"][0].get("message", {}).get("content", "")
-            # Strip <think> blocks from models that embed reasoning in content
-            dynamic_prompt = _re.sub(r'<think>.*?</think>', '', dynamic_prompt, flags=_re.DOTALL).strip()
-            dynamic_prompt = _re.sub(r'<think>.*', '', dynamic_prompt, flags=_re.DOTALL).strip()
-            if len(dynamic_prompt) > 100:  # Sanity check — prompt should be substantial
-                logger.info(f"[{agent_id}] Dynamic prompt generated: {len(dynamic_prompt)} chars")
-                return dynamic_prompt
+        dynamic_prompt = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=60.0
+        )
+        if len(dynamic_prompt) > 100:  # Sanity check
+            logger.info(f"[{agent_id}] Dynamic prompt generated: {len(dynamic_prompt)} chars")
+            return dynamic_prompt
 
         # Fallback if generation was too short
         return static_prompt
@@ -1661,9 +1636,9 @@ async def _generate_pr_body(
     task_list = "\n".join(task_summaries) if task_summaries else "- No task summaries available"
 
     # Try AI-powered PR body
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
     if key and key != "your-api-key-here":
         try:
@@ -1689,32 +1664,20 @@ Write a PR body with these sections:
 
 Keep it concise and professional. Use markdown formatting."""
 
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": "You are a technical writer creating GitHub PR descriptions."},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "chat_template_kwargs": {"thinking": False},
-            }
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-            }
+            messages = [
+                {"role": "system", "content": "You are a technical writer creating GitHub PR descriptions."},
+                {"role": "user", "content": prompt},
+            ]
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-
-            if "choices" in data and len(data["choices"]) > 0:
-                ai_body = data["choices"][0].get("message", {}).get("content", "")
-                # Strip <think> blocks from models that embed reasoning in content
-                ai_body = _re.sub(r'<think>.*?</think>', '', ai_body, flags=_re.DOTALL).strip()
-                ai_body = _re.sub(r'<think>.*', '', ai_body, flags=_re.DOTALL).strip()
-                if len(ai_body) > 50:
-                    return ai_body
+            ai_body = await llm_gateway.call_llm_and_extract(
+                messages=messages,
+                api_url=url,
+                api_key=key,
+                model=model_name,
+                timeout=60.0
+            )
+            if len(ai_body) > 50:
+                return ai_body
 
         except Exception:
             pass  # Fall back to template
@@ -1824,11 +1787,11 @@ async def _call_ai_for_code(
         workspace_tree: The Master Agent's Canonical Project Tree
         live_repo_tree: The actual current file structure from the git repository
     """
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         raise ValueError("AI API key not configured")
 
     # Use dynamic prompt if provided, otherwise fall back to static
@@ -1893,41 +1856,34 @@ async def _call_ai_for_code(
 
     user_content = "\n".join(user_parts)
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    last_err = None
+    content = ""
+    for attempt in range(3):
+        try:
+            if attempt > 0:
+                await asyncio.sleep(5 * attempt)
+            content = await llm_gateway.call_llm_and_extract(
+                messages=messages,
+                api_url=url,
+                api_key=key,
+                model=model_name,
+                timeout=120.0
+            )
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 2:
+                raise
+    if last_err:
+        raise last_err
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        last_err = None
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    await asyncio.sleep(5 * attempt)
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                if attempt == 2:
-                    raise
-        if last_err:
-            raise last_err
-
-    if "choices" in data and len(data["choices"]) > 0:
-        content = data["choices"][0].get("message", {}).get("content", "")
+    if content:
         return _clean_ai_code_response(content)
     else:
         raise ValueError("No response from AI model")
@@ -1954,11 +1910,11 @@ async def _call_ai_for_fix(
     If builder_crashed=True, the previous build script failed before producing files
     and /workspace/ is empty, so we regenerate from scratch.
     """
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         raise ValueError("AI API key not configured")
 
     system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
@@ -2026,43 +1982,36 @@ IMPORTANT RULES:
 - Exit with code 0 if all fixes pass, 1 if any remain.
 """
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": fix_prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": fix_prompt},
+    ]
 
     await asyncio.sleep(3)
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        last_err = None
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    await asyncio.sleep(5 * attempt)
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                if attempt == 2:
-                    raise
-        if last_err:
-            raise last_err
+    last_err = None
+    content = ""
+    for attempt in range(3):
+        try:
+            if attempt > 0:
+                await asyncio.sleep(5 * attempt)
+            content = await llm_gateway.call_llm_and_extract(
+                messages=messages,
+                api_url=url,
+                api_key=key,
+                model=model_name,
+                timeout=120.0
+            )
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 2:
+                raise
+    if last_err:
+        raise last_err
 
-    if "choices" in data and len(data["choices"]) > 0:
-        content = data["choices"][0].get("message", {}).get("content", "")
+    if content:
         return _clean_ai_code_response(content)
     else:
         raise ValueError("No response from AI model for fix iteration")
@@ -2075,11 +2024,11 @@ async def _call_ai_for_self_review(
     tech_spec: str = "",
 ) -> tuple[bool, str]:
     """Call AI to generate a self-review of the project structure before pushing."""
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         raise ValueError("AI API key not configured")
 
     system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
@@ -2101,38 +2050,31 @@ Are the core requirements structurally met? Are there any glaring missing folder
 Reply EXACTLY on the very first line with either 'PASS' or 'FAIL'.
 On the following lines, provide a short 1-3 sentence justification."""
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": review_prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-        "temperature": 0.2, # Low temp for analytical check
-    }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": review_prompt},
+    ]
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    last_err = None
+    content = ""
+    for attempt in range(3):
+        try:
+            content = await llm_gateway.call_llm_and_extract(
+                messages=messages,
+                api_url=url,
+                api_key=key,
+                model=model_name,
+                timeout=60.0,
+                temperature=0.2
+            )
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+    if last_err:
+        return True, f"Self-review API failed: {last_err}. Passing by default."
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        last_err = None
-        for attempt in range(3):
-            try:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-        if last_err:
-            return True, f"Self-review API failed: {last_err}. Passing by default."
-
-    if data and "choices" in data and len(data["choices"]) > 0:
-        content = data["choices"][0].get("message", {}).get("content", "").strip()
+    if content:
         passed = content.upper().startswith("PASS")
         return passed, content
     return True, "No response from AI model for self-review. Passing by default."
@@ -2822,11 +2764,11 @@ async def _refresh_workspace_contract_from_git_repo(
 
 
 async def _call_ai_for_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
-    key = settings.ai_api_key
-    if not key or key == "your-api-key-here":
+    key = llm_gateway.resolve_key()
+    if not llm_gateway.check_api_key():
         return {}
-    url = settings.ai_api_url
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    model_name = llm_gateway.resolve_model()
     prompt = (
         "You are a build engineer. Given this repo summary, return JSON only with keys "
         "\"install\" (list of shell commands) and \"tests\" (list of shell commands). "
@@ -2835,32 +2777,22 @@ async def _call_ai_for_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
         "pnpm install, pnpm test, yarn install, yarn test. If no tests, return empty lists.\n\n"
         f"REPO SUMMARY:\n{json.dumps(summary, indent=2)}"
     )
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": "Return only valid JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    # Strip <think> blocks from models that embed reasoning in content
-    content = _re.sub(r'<think>.*?</think>', '', content, flags=_re.DOTALL).strip()
-    content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL).strip()
-    start = content.find("{")
-    end = content.rfind("}")
-    if start == -1 or end == -1:
-        return {}
+    messages = [
+        {"role": "system", "content": "Return only valid JSON."},
+        {"role": "user", "content": prompt},
+    ]
     try:
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=120.0
+        )
+        start = content.find("{")
+        end = content.rfind("}")
+        if start == -1 or end == -1:
+            return {}
         return json.loads(content[start:end + 1])
     except Exception:
         return {}
@@ -3625,7 +3557,7 @@ async def _call_ai_for_merge_resolution(
     source_agent: Optional[str],
     task_title: str,
 ) -> str:
-    if not settings.ai_api_key or settings.ai_api_key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         return ""
 
     prompt = f"""You are resolving a git merge conflict for a software repository.
@@ -3659,33 +3591,23 @@ INTEGRATION BRANCH VERSION:
 {theirs_content[:12000]}
 THEIRS>>>"""
 
-    payload = {
-        "model": settings.ai_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are an expert git merge assistant. Output only merged file contents.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {settings.ai_api_key}",
-    }
+    messages = [
+        {
+            "role": "system",
+            "content": "You are an expert git merge assistant. Output only merged file contents.",
+        },
+        {"role": "user", "content": prompt},
+    ]
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        response = await client.post(settings.ai_api_url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-    if "choices" not in data or not data["choices"]:
+    try:
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            timeout=90.0
+        )
+        return _normalize_ai_merged_content(content)
+    except Exception as e:
+        logger.error(f"AI merge resolution failed: {e}")
         return ""
-
-    content = data["choices"][0].get("message", {}).get("content", "") or ""
-    return _normalize_ai_merged_content(content)
 
 
 async def _resolve_conflicts_with_ai(
@@ -8085,11 +8007,11 @@ async def _generate_detailed_project_tree_plan(
     repo_tree_context: str = "",
     previous_tree_feedback: str = "",
 ) -> str:
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         return ""
 
     task_list_text = _build_task_context_block(
@@ -8184,31 +8106,19 @@ CRITICAL STRUCTURAL RULES (MUST FOLLOW):
 {previous_tree_feedback if previous_tree_feedback else ''}
 """
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": MASTER_TREE_GENERATOR_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": MASTER_TREE_GENERATOR_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-        content = ""
-        if "choices" in data and data["choices"]:
-            content = data["choices"][0].get("message", {}).get("content", "")
-        content = _re.sub(r"<think>.*?</think>", "", str(content), flags=_re.DOTALL).strip()
-        content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
-        
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=120.0
+        )
         clean_text = _strip_markdown_fences(content)
         parsed_json = _extract_json_object_from_text(clean_text)
         if parsed_json is not None:
@@ -8492,11 +8402,11 @@ async def _validate_master_project_tree_plan(
         stack_profile=stack_profile,
     )
 
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         return heuristic
 
     task_lines = _build_task_context_block(
@@ -8578,28 +8488,19 @@ Rules:
 - If rejected, provide a corrected_tree as a full replacement tree that follows best practices for the tech stack.
 """
 
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": MASTER_TREE_VALIDATOR_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-    }
+    messages = [
+        {"role": "system", "content": MASTER_TREE_VALIDATOR_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-        content = ""
-        if "choices" in data and data["choices"]:
-            content = data["choices"][0].get("message", {}).get("content", "")
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=120.0
+        )
         parsed = _extract_json_object_from_text(content)
         if not parsed:
             return heuristic
@@ -13366,11 +13267,11 @@ async def _generate_master_verification_report(
     Generate a dynamic verification report/checklist based on project analysis.
     This defines exactly what the Master Agent should look for in the HTML.
     """
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
 
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         return "Check if the application is running and matches basic requirements."
 
     tasks_text = ""
@@ -13398,26 +13299,19 @@ Write a PRECISE list of features, components, elements, and UI signals that MUST
 Return ONLY the checklist (max 10 points) as a clear, actionable text report.
 """
     try:
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": "You are a software quality architect. Write precise, project-specific verification checklists."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        }
-
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                report = data["choices"][0].get("message", {}).get("content", "")
-                return _re.sub(r"<think>.*?</think>", "", report, flags=_re.DOTALL).strip()
+        messages = [
+            {"role": "system", "content": "You are a software quality architect. Write precise, project-specific verification checklists."},
+            {"role": "user", "content": prompt},
+        ]
+        report = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=45.0
+        )
+        if report:
+            return report
     except Exception as e:
         logger.warning(f"Failed to generate dynamic verification report: {e}")
     
@@ -13430,9 +13324,9 @@ async def _master_verify_deployed_html(html_content: str, hints_text: str = "", 
     Returns (is_valid, summary_reason, full_analysis_dict).
     """
     try:
-        url = settings.ai_api_url
-        key = settings.ai_api_key
-        model_name = settings.ai_model
+        url = llm_gateway.resolve_url()
+        key = llm_gateway.resolve_key()
+        model_name = llm_gateway.resolve_model()
         
         html_preview = html_content[:20000]
         
@@ -13464,42 +13358,34 @@ Respond with JSON strictly following this schema:
   ]
 }}
 """
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": "You are a highly critical software auditor. You perform strict, evidence-based verification of HTML content against requirements."},
-                {"role": "user", "content": prompt}
-            ],
-            "stream": False,
-        }
-        if "gpt" in str(model_name).lower():
-            payload["response_format"] = {"type": "json_object"}
-            
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        }
+        messages = [
+            {"role": "system", "content": "You are a highly critical software auditor. You perform strict, evidence-based verification of HTML content against requirements."},
+            {"role": "user", "content": prompt}
+        ]
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL)
-                content = content.replace("```json", "").replace("```", "").strip()
-                
-                start_idx = content.find("{")
-                end_idx = content.rfind("}")
-                if start_idx != -1 and end_idx != -1:
-                    content = content[start_idx:end_idx + 1]
-                    try:
-                        analysis = json.loads(content)
-                        is_approved = analysis.get("status", "").upper() == "APPROVE"
-                        return is_approved, analysis.get("reason", ""), analysis
-                    except Exception as parse_e:
-                        return False, f"Failed to parse AI audit: {parse_e}", {}
+        response_format = {"type": "json_object"} if "gpt" in str(model_name).lower() else None
+
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=60.0,
+            response_format=response_format
+        )
+        
+        if content:
+            content = content.replace("```json", "").replace("```", "").strip()
+            start_idx = content.find("{")
+            end_idx = content.rfind("}")
+            if start_idx != -1 and end_idx != -1:
+                content = content[start_idx:end_idx + 1]
+                try:
+                    analysis = json.loads(content)
+                    is_approved = analysis.get("status", "").upper() == "APPROVE"
+                    return is_approved, analysis.get("reason", ""), analysis
+                except Exception as parse_e:
+                    return False, f"Failed to parse AI audit: {parse_e}", {}
     except Exception as e:
         logger.warning(f"[Master Agent] HTML verification AI failed: {e}")
         return False, f"Semantic audit failed to execute: {str(e)[:100]}", {"status": "REJECT", "audit_log": [f"ERROR: AI audit crashed ({e})"]}
@@ -14424,11 +14310,11 @@ async def _master_analyze_failure(
     Master Agent analyzes why agent failed using AI.
     Returns analysis with root cause and recovery plan.
     """
-    url = settings.ai_api_url
-    key = settings.ai_api_key
-    model_name = settings.ai_model
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
     
-    if not key or key == "your-api-key-here":
+    if not llm_gateway.check_api_key():
         return {
             "root_cause": "API key not configured",
             "recovery_plan": "Check configuration",
@@ -14486,45 +14372,33 @@ Return ONLY valid JSON:
 """
     
     try:
-        payload = {
-            "model": model_name,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are an expert software architect analyzing agent failures. Provide clear, actionable recovery plans."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "stream": False,
-            "chat_template_kwargs": {"thinking": False},
-        }
+        messages = [
+            {
+                "role": "system",
+                "content": "You are an expert software architect analyzing agent failures. Provide clear, actionable recovery plans."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
         
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        }
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=60.0
+        )
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                # Clean response
-                content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL)
-                content = content.replace("```json", "").replace("```", "").strip()
-                
-                # Extract JSON
-                start_idx = content.find("{")
-                end_idx = content.rfind("}")
-                if start_idx != -1 and end_idx != -1:
-                    content = content[start_idx:end_idx + 1]
-                    analysis = json.loads(content)
-                    return analysis
+        if content:
+            content = content.replace("```json", "").replace("```", "").strip()
+            start_idx = content.find("{")
+            end_idx = content.rfind("}")
+            if start_idx != -1 and end_idx != -1:
+                content = content[start_idx:end_idx + 1]
+                analysis = json.loads(content)
+                return analysis
         
         return {
             "root_cause": "Failed to analyze",
