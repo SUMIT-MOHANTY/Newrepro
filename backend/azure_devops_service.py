@@ -209,6 +209,28 @@ def _auth_headers(pat: Optional[str]) -> Dict[str, str]:
     return headers
 
 
+async def is_repo_public(
+    organization: str,
+    project: str,
+    repo: str,
+) -> bool:
+    """Check if an Azure DevOps repository is accessible without authentication.
+    
+    Note: Azure DevOps repositories are typically private by default.
+    This checks if the repo metadata is accessible without a PAT.
+    """
+    url = _repo_api_base(organization, project, repo)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            url,
+            params={"api-version": "7.1"},
+            headers=_auth_headers(pat=None),  # No PAT
+        )
+        # If we get 200, it's public (very rare for Azure DevOps)
+        # Most likely 401/403 for private repos
+        return resp.status_code == 200
+
+
 def _repo_api_base(organization: str, project: str, repo: str) -> str:
     org_enc = quote(organization, safe="")
     project_enc = quote(project, safe="")

@@ -609,8 +609,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
         if (agent.id === 'agent_03' || agent.id === 'agent_04') return;
-        const needsConfig = !agent.git_repo_url || !agent.has_git_token;
-        if (needsConfig) {
+        // For private repos, require both URL and PAT. For public repos, only URL is needed.
+        const needsRepoUrl = !agent.git_repo_url;
+        const needsPatForPrivateRepo = agent.git_repo_url && !agent.is_public_repo && !agent.has_git_token;
+        
+        if (needsRepoUrl || needsPatForPrivateRepo) {
             navigate('/prerequisites');
             return;
         }
@@ -720,7 +723,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
         if (idleAgents.length === 0) return;
 
-        const missingConfig = idleAgents.filter(agent => !agent.git_repo_url || !agent.has_git_token);
+        // Check for missing config: require repo URL for all, and PAT only for private repos
+        const missingConfig = idleAgents.filter(agent => {
+            const needsRepoUrl = !agent.git_repo_url;
+            const needsPatForPrivateRepo = agent.git_repo_url && !agent.is_public_repo && !agent.has_git_token;
+            return needsRepoUrl || needsPatForPrivateRepo;
+        });
+        
         if (missingConfig.length > 0) {
             navigate('/prerequisites');
             return;
@@ -1189,7 +1198,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{!isSystemAgent && agent.sub_type && `${agent.sub_type} `}{getNeutralAgentLabel(agent)}</p>
                             {!isSystemAgent && (
                                 <p className="text-[10px] text-app-text-light">
-                                    Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : 'missing'}
+                                    Git: {agent.git_repo_url ? 'URL saved' : 'URL missing'} | PAT: {agent.has_git_token ? 'saved' : agent.is_public_repo ? 'not needed (public)' : 'missing'}
                                 </p>
                             )}
                         </div>
@@ -3117,7 +3126,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 {gitModalAgent.id === '__run_all_setup__' ? (
                                     <>
                                         <p className="text-sm text-app-text-muted mb-6 font-medium">
-                                            {`To run ${gitModalAgent.missingConfig.length} agent(s), provide one global Git repository and PAT. All agents will use this same configuration.`}
+                                            {`To run ${gitModalAgent.missingConfig.length} agent(s), provide one global Git repository. PAT is optional for public repositories.`}
                                         </p>
                                         <div className="p-4 border border-app-primary-light bg-app-primary-light/30 rounded-xl">
                                             <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Git Repository URL <span className="text-red-400">*</span></label>
@@ -3135,7 +3144,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 className="w-full px-3 py-2 border border-app-border rounded-lg focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-xs bg-app-bg-card text-app-text-main mb-3"
                                             />
 
-                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Personal Access Token <span className="text-red-400">*</span></label>
+                                            <label className="block text-[10px] font-bold text-app-text-muted mb-1.5 uppercase tracking-widest">Global Personal Access Token <span className="text-gray-400">(optional for public repos)</span></label>
                                             <input
                                                 type="password"
                                                 value={agentsGitConfig.__global__?.git_token || ''}

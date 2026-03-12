@@ -5,7 +5,7 @@ import { clearAuthData } from '../utils/auth';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound } from 'lucide-react';
+import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound, AlertTriangle, RefreshCw } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 
 // import bourntecLogo from '../assets/bourntec_logo.png';
@@ -465,6 +465,10 @@ const Dashboard = ({
     const [showAzureRepoSelector, setShowAzureRepoSelector] = useState(false);
     const [azureProjectUrl, setAzureProjectUrl] = useState('');
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
+    
+    // Track if credentials are locked (saved and can only be changed once)
+    const [credentialsLocked, setCredentialsLocked] = useState(false);
+    const [hasChangedCredentials, setHasChangedCredentials] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
@@ -517,6 +521,119 @@ const Dashboard = ({
         }
         return null;
     }, [selectedProjectKey, selectedProject, governanceContext]);
+
+    const saveGitCredentialsToBackend = async (repoUrl, token, projectKey = selectedProjectKey) => {
+        try {
+            const authToken = localStorage.getItem('token');
+            if (!authToken || !projectKey) return;
+
+            // Find an agent to update (use the first non-system agent)
+            const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
+            agentsUrl.searchParams.set('project_token', projectKey);
+            const agentsRes = await fetch(agentsUrl.toString(), {
+                headers: { Authorization: `Bearer ${authToken}` },
+            });
+            
+            if (!agentsRes.ok) return;
+            
+            const agentsData = await agentsRes.json().catch(() => ({}));
+            const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
+            const targetAgent = agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
+            
+            if (!targetAgent?.id) return;
+
+            // Update the agent's Git credentials
+            const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
+            updateUrl.searchParams.set('project_token', projectKey);
+            const gitPayload = { git_repo_url: repoUrl, git_token: token };
+
+            await fetch(updateUrl.toString(), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                },
+                body: JSON.stringify(gitPayload),
+            });
+        } catch (err) {
+            console.warn('Failed to save Git credentials to backend:', err);
+        }
+    };
+
+    const handleChangeCredentials = () => {
+        if (credentialsLocked && hasChangedCredentials) {
+            alert('Credentials can only be changed once after initial setup. Please contact support if you need to change them again.');
+            return;
+        }
+        // Clear current credentials to allow new entry
+        setGithubLinkUrl('');
+        setGithubLinkToken('');
+        setAzureLinkUrl('');
+        setAzureLinkToken('');
+        setAzureLinkBranch('');
+        setCredentialsLocked(false);
+    };
+
+    const loadSavedGitCredentials = useCallback(async (projectKey = selectedProjectKey) => {
+        try {
+            const authToken = localStorage.getItem('token');
+            if (!authToken || !projectKey) return;
+
+            const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
+            agentsUrl.searchParams.set('project_token', projectKey);
+            const agentsRes = await fetch(agentsUrl.toString(), {
+                headers: { Authorization: `Bearer ${authToken}` },
+            });
+            
+            if (!agentsRes.ok) return;
+            
+            const agentsData = await agentsRes.json().catch(() => ({}));
+            const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
+            
+            // Find first agent with Git credentials
+            const agentWithCreds = agentList.find((a) => a?.git_repo_url);
+            
+            if (agentWithCreds?.git_repo_url) {
+                const repoUrl = agentWithCreds.git_repo_url;
+                const hasToken = agentWithCreds.has_git_token;
+                
+                // Determine provider from URL
+                const isAzure = repoUrl.includes('dev.azure.com') || repoUrl.includes('visualstudio.com');
+                
+                if (isAzure) {
+                    setAzureLinkUrl(repoUrl);
+                    setRepoLinkProvider('azure-devops');
+                    setIsOAuthRepoSelected(false);
+                    // Note: We can't retrieve the actual token for security reasons
+                    // but we know it exists if hasToken is true
+                } else {
+                    setGithubLinkUrl(repoUrl);
+                    setRepoLinkProvider('github');
+                    // For GitHub, also check if using OAuth or PAT
+                    if (hasToken && !agentWithCreds.git_token) {
+                        // Token exists on backend but not returned (security)
+                        setGithubAuthMode('pat');
+                    }
+                }
+                
+                // Lock credentials if they were previously saved
+                setCredentialsLocked(true);
+            }
+        } catch (err) {
+            console.warn('Failed to load saved Git credentials:', err);
+        }
+    }, [selectedProjectKey]);
+
+    // Load saved Git credentials when project changes
+    useEffect(() => {
+        if (selectedProjectKey) {
+            loadSavedGitCredentials(selectedProjectKey);
+        } else {
+            // Reset when no project selected
+            setCredentialsLocked(false);
+            setHasChangedCredentials(false);
+        }
+    }, [selectedProjectKey, loadSavedGitCredentials]);
 
     useEffect(() => {
         const providerFromContext = String(repoContext?.provider || '').trim().toLowerCase();
@@ -1229,6 +1346,16 @@ const Dashboard = ({
                 : parseRepoMetaFromUrl(githubLinkUrl);
             if (repoFromInput) {
                 persistRepoContextMetaForProject(repoFromInput, taskKey);
+            }
+            
+            // Also save Git credentials to backend for use by agents
+            const gitTokenToSave = repoLinkProvider === 'azure-devops' ? azureLinkToken : githubLinkToken;
+            const gitUrlToSave = repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl;
+            if (gitUrlToSave && gitTokenToSave) {
+                await saveGitCredentialsToBackend(gitUrlToSave, gitTokenToSave, taskKey);
+                // Mark that credentials have been saved and can only be changed once
+                setHasChangedCredentials(true);
+                setCredentialsLocked(true);
             }
         }
 
@@ -2907,6 +3034,81 @@ const Dashboard = ({
                                                         Provide a repository link from GitHub or Azure DevOps. For private repositories, use PAT, or for GitHub you can also use username and password.
                                                     </p>
                                                 </div>
+                                                
+                                                {/* Show saved credentials indicator - Only show for the saved provider */}
+                                                {credentialsLocked && repoLinkProvider === 'azure-devops' && azureLinkUrl && (
+                                                    <div className="mb-4 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-800 rounded-lg shadow-sm">
+                                                        <div className="flex items-start justify-between gap-2">
+                                                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                                                                <CheckCircle2 className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                                                                <div className="flex-1 min-w-0">
+                                                                    <p className="text-xs font-bold text-blue-900 dark:text-blue-100 uppercase tracking-wide mb-1">
+                                                                        <span className="flex items-center gap-1.5">
+                                                                            <AzureDevOpsIcon className="w-3.5 h-3.5" />
+                                                                            Azure DevOps Credentials Saved
+                                                                        </span>
+                                                                    </p>
+                                                                    {hasChangedCredentials ? (
+                                                                        <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
+                                                                            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                                                            <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+                                                                                Changed once - Contact support for further changes
+                                                                            </span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={handleChangeCredentials}
+                                                                            className="mt-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 underline underline-offset-2 decoration-2 hover:decoration-blue-500 transition-all flex items-center gap-1"
+                                                                        >
+                                                                            <RefreshCw className="w-3 h-3" />
+                                                                            Change credentials (one-time only)
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                
+                                                {credentialsLocked && repoLinkProvider === 'github' && githubLinkUrl && (
+                                                    <div className="mb-4 p-3 bg-gradient-to-r from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border border-gray-200 dark:border-gray-800 rounded-lg shadow-sm">
+                                                        <div className="flex items-start justify-between gap-2">
+                                                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                                                                <CheckCircle2 className="w-5 h-5 text-gray-700 dark:text-gray-400 mt-0.5 flex-shrink-0" />
+                                                                <div className="flex-1 min-w-0">
+                                                                    <p className="text-xs font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide mb-1">
+                                                                        <span className="flex items-center gap-1.5">
+                                                                            <GitHubIcon className="w-3.5 h-3.5" />
+                                                                            GitHub Credentials Saved
+                                                                        </span>
+                                                                    </p>
+                                                                    <p className="text-[11px] text-gray-700 dark:text-gray-300 font-mono truncate" title={githubLinkUrl}>
+                                                                        {githubLinkUrl}
+                                                                    </p>
+                                                                    {hasChangedCredentials ? (
+                                                                        <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
+                                                                            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                                                            <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+                                                                                Changed once - Contact support for further changes
+                                                                            </span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={handleChangeCredentials}
+                                                                            className="mt-2 text-[11px] font-semibold text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 underline underline-offset-2 decoration-2 hover:decoration-gray-500 transition-all flex items-center gap-1"
+                                                                        >
+                                                                            <RefreshCw className="w-3 h-3" />
+                                                                            Change credentials (one-time only)
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                
                                                 <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
                                                     <button
                                                         type="button"
@@ -2929,6 +3131,7 @@ const Dashboard = ({
                                                         </span>
                                                     </button>
                                                 </div>
+                                                
                                                 {repoLinkProvider === 'github' && (
                                                     <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
                                                         <button

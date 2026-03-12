@@ -4984,8 +4984,44 @@ def _sanitize_agent_for_user(
     safe_agent = dict(agent)
     safe_agent["git_repo_url"] = global_cred.git_repo_url if global_cred and global_cred.git_repo_url else None
     safe_agent["has_git_token"] = bool(global_cred and global_cred.git_token)
+    # Default to False; will be populated by async version
+    safe_agent["is_public_repo"] = False
     if "git_token" in safe_agent:
         safe_agent["git_token"] = None
+    return safe_agent
+
+
+async def _sanitize_agent_for_user_with_public_check(
+    agent: Dict[str, Any],
+    global_cred: Optional[models.AgentCredential],
+) -> Dict[str, Any]:
+    """Enhanced version that checks if the repository is public."""
+    safe_agent = _sanitize_agent_for_user(agent, global_cred)
+    
+    # Only check if we have a repo URL
+    if global_cred and global_cred.git_repo_url:
+        repo_url = global_cred.git_repo_url.strip()
+        try:
+            # Check if it's a GitHub repo
+            if "github.com" in repo_url:
+                # Extract owner/repo from URL
+                match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", repo_url)
+                if match:
+                    owner, repo = match.groups()
+                    safe_agent["is_public_repo"] = await github_service.is_repo_public(owner, repo)
+            # Check if it's Azure DevOps repo
+            elif "dev.azure.com" in repo_url or "visualstudio.com" in repo_url:
+                parsed = azure_devops_service.parse_azure_repo_url(repo_url)
+                if parsed.get("organization") and parsed.get("project") and parsed.get("repo"):
+                    safe_agent["is_public_repo"] = await azure_devops_service.is_repo_public(
+                        parsed["organization"],
+                        parsed["project"],
+                        parsed["repo"],
+                    )
+        except Exception:
+            # If check fails, default to False (assume private for safety)
+            safe_agent["is_public_repo"] = False
+    
     return safe_agent
 
 
@@ -5067,14 +5103,24 @@ async def list_agents(
         visible_runtime_ids[_public_agent_id(row[0], project_token)] = (row_kind, row_sub_type)
 
     global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-    agents = [
-        {
-            **_sanitize_agent_for_user(agent, global_cred),
-            "agent_kind": visible_runtime_ids[agent.get("id")][0],
-            "sub_type": visible_runtime_ids[agent.get("id")][1],
-        }
+    
+    # Check public repo status for all agents in parallel
+    import asyncio
+    agent_tasks = [
+        _sanitize_agent_for_user_with_public_check(agent, global_cred)
         for agent in agent_service.get_all_agents(project_token)
         if agent.get("id") in visible_runtime_ids
+    ]
+    sanitized_agents = await asyncio.gather(*agent_tasks)
+    
+    agents = [
+        {
+            **sanitized_agent,
+            "agent_kind": visible_runtime_ids[sanitized_agent.get("id")][0],
+            "sub_type": visible_runtime_ids[sanitized_agent.get("id")][1],
+        }
+        for sanitized_agent in sanitized_agents
+        if sanitized_agent.get("id") in visible_runtime_ids
     ]
     return {"agents": agents}
 
@@ -5251,7 +5297,8 @@ async def get_agent_status(
         )
         agent = agent_service.get_agent_status(agent_id, project_token)
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
+        sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5565,7 +5612,7 @@ async def add_agent(
         )
 
     response = {
-        "agent": _sanitize_agent_for_user(agent, global_cred),
+        "agent": await _sanitize_agent_for_user_with_public_check(agent, global_cred),
         "external_username": external_username,
     }
     if external_agent is not None:
@@ -5617,7 +5664,8 @@ async def update_agent(
                 project_token=project_token,
             )
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
+        sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5664,7 +5712,8 @@ async def update_agent_post(
                 project_token=project_token,
             )
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
+        sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
