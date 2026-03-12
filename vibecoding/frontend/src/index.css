@@ -21,6 +21,11 @@ code {
 }
 
 /* Custom Scrollbar - Professional */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 8px;
 }
@@ -45,6 +50,17 @@ code {
 
 .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
+}
+
+/* Ensure proper flex behavior for scrolling */
+.min-h-0 {
+  min-height: 0;
+}
+
+/* Fix overflow issues */
+.overflow-y-auto {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Message Animation */

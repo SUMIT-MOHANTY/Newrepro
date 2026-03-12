@@ -7,41 +7,12 @@ const ChatInput = ({
   onSend, 
   loading, 
   darkMode,
-  onKeyPress,
-  suggestions 
+  onKeyPress
 }) => {
   return (
     <div className={`p-4 border-t ${
       darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
     }`}>
-      {/* Suggestions */}
-      {suggestions && suggestions.length > 0 && (
-        <div className={`px-4 py-3 border-b mb-4 ${
-          darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
-        }`}>
-          <div className="flex items-center gap-2 mb-3">
-            <span className={`text-xs font-medium ${
-              darkMode ? 'text-[#858585]' : 'text-gray-500'
-            }`}>Suggestions</span>
-          </div>
-          <div className="space-y-2">
-            {suggestions.map((suggestion, idx) => (
-              <button
-                key={idx}
-                onClick={() => setInput(suggestion)}
-                className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all ${
-                  darkMode 
-                    ? 'bg-[#2d2d30] hover:bg-[#3e3e42] text-[#cccccc] border border-[#3e3e42]' 
-                    : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200'
-                }`}
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Input Area */}
       <div className="relative">
         <textarea
