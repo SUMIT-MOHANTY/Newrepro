@@ -1,7 +1,7 @@
 import React from 'react';
-import { Sun, Moon } from 'lucide-react';
+import { Sun, Moon, GitBranch } from 'lucide-react';
 
-const Header = ({ darkMode, onToggleTheme, onPublish }) => {
+const Header = ({ darkMode, onToggleTheme, onPublish, onGitClick }) => {
   return (
     <div className={`flex items-center justify-between px-6 py-3 border-b ${
       darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-white border-gray-200'
@@ -14,6 +14,17 @@ const Header = ({ darkMode, onToggleTheme, onPublish }) => {
       </div>
       
       <div className="flex items-center gap-3">
+        <button
+          onClick={onGitClick}
+          className={`p-2 rounded-lg transition-colors ${
+            darkMode 
+              ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
+              : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
+          }`}
+          title="Git Integration"
+        >
+          <GitBranch className="w-4 h-4" />
+        </button>
         <button
           onClick={onToggleTheme}
           className={`p-2 rounded-lg transition-colors ${

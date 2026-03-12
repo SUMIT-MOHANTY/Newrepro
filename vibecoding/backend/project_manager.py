@@ -4,11 +4,14 @@ import zipfile
 import shutil
 import docker
 import asyncio
+import time
+import requests
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 import json
 import logging
+from runtime_detector import runtime_detector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,19 +62,17 @@ class ProjectManager:
         version_dir = project_dir / "versions" / version_id
         version_dir.mkdir(exist_ok=True)
         
-        # Determine file type and extension
-        file_extension = "html"
-        is_python_file = False
+        # 🚀 AUTO-DETECT RUNTIME (Like Base44/Replit)
+        runtime_name, runtime_config = runtime_detector.detect(code)
+        filename = runtime_detector.get_filename(runtime_name)
         
-        if code.strip().startswith(('from flask', 'import flask', 'app = Flask', 'def ', 'class ')) and 'def ' in code:
-            file_extension = "py"
-            is_python_file = True
-        elif code.strip().startswith('<!DOCTYPE') or '<html' in code:
-            file_extension = "html"
-            is_python_file = False
+        logger.info(f"🔍 Detected runtime: {runtime_name}")
+        logger.info(f"📝 Using filename: {filename}")
+        logger.info(f"🐳 Docker image: {runtime_config['image']}")
+        logger.info(f"🔌 Port: {runtime_config['port']}")
         
-        # Save code file
-        code_file = version_dir / f"index.{file_extension}"
+        # Save code file with correct name
+        code_file = version_dir / filename
         with open(code_file, 'w', encoding='utf-8') as f:
             f.write(code)
         
@@ -80,8 +81,10 @@ class ProjectManager:
             "version_id": version_id,
             "prompt": prompt,
             "created_at": datetime.now().isoformat(),
-            "files": [f"index.{file_extension}"],
-            "file_type": "python" if is_python_file else "html"
+            "runtime": runtime_name,
+            "filename": filename,
+            "docker_image": runtime_config['image'],
+            "port": runtime_config['port'],
         }
         
         with open(version_dir / "metadata.json", "w") as f:
@@ -93,7 +96,7 @@ class ProjectManager:
         # Automatically create ZIP after saving
         self.create_project_zip(project_id)
         
-        logger.info(f"Saved version {version_id} for project {project_id} and created ZIP")
+        logger.info(f"✅ Saved version {version_id} for project {project_id}")
         return version_id, code_file
     
     def _update_project_metadata(self, project_id: str, version_id: str, prompt: str):
@@ -115,22 +118,30 @@ class ProjectManager:
             json.dump(metadata, f, indent=2)
     
     async def create_container_for_code(self, project_id: str, version_id: str) -> Optional[str]:
-        """Create Docker container for code execution"""
+        """Create Docker container for code execution using detected runtime"""
         project_dir = self.artifacts_dir / project_id
         version_dir = project_dir / "versions" / version_id
         metadata_file = version_dir / "metadata.json"
         
-        # Read version metadata to determine file type
+        # Read version metadata to get runtime info
         try:
             with open(metadata_file, 'r') as f:
-                version_metadata = json.load(f)
-            file_type = version_metadata.get('file_type', 'html')
-            main_file = f"index.{version_metadata.get('files', ['index.html'])[0].split('.')[1]}"
-        except:
-            file_type = 'html'
-            main_file = 'index.html'
+                metadata = json.load(f)
+            
+            runtime = metadata.get('runtime', 'static-html')
+            filename = metadata.get('filename', 'app.py')
+            docker_image = metadata.get('docker_image', 'vibecoding-code-executor:latest')
+            port = metadata.get('port', 80)
+            
+            logger.info(f"🚀 Creating container with runtime: {runtime}")
+            logger.info(f"🐳 Docker image: {docker_image}")
+            logger.info(f"🔌 Port: {port}")
+            
+        except Exception as e:
+            logger.error(f"Failed to read metadata: {e}")
+            return None
         
-        code_file = version_dir / main_file
+        code_file = version_dir / filename
         
         if not code_file.exists():
             logger.error(f"Code file not found: {code_file}")
@@ -140,65 +151,95 @@ class ProjectManager:
         
         try:
             # Stop and remove existing container if it exists
-            if container_name in self.running_containers:
-                container = self.running_containers[container_name]
-                container.stop()
-                container.remove()
-                del self.running_containers[container_name]
+            try:
+                old_container = self.docker_client.containers.get(container_name)
+                old_container.stop()
+                old_container.remove()
+                logger.info(f"Removed old container: {container_name}")
+            except:
+                pass
             
-            # Convert path to absolute path for Docker volume
-            abs_code_path = str(code_file.absolute())
+            # Create container with detected runtime
+            logger.info(f"🏗️ Building container: {container_name}")
             
-            if file_type == 'python':
-                # Use Python container for Python files
-                container = self.docker_client.containers.run(
-                    "vibecoding-python-executor:latest",
-                    name=container_name,
-                    ports={'5000/tcp': None},  # Auto-assign port
-                    volumes={
-                        abs_code_path: {
-                            'bind': '/app',
-                            'mode': 'rw'
-                        }
-                    },
-                    working_dir='/app',
-                    command=["python", "index.py"],
-                    detach=True,
-                    remove=False
-                )
+            container = self.docker_client.containers.run(
+                docker_image,
+                name=container_name,
+                ports={f'{port}/tcp': None},  # Auto-assign host port
+                volumes={
+                    str(version_dir.absolute()): {
+                        'bind': '/app',
+                        'mode': 'rw'
+                    }
+                },
+                working_dir='/app',
+                detach=True,
+                remove=False,
+                environment={
+                    'PYTHONUNBUFFERED': '1',
+                    'PORT': str(port),
+                }
+            )
+            
+            # Store container reference
+            self.running_containers[container_name] = container
+            
+            # Get assigned host port
+            container.reload()
+            port_bindings = container.ports.get(f'{port}/tcp', [])
+            if not port_bindings:
+                logger.error(f"No port binding found for {port}/tcp")
+                return None
+            
+            host_port = port_bindings[0].get('HostPort')
+            if not host_port:
+                logger.error(f"Failed to get host port")
+                return None
+            
+            url = f"http://localhost:{host_port}"
+            logger.info(f"✅ Container running at: {url}")
+            
+            # Wait for server to be ready (check Docker health status)
+            max_wait_time = 30  # 30 seconds
+            start_time = asyncio.get_event_loop().time()
+            
+            while (asyncio.get_event_loop().time() - start_time) < max_wait_time:
+                try:
+                    # Reload container to get latest health status
+                    container.reload()
+                    
+                    # Check if container has health check configured
+                    health_status = container.attrs.get('State', {}).get('Health', {}).get('Status')
+                    
+                    if health_status == 'healthy':
+                        logger.info(f"🎉 Container health check passed - server ready at {url}")
+                        return url
+                    elif health_status == 'unhealthy':
+                        logger.warning(f"⚠️ Container health check failed")
+                        break
+                    
+                    # If no health check, try HTTP request
+                    if health_status is None:
+                        try:
+                            response = requests.get(url, timeout=2)
+                            if response.status_code < 500:
+                                logger.info(f"🎉 Server responding at {url}")
+                                return url
+                        except:
+                            pass
+                    
+                except Exception as e:
+                    logger.debug(f"Health check attempt failed: {e}")
                 
-                # Get assigned port
-                container.reload()
-                port = container.ports['5000/tcp'][0]['HostPort']
-                
-                logger.info(f"Python container {container_name} running on port {port}")
-                return f"http://localhost:{port}"
-                
-            else:
-                # Use Nginx container for HTML files
-                container = self.docker_client.containers.run(
-                    "vibecoding-code-executor:latest",
-                    name=container_name,
-                    ports={'80/tcp': None},  # Auto-assign port
-                    volumes={
-                        abs_code_path: {
-                            'bind': '/usr/share/nginx/html',
-                            'mode': 'ro'
-                        }
-                    },
-                    detach=True,
-                    remove=False
-                )
-                
-                # Get assigned port
-                container.reload()
-                port = container.ports['80/tcp'][0]['HostPort']
-                
-                logger.info(f"Nginx container {container_name} running on port {port}")
-                return f"http://localhost:{port}"
+                await asyncio.sleep(1)
+            
+            logger.info(f"⏱️ Health check timeout - container may still be starting. URL: {url}")
+            return url
             
         except Exception as e:
             logger.error(f"Failed to create container: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def stop_container(self, project_id: str, version_id: str):
