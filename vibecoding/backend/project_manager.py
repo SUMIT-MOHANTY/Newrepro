@@ -122,13 +122,16 @@ class ProjectManager:
                 container.remove()
                 del self.running_containers[container_name]
             
-            # Create new container
+            # Convert path to absolute path for Docker volume
+            abs_code_path = str(code_file.absolute())
+            
+            # Create new container with proper volume binding
             container = self.docker_client.containers.run(
                 "nginx:alpine",
                 name=container_name,
                 ports={'80/tcp': None},  # Auto-assign port
                 volumes={
-                    str(code_file.parent): {
+                    abs_code_path: {
                         'bind': '/usr/share/nginx/html',
                         'mode': 'ro'
                     }
@@ -139,7 +142,7 @@ class ProjectManager:
             
             self.running_containers[container_name] = container
             
-            # Get the assigned port
+            # Get assigned port
             container.reload()
             port = container.ports['80/tcp'][0]['HostPort']
             
