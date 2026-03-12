@@ -9,8 +9,7 @@ const ChatInput = ({
   onSend, 
   loading, 
   darkMode,
-  onKeyPress,
-  suggestions 
+  onKeyPress
 }) => {
   return (
     <div className={cn(
