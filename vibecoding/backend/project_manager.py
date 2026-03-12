@@ -59,8 +59,19 @@ class ProjectManager:
         version_dir = project_dir / "versions" / version_id
         version_dir.mkdir(exist_ok=True)
         
+        # Determine file type and extension
+        file_extension = "html"
+        is_python_file = False
+        
+        if code.strip().startswith(('from flask', 'import flask', 'app = Flask', 'def ', 'class ')) and 'def ' in code:
+            file_extension = "py"
+            is_python_file = True
+        elif code.strip().startswith('<!DOCTYPE') or '<html' in code:
+            file_extension = "html"
+            is_python_file = False
+        
         # Save code file
-        code_file = version_dir / "index.html"
+        code_file = version_dir / f"index.{file_extension}"
         with open(code_file, 'w', encoding='utf-8') as f:
             f.write(code)
         
@@ -69,7 +80,8 @@ class ProjectManager:
             "version_id": version_id,
             "prompt": prompt,
             "created_at": datetime.now().isoformat(),
-            "files": ["index.html"]
+            "files": [f"index.{file_extension}"],
+            "file_type": "python" if is_python_file else "html"
         }
         
         with open(version_dir / "metadata.json", "w") as f:
@@ -106,7 +118,19 @@ class ProjectManager:
         """Create Docker container for code execution"""
         project_dir = self.artifacts_dir / project_id
         version_dir = project_dir / "versions" / version_id
-        code_file = version_dir / "index.html"
+        metadata_file = version_dir / "metadata.json"
+        
+        # Read version metadata to determine file type
+        try:
+            with open(metadata_file, 'r') as f:
+                version_metadata = json.load(f)
+            file_type = version_metadata.get('file_type', 'html')
+            main_file = f"index.{version_metadata.get('files', ['index.html'])[0].split('.')[1]}"
+        except:
+            file_type = 'html'
+            main_file = 'index.html'
+        
+        code_file = version_dir / main_file
         
         if not code_file.exists():
             logger.error(f"Code file not found: {code_file}")
@@ -125,29 +149,53 @@ class ProjectManager:
             # Convert path to absolute path for Docker volume
             abs_code_path = str(code_file.absolute())
             
-            # Create new container with proper volume binding
-            container = self.docker_client.containers.run(
-                "nginx:alpine",
-                name=container_name,
-                ports={'80/tcp': None},  # Auto-assign port
-                volumes={
-                    abs_code_path: {
-                        'bind': '/usr/share/nginx/html',
-                        'mode': 'ro'
-                    }
-                },
-                detach=True,
-                remove=False
-            )
-            
-            self.running_containers[container_name] = container
-            
-            # Get assigned port
-            container.reload()
-            port = container.ports['80/tcp'][0]['HostPort']
-            
-            logger.info(f"Container {container_name} running on port {port}")
-            return f"http://localhost:{port}"
+            if file_type == 'python':
+                # Use Python container for Python files
+                container = self.docker_client.containers.run(
+                    "vibecoding-python-executor:latest",
+                    name=container_name,
+                    ports={'5000/tcp': None},  # Auto-assign port
+                    volumes={
+                        abs_code_path: {
+                            'bind': '/app',
+                            'mode': 'rw'
+                        }
+                    },
+                    working_dir='/app',
+                    command=["python", "index.py"],
+                    detach=True,
+                    remove=False
+                )
+                
+                # Get assigned port
+                container.reload()
+                port = container.ports['5000/tcp'][0]['HostPort']
+                
+                logger.info(f"Python container {container_name} running on port {port}")
+                return f"http://localhost:{port}"
+                
+            else:
+                # Use Nginx container for HTML files
+                container = self.docker_client.containers.run(
+                    "vibecoding-code-executor:latest",
+                    name=container_name,
+                    ports={'80/tcp': None},  # Auto-assign port
+                    volumes={
+                        abs_code_path: {
+                            'bind': '/usr/share/nginx/html',
+                            'mode': 'ro'
+                        }
+                    },
+                    detach=True,
+                    remove=False
+                )
+                
+                # Get assigned port
+                container.reload()
+                port = container.ports['80/tcp'][0]['HostPort']
+                
+                logger.info(f"Nginx container {container_name} running on port {port}")
+                return f"http://localhost:{port}"
             
         except Exception as e:
             logger.error(f"Failed to create container: {str(e)}")
