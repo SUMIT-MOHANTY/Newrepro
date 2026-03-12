@@ -1,5 +1,7 @@
 import React from 'react';
 import { Send, Plus } from 'lucide-react';
+import { Button } from './ui/button';
+import { cn } from '@/lib/utils';
 
 const ChatInput = ({ 
   input, 
@@ -10,9 +12,10 @@ const ChatInput = ({
   onKeyPress
 }) => {
   return (
-    <div className={`p-4 border-t ${
+    <div className={cn(
+      'p-4 border-t',
       darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
-    }`}>
+    )}>
       {/* Input Area */}
       <div className="relative">
         <textarea
@@ -22,34 +25,38 @@ const ChatInput = ({
           placeholder="What would you like to change?"
           disabled={loading}
           rows="3"
-          className={`w-full px-4 py-3 pr-12 rounded-lg text-sm resize-none transition-colors focus:outline-none focus:ring-2 ${
+          className={cn(
+            'w-full px-4 py-3 pr-12 rounded-lg text-sm resize-none transition-colors focus:outline-none focus:ring-2 border max-h-24 overflow-y-auto',
             darkMode 
-              ? 'bg-[#2d2d30] text-[#cccccc] placeholder-[#858585] focus:ring-[#0e639c] border border-[#3e3e42]' 
-              : 'bg-gray-50 text-gray-900 placeholder-gray-400 focus:ring-blue-500 border border-gray-200'
-          }`}
+              ? 'bg-[#2d2d30] text-[#cccccc] placeholder-[#858585] focus:ring-[#0e639c] border-[#3e3e42]' 
+              : 'bg-gray-50 text-gray-900 placeholder-gray-400 focus:ring-blue-500 border-gray-200'
+          )}
         />
-        <button
+        <Button
           onClick={onSend}
           disabled={loading || !input.trim()}
-          className={`absolute right-3 bottom-3 p-2 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-            darkMode 
-              ? 'bg-[#0e639c] text-white hover:bg-[#1177bb]' 
-              : 'bg-blue-500 text-white hover:bg-blue-600'
-          }`}
+          size="icon"
+          className="absolute right-3 bottom-3"
         >
           <Send className="w-4 h-4" />
-        </button>
+        </Button>
       </div>
-      <div className={`flex items-center justify-between mt-2 text-xs ${
+      <div className={cn(
+        'flex items-center justify-between mt-2 text-xs',
         darkMode ? 'text-[#858585]' : 'text-gray-400'
-      }`}>
+      )}>
         <div className="flex items-center gap-3">
-          <button className={`flex items-center gap-1 transition-colors ${
-            darkMode ? 'hover:text-[#cccccc]' : 'hover:text-gray-600'
-          }`}>
+          <Button 
+            variant="ghost"
+            size="sm"
+            className={cn(
+              'flex items-center gap-1 h-6 px-2 text-xs',
+              darkMode ? 'hover:text-[#cccccc]' : 'hover:text-gray-600'
+            )}
+          >
             <Plus className="w-3.5 h-3.5" />
             <span>Attach</span>
-          </button>
+          </Button>
         </div>
         <span>Press Enter to send</span>
       </div>

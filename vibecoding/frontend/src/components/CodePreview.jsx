@@ -105,70 +105,102 @@ const CodePreview = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col">
-      {/* Tab Bar */}
-      <div className={`flex items-center gap-2 px-6 py-2 border-b ${
-        darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-gray-50 border-gray-200'
-      }`}>
-        <button
+    <div className="flex-1 flex flex-col min-h-0" style={{ position: 'relative', overflow: 'visible' }}>
+      {/* Tab Bar - Always Visible */}
+      <div 
+        className="flex items-center gap-2 px-6 py-3 border-b flex-shrink-0"
+        style={{
+          backgroundColor: darkMode ? '#252526' : '#f9fafb',
+          borderColor: darkMode ? '#3e3e42' : '#e5e7eb',
+          minHeight: '48px',
+          flexShrink: 0,
+          display: 'flex',
+          visibility: 'visible',
+          opacity: 1,
+          position: 'sticky',
+          top: 0,
+          zIndex: 9999,
+          width: '100%'
+        }}
+      >
+        <Button
           onClick={() => setActiveTab('preview')}
-          className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+          variant={activeTab === 'preview' ? 'default' : 'ghost'}
+          size="sm"
+          className={cn(
+            'rounded-md text-sm h-9 px-4 py-2 flex items-center gap-2',
             activeTab === 'preview'
-              ? darkMode
-                ? 'bg-[#1e1e1e] text-white border border-[#3e3e42]'
-                : 'bg-white text-gray-900 border border-gray-300 shadow-sm'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
               : darkMode
                 ? 'text-[#cccccc] hover:text-white hover:bg-[#2d2d30]'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-          }`}
+          )}
+          disabled={!previewCode}
+          style={{
+            opacity: !previewCode ? 0.5 : 1,
+            cursor: !previewCode ? 'not-allowed' : 'pointer'
+          }}
         >
-          <div className="flex items-center gap-2">
-            <Eye className="w-4 h-4" />
-            Preview
-          </div>
-        </button>
-        <button
+          <Eye className="w-4 h-4 mr-2" />
+          Preview
+        </Button>
+        <Button
           onClick={() => setActiveTab('code')}
-          className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+          variant={activeTab === 'code' ? 'default' : 'ghost'}
+          size="sm"
+          className={cn(
+            'rounded-md text-sm h-9 px-4 py-2 flex items-center gap-2',
             activeTab === 'code'
-              ? darkMode
-                ? 'bg-[#1e1e1e] text-white border border-[#3e3e42]'
-                : 'bg-white text-gray-900 border border-gray-300 shadow-sm'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
               : darkMode
                 ? 'text-[#cccccc] hover:text-white hover:bg-[#2d2d30]'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-          }`}
+          )}
+          disabled={!previewCode}
+          style={{
+            opacity: !previewCode ? 0.5 : 1,
+            cursor: !previewCode ? 'not-allowed' : 'pointer'
+          }}
         >
-          <div className="flex items-center gap-2">
-            <Code className="w-4 h-4" />
-            Code
-          </div>
-        </button>
+          <Code className="w-4 h-4 mr-2" />
+          Code
+        </Button>
         
-        {previewCode && (
-          <div className="ml-auto flex items-center gap-2">
-            {/* Version Selector */}
-            {codeVersions && codeVersions.length > 1 && (
-              <div className="flex items-center gap-2">
-                <span className={`text-xs ${
-                  darkMode ? 'text-[#858585]' : 'text-gray-500'
-                }`}>Version:</span>
-                <select
-                  value={selectedVersion || ''}
-                  onChange={(e) => onLoadVersion(Number(e.target.value))}
-                  className={`px-2 py-1 rounded-md text-xs transition-colors ${
-                    darkMode 
-                      ? 'bg-[#2d2d30] text-[#cccccc] border border-[#3e3e42] hover:bg-[#3e3e42]' 
-                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
+        <div className="ml-auto flex items-center gap-2" style={{ minWidth: '200px' }}>
+          {/* Version Selector - Always visible when code exists */}
+          <div className="flex items-center gap-2">
+            <span className={cn(
+              'text-xs whitespace-nowrap',
+              darkMode ? 'text-[#858585]' : 'text-gray-500'
+            )}>Version:</span>
+            {previewCode && codeVersions && codeVersions.length > 0 ? (
+              <Select value={String(selectedVersion || codeVersions[codeVersions.length - 1]?.id || '')} onValueChange={(val) => onLoadVersion?.(Number(val))}>
+                <SelectTrigger className={cn(
+                  'w-[180px] px-2 py-1 rounded-md text-xs',
+                  darkMode 
+                    ? 'bg-[#2d2d30] text-[#cccccc] border border-[#3e3e42] hover:bg-[#3e3e42]' 
+                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                )}>
+                  <SelectValue placeholder="Select version" />
+                </SelectTrigger>
+                <SelectContent className={cn(
+                  'z-[9999]',
+                  darkMode ? 'bg-[#2d2d30] border-[#3e3e42]' : 'bg-white border-gray-300'
+                )}>
                   {codeVersions.map((version, idx) => (
-                    <option key={version.id} value={version.id}>
+                    <SelectItem key={version.id} value={String(version.id)}>
                       v{codeVersions.length - idx} - {new Date(version.timestamp).toLocaleTimeString()}
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
-              </div>
+                </SelectContent>
+              </Select>
+            ) : (
+              <span className={cn(
+                'text-xs px-2 py-1',
+                darkMode ? 'text-[#858585]' : 'text-gray-400'
+              )}>
+                {previewCode ? 'v1 - Current' : 'No versions'}
+              </span>
             )}
             
             <button
@@ -209,11 +241,12 @@ const CodePreview = ({
       </div>
 
       {/* Preview/Code Area */}
-      <div className={`flex-1 ${
-        darkMode ? 'bg-[#1e1e1e]' : 'bg-white'
-      }`}>
+      <div 
+        className={`flex-1 min-h-0 flex flex-col overflow-auto`}
+        style={{ flex: '1 1 auto', minHeight: 0 }}
+      >
         {!previewCode ? (
-          <div className="h-full flex items-center justify-center">
+          <div className="flex-1 min-h-0 flex items-center justify-center">
             <div className="text-center">
               <div className={`w-20 h-20 rounded-2xl mx-auto mb-4 flex items-center justify-center ${
                 darkMode ? 'bg-[#2d2d30]' : 'bg-gray-100'
@@ -500,8 +533,8 @@ const CodePreview = ({
                   </div>
                   
                   {/* Code Content */}
-                  <div className="flex-1 py-4 px-4 overflow-x-auto">
-                    <pre className={`text-sm font-mono leading-relaxed ${
+                  <div className="flex-1 py-4 px-4 overflow-x-auto overflow-y-auto">
+                    <pre className={`text-sm font-mono leading-relaxed whitespace-pre-wrap break-words ${
                       darkMode ? 'text-[#d4d4d4]' : 'text-gray-800'
                     }`}>
                       <code>{currentFileContent || previewCode}</code>

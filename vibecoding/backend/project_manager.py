@@ -22,8 +22,19 @@ class ProjectManager:
     def __init__(self, artifacts_dir: str = "project_artifacts"):
         self.artifacts_dir = Path(artifacts_dir)
         self.artifacts_dir.mkdir(exist_ok=True)
-        self.docker_client = docker.from_env()
+        self._docker_client = None
         self.running_containers: Dict[str, docker.models.containers.Container] = {}
+    
+    @property
+    def docker_client(self):
+        """Lazy load Docker client on first access"""
+        if self._docker_client is None:
+            try:
+                self._docker_client = docker.from_env()
+            except docker.errors.DockerException as e:
+                logger.warning(f"Docker is not available: {str(e)}")
+                return None
+        return self._docker_client
         
     def generate_project_id(self) -> str:
         """Generate unique project ID"""
@@ -320,6 +331,10 @@ class ProjectManager:
     def cleanup_old_containers(self):
         """Clean up old containers"""
         try:
+            if self.docker_client is None:
+                logger.info("Docker not available, skipping container cleanup")
+                return
+                
             containers = self.docker_client.containers.list(
                 all=True,
                 filters={"name": "vibecoding_"}
