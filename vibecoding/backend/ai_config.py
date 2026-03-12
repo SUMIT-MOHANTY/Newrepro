@@ -55,11 +55,53 @@ class AIConfig:
         payload = self.get_payload(messages, **kwargs)
         
         try:
-            response = requests.post(self.base_url, headers=headers, json=payload)
+            response = requests.post(self.base_url, headers=headers, json=payload, stream=payload.get("stream", False))
             response.raise_for_status()
-            return response.json()
+            
+            # Handle streaming responses
+            if payload.get("stream", False):
+                return self._handle_streaming_response(response)
+            else:
+                return response.json()
         except requests.exceptions.RequestException as e:
             raise Exception(f"AI API request failed: {str(e)}")
+    
+    def _handle_streaming_response(self, response) -> Dict[str, Any]:
+        """Aggregate streaming response chunks into a single response"""
+        import json
+        content = ""
+        
+        try:
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith("data: "):
+                        line = line[6:]  # Remove 'data: ' prefix
+                    
+                    if line.strip() == "[DONE]":
+                        break
+                    
+                    try:
+                        chunk = json.loads(line)
+                        if "choices" in chunk and len(chunk["choices"]) > 0:
+                            delta = chunk["choices"][0].get("delta", {})
+                            if "content" in delta and delta["content"]:
+                                content += delta["content"]
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Return aggregated response in standard format
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": content
+                        }
+                    }
+                ]
+            }
+        except Exception as e:
+            raise Exception(f"Failed to parse streaming response: {str(e)}")
 
 # Global AI configuration instance
 ai_config = AIConfig()
