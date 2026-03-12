@@ -237,6 +237,20 @@ export default function AgentAnalysis({
         }
     }, []);
 
+    // Load repo context from storage
+    useEffect(() => {
+        const storedRepoContext = sessionStorage.getItem('repoContext') || localStorage.getItem('repoContext');
+        if (storedRepoContext) {
+            try {
+                const parsed = JSON.parse(storedRepoContext);
+                console.log('Loaded repo context from storage:', parsed);
+                setRepoContext(parsed);
+            } catch (err) {
+                console.warn('Failed to parse repo context from storage:', err);
+            }
+        }
+    }, []);
+
     const persistHistoryDocument = useCallback(async (payload, documentId = null) => {
         const response = await fetch(
             documentId ? API_ENDPOINTS.HISTORY_ITEM(documentId) : API_ENDPOINTS.HISTORY,
@@ -495,6 +509,84 @@ export default function AgentAnalysis({
     fetchAnalysisRef.current = fetchAnalysis;
     streamAnalysisRef.current = streamAnalysis;
 
+    const handleRepositoryOnlyAnalysis = useCallback(async () => {
+        if (!token) {
+            setError('You are not logged in. Please login again.');
+            setLoading(false);
+            return;
+        }
+
+        setProcessing(true);
+        setLoading(false);
+        setProgress(70);
+        setProgressMessage('Analyzing repository structure...');
+        setError('');
+        setAiQuestions([]);
+        setUserAnswers({});
+        setUserFeedback('');
+
+        try {
+            // Create a virtual document entry for the repository analysis
+            const virtualDocument = {
+                id: `repo-${selectedProjectKey}-${Date.now()}`,
+                filename: `Repository Analysis - ${repoContext.repo || 'Unknown Repository'}`,
+                full_content: repoContext.context,
+                content_preview: repoContext.context?.substring(0, 200) + '...' || '',
+            };
+
+            const initialResult = {
+                id: virtualDocument.id,
+                filename: virtualDocument.filename,
+                extraction: {
+                    markdown: repoContext.context,
+                    html: '',
+                    num_pages: null,
+                },
+                analysis: { analysis: '', reasoning: '' },
+                revisionNumber: 1,
+                isRepositoryOnly: true, // Flag to indicate this is repo-only analysis
+            };
+
+            setResult(initialResult);
+
+            // Get AI config from localStorage
+            const aiConfigStr = localStorage.getItem('aiConfig');
+            let aiConfig = { apiUrl: '', apiKey: '', model: '', stream: false };
+            if (aiConfigStr) {
+                try {
+                    aiConfig = JSON.parse(aiConfigStr);
+                } catch { }
+            }
+
+            const aiPayload = {
+                document_content: repoContext.context,
+                api_url: aiConfig?.apiUrl || undefined,
+                api_key: aiConfig?.apiKey || undefined,
+                model: aiConfig?.model || undefined,
+                stream: aiConfig?.stream || false,
+                governance_context: governanceContext || undefined,
+            };
+
+            if (aiConfig?.stream || false) {
+                await streamAnalysisRef.current(aiPayload, token, initialResult, {
+                    repoContext: repoContext,
+                    governanceContext: governanceContext,
+                });
+            } else {
+                setProgress(85);
+                setProgressMessage('Generating repository analysis report...');
+                await fetchAnalysisRef.current(aiPayload, token, initialResult, {
+                    repoContext: repoContext,
+                    governanceContext: governanceContext,
+                });
+            }
+        } catch (err) {
+            setError(err.message || 'Repository analysis failed.');
+        } finally {
+            setProcessing(false);
+        }
+    }, [token, governanceContext, selectedProjectKey, repoContext, fetchAnalysisRef, streamAnalysisRef]);
+
     const triggerPendingAnalysis = useCallback(async (document, pendingAnalysis) => {
         if (!token) {
             setError('You are not logged in. Please login again.');
@@ -592,9 +684,29 @@ export default function AgentAnalysis({
 
             try {
                 const latestDocument = selectedProject.latestDocument;
-                if (!latestDocument) {
+                
+                console.log('AgentAnalysis useEffect:', {
+                    selectedProjectKey,
+                    hasLatestDocument: !!latestDocument,
+                    hasRepoContext: !!repoContext,
+                    repoContextRepo: repoContext?.repo,
+                    repoContextContext: repoContext?.context ? 'present' : 'missing'
+                });
+                
+                // Check if we have repo context but no document - allow repo-only analysis
+                const hasRepoContextOnly = !latestDocument && repoContext?.context;
+                
+                console.log('hasRepoContextOnly:', hasRepoContextOnly);
+                
+                if (!latestDocument && !hasRepoContextOnly) {
                     setError('No document found for this project. Please upload a document first.');
                     setLoading(false);
+                    return;
+                }
+
+                // Handle repository-only analysis (no BRD document)
+                if (hasRepoContextOnly) {
+                    await handleRepositoryOnlyAnalysis();
                     return;
                 }
 
@@ -714,7 +826,7 @@ export default function AgentAnalysis({
         };
 
         loadAnalysis();
-    }, [selectedProjectKey, selectedProject, projectsLoading, token, hasGovernanceAssessment, triggerPendingAnalysis, location.pathname]);
+    }, [selectedProjectKey, selectedProject, projectsLoading, token, hasGovernanceAssessment, triggerPendingAnalysis, location.pathname, repoContext]);
 
     const handleRefineAnalysis = async () => {
         let feedbackToSend = userFeedback;

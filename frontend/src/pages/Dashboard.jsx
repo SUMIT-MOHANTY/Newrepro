@@ -473,6 +473,26 @@ const Dashboard = ({
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
+    
+    const saveRepoContextToStorage = (context) => {
+        try {
+            console.log('Saving repo context to storage:', context);
+            localStorage.setItem('repoContext', JSON.stringify(context));
+            sessionStorage.setItem('repoContext', JSON.stringify(context));
+        } catch (err) {
+            console.warn('Failed to save repo context to storage:', err);
+        }
+    };
+
+    const clearRepoContextFromStorage = () => {
+        try {
+            localStorage.removeItem('repoContext');
+            sessionStorage.removeItem('repoContext');
+        } catch (err) {
+            console.warn('Failed to clear repo context from storage:', err);
+        }
+    };
+    
     const persistRepoContextMetaForProject = useCallback((ctx, projectKey = selectedProjectKey) => {
         const repoMeta = buildRepoContextMeta(ctx);
         if (!repoMeta) return;
@@ -572,6 +592,89 @@ const Dashboard = ({
         setAzureLinkToken('');
         setAzureLinkBranch('');
         setCredentialsLocked(false);
+    };
+
+    const fetchRepoContextForAnalysis = async (repoUrl, token, provider, projectKey = selectedProjectKey) => {
+        try {
+            const authToken = localStorage.getItem('token');
+            if (!authToken || !repoUrl || !token) return;
+
+            const endpoint = provider === 'azure-devops'
+                ? API_ENDPOINTS.AZURE_DEVOPS_REPO_CONTEXT
+                : API_ENDPOINTS.GITHUB_REPO_CONTEXT;
+
+            const payload = provider === 'azure-devops'
+                ? { repo_url: repoUrl, token }
+                : (() => {
+                    // For GitHub, determine auth mode based on URL and token format
+                    const isPersonalToken = token.startsWith('ghp_') || token.length > 40;
+                    return isPersonalToken
+                        ? { owner: repoUrl.split('/').slice(-2)[0], repo: repoUrl.split('/').pop().replace('.git', ''), token }
+                        : { owner: repoUrl.split('/').slice(-2)[0], repo: repoUrl.split('/').pop().replace('.git', '') };
+                  })();
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                },
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to fetch repo context: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            
+            // Build repo context from response
+            const nextRepoContext = {
+                repo: provider === 'azure-devops' 
+                    ? data.repo || repoUrl 
+                    : `${data.owner}/${data.repo}`,
+                branch: data.branch || 'main',
+                context: data.context,
+                fromLink: true,
+                provider,
+                url: repoUrl,
+            };
+
+            setRepoContext(nextRepoContext);
+            persistRepoContextMetaForProject(nextRepoContext);
+            saveRepoContextToStorage(nextRepoContext);
+        } catch (err) {
+            console.warn('Fetch repo context for analysis failed:', err);
+            throw err;
+        }
+    };
+
+    const handleRepositoryOnlyAnalysisInDashboard = async (taskKey) => {
+        if (!hasGovernanceAssessment) {
+            // Navigate to governance first for repo-only analysis
+            setProjectState(taskKey, {
+                processing: false,
+                progress: 85,
+                progressMessage: 'Repository context ready. Continue with Governance.',
+                result: null,
+            });
+            
+            // Save a pending analysis entry for repository-only case
+            await savePendingScreeningToHistory({
+                filename: `Repository Analysis - ${repoContext.repo || 'Unknown Repository'}`,
+                markdown: repoContext.context,
+                taskKey,
+                repoContextState: repoContext,
+                isRepositoryOnly: true,
+            });
+            
+            navigate('/new-project/governance');
+            return;
+        }
+
+        // If governance is already complete, navigate directly to AgentAnalysis
+        // The AgentAnalysis component will handle the repository-only analysis
+        navigate('/agent-analysis');
     };
 
     const loadSavedGitCredentials = useCallback(async (projectKey = selectedProjectKey) => {
@@ -1353,9 +1456,29 @@ const Dashboard = ({
             const gitUrlToSave = repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl;
             if (gitUrlToSave && gitTokenToSave) {
                 await saveGitCredentialsToBackend(gitUrlToSave, gitTokenToSave, taskKey);
-                // Mark that credentials have been saved and can only be changed once
-                setHasChangedCredentials(true);
+                // Only mark as changed if user explicitly clicked the Change button (not on initial save)
+                if (credentialsLocked) {
+                    // This is a change operation (user clicked "Change" button)
+                    setHasChangedCredentials(true);
+                }
+                // Always lock after saving
                 setCredentialsLocked(true);
+                
+                // If repo context is not loaded yet but we have credentials, fetch it now for AI analysis
+                if (!repoContext) {
+                    try {
+                        await fetchRepoContextForAnalysis(gitUrlToSave, gitTokenToSave, repoLinkProvider, taskKey);
+                    } catch (err) {
+                        console.warn('Failed to fetch repo context for analysis:', err);
+                        // Continue without repo context - AI will analyze just the BRD
+                    }
+                }
+            }
+
+            // Handle repository-only analysis (no BRD document)
+            if (repoContext?.context && !extractedMarkdown) {
+                await handleRepositoryOnlyAnalysisInDashboard(taskKey);
+                return;
             }
         }
 
@@ -2355,6 +2478,7 @@ const Dashboard = ({
             };
             setRepoContext(nextRepoContext);
             persistRepoContextMetaForProject(nextRepoContext);
+            saveRepoContextToStorage(nextRepoContext);
             if (githubAuthMode === 'basic') {
                 setGithubLinkPassword('');
             }
@@ -2389,6 +2513,7 @@ const Dashboard = ({
 
         if (repoContext) {
             setRepoContext(null);
+            clearRepoContextFromStorage();
         }
     };
 
@@ -2536,6 +2661,7 @@ const Dashboard = ({
             };
             setRepoContext(nextRepoContext);
             persistRepoContextMetaForProject(nextRepoContext);
+            saveRepoContextToStorage(nextRepoContext);
             setAzureLinkError('');
         } catch (e) {
             setAzureLinkError(e.message || 'Failed to parse or load Azure DevOps URL');
@@ -2941,7 +3067,8 @@ const Dashboard = ({
                                                         (githubLinkPassword && githubLinkPassword.trim().length > 0);
                                                     // Check if repoContext is from link (but not Azure DevOps)
                                                     const hasLinkRepoContext = repoContext && repoContext.fromLink && repoContext.provider !== 'azure-devops';
-                                                    return hasGithubLinkFields || hasLinkRepoContext;
+                                                    const shouldShowLinkOption = hasGithubLinkFields || hasLinkRepoContext || !repoContext; // Show when no repo context or using manual link
+                                                    return shouldShowLinkOption ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none';
                                                 })() ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Link Option</span>
                                                 </div>
@@ -2985,6 +3112,7 @@ const Dashboard = ({
                                                             }}
                                                             onClearRepo={() => {
                                                                 setRepoContext(null);
+                                                                clearRepoContextFromStorage();
                                                                 setIsOAuthRepoSelected(false);
                                                             }}
                                                         />
@@ -3013,6 +3141,7 @@ const Dashboard = ({
                                                             }}
                                                             onClearRepo={() => {
                                                                 setRepoContext(null);
+                                                                clearRepoContextFromStorage();
                                                                 setIsOAuthRepoSelected(false);
                                                             }}
                                                         />
@@ -3022,7 +3151,7 @@ const Dashboard = ({
 
                                             {/* OPTION 2: Repository URL (GitHub / Azure DevOps) */}
                                             <div className="relative border border-app-border rounded-xl bg-app-bg-card shadow-sm p-5 flex flex-col justify-start overflow-hidden">
-                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || (repoContext && !repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || repoContext) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Connected Account</span>
                                                 </div>
                                                 <div className="mb-4">
@@ -3164,7 +3293,7 @@ const Dashboard = ({
                                                             value={azureLinkBranch}
                                                             onChange={e => {
                                                                 setAzureLinkBranch(e.target.value);
-                                                                if (repoContext) setRepoContext(null);
+                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                             }}
                                                             placeholder="Azure DevOps username *"
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -3176,7 +3305,7 @@ const Dashboard = ({
                                                             value={azureLinkToken}
                                                             onChange={e => {
                                                                 setAzureLinkToken(e.target.value);
-                                                                if (repoContext) setRepoContext(null);
+                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                             }}
                                                             placeholder="Azure DevOps PAT *"
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -3187,7 +3316,7 @@ const Dashboard = ({
                                                             value={githubLinkToken}
                                                             onChange={e => {
                                                                 setGithubLinkToken(e.target.value);
-                                                                if (repoContext) setRepoContext(null);
+                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                             }}
                                                             placeholder="Optional GitHub PAT for private repos..."
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -3199,7 +3328,7 @@ const Dashboard = ({
                                                                 value={githubLinkUsername}
                                                                 onChange={e => {
                                                                     setGithubLinkUsername(e.target.value);
-                                                                    if (repoContext) setRepoContext(null);
+                                                                    if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                                 }}
                                                                 placeholder="GitHub username"
                                                                 className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -3209,7 +3338,7 @@ const Dashboard = ({
                                                                 value={githubLinkPassword}
                                                                 onChange={e => {
                                                                     setGithubLinkPassword(e.target.value);
-                                                                    if (repoContext) setRepoContext(null);
+                                                                    if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                                 }}
                                                                 placeholder="GitHub password"
                                                                 className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -3233,6 +3362,7 @@ const Dashboard = ({
                                                             <button
                                                                 onClick={() => {
                                                                     setRepoContext(null);
+                                                                    clearRepoContextFromStorage();
                                                                     setGithubLinkUrl('');
                                                                     setGithubLinkToken('');
                                                                     setGithubAuthMode('pat');
@@ -3326,8 +3456,8 @@ const Dashboard = ({
                                     <div className="flex justify-end gap-3 pt-6">
                                         <button
                                             type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
+                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || (activeTab === 'github-link' && !repoContext?.context) || processing || urlFetching}
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || (activeTab === 'github-link' && !repoContext?.context) || processing || urlFetching
                                                 ? 'bg-app-border cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
@@ -3337,7 +3467,9 @@ const Dashboard = ({
                                                 ? (hasGovernanceAssessment ? 'Analyzing...' : 'Saving Screening...')
                                                 : selectedProject?.documents.length > 0
                                                     ? (hasGovernanceAssessment ? 'Start Revision Analysis' : 'Continue to Governance')
-                                                    : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
+                                                    : activeTab === 'github-link'
+                                                        ? (hasGovernanceAssessment ? 'Analyze Repository' : 'Continue to Governance')
+                                                        : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
                                         </button>
                                     </div>
                                 </form>

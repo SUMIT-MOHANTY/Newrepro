@@ -835,7 +835,10 @@ export default function TaskCreation({
                 formData.append('governance', JSON.stringify(governanceObj));
                 if (repoLinkUrl) formData.append('repo_link_url', repoLinkUrl);
 
+                // Add text content as a separate key
                 if (inputText) {
+                    formData.append('text', inputText);
+                    
                     const blob = new Blob([inputText], { type: 'text/plain' });
                     const filenameBase = String(latestDoc?.filename || 'requirements').replace(/[^\w.-]+/g, '_');
                     formData.append('input_file', blob, `${filenameBase || 'requirements'}.txt`);

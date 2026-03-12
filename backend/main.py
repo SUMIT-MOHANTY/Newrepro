@@ -7225,8 +7225,8 @@ async def put_agent_project_config(
     Persist per-project config used by the agent pipeline.
 
     Supports:
-    - multipart/form-data: mode, prerequisites (JSON string), analysed_file (JSON string), input_file (binary), repo_link_url, project_token (optional)
-    - application/json: { mode, prerequisites, analysed_file, repo_link_url, project_token? }
+    - multipart/form-data: mode, prerequisites (JSON string), analysed_file (JSON string), input_file (binary), text (string), repo_link_url, project_token (optional)
+    - application/json: { mode, prerequisites, analysed_file, text, repo_link_url, project_token? }
     """
     import json as json_mod
 
@@ -7239,6 +7239,7 @@ async def put_agent_project_config(
     repo_link_url: Optional[str] = None
     project_token: Optional[str] = None
     upload: Optional[UploadFile] = None
+    text_content: Optional[str] = None
 
     if "application/json" in content_type:
         payload = await request.json()
@@ -7250,11 +7251,13 @@ async def put_agent_project_config(
         governance_obj = payload.get("governance")
         repo_link_url = str(payload.get("repo_link_url") or "").strip() or None
         project_token = str(payload.get("project_token") or "").strip() or None
+        text_content = str(payload.get("text") or "").strip() or None
     else:
         form = await request.form()
         mode = str(form.get("mode") or "").strip()
         repo_link_url = str(form.get("repo_link_url") or "").strip() or None
         project_token = str(form.get("project_token") or "").strip() or None
+        text_content = str(form.get("text") or "").strip() or None
 
         prereq_raw = form.get("prerequisites")
         analysed_raw = form.get("analysed_file")
@@ -7306,6 +7309,7 @@ async def put_agent_project_config(
         "project_token": safe_project,
         "owner_id": current_user.id,
         "saved_at": datetime.utcnow().isoformat(),
+        "text": text_content,
     }
 
     (base_dir / "project_config.json").write_text(
