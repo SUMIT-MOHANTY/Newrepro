@@ -8106,7 +8106,6 @@ CRITICAL STRUCTURAL RULES (MUST FOLLOW):
 {previous_tree_feedback if previous_tree_feedback else ''}
 """
 
-    payload = {
     messages = [
         {"role": "system", "content": MASTER_TREE_GENERATOR_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
@@ -8488,16 +8487,6 @@ Rules:
 - Do NOT reject simply because the tree uses a different directory layout than the workspace contract. The AI should use the best structure for the tech stack.
 - If rejected, provide a corrected_tree as a full replacement tree that follows best practices for the tech stack.
 """
-
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": MASTER_TREE_VALIDATOR_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "chat_template_kwargs": {"thinking": False},
-    }
 
     messages = [
         {"role": "system", "content": MASTER_TREE_VALIDATOR_SYSTEM_PROMPT},
@@ -13310,26 +13299,19 @@ Write a PRECISE list of features, components, elements, and UI signals that MUST
 Return ONLY the checklist (max 10 points) as a clear, actionable text report.
 """
     try:
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": "You are a software quality architect. Write precise, project-specific verification checklists."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        }
-
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                report = data["choices"][0].get("message", {}).get("content", "")
-                return _re.sub(r"<think>.*?</think>", "", report, flags=_re.DOTALL).strip()
+        messages = [
+            {"role": "system", "content": "You are a software quality architect. Write precise, project-specific verification checklists."},
+            {"role": "user", "content": prompt},
+        ]
+        report = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=45.0
+        )
+        if report:
+            return report
     except Exception as e:
         logger.warning(f"Failed to generate dynamic verification report: {e}")
     
@@ -13376,42 +13358,34 @@ Respond with JSON strictly following this schema:
   ]
 }}
 """
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": "You are a highly critical software auditor. You perform strict, evidence-based verification of HTML content against requirements."},
-                {"role": "user", "content": prompt}
-            ],
-            "stream": False,
-        }
-        if "gpt" in str(model_name).lower():
-            payload["response_format"] = {"type": "json_object"}
-            
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        }
+        messages = [
+            {"role": "system", "content": "You are a highly critical software auditor. You perform strict, evidence-based verification of HTML content against requirements."},
+            {"role": "user", "content": prompt}
+        ]
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL)
-                content = content.replace("```json", "").replace("```", "").strip()
-                
-                start_idx = content.find("{")
-                end_idx = content.rfind("}")
-                if start_idx != -1 and end_idx != -1:
-                    content = content[start_idx:end_idx + 1]
-                    try:
-                        analysis = json.loads(content)
-                        is_approved = analysis.get("status", "").upper() == "APPROVE"
-                        return is_approved, analysis.get("reason", ""), analysis
-                    except Exception as parse_e:
-                        return False, f"Failed to parse AI audit: {parse_e}", {}
+        response_format = {"type": "json_object"} if "gpt" in str(model_name).lower() else None
+
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=60.0,
+            response_format=response_format
+        )
+        
+        if content:
+            content = content.replace("```json", "").replace("```", "").strip()
+            start_idx = content.find("{")
+            end_idx = content.rfind("}")
+            if start_idx != -1 and end_idx != -1:
+                content = content[start_idx:end_idx + 1]
+                try:
+                    analysis = json.loads(content)
+                    is_approved = analysis.get("status", "").upper() == "APPROVE"
+                    return is_approved, analysis.get("reason", ""), analysis
+                except Exception as parse_e:
+                    return False, f"Failed to parse AI audit: {parse_e}", {}
     except Exception as e:
         logger.warning(f"[Master Agent] HTML verification AI failed: {e}")
         return False, f"Semantic audit failed to execute: {str(e)[:100]}", {"status": "REJECT", "audit_log": [f"ERROR: AI audit crashed ({e})"]}
@@ -14398,45 +14372,33 @@ Return ONLY valid JSON:
 """
     
     try:
-        payload = {
-            "model": model_name,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are an expert software architect analyzing agent failures. Provide clear, actionable recovery plans."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "stream": False,
-            "chat_template_kwargs": {"thinking": False},
-        }
+        messages = [
+            {
+                "role": "system",
+                "content": "You are an expert software architect analyzing agent failures. Provide clear, actionable recovery plans."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
         
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-        }
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=60.0
+        )
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            if "choices" in data and len(data["choices"]) > 0:
-                content = data["choices"][0].get("message", {}).get("content", "")
-                # Clean response
-                content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL)
-                content = content.replace("```json", "").replace("```", "").strip()
-                
-                # Extract JSON
-                start_idx = content.find("{")
-                end_idx = content.rfind("}")
-                if start_idx != -1 and end_idx != -1:
-                    content = content[start_idx:end_idx + 1]
-                    analysis = json.loads(content)
-                    return analysis
+        if content:
+            content = content.replace("```json", "").replace("```", "").strip()
+            start_idx = content.find("{")
+            end_idx = content.rfind("}")
+            if start_idx != -1 and end_idx != -1:
+                content = content[start_idx:end_idx + 1]
+                analysis = json.loads(content)
+                return analysis
         
         return {
             "root_cause": "Failed to analyze",
