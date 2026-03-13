@@ -1020,12 +1020,18 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
         if code:
             version_id, _ = project_manager.save_code_version(project_id, code, request.prompt)
             
-            # Create container for preview
-            try:
-                preview_url = await project_manager.create_container_for_code(project_id, version_id)
-            except Exception as e:
-                print(f"Failed to create container: {str(e)}")
-                # Continue without container if it fails
+            # Check if Docker is available before attempting to create container
+            if project_manager.docker_client is None:
+                print("⚠️ Docker not available - preview functionality disabled")
+                print("Please ensure Docker Desktop is installed and running")
+                preview_url = None
+            else:
+                # Create container for preview
+                try:
+                    preview_url = await project_manager.create_container_for_code(project_id, version_id)
+                except Exception as e:
+                    print(f"Failed to create container: {str(e)}")
+                    # Continue without container if it fails
 
         return GenerateResponse(
             message=message if message else "I've generated the code for you!",
@@ -1108,10 +1114,19 @@ async def get_version_code(project_id: str, version_id: str):
 @app.post("/api/projects/{project_id}/versions/{version_id}/preview")
 async def create_preview(project_id: str, version_id: str):
     try:
+        # Check if Docker is available
+        if project_manager.docker_client is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Docker not available. Please ensure Docker Desktop is installed and running."
+            )
+        
         preview_url = await project_manager.create_container_for_code(project_id, version_id)
         if not preview_url:
             raise HTTPException(status_code=500, detail="Failed to create preview")
         return {"preview_url": preview_url}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1143,6 +1158,10 @@ async def download_project(project_id: str):
 @app.post("/api/cleanup")
 async def cleanup_containers():
     try:
+        # Check if Docker is available
+        if project_manager.docker_client is None:
+            return {"message": "Docker not available - no containers to clean up"}
+        
         project_manager.cleanup_old_containers()
         return {"message": "Cleanup completed"}
     except Exception as e:

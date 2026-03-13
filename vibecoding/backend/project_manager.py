@@ -31,8 +31,10 @@ class ProjectManager:
         if self._docker_client is None:
             try:
                 self._docker_client = docker.from_env()
+                logger.info("✅ Docker client initialized successfully")
             except docker.errors.DockerException as e:
-                logger.warning(f"Docker is not available: {str(e)}")
+                logger.warning(f"⚠️ Docker is not available: {str(e)}")
+                logger.warning("Preview functionality will be disabled")
                 return None
         return self._docker_client
         
@@ -211,6 +213,12 @@ class ProjectManager:
                 return None
         
         container_name = f"vibecoding_{project_id}_{version_id}"
+        
+        # Check if Docker is available
+        if self.docker_client is None:
+            logger.error("❌ Docker client not available - cannot create container")
+            logger.error("Please ensure Docker Desktop is installed and running")
+            return None
         
         try:
             # Stop and remove existing container if it exists
