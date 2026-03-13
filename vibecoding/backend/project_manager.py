@@ -16,6 +16,66 @@ from runtime_detector import runtime_detector
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+EDITOR_INJECTION_SCRIPT = """
+<script id="__vibe_editor__">
+(function() {
+  var hoveredEl = null;
+  var selectedEl = null;
+  var editMode = false;
+
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'set-edit-mode') {
+      editMode = e.data.value;
+      if (!editMode) { clearHover(); clearSelection(); }
+    }
+  });
+
+  function getElementInfo(el) {
+    var rect = el.getBoundingClientRect();
+    return {
+      tagName: el.tagName,
+      id: el.id || '',
+      className: (typeof el.className === 'string' ? el.className : ''),
+      textContent: (el.textContent || '').substring(0, 150),
+      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+    };
+  }
+
+  function clearHover() { window.parent.postMessage({ type: 'element-hover', data: null }, '*'); }
+  function clearSelection() { selectedEl = null; window.parent.postMessage({ type: 'element-deselect' }, '*'); }
+
+  document.addEventListener('mouseover', function(e) {
+    if (!editMode) return;
+    var el = e.target;
+    if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') { clearHover(); return; }
+    hoveredEl = el;
+    window.parent.postMessage({ type: 'element-hover', data: getElementInfo(el) }, '*');
+  }, true);
+
+  document.addEventListener('mouseout', function(e) {
+    if (!editMode) return;
+    hoveredEl = null;
+    clearHover();
+  }, true);
+
+  document.addEventListener('click', function(e) {
+    if (!editMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var el = e.target;
+    if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
+    selectedEl = el;
+    window.parent.postMessage({ type: 'element-selected', data: getElementInfo(el) }, '*');
+  }, true);
+
+  document.addEventListener('scroll', function() {
+    if (!editMode || !hoveredEl) return;
+    window.parent.postMessage({ type: 'element-hover', data: getElementInfo(hoveredEl) }, '*');
+  }, true);
+})();
+</script>
+"""
+
 class ProjectManager:
     """Manages container-based code execution and project artifacts"""
     
@@ -98,6 +158,13 @@ class ProjectManager:
                 file_path = version_dir / filename
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 
+                # Inject editor script into HTML files for cross-origin visual editing capability
+                if filename.endswith('.html'):
+                    if '</body>' in file_content:
+                        file_content = file_content.replace('</body>', f'{EDITOR_INJECTION_SCRIPT}</body>')
+                    else:
+                        file_content += EDITOR_INJECTION_SCRIPT
+
                 # Save file
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(file_content)
@@ -126,6 +193,13 @@ class ProjectManager:
             logger.info(f"🔍 Detected runtime: {runtime_name}")
             logger.info(f"📝 Using filename: {filename}")
             
+            # Inject editor script if it's an HTML single file
+            if filename.endswith('.html'):
+                if '</body>' in code:
+                    code = code.replace('</body>', f'{EDITOR_INJECTION_SCRIPT}</body>')
+                else:
+                    code += EDITOR_INJECTION_SCRIPT
+
             # Save code file
             main_file_path = version_dir / filename
             with open(main_file_path, 'w', encoding='utf-8') as f:
