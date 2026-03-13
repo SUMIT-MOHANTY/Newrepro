@@ -16,6 +16,10 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true
       }
+    },
+    // Disable HMR overlay for URI errors
+    hmr: {
+      overlay: false
     }
   }
 })

@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { Eye, Code, Copy, Check, RefreshCw, Download, Sparkles } from 'lucide-react';
 import { Button } from './ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { cn } from '@/lib/utils';
 import { 
   Select, 
@@ -10,6 +11,7 @@ import {
   SelectValue 
 } from './ui/select';
 import FileTree from './FileTree';
+import EditElementMenu from './EditElementMenu';
 
 const CodePreview = ({ 
   previewCode, 
@@ -23,7 +25,9 @@ const CodePreview = ({
   codeVersions,
   selectedVersion,
   onLoadVersion,
-  containerPreviewUrl  // Add container preview URL prop
+  containerPreviewUrl,  // Add container preview URL prop
+  onSendElementToAI,   // New prop for sending element to AI
+  onUpdateCode         // New prop for updating code when element is edited
 }) => {
   const iframeRef = useRef(null);
   const [iframeKey, setIframeKey] = React.useState(0);
@@ -32,6 +36,11 @@ const CodePreview = ({
   const [isFullscreen, setIsFullscreen] = React.useState(false);
   const [selectedFile, setSelectedFile] = React.useState(null);
   const [currentFileContent, setCurrentFileContent] = React.useState('');
+  const [editMenu, setEditMenu] = React.useState({
+    visible: false,
+    element: null,
+    position: { x: 0, y: 0 }
+  });
 
   // Force iframe refresh when containerPreviewUrl or previewCode changes
   React.useEffect(() => {
@@ -65,6 +74,114 @@ const CodePreview = ({
   const handleIframeLoad = () => {
     setIsLoading(false);
     console.log('🌐 iframe loaded with src:', containerPreviewUrl || 'data URL');
+    
+    // Add element selection functionality to iframe
+    const iframe = iframeRef.current;
+    if (iframe && iframe.contentDocument) {
+      const doc = iframe.contentDocument;
+      
+      // Add click handler to all elements
+      const addClickHandlers = () => {
+        const allElements = doc.querySelectorAll('*');
+        allElements.forEach(element => {
+          element.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showEditMenu(element, e);
+          });
+          
+          // Add hover effect
+          element.addEventListener('mouseenter', () => {
+            element.style.outline = '2px solid #3b82f6';
+            element.style.outlineOffset = '2px';
+          });
+          
+          element.addEventListener('mouseleave', () => {
+            element.style.outline = '';
+            element.style.outlineOffset = '';
+          });
+        });
+      };
+      
+      // Initial setup
+      addClickHandlers();
+      
+      // Watch for DOM changes
+      const observer = new MutationObserver(() => {
+        addClickHandlers();
+      });
+      
+      observer.observe(doc.body, {
+        childList: true,
+        subtree: true
+      });
+    }
+  };
+
+  // Show edit menu
+  const showEditMenu = (element, event) => {
+    const rect = element.getBoundingClientRect();
+    setEditMenu({
+      visible: true,
+      element: element,
+      position: {
+        x: rect.left + rect.width / 2,
+        y: rect.top
+      }
+    });
+  };
+
+  // Handle element property changes
+  const handleEditProperties = (element, property, value) => {
+    element.style[property] = value;
+    
+    // Update the code in the parent
+    if (onUpdateCode) {
+      const iframe = iframeRef.current;
+      if (iframe && iframe.contentDocument) {
+        const updatedHTML = iframe.contentDocument.documentElement.outerHTML;
+        onUpdateCode(updatedHTML);
+      }
+    }
+  };
+
+  // Handle element code editing
+  const handleEditCode = (element) => {
+    const currentHTML = element.outerHTML;
+    const newHTML = prompt('Edit HTML:', currentHTML);
+    if (newHTML !== null && newHTML !== currentHTML) {
+      element.outerHTML = newHTML;
+      
+      // Update the code in the parent
+      if (onUpdateCode) {
+        const iframe = iframeRef.current;
+        if (iframe && iframe.contentDocument) {
+          const updatedHTML = iframe.contentDocument.documentElement.outerHTML;
+          onUpdateCode(updatedHTML);
+        }
+      }
+    }
+  };
+
+  // Handle sending element to AI
+  const handleSendElementToAI = (elementInfo) => {
+    if (onSendElementToAI) {
+      onSendElementToAI(elementInfo);
+    }
+  };
+
+  // Handle element deletion
+  const handleDeleteElement = (element) => {
+    element.remove();
+    
+    // Update the code in the parent
+    if (onUpdateCode) {
+      const iframe = iframeRef.current;
+      if (iframe && iframe.contentDocument) {
+        const updatedHTML = iframe.contentDocument.documentElement.outerHTML;
+        onUpdateCode(updatedHTML);
+      }
+    }
   };
 
   // Get device dimensions
@@ -478,11 +595,15 @@ const CodePreview = ({
                 <iframe
                   key={iframeKey}
                   ref={iframeRef}
-                  src={containerPreviewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewCode)}`}
+                  src={containerPreviewUrl ? containerPreviewUrl : `data:text/html;charset=utf-8,${encodeURIComponent(previewCode || '')}`}
                   className="w-full h-full border-0"
                   title="Preview"
                   onLoad={handleIframeLoad}
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                  onError={(e) => {
+                    console.error('Iframe load error:', e);
+                    console.log('Attempted URL:', containerPreviewUrl);
+                  }}
                 />
               </div>
             </div>
@@ -597,6 +718,20 @@ const CodePreview = ({
           </div>
         )}
       </div>
+      
+      {/* Edit Element Menu */}
+      {editMenu.visible && (
+        <EditElementMenu
+          element={editMenu.element}
+          position={editMenu.position}
+          onClose={() => setEditMenu({ ...editMenu, visible: false })}
+          onEditProperties={handleEditProperties}
+          onEditCode={handleEditCode}
+          onSendToAI={handleSendElementToAI}
+          onDelete={handleDeleteElement}
+          darkMode={darkMode}
+        />
+      )}
     </div>
   );
 };

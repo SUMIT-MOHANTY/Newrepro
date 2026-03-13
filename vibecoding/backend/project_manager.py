@@ -6,6 +6,7 @@ import docker
 import asyncio
 import time
 import requests
+import threading
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -25,9 +26,19 @@ EDITOR_INJECTION_SCRIPT = """
   var editMode = false;
 
   window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'set-edit-mode') {
+    if (!e.data || !e.data.type) return;
+    
+    if (e.data.type === 'set-edit-mode') {
       editMode = e.data.value;
       if (!editMode) { clearHover(); clearSelection(); }
+    } else if (e.data.type === 'update-element-property') {
+      if (selectedEl && e.data.property) {
+        if (e.data.property === 'textContent' || e.data.property === 'innerHTML' || e.data.property === 'innerText') {
+          selectedEl[e.data.property] = e.data.value;
+        } else {
+          selectedEl.style[e.data.property] = e.data.value;
+        }
+      }
     }
   });
 
@@ -66,7 +77,10 @@ EDITOR_INJECTION_SCRIPT = """
     var el = e.target;
     if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
     selectedEl = el;
-    window.parent.postMessage({ type: 'element-selected', data: getElementInfo(el) }, '*');
+    var info = getElementInfo(el);
+    info.mouseX = e.clientX;
+    info.mouseY = e.clientY;
+    window.parent.postMessage({ type: 'element-selected', data: info }, '*');
   }, true);
 
   document.addEventListener('scroll', function() {
@@ -85,6 +99,7 @@ class ProjectManager:
         self.artifacts_dir.mkdir(exist_ok=True)
         self._docker_client = None
         self.running_containers: Dict[str, docker.models.containers.Container] = {}
+        self.log_threads: Dict[str, threading.Thread] = {}
     
     @property
     def docker_client(self):
@@ -98,6 +113,20 @@ class ProjectManager:
                 logger.warning("Preview functionality will be disabled")
                 return None
         return self._docker_client
+    
+    def _stream_container_logs(self, container, container_name: str):
+        """Stream container logs to console in a separate thread"""
+        try:
+            logger.info(f"📋 Starting log stream for {container_name}")
+            for log_line in container.logs(stream=True, follow=True):
+                try:
+                    decoded_line = log_line.decode('utf-8').strip()
+                    if decoded_line:
+                        logger.info(f"[{container_name}] {decoded_line}")
+                except Exception as e:
+                    logger.debug(f"Error decoding log line: {e}")
+        except Exception as e:
+            logger.debug(f"Log streaming ended for {container_name}: {e}")
         
     def generate_project_id(self) -> str:
         """Generate unique project ID"""
@@ -259,8 +288,59 @@ class ProjectManager:
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
     
+    def _send_switch_command(self, container, version_id: str) -> bool:
+        """Send version switch command to supervisor inside container"""
+        try:
+            import json
+            command = json.dumps({'action': 'switch', 'version_id': version_id})
+            
+            # Use docker exec to send command via socket
+            # Create a Python script to send the command properly
+            python_cmd = f"""
+import socket
+import json
+import sys
+
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect('/tmp/supervisor.sock')
+    s.send(json.dumps({{'action': 'switch', 'version_id': '{version_id}'}}).encode())
+    response = s.recv(1024).decode()
+    print(response)
+    s.close()
+except Exception as e:
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+"""
+            
+            exec_result = container.exec_run(
+                ['python3', '-c', python_cmd],
+                demux=True
+            )
+            
+            if exec_result.exit_code == 0:
+                response = exec_result.output[0].decode() if exec_result.output[0] else ""
+                logger.info(f"📨 Supervisor response: {response}")
+                
+                # Check if response indicates success
+                try:
+                    resp_data = json.loads(response)
+                    return resp_data.get('success', False)
+                except:
+                    return True  # Assume success if we got a response
+            else:
+                error = exec_result.output[1].decode() if exec_result.output[1] else ""
+                logger.error(f"❌ Failed to send switch command: {error}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error sending switch command: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     async def create_container_for_code(self, project_id: str, version_id: str) -> Optional[str]:
-        """Create Docker container for code execution using detected runtime"""
+        """Create or reuse Docker container and switch to the specified version"""
         project_dir = self.artifacts_dir / project_id
         version_dir = project_dir / "versions" / version_id
         metadata_file = version_dir / "metadata.json"
@@ -271,29 +351,19 @@ class ProjectManager:
                 metadata = json.load(f)
             
             runtime = metadata.get('runtime', 'static-html')
-            main_file = metadata.get('main_file', metadata.get('filename', 'index.html'))
             docker_image = metadata.get('docker_image', 'vibecoding-code-executor:latest')
             port = metadata.get('port', 80)
-            is_multi_file = metadata.get('is_multi_file', False)
             
-            logger.info(f"🚀 Creating container with runtime: {runtime}")
-            logger.info(f"🐳 Docker image: {docker_image}")
+            logger.info(f"🚀 Switching to version {version_id}")
+            logger.info(f"🔍 Runtime: {runtime}")
             logger.info(f"🔌 Port: {port}")
-            logger.info(f"📁 Multi-file: {is_multi_file}")
             
         except Exception as e:
             logger.error(f"Failed to read metadata: {e}")
             return None
         
-        # For multi-file projects, mount the entire version directory
-        # For single file, we still need the file to exist
-        if not is_multi_file:
-            code_file = version_dir / main_file
-            if not code_file.exists():
-                logger.error(f"Code file not found: {code_file}")
-                return None
-        
-        container_name = f"vibecoding_{project_id}_{version_id}"
+        # Use project_id only for container name (one container per project)
+        container_name = f"vibecoding_{project_id}"
         
         # Check if Docker is available
         if self.docker_client is None:
@@ -302,50 +372,76 @@ class ProjectManager:
             return None
         
         try:
-            # Stop and remove existing container if it exists
+            # Check if container already exists
+            existing_container = None
+            
             try:
-                old_container = self.docker_client.containers.get(container_name)
-                old_container.stop()
-                old_container.remove()
-                logger.info(f"Removed old container: {container_name}")
-            except:
-                pass
+                existing_container = self.docker_client.containers.get(container_name)
+                logger.info(f"♻️ Found existing container: {container_name}")
+                
+                # Container exists - send version switch command
+                if existing_container.status != 'running':
+                    existing_container.start()
+                    logger.info(f"▶️ Started container")
+                    # Wait a moment for supervisor to be ready
+                    await asyncio.sleep(2)
+                
+                # Send switch command to supervisor
+                logger.info(f"📡 Sending switch command to version {version_id}")
+                success = self._send_switch_command(existing_container, version_id)
+                
+                if success:
+                    logger.info(f"✅ Switched to version {version_id}")
+                    container = existing_container
+                else:
+                    logger.warning(f"⚠️ Failed to switch version, recreating container")
+                    existing_container.stop()
+                    existing_container.remove()
+                    existing_container = None
+                
+            except docker.errors.NotFound:
+                logger.info(f"🆕 Creating new container: {container_name}")
             
-            # Create container with detected runtime
-            logger.info(f"🏗️ Building container: {container_name}")
-            
-            # Use default mount path /app or runtime specific one
-            mount_path = metadata.get('mount_path', '/app')
-            
-            # Prepare environment variables
-            env_vars = {
-                'PYTHONUNBUFFERED': '1',
-                'PORT': str(port),
-            }
-            
-            # Add any runtime-specific env vars from metadata
-            runtime_env = metadata.get('env', {})
-            if runtime_env:
-                env_vars.update(runtime_env)
-            
-            container = self.docker_client.containers.run(
-                docker_image,
-                name=container_name,
-                ports={f'{port}/tcp': None},  # Auto-assign host port
-                volumes={
-                    str(version_dir.absolute()): {
-                        'bind': mount_path,
-                        'mode': 'rw'
+            # Create new container only if doesn't exist or switch failed
+            if existing_container is None:
+                # Mount the ENTIRE project directory so all versions are accessible
+                container = self.docker_client.containers.run(
+                    docker_image,
+                    name=container_name,
+                    ports={f'{port}/tcp': None},  # Auto-assign host port
+                    volumes={
+                        str(project_dir.absolute()): {
+                            'bind': '/project',
+                            'mode': 'rw'
+                        }
+                    },
+                    working_dir='/app',
+                    detach=True,
+                    remove=False,
+                    environment={
+                        'PYTHONUNBUFFERED': '1',
+                        'PORT': str(port),
+                        'INITIAL_VERSION': version_id,
+                        'NVIDIA_API_KEY': os.environ.get('NVIDIA_API_KEY', ''),
                     }
-                },
-                working_dir=mount_path,
-                detach=True,
-                remove=False,
-                environment=env_vars
-            )
+                )
+                
+                logger.info(f"🏗️ Created container with initial version {version_id}")
+                
+                # Wait for supervisor to start
+                await asyncio.sleep(3)
             
             # Store container reference
             self.running_containers[container_name] = container
+            
+            # Start log streaming in a separate thread
+            log_thread = threading.Thread(
+                target=self._stream_container_logs,
+                args=(container, container_name),
+                daemon=True
+            )
+            log_thread.start()
+            self.log_threads[container_name] = log_thread
             
             # Get assigned host port
             container.reload()
@@ -405,9 +501,9 @@ class ProjectManager:
             traceback.print_exc()
             return None
     
-    def stop_container(self, project_id: str, version_id: str):
-        """Stop and remove container"""
-        container_name = f"vibecoding_{project_id}_{version_id}"
+    def stop_container(self, project_id: str, version_id: str = None):
+        """Stop and remove container (version_id is ignored, one container per project)"""
+        container_name = f"vibecoding_{project_id}"
         
         if container_name in self.running_containers:
             try:
@@ -415,6 +511,11 @@ class ProjectManager:
                 container.stop()
                 container.remove()
                 del self.running_containers[container_name]
+                
+                # Clean up log thread reference (thread will exit automatically)
+                if container_name in self.log_threads:
+                    del self.log_threads[container_name]
+                
                 logger.info(f"Stopped container {container_name}")
             except Exception as e:
                 logger.error(f"Failed to stop container {container_name}: {str(e)}")
