@@ -232,6 +232,139 @@ function App() {
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
+  // Inject edit mode script when editMode changes
+  useEffect(() => {
+    if (!editMode) {
+      setSelectedElement(null);
+      return;
+    }
+
+    const injectEditScript = () => {
+      const iframe = document.querySelector('iframe[title="Preview"]');
+      if (!iframe) {
+        console.log('Iframe not found');
+        return;
+      }
+
+      try {
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (!iframeDoc) {
+          console.log('Cannot access iframe document');
+          return;
+        }
+
+        // Wait for body to be ready
+        if (!iframeDoc.body) {
+          setTimeout(injectEditScript, 100);
+          return;
+        }
+
+        console.log('Injecting edit mode script...');
+
+        // Remove existing script and styles
+        const existingScript = iframeDoc.getElementById('vibe-edit-script');
+        const existingStyle = iframeDoc.getElementById('vibe-edit-style');
+        if (existingScript) existingScript.remove();
+        if (existingStyle) existingStyle.remove();
+
+        // Add styles first
+        const style = iframeDoc.createElement('style');
+        style.id = 'vibe-edit-style';
+        style.textContent = `
+          .vibe-edit-hover {
+            outline: 3px solid #a855f7 !important;
+            outline-offset: 2px !important;
+            cursor: pointer !important;
+            box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.2) !important;
+          }
+          .vibe-edit-selected {
+            outline: 4px solid #8b5cf6 !important;
+            outline-offset: 2px !important;
+            background: rgba(168, 85, 247, 0.15) !important;
+            box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.3) !important;
+          }
+          body * {
+            cursor: crosshair !important;
+          }
+        `;
+        iframeDoc.head.appendChild(style);
+        console.log('Styles injected');
+
+        // Add hover and click handlers
+        const script = iframeDoc.createElement('script');
+        script.id = 'vibe-edit-script';
+        script.textContent = `
+          console.log('Edit mode script loaded');
+          let currentHover = null;
+          
+          // Hover effect
+          document.body.addEventListener('mouseover', function(e) {
+            const target = e.target;
+            if (target.tagName !== 'HTML' && target.tagName !== 'BODY' && target.tagName !== 'SCRIPT' && target.tagName !== 'STYLE') {
+              console.log('Hovering:', target.tagName);
+              if (currentHover && currentHover !== target) {
+                currentHover.classList.remove('vibe-edit-hover');
+              }
+              target.classList.add('vibe-edit-hover');
+              currentHover = target;
+            }
+          }, true);
+          
+          document.body.addEventListener('mouseout', function(e) {
+            const target = e.target;
+            if (target.tagName !== 'HTML' && target.tagName !== 'BODY') {
+              target.classList.remove('vibe-edit-hover');
+            }
+          }, true);
+          
+          // Click to select
+          document.body.addEventListener('click', function(e) {
+            const target = e.target;
+            if (target.tagName !== 'HTML' && target.tagName !== 'BODY' && target.tagName !== 'SCRIPT' && target.tagName !== 'STYLE') {
+              e.preventDefault();
+              e.stopPropagation();
+              
+              console.log('Clicked:', target.tagName);
+              
+              // Remove previous selection highlights
+              document.querySelectorAll('.vibe-edit-selected').forEach(el => {
+                el.classList.remove('vibe-edit-selected');
+              });
+              
+              // Highlight clicked element
+              target.classList.add('vibe-edit-selected');
+              target.classList.remove('vibe-edit-hover');
+              
+              // Send element info to parent
+              window.parent.postMessage({
+                type: 'element-selected',
+                tagName: target.tagName,
+                className: target.className.replace('vibe-edit-hover', '').replace('vibe-edit-selected', '').trim(),
+                id: target.id,
+                textContent: target.textContent?.substring(0, 100),
+                innerHTML: target.innerHTML?.substring(0, 200)
+              }, '*');
+            }
+          }, true);
+          
+          console.log('Edit mode handlers attached');
+        `;
+        iframeDoc.body.appendChild(script);
+        console.log('Script injected successfully');
+
+      } catch (err) {
+        console.error('Failed to inject edit mode script:', err);
+      }
+    };
+
+    // Try to inject after a short delay to ensure iframe is ready
+    const timer = setTimeout(injectEditScript, 300);
+    
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [editMode, iframeKey]);
+
   // Handle element edit
   const handleElementEdit = async () => {
     if (!editPrompt.trim() || !selectedElement) return;
@@ -777,58 +910,6 @@ function App() {
                       className="w-full h-full border-0"
                       title="Preview"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                      onLoad={(e) => {
-                        if (editMode) {
-                          // Inject edit mode script into iframe
-                          try {
-                            const iframeDoc = e.target.contentDocument || e.target.contentWindow.document;
-                            const script = iframeDoc.createElement('script');
-                            script.textContent = `
-                              document.addEventListener('click', function(e) {
-                                if (e.target.tagName !== 'HTML' && e.target.tagName !== 'BODY') {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  
-                                  // Remove previous highlights
-                                  document.querySelectorAll('.vibe-edit-highlight').forEach(el => {
-                                    el.classList.remove('vibe-edit-highlight');
-                                  });
-                                  
-                                  // Highlight clicked element
-                                  e.target.classList.add('vibe-edit-highlight');
-                                  
-                                  // Send element info to parent
-                                  window.parent.postMessage({
-                                    type: 'element-selected',
-                                    tagName: e.target.tagName,
-                                    className: e.target.className.replace('vibe-edit-highlight', '').trim(),
-                                    id: e.target.id,
-                                    textContent: e.target.textContent?.substring(0, 100),
-                                    innerHTML: e.target.innerHTML?.substring(0, 200)
-                                  }, '*');
-                                }
-                              }, true);
-                              
-                              // Add highlight styles
-                              const style = document.createElement('style');
-                              style.textContent = \`
-                                .vibe-edit-highlight {
-                                  outline: 2px solid #a855f7 !important;
-                                  outline-offset: 2px !important;
-                                  cursor: pointer !important;
-                                }
-                                * {
-                                  cursor: crosshair !important;
-                                }
-                              \`;
-                              document.head.appendChild(style);
-                            `;
-                            iframeDoc.body.appendChild(script);
-                          } catch (err) {
-                            console.log('Could not inject edit mode script:', err);
-                          }
-                        }
-                      }}
                     />
                   </div>
                   
