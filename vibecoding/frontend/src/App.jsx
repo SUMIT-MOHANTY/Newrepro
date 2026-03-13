@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -50,9 +50,11 @@ function App() {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [editMode, setEditMode] = useState(false);
   const [selectedElement, setSelectedElement] = useState(null);
+  const [hoveredElement, setHoveredElement] = useState(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const iframeRef = useRef(null);
 
   // Save chat history whenever messages change
   useEffect(() => {
@@ -332,17 +334,170 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  // Listen for element selection from iframe
+  // ─── VISUAL EDITOR: postMessage-based architecture ───────────────────────────
+  // The correct approach (used by Base44, Webflow, Framer) is to inject a script
+  // INTO the iframe content (same-origin srcDoc). That script runs inside the
+  // iframe and sends postMessage events back to the parent. The parent renders a
+  // floating overlay using the received coordinates. We never access
+  // contentDocument from the parent.
+
+  // Build the editor injection script that will be injected into the iframe HTML
+  const buildEditorScript = () => `
+    <script id="__vibe_editor__">
+    (function() {
+      var hoveredEl = null;
+      var selectedEl = null;
+      var editMode = false;
+
+      // Listen for edit-mode toggle from parent
+      window.addEventListener('message', function(e) {
+        if (e.data && e.data.type === 'set-edit-mode') {
+          editMode = e.data.value;
+          if (!editMode) {
+            clearHover();
+            clearSelection();
+          }
+        }
+      });
+
+      function getElementInfo(el) {
+        var rect = el.getBoundingClientRect();
+        return {
+          tagName: el.tagName,
+          id: el.id || '',
+          className: (typeof el.className === 'string' ? el.className : '') ,
+          textContent: (el.textContent || '').substring(0, 150),
+          rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+        };
+      }
+
+      function clearHover() {
+        window.parent.postMessage({ type: 'element-hover', data: null }, '*');
+      }
+
+      function clearSelection() {
+        selectedEl = null;
+        window.parent.postMessage({ type: 'element-deselect' }, '*');
+      }
+
+      document.addEventListener('mouseover', function(e) {
+        if (!editMode) return;
+        var el = e.target;
+        if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') {
+          clearHover();
+          return;
+        }
+        hoveredEl = el;
+        window.parent.postMessage({ type: 'element-hover', data: getElementInfo(el) }, '*');
+      }, true);
+
+      document.addEventListener('mouseout', function(e) {
+        if (!editMode) return;
+        hoveredEl = null;
+        clearHover();
+      }, true);
+
+      document.addEventListener('click', function(e) {
+        if (!editMode) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var el = e.target;
+        if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
+        selectedEl = el;
+        window.parent.postMessage({ type: 'element-selected', data: getElementInfo(el) }, '*');
+      }, true);
+
+      // Scroll events: re-broadcast hover rect when page scrolls
+      document.addEventListener('scroll', function() {
+        if (!editMode || !hoveredEl) return;
+        window.parent.postMessage({ type: 'element-hover', data: getElementInfo(hoveredEl) }, '*');
+      }, true);
+    })();
+    <\/script>
+  `;
+
+  // Inject editor script into preview HTML (srcDoc only – not cross-origin URLs)
+  const injectEditorScript = (html) => {
+    if (!html) return html;
+    const script = buildEditorScript();
+    // Inject before </body> if exists, otherwise append
+    if (html.includes('</body>')) {
+      return html.replace('</body>', script + '</body>');
+    }
+    return html + script;
+  };
+
+  // Track iframe container ref for overlay positioning
+  const iframeContainerRef = useRef(null);
+
+  // Listen for postMessage events from iframe
   useEffect(() => {
     const handleMessage = (event) => {
-      if (event.data.type === 'element-selected') {
-        setSelectedElement(event.data);
+      const msg = event.data;
+      if (!msg || !msg.type) return;
+
+      if (msg.type === 'element-hover') {
+        if (!msg.data) {
+          setHoveredElement(null);
+          return;
+        }
+        // Coordinates from iframe are relative to iframe viewport.
+        // We need to offset by the iframe element's position in parent.
+        const iframe = iframeRef.current;
+        const container = iframeContainerRef.current;
+        if (!iframe || !container) return;
+        const iframeRect = iframe.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const offsetTop = iframeRect.top - containerRect.top;
+        const offsetLeft = iframeRect.left - containerRect.left;
+        setHoveredElement({
+          ...msg.data,
+          rect: {
+            top: msg.data.rect.top + offsetTop,
+            left: msg.data.rect.left + offsetLeft,
+            width: msg.data.rect.width,
+            height: msg.data.rect.height,
+          }
+        });
+      } else if (msg.type === 'element-selected') {
+        const iframe = iframeRef.current;
+        const container = iframeContainerRef.current;
+        if (!iframe || !container) return;
+        const iframeRect = iframe.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const offsetTop = iframeRect.top - containerRect.top;
+        const offsetLeft = iframeRect.left - containerRect.left;
+        setSelectedElement({
+          ...msg.data,
+          rect: {
+            top: msg.data.rect.top + offsetTop,
+            left: msg.data.rect.left + offsetLeft,
+            width: msg.data.rect.width,
+            height: msg.data.rect.height,
+          }
+        });
+      } else if (msg.type === 'element-deselect') {
+        setSelectedElement(null);
       }
     };
-    
+
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  // Tell iframe to enable/disable edit mode via postMessage (NO iframe reload!)
+  // The preview must stay visually identical — like Base44/Webflow.
+  useEffect(() => {
+    if (!editMode) {
+      setSelectedElement(null);
+      setHoveredElement(null);
+    }
+    // Send edit-mode state to iframe's injected script
+    const iframe = iframeRef.current;
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
+    }
+  }, [editMode]);
 
   // Close version history dropdown when clicking outside
   useEffect(() => {
@@ -351,183 +506,12 @@ function App() {
         setShowVersionHistory(false);
       }
     };
-    
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showVersionHistory]);
 
-  // Inject edit mode script when editMode changes
-  useEffect(() => {
-    if (!editMode) {
-      setSelectedElement(null);
-    }
-    // Don't force iframe reload - let React handle it naturally
-  }, [editMode]);
+  // ─── END VISUAL EDITOR ───────────────────────────────────────────────────────
 
-  // Prepare preview code with edit mode script injected
-  const getPreviewContent = () => {
-    // Use fullCode for edit mode to preserve all styles and structure
-    const codeToUse = fullCode || previewCode;
-    if (!codeToUse) return '';
-    
-    if (!editMode) return codeToUse;
-
-    // Inject edit mode script into the HTML
-    const editModeScript = `
-      <style id="vibe-edit-style">
-        * {
-          cursor: crosshair !important;
-        }
-        .vibe-edit-hover {
-          outline: 3px solid #a855f7 !important;
-          outline-offset: 2px !important;
-          box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.2) !important;
-          position: relative !important;
-          z-index: 999999 !important;
-        }
-        .vibe-edit-selected {
-          outline: 4px solid #8b5cf6 !important;
-          outline-offset: 2px !important;
-          background: rgba(168, 85, 247, 0.15) !important;
-          box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.3) !important;
-          position: relative !important;
-          z-index: 999999 !important;
-        }
-      </style>
-      <script id="vibe-edit-script">
-        (function() {
-          console.log('🎨 Edit mode script loaded');
-          let currentHover = null;
-          let isInitialized = false;
-          
-          function initEditMode() {
-            if (isInitialized) {
-              console.log('⚠️ Edit mode already initialized');
-              return;
-            }
-            
-            console.log('✅ Initializing edit mode handlers');
-            isInitialized = true;
-            
-            // Prevent default link behavior
-            document.addEventListener('click', function(e) {
-              if (e.target.tagName === 'A') {
-                e.preventDefault();
-              }
-            }, true);
-            
-            // Hover effect - use capture phase
-            document.addEventListener('mouseover', function(e) {
-              e.stopPropagation();
-              const target = e.target;
-              
-              if (!target || target.tagName === 'HTML' || target.tagName === 'BODY' || 
-                  target.tagName === 'SCRIPT' || target.tagName === 'STYLE' ||
-                  target.id === 'vibe-edit-style' || target.id === 'vibe-edit-script') {
-                return;
-              }
-              
-              if (currentHover && currentHover !== target) {
-                currentHover.classList.remove('vibe-edit-hover');
-              }
-              
-              target.classList.add('vibe-edit-hover');
-              currentHover = target;
-              console.log('👆 Hovering:', target.tagName, target.className);
-            }, true);
-            
-            document.addEventListener('mouseout', function(e) {
-              e.stopPropagation();
-              const target = e.target;
-              if (target && target.tagName !== 'HTML' && target.tagName !== 'BODY') {
-                target.classList.remove('vibe-edit-hover');
-              }
-            }, true);
-            
-            // Click to select - use capture phase
-            document.addEventListener('click', function(e) {
-              const target = e.target;
-              
-              if (!target || target.tagName === 'HTML' || target.tagName === 'BODY' || 
-                  target.tagName === 'SCRIPT' || target.tagName === 'STYLE') {
-                return;
-              }
-              
-              e.preventDefault();
-              e.stopPropagation();
-              
-              console.log('🎯 Element clicked:', target.tagName, target.className);
-              
-              // Remove previous selection highlights
-              document.querySelectorAll('.vibe-edit-selected').forEach(function(el) {
-                el.classList.remove('vibe-edit-selected');
-              });
-              
-              // Highlight clicked element
-              target.classList.add('vibe-edit-selected');
-              target.classList.remove('vibe-edit-hover');
-              
-              // Get clean className without edit classes
-              const cleanClassName = target.className
-                .replace(/vibe-edit-hover/g, '')
-                .replace(/vibe-edit-selected/g, '')
-                .trim();
-              
-              // Send element info to parent
-              try {
-                window.parent.postMessage({
-                  type: 'element-selected',
-                  tagName: target.tagName,
-                  className: cleanClassName,
-                  id: target.id || '',
-                  textContent: (target.textContent || '').substring(0, 100),
-                  innerHTML: (target.innerHTML || '').substring(0, 200)
-                }, '*');
-                console.log('📤 Message sent to parent');
-              } catch (err) {
-                console.error('❌ Error sending message:', err);
-              }
-            }, true);
-            
-            console.log('✨ Edit mode ready!');
-          }
-          
-          // Try multiple initialization methods
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initEditMode);
-            console.log('⏳ Waiting for DOMContentLoaded');
-          } else {
-            console.log('⚡ DOM already loaded, initializing immediately');
-            initEditMode();
-          }
-          
-          // Backup: also try on window load
-          window.addEventListener('load', function() {
-            console.log('🔄 Window loaded, ensuring edit mode is initialized');
-            initEditMode();
-          });
-          
-          // Immediate attempt
-          setTimeout(initEditMode, 100);
-        })();
-      </script>
-    `;
-
-    // Inject before closing </body> tag, or before </html> if no body, or at the end
-    let modifiedCode = codeToUse;
-    if (modifiedCode.toLowerCase().includes('</body>')) {
-      modifiedCode = modifiedCode.replace(/<\/body>/i, editModeScript + '</body>');
-    } else if (modifiedCode.toLowerCase().includes('</html>')) {
-      modifiedCode = modifiedCode.replace(/<\/html>/i, editModeScript + '</html>');
-    } else {
-      // No closing tags found, append at the end
-      modifiedCode = modifiedCode + editModeScript;
-    }
-    
-    return modifiedCode;
-  };
-
-  // Handle element edit
   const handleElementEdit = async () => {
     if (!editPrompt.trim() || !selectedElement) return;
 
@@ -777,6 +761,40 @@ function App() {
     });
     
     return tree;
+  };
+
+  // Get the best available HTML content for inline preview / edit mode.
+  // Priority: previewCode (already extracted HTML) > HTML from fileTree > fullCode fallback
+  const getPreviewHtml = () => {
+    // If previewCode is set and looks like HTML, use it
+    if (previewCode && (previewCode.includes('<html') || previewCode.includes('<!DOCTYPE') || previewCode.includes('<body') || previewCode.includes('<div'))) {
+      return previewCode;
+    }
+    // Search fileTree for an HTML file
+    const findHtml = (items) => {
+      if (!items) return null;
+      // Priority 1: preview.html
+      for (const item of items) {
+        if (item.type === 'file' && (item.name === 'preview.html' || item.name === 'index.html')) return item.content;
+        if (item.type === 'folder' && item.children) {
+          const found = findHtml(item.children);
+          if (found) return found;
+        }
+      }
+      // Priority 2: any .html
+      for (const item of items) {
+        if (item.type === 'file' && item.name.endsWith('.html')) return item.content;
+        if (item.type === 'folder' && item.children) {
+          const found = findHtml(item.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    const htmlFromTree = findHtml(fileTree);
+    if (htmlFromTree) return htmlFromTree;
+    // Last resort: fullCode (may be single-file HTML or raw code)
+    return fullCode || previewCode || '';
   };
 
   return (
@@ -1079,19 +1097,33 @@ function App() {
                 {/* Edit Mode Banner */}
                 {editMode && (
                   <div className="flex-shrink-0 bg-purple-600/20 border-b border-purple-500/30 px-4 py-2">
-                    <div className="flex items-center gap-2 text-sm text-purple-200">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <span>Edit Mode Active - Click any element in the preview to edit it</span>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-sm text-purple-200">
+                        <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                        <span>Edit Mode — hover over any element to highlight it, click to select and edit</span>
+                      </div>
+                      {selectedElement && (
+                        <button
+                          onClick={() => { setSelectedElement(null); setHoveredElement(null); }}
+                          className="text-purple-300 hover:text-white text-xs px-2 py-0.5 rounded border border-purple-500/40 hover:border-purple-400"
+                        >
+                          Clear selection
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
                 
                 {/* Preview iframe with responsive sizing */}
-                <div className={`flex-1 relative flex items-center justify-center ${editMode ? 'bg-white' : 'bg-[#0A0A0F]'}`}>
+                {/* The iframe source NEVER changes when toggle edit mode.
+                    Editor script is always injected into srcDoc; it stays dormant until activated. */}
+                <div 
+                  className={`flex-1 relative flex items-center justify-center bg-[#0A0A0F]`}
+                >
                   <div 
-                    className={`h-full transition-all duration-300 ${
+                    className={`h-full transition-all duration-300 relative ${
                       screenSize === 'mobile' ? 'w-[375px]' :
                       screenSize === 'tablet' ? 'w-[768px]' :
                       'w-full'
@@ -1101,14 +1133,87 @@ function App() {
                     }}
                   >
                     <iframe
+                      ref={iframeRef}
                       key={iframeKey}
-                      src={previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(editMode ? getPreviewContent() : (fullCode || previewCode))}`}
+                      src={previewUrl || undefined}
+                      srcDoc={!previewUrl ? injectEditorScript(getPreviewHtml()) : undefined}
                       className="w-full h-full border-0"
                       title="Preview"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                      onLoad={() => {
+                        // Notify injected script of current edit mode state after (re)load
+                        const iframe = iframeRef.current;
+                        if (iframe && iframe.contentWindow) {
+                          iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
+                        }
+                      }}
                     />
+
+                    {/* Overlay container – pointer-events none preserves iframe scrolling */}
+                    <div
+                      ref={iframeContainerRef}
+                      className="absolute inset-0 pointer-events-none"
+                      style={{ zIndex: 10 }}
+                    >
+                      {/* Hover highlight */}
+                      {editMode && hoveredElement && !selectedElement && (
+                        <div
+                          className="absolute pointer-events-none transition-all duration-75"
+                          style={{
+                            top: hoveredElement.rect.top,
+                            left: hoveredElement.rect.left,
+                            width: hoveredElement.rect.width,
+                            height: hoveredElement.rect.height,
+                            outline: '2px solid #a855f7',
+                            outlineOffset: '1px',
+                            boxShadow: '0 0 0 4px rgba(168, 85, 247, 0.15)',
+                          }}
+                        >
+                          <div
+                            className="absolute px-2 py-0.5 bg-purple-600 text-white text-xs rounded font-mono whitespace-nowrap"
+                            style={{ top: '-22px', left: 0 }}
+                          >
+                            {hoveredElement.tagName?.toLowerCase()}
+                            {hoveredElement.id && <span className="text-purple-200">#{hoveredElement.id}</span>}
+                            {hoveredElement.className && <span className="text-purple-200">.{hoveredElement.className.trim().split(/\s+/)[0]}</span>}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Selection highlight */}
+                      {editMode && selectedElement && (
+                        <div
+                          className="absolute pointer-events-none"
+                          style={{
+                            top: selectedElement.rect.top,
+                            left: selectedElement.rect.left,
+                            width: selectedElement.rect.width,
+                            height: selectedElement.rect.height,
+                            outline: '2px solid #8b5cf6',
+                            outlineOffset: '1px',
+                            background: 'rgba(139, 92, 246, 0.08)',
+                            boxShadow: '0 0 0 4px rgba(139, 92, 246, 0.25)',
+                          }}
+                        >
+                          <div
+                            className="absolute px-2 py-0.5 bg-violet-600 text-white text-xs rounded font-mono whitespace-nowrap flex items-center gap-1"
+                            style={{ top: '-22px', left: 0 }}
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                            {selectedElement.tagName?.toLowerCase()}
+                            {selectedElement.id && <span className="text-violet-200">#{selectedElement.id}</span>}
+                            {selectedElement.className && <span className="text-violet-200">.{selectedElement.className.trim().split(/\s+/)[0]}</span>}
+                          </div>
+                          {['tl','tr','bl','br'].map(c => (
+                            <div key={c} className={`absolute w-2.5 h-2.5 bg-violet-500 rounded-sm border border-white ${
+                              c==='tl' ? '-top-1.5 -left-1.5' : c==='tr' ? '-top-1.5 -right-1.5' : c==='bl' ? '-bottom-1.5 -left-1.5' : '-bottom-1.5 -right-1.5'
+                            }`} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  
+
                   {/* Screen size label */}
                   {screenSize !== 'desktop' && (
                     <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-sm text-xs text-white">
