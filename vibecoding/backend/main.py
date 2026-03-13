@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
 from git_manager import git_manager
+from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user
 
 load_dotenv()
 
@@ -914,6 +915,31 @@ Response format:
 1. Brief explanation (1-2 sentences)
 2. Complete code with file markers
 3. NO folder structure diagrams"""
+
+# ─── Auth Endpoints ─────────────────────────────────────────────────────────────
+@app.post("/api/auth/signup")
+async def signup(request: SignupRequest):
+    """Register a new user."""
+    return signup_user(request)
+
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest):
+    """Login with email and password."""
+    return login_user(request)
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    """Get current authenticated user."""
+    return user
+
+
+@app.get("/api/auth/verify")
+async def verify_token(user: dict = Depends(get_current_user)):
+    """Verify if the current token is valid."""
+    return {"valid": True, "user": user}
+
 
 @app.get("/")
 async def root():

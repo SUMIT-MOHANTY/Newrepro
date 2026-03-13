@@ -122,7 +122,7 @@ async def fetch_page_content(url: str, max_length: int = 8000) -> str:
             "Accept-Language": "en-US,en;q=0.5",
         }
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
 
@@ -285,7 +285,7 @@ async def make_request_with_tools(
         print(f"\n🤖 AI Request (round {round_num + 1})...")
 
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=300) as client:
                 response = await client.post(
                     ai_config.base_url,
                     headers=headers,
@@ -293,8 +293,12 @@ async def make_request_with_tools(
                 )
                 response.raise_for_status()
                 result = response.json()
+        except httpx.TimeoutException:
+            raise Exception("AI API request timed out after 300 seconds. The generation took too long.")
+        except httpx.HTTPStatusError as e:
+            raise Exception(f"AI API returned error status {e.response.status_code}: {e.response.text}")
         except httpx.HTTPError as e:
-            raise Exception(f"AI API request failed: {str(e)}")
+            raise Exception(f"AI API networking error: {str(e)}")
 
         if "choices" not in result or len(result["choices"]) == 0:
             raise Exception("Invalid response format from AI API")
@@ -361,7 +365,7 @@ async def make_request_with_tools(
     payload["stream"] = False
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(
                 ai_config.base_url,
                 headers=headers,
@@ -372,5 +376,9 @@ async def make_request_with_tools(
         if tool_call_log:
             result["_tool_calls_log"] = tool_call_log
         return result
+    except httpx.TimeoutException:
+        raise Exception("AI API final request timed out after 300 seconds.")
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"AI API final request returned status {e.response.status_code}: {e.response.text}")
     except httpx.HTTPError as e:
-        raise Exception(f"AI API final request failed: {str(e)}")
+        raise Exception(f"AI API final networking error: {str(e)}")

@@ -1,14 +1,65 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
 import CodePreview from './components/CodePreview';
 import GitPanel from './components/GitPanel';
+import Header from './components/Header';
+import LandingPage from './components/LandingPage';
+import LoginPage from './components/LoginPage';
+import SignupPage from './components/SignupPage';
+import { useAuth } from './contexts/AuthContext';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 function App() {
+  const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
+  const navigate = useNavigate();
+
+  // Auth loading state
+  if (authLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[#0A0A0F]">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center animate-pulse">
+            <Zap className="w-7 h-7 text-white" />
+          </div>
+          <div className="auth-spinner" style={{ width: 28, height: 28, borderWidth: 3 }} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Routes>
+      <Route path="/" element={
+        isAuthenticated ? <Workspace user={user} logout={logout} /> : 
+        <LandingPage onGetStarted={() => navigate('/signup')} onSignIn={() => navigate('/login')} />
+      } />
+      <Route path="/login" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><LoginPage onSwitchToSignup={() => navigate('/signup')} /></AuthLayout>
+      } />
+      <Route path="/signup" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><SignupPage onSwitchToLogin={() => navigate('/login')} /></AuthLayout>
+      } />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
+
+function AuthLayout({ children }) {
+  return (
+    <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
+      <Header chatVersion="1.0" user={null} />
+      {children}
+    </div>
+  );
+}
+
+function Workspace({ user, logout }) {
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState(() => {
     // Load or create workspace ID
     const saved = localStorage.getItem('vibecoding_workspace_id');
@@ -550,10 +601,13 @@ function App() {
       if (showVersionHistory && !event.target.closest('.version-history-container')) {
         setShowVersionHistory(false);
       }
+      if (showUserMenu && !event.target.closest('.user-menu-container')) {
+        setShowUserMenu(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showVersionHistory]);
+  }, [showVersionHistory, showUserMenu]);
 
   // ─── END VISUAL EDITOR ───────────────────────────────────────────────────────
 
@@ -843,63 +897,20 @@ function App() {
 
   return (
     <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
-      {/* Top Header - Base44 Style */}
-      <div className="h-14 border-b border-white/10 flex items-center justify-between px-6 bg-[#0F0F14]">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-              <Zap className="w-5 h-5" />
-            </div>
-            <span className="font-bold text-lg">VibeCoding</span>
-          </div>
-          <div className="h-6 w-px bg-white/10" />
-          <span className="text-sm text-gray-400">Chat v{chatVersion}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button 
-            variant="ghost"
-            size="sm"
-            onClick={handleNewChat}
-            className="bg-white/5 hover:bg-white/10"
-            title="Start a new chat"
-          >
-            <Plus className="w-4 h-4" />
-            New Chat
-          </Button>
-          <Button 
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowGitPanel(true)}
-            className="bg-white/5 hover:bg-white/10"
-            title="Git Integration"
-          >
-            <History className="w-4 h-4" />
-            Git
-          </Button>
-          <Button 
-            disabled={isDeploying || !previewCode}
-            onClick={handleDeploy}
-            className={`transition-all duration-300 ${
-              deployStatus === 'success' ? 'bg-green-600 hover:bg-green-700' :
-              deployStatus === 'error' ? 'bg-red-600 hover:bg-red-700' :
-              'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700'
-            } text-sm font-medium min-w-[100px] flex items-center justify-center gap-2`}
-          >
-            {isDeploying ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : deployStatus === 'success' ? (
-              <Check className="w-4 h-4" />
-            ) : deployStatus === 'error' ? (
-              <Zap className="w-4 h-4" />
-            ) : null}
-            {isDeploying ? 'Deploying...' : 
-             deployStatus === 'success' ? 'Deployed!' : 
-             deployStatus === 'error' ? 'Failed' : 'Deploy'}
-          </Button>
-        </div>
-      </div>
-
-      {/* Error/Status Banner */}
+      <Header
+        chatVersion={chatVersion}
+        user={user}
+        showUserMenu={showUserMenu}
+        setShowUserMenu={setShowUserMenu}
+        onNewChat={handleNewChat}
+        onGitClick={() => setShowGitPanel(true)}
+        onDeploy={handleDeploy}
+        isDeploying={isDeploying}
+        deployStatus={deployStatus}
+        previewCode={previewCode}
+        loading={loading}
+        onLogout={logout}
+      />
       {(errorHeader || deployStatus === 'success') && (
         <div className={`h-10 flex items-center justify-center px-6 text-sm animate-in slide-in-from-top duration-300 ${
           deployStatus === 'success' ? 'bg-green-600/20 text-green-300' : 'bg-red-600/20 text-red-300'
@@ -939,7 +950,6 @@ function App() {
             containerPreviewUrl={previewUrl}
           />
         </div>
-
 
         {/* Right Panel - Chat */}
         <ChatPanel

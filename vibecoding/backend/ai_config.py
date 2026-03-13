@@ -21,7 +21,7 @@ class AIConfig:
         if not self.model:
             raise ValueError("AI_MODEL environment variable is required")
         
-        self.max_tokens = int(os.getenv("AI_MAX_TOKENS", ""))
+        # self.max_tokens = int(os.getenv("AI_MAX_TOKENS", ""))
         self.temperature = float(os.getenv("AI_TEMPERATURE", "1.0"))
         self.top_p = float(os.getenv("AI_TOP_P", "1.0"))
         self.frequency_penalty = float(os.getenv("AI_FREQUENCY_PENALTY", "0.0"))
@@ -40,7 +40,7 @@ class AIConfig:
         payload = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            # "max_tokens": kwargs.get("max_tokens", self.max_tokens),
             "temperature": kwargs.get("temperature", self.temperature),
             "top_p": kwargs.get("top_p", self.top_p),
             "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
