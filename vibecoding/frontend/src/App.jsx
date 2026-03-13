@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, MessageSquare, Clock, X } from 'lucide-react';
 import { Button } from './components/ui/button';
 import ChatPanel from './components/ChatPanel';
 import CodePreview from './components/CodePreview';
@@ -61,7 +61,74 @@ function App() {
     element: null,
     position: { x: 0, y: 0 }
   });
+  const [showChatHistory, setShowChatHistory] = useState(false);
+  const [allChats, setAllChats] = useState([]);
   const iframeRef = useRef(null);
+
+  const loadChatHistory = () => {
+    const chats = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(`vibecoding_chat_${currentProjectId}_v`)) {
+            const vStr = key.split('_v')[1];
+            const v = parseInt(vStr);
+            if (!isNaN(v)) {
+                try {
+                    const msgsStr = localStorage.getItem(key);
+                    const msgs = msgsStr ? JSON.parse(msgsStr) : [];
+                    const codeVersStr = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${v}`);
+                    const codeVers = codeVersStr ? JSON.parse(codeVersStr) : [];
+                    
+                    chats.push({
+                        version: v,
+                        messageCount: msgs.length,
+                        title: msgs.find(m => m.role === 'user')?.content.substring(0, 40) + '...' || `Chat ${v}`,
+                        timestamp: msgs.length > 0 ? msgs[0].timestamp : null
+                    });
+                } catch(e) {}
+            }
+        }
+    }
+    chats.sort((a, b) => b.version - a.version);
+    setAllChats(chats);
+  };
+
+  useEffect(() => {
+    if (showChatHistory) {
+      loadChatHistory();
+    }
+  }, [showChatHistory, currentProjectId]);
+
+  const loadHistoricalChat = (v) => {
+    setChatVersion(v);
+    localStorage.setItem(`vibecoding_${currentProjectId}_version`, v.toString());
+    
+    const msgsStr = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${v}`);
+    const msgs = msgsStr ? JSON.parse(msgsStr) : [];
+    setMessages(msgs);
+    
+    const codeVersStr = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${v}`);
+    const codeVers = codeVersStr ? JSON.parse(codeVersStr) : [];
+    setCodeVersions(codeVers);
+    
+    const currCodeVStr = localStorage.getItem(`vibecoding_current_code_version_${currentProjectId}_v${v}`);
+    let currCodeV = currCodeVStr ? parseInt(currCodeVStr) : -1;
+    if (currCodeV === -1 && codeVers.length > 0) {
+      currCodeV = codeVers[codeVers.length - 1].version;
+    } else if (currCodeV === -1) {
+      currCodeV = 0;
+    }
+    setCurrentCodeVersion(currCodeV);
+    
+    if (codeVers.length === 0) {
+        setPreviewCode('');
+        setPreviewUrl('');
+        setFileTree([]);
+        setSelectedFile(null);
+    }
+    
+    setShowChatHistory(false);
+  };
 
   // Save chat history whenever messages change
   useEffect(() => {
@@ -936,6 +1003,16 @@ Please suggest improvements or modifications for this element.`;
           <Button 
             variant="ghost"
             size="sm"
+            onClick={() => setShowChatHistory(true)}
+            className="bg-white/5 hover:bg-white/10"
+            title="View chat history"
+          >
+            <Clock className="w-4 h-4" />
+            History
+          </Button>
+          <Button 
+            variant="ghost"
+            size="sm"
             onClick={handleNewChat}
             className="bg-white/5 hover:bg-white/10"
             title="Start a new chat"
@@ -1484,6 +1561,96 @@ Please suggest improvements or modifications for this element.`;
           }}
           darkMode={true}
         />
+      )}
+      
+      {/* Chat History Modal/Sidebar */}
+      {showChatHistory && (
+        <div className="absolute inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm"
+          onClick={() => setShowChatHistory(false)}
+        >
+          <div 
+            className="w-80 h-full bg-[#0F0F14] border-l border-white/10 flex flex-col shadow-2xl animate-in slide-in-from-right"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="px-4 py-4 border-b border-white/10 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Clock className="w-5 h-5 text-gray-400" />
+                <h2 className="text-lg font-semibold text-white">Chat History</h2>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowChatHistory(false)}
+                className="hover:bg-white/10"
+              >
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-3">
+              {allChats.length === 0 ? (
+                <div className="text-center text-gray-500 mt-10 text-sm">
+                  No conversation history found.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {allChats.map(chat => (
+                    <div 
+                      key={chat.version}
+                      onClick={() => loadHistoricalChat(chat.version)}
+                      className={`p-3 rounded-xl border cursor-pointer transition-all ${
+                        chat.version === chatVersion
+                          ? 'bg-purple-600/20 border-purple-500/50 hover:bg-purple-600/30'
+                          : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/10'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium text-white flex items-center gap-2">
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          Chat v{chat.version}
+                        </span>
+                        {chat.version === chatVersion && (
+                          <span className="text-[10px] bg-purple-600 px-1.5 py-0.5 rounded text-white font-medium">
+                            Current
+                          </span>
+                        )}
+                      </div>
+                      
+                      <div className="text-xs text-gray-400 line-clamp-2 my-1.5">
+                        {chat.title === `Chat ${chat.version}` && chat.messageCount > 0 
+                          ? 'Empty conversation' 
+                          : chat.title || 'Empty conversation'
+                        }
+                      </div>
+                      
+                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/10">
+                        <span className="text-[10px] text-gray-500">
+                          {chat.messageCount} messages
+                        </span>
+                        <span className="text-[10px] text-gray-500">
+                          {formatTimestamp(chat.timestamp)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 border-t border-white/10">
+              <Button 
+                className="w-full bg-white/5 hover:bg-white/10"
+                onClick={() => {
+                  handleNewChat();
+                  setShowChatHistory(false);
+                }}
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Start New Chat
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
