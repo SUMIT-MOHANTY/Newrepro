@@ -1,29 +1,26 @@
-FROM node:20-bookworm-slim AS node_runtime
+# Minimal base image - AI agent installs everything dynamically
+FROM ubuntu:22.04
 
-FROM python:3.11-slim-bookworm
+ENV DEBIAN_FRONTEND=noninteractive
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-RUN apt-get update -o Acquire::Retries=5 && \
-    apt-get install -y --fix-missing --no-install-recommends \
-        -o Acquire::Retries=5 \
-        -o Acquire::http::Timeout=60 \
-        -o Acquire::https::Timeout=60 \
+# Install ONLY essentials: curl for health checks, and basic build tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        wget \
         ca-certificates \
-        git && \
-    mkdir -p /workspace && \
-    rm -rf /var/lib/apt/lists/*
+        git \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
-COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+WORKDIR /app
 
-RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
-    ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+# Copy intelligent agent entrypoint (bash script, no Python dependency)
+COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
+RUN chmod +x /usr/local/bin/agent-entrypoint.sh
 
-WORKDIR /workspace
+# Health check - try common ports
+HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=5 \
+    CMD curl -f http://localhost:8000/ || curl -f http://localhost:5000/ || curl -f http://localhost:3000/ || exit 1
 
-CMD ["sleep", "infinity"]
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint.sh"]

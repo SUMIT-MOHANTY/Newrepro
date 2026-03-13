@@ -149,13 +149,67 @@ function App() {
     }
   }, [codeVersions, currentCodeVersion, currentProjectId, chatVersion]);
 
+  // Force iframe reload when preview URL changes
+  useEffect(() => {
+    if (previewUrl) {
+      console.log('🔄 Preview URL changed, forcing iframe reload:', previewUrl);
+      
+      // Force iframe to reload by briefly setting to blank
+      const iframe = document.querySelector('iframe[title="Code Preview"]');
+      if (iframe) {
+        const newUrl = previewUrl;
+        iframe.src = 'about:blank';
+        
+        // Small delay then load new URL
+        setTimeout(() => {
+          iframe.src = newUrl;
+        }, 100);
+      }
+    }
+  }, [previewUrl]);
+
   // Load code version when switching
   useEffect(() => {
     if (codeVersions.length > 0 && currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
       const version = codeVersions[currentCodeVersion - 1];
       setPreviewCode(version.code);
-      setPreviewUrl(version.previewUrl || '');
       setFileTree(version.fileTree || []);
+      
+      // Trigger version switch in container
+      if (version.versionId && currentProjectId) {
+        axios.post(`http://localhost:8000/api/projects/${currentProjectId}/versions/${version.versionId}/preview`)
+          .then(response => {
+            const newPreviewUrl = response.data.preview_url;
+            // Add cache-busting parameter to force iframe reload
+            const separator = newPreviewUrl.includes('?') ? '&' : '?';
+            const urlWithVersion = `${newPreviewUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
+            setPreviewUrl(urlWithVersion);
+            console.log(`🔄 Switched to version ${version.versionId}: ${urlWithVersion}`);
+          })
+          .catch(error => {
+            console.error('Failed to switch version:', error);
+            // Fallback to stored URL
+            const baseUrl = version.previewUrl || '';
+            if (baseUrl) {
+              const separator = baseUrl.includes('?') ? '&' : '?';
+              const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
+              setPreviewUrl(urlWithVersion);
+            } else {
+              setPreviewUrl('');
+            }
+          });
+      } else {
+        // No version ID, use stored URL
+        const baseUrl = version.previewUrl || '';
+        if (baseUrl) {
+          const separator = baseUrl.includes('?') ? '&' : '?';
+          const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
+          setPreviewUrl(urlWithVersion);
+        } else {
+          setPreviewUrl('');
+        }
+      }
+      
       if (version.fileTree && version.fileTree.length > 0) {
         const findFirstFile = (items) => {
           for (const item of items) {
@@ -173,6 +227,14 @@ function App() {
       setIframeKey(prev => prev + 1);
     }
   }, [currentCodeVersion]);
+
+  // Reload iframe when previewUrl changes
+  useEffect(() => {
+    if (previewUrl) {
+      console.log('🔄 Preview URL changed, reloading iframe:', previewUrl);
+      setIframeKey(prev => prev + 1);
+    }
+  }, [previewUrl]);
 
   // Function to save a new code version
   const saveCodeVersion = (code, previewUrl, fileTree, prompt) => {
@@ -1357,6 +1419,7 @@ Please suggest improvements or modifications for this element.`;
                       title="Preview"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                       onLoad={() => {
+                        console.log('📺 Iframe loaded with:', previewUrl ? `URL: ${previewUrl}` : 'srcDoc (raw HTML)');
                         // Notify injected script of current edit mode state after (re)load
                         const iframe = iframeRef.current;
                         if (iframe && iframe.contentWindow) {

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
+from dual_agent_handler import get_dual_agent_handler
 
 load_dotenv()
 
@@ -77,6 +78,16 @@ Use these tools when:
 3. ALWAYS write ACTUAL CODE in every file - NEVER descriptions or comments only
 4. ALWAYS use file markers: // FILE: path/to/filename.ext
 5. MINIMUM 4 files for any project (main file + templates/components + styles + config)
+
+⚠️ FLASK COMPATIBILITY (IMPORTANT):
+- NEVER use @app.before_first_request (deprecated in Flask 3.0+)
+- Instead, use: with app.app_context(): db.create_all() after creating the app
+- Always specify Flask version in requirements.txt (e.g., Flask==2.3.3 or Flask==3.0.0)
+- Use app.run(debug=True, host='0.0.0.0', port=5000) for proper container compatibility
+
+⚠️ DJANGO COMPATIBILITY (IMPORTANT):
+- Use python manage.py runserver 0.0.0.0:5000 (port 5000, not 8000)
+- All Python frameworks (Flask, Django, FastAPI) should use port 5000 for consistency
 
 CRITICAL: Generate ACTUAL CODE for EVERY FILE, not folder structure descriptions or comments!
 
@@ -907,6 +918,44 @@ Response format:
 @app.get("/")
 async def root():
     return {"message": "Bourtec VibeCoding API is running"}
+
+@app.post("/api/chat/dual-agent")
+async def dual_agent_chat(request: GenerateRequest):
+    """
+    New endpoint using dual-agent architecture:
+    - Routes to Chat Agent for general questions
+    - Routes to Code Execution Agent (in container) for code generation
+    """
+    try:
+        # Get dual agent handler
+        handler = get_dual_agent_handler()
+        
+        # Convert history to dict format
+        history = [{"role": msg.role, "content": msg.content} for msg in request.history]
+        
+        # Handle the message
+        result = await handler.handle_message(request.prompt, history)
+        
+        if result.get("success"):
+            # Get or create project ID
+            project_id = request.project_id or project_manager.generate_project_id()
+            
+            return {
+                "message": result.get("message", ""),
+                "code": result.get("code"),
+                "project_id": project_id,
+                "version_id": None,
+                "preview_url": result.get("preview_url"),
+                "agent_type": result.get("agent_type"),
+                "tool_calls_log": None
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest):

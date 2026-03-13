@@ -591,11 +591,15 @@ const CodePreview = ({
                 <iframe
                   key={iframeKey}
                   ref={iframeRef}
-                  src={containerPreviewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewCode)}`}
+                  src={containerPreviewUrl ? containerPreviewUrl : `data:text/html;charset=utf-8,${encodeURIComponent(previewCode || '')}`}
                   className="w-full h-full border-0"
                   title="Preview"
                   onLoad={handleIframeLoad}
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                  onError={(e) => {
+                    console.error('Iframe load error:', e);
+                    console.log('Attempted URL:', containerPreviewUrl);
+                  }}
                 />
               </div>
             </div>
