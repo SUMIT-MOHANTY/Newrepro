@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
 
 function App() {
   const [currentProjectId, setCurrentProjectId] = useState(() => {
@@ -24,6 +24,17 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
   
+  const [codeVersions, setCodeVersions] = useState(() => {
+    // Load code versions for current chat
+    const saved = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`);
+    return saved ? JSON.parse(saved) : [];
+  });
+  
+  const [currentCodeVersion, setCurrentCodeVersion] = useState(() => {
+    const saved = localStorage.getItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`);
+    return saved ? parseInt(saved) : 0;
+  });
+  
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewCode, setPreviewCode] = useState('');
@@ -38,6 +49,7 @@ function App() {
   const [selectedElement, setSelectedElement] = useState(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
 
   // Save chat history whenever messages change
   useEffect(() => {
@@ -46,6 +58,53 @@ function App() {
       localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
     }
   }, [messages, currentProjectId, chatVersion]);
+
+  // Save code versions whenever they change
+  useEffect(() => {
+    if (codeVersions.length > 0) {
+      localStorage.setItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`, JSON.stringify(codeVersions));
+      localStorage.setItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`, currentCodeVersion.toString());
+    }
+  }, [codeVersions, currentCodeVersion, currentProjectId, chatVersion]);
+
+  // Load code version when switching
+  useEffect(() => {
+    if (codeVersions.length > 0 && currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
+      const version = codeVersions[currentCodeVersion - 1];
+      setPreviewCode(version.code);
+      setPreviewUrl(version.previewUrl || '');
+      setFileTree(version.fileTree || []);
+      if (version.fileTree && version.fileTree.length > 0) {
+        const findFirstFile = (items) => {
+          for (const item of items) {
+            if (item.type === 'file') return item;
+            if (item.type === 'folder' && item.children) {
+              const found = findFirstFile(item.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        const firstFile = findFirstFile(version.fileTree);
+        if (firstFile) setSelectedFile(firstFile);
+      }
+      setIframeKey(prev => prev + 1);
+    }
+  }, [currentCodeVersion]);
+
+  // Function to save a new code version
+  const saveCodeVersion = (code, previewUrl, fileTree, prompt) => {
+    const newVersion = {
+      version: codeVersions.length + 1,
+      code,
+      previewUrl,
+      fileTree,
+      prompt,
+      timestamp: new Date().toISOString()
+    };
+    setCodeVersions(prev => [...prev, newVersion]);
+    setCurrentCodeVersion(newVersion.version);
+  };
 
   // Function to start a new chat
   const handleNewChat = () => {
@@ -58,6 +117,8 @@ function App() {
     setSelectedFile(null);
     setEditMode(false);
     setSelectedElement(null);
+    setCodeVersions([]);
+    setCurrentCodeVersion(0);
     localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
   };
 
@@ -120,7 +181,7 @@ function App() {
   const handleSend = async () => {
     if (!input.trim() || loading) return;
 
-    const userMessage = { role: 'user', content: input };
+    const userMessage = { role: 'user', content: input, timestamp: new Date().toISOString() };
     setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
     setInput('');
@@ -139,6 +200,7 @@ function App() {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        timestamp: new Date().toISOString()
       };
 
       setMessages(prev => [...prev, aiMessage]);
@@ -151,6 +213,9 @@ function App() {
         const code = response.data.code;
         const files = parseCodeToFiles(code);
         setFileTree(files);
+        
+        // Save this as a new code version
+        saveCodeVersion(code, response.data.preview_url || '', files, currentInput);
         
         // Expand all folders by default
         const allFolderPaths = new Set();
@@ -234,7 +299,8 @@ function App() {
       console.error('Error:', error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: 'Sorry, there was an error. Please try again.'
+        content: 'Sorry, there was an error. Please try again.',
+        timestamp: new Date().toISOString()
       }]);
     } finally {
       setLoading(false);
@@ -272,6 +338,18 @@ function App() {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  // Close version history dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showVersionHistory && !event.target.closest('.version-history-container')) {
+        setShowVersionHistory(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showVersionHistory]);
 
   // Inject edit mode script when editMode changes
   useEffect(() => {
@@ -398,7 +476,8 @@ function App() {
 
     const editMessage = {
       role: 'user',
-      content: `Edit the ${selectedElement.tagName?.toLowerCase()} element: ${editPrompt}\n\nCurrent element: <${selectedElement.tagName?.toLowerCase()}${selectedElement.id ? ` id="${selectedElement.id}"` : ''}${selectedElement.className ? ` class="${selectedElement.className}"` : ''}>${selectedElement.textContent?.substring(0, 50)}</${selectedElement.tagName?.toLowerCase()}>\n\nOnly modify this specific element, keep everything else the same.`
+      content: `Edit the ${selectedElement.tagName?.toLowerCase()} element: ${editPrompt}\n\nCurrent element: <${selectedElement.tagName?.toLowerCase()}${selectedElement.id ? ` id="${selectedElement.id}"` : ''}${selectedElement.className ? ` class="${selectedElement.className}"` : ''}>${selectedElement.textContent?.substring(0, 50)}</${selectedElement.tagName?.toLowerCase()}>\n\nOnly modify this specific element, keep everything else the same.`,
+      timestamp: new Date().toISOString()
     };
 
     setMessages(prev => [...prev, editMessage]);
@@ -416,6 +495,7 @@ function App() {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        timestamp: new Date().toISOString()
       };
 
       setMessages(prev => [...prev, aiMessage]);
@@ -427,6 +507,9 @@ function App() {
         const code = response.data.code;
         const files = parseCodeToFiles(code);
         setFileTree(files);
+        
+        // Save this as a new code version
+        saveCodeVersion(code, response.data.preview_url || '', files, editMessage.content);
         
         const allFolderPaths = new Set();
         const collectFolders = (items) => {
@@ -497,11 +580,35 @@ function App() {
       console.error('Error:', error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: 'Sorry, there was an error editing the element. Please try again.'
+        content: 'Sorry, there was an error editing the element. Please try again.',
+        timestamp: new Date().toISOString()
       }]);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Format timestamp for display
+  const formatTimestamp = (timestamp) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    
+    // Show time for today, date for older
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) {
+      return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    }
+    
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   };
 
   // Parse code to extract files and build tree structure
@@ -625,6 +732,60 @@ function App() {
           </div>
           <div className="h-6 w-px bg-white/10" />
           <span className="text-sm text-gray-400">Chat v{chatVersion}</span>
+          {codeVersions.length > 0 && (
+            <>
+              <div className="h-6 w-px bg-white/10" />
+              <div className="relative version-history-container">
+                <button
+                  onClick={() => setShowVersionHistory(!showVersionHistory)}
+                  className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors"
+                >
+                  <History className="w-4 h-4" />
+                  <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
+                </button>
+                
+                {/* Version History Dropdown */}
+                {showVersionHistory && (
+                  <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
+                    <div className="p-3 border-b border-white/10">
+                      <div className="text-sm font-semibold text-white">Code Version History</div>
+                      <div className="text-xs text-gray-400 mt-1">{codeVersions.length} versions saved</div>
+                    </div>
+                    <div className="p-2">
+                      {codeVersions.map((version) => (
+                        <button
+                          key={version.version}
+                          onClick={() => {
+                            setCurrentCodeVersion(version.version);
+                            setShowVersionHistory(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors ${
+                            currentCodeVersion === version.version
+                              ? 'bg-purple-600/20 border border-purple-500/30'
+                              : 'hover:bg-white/5'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className={`text-sm font-medium ${
+                              currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
+                            }`}>
+                              Version {version.version}
+                            </span>
+                            <span className="text-xs text-gray-500">
+                              {formatTimestamp(version.timestamp)}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-400 line-clamp-2">
+                            {version.prompt}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button 
@@ -1030,6 +1191,13 @@ function App() {
                     : 'bg-white/5 text-gray-200'
                 }`}>
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                  {msg.timestamp && (
+                    <div className={`text-xs mt-1.5 ${
+                      msg.role === 'user' ? 'text-purple-200' : 'text-gray-500'
+                    }`}>
+                      {formatTimestamp(msg.timestamp)}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
