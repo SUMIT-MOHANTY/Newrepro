@@ -125,3 +125,40 @@ select:focus {
 .version-active {
   animation: versionPulse 2s ease-in-out infinite;
 }
+
+/* Force aggressive word wrapping for markdown content */
+.markdown-body {
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  white-space: -moz-pre-wrap;
+  white-space: -pre-wrap;
+  white-space: -o-pre-wrap;
+  word-break: break-all;
+}
+
+.markdown-body table {
+  width: 100%;
+  table-layout: fixed; /* Forces table not to stretch past 100% */
+  word-wrap: break-word;
+}
+
+.markdown-body td, .markdown-body th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+
+.markdown-body a {
+  word-wrap: break-word;
+  word-break: break-all;
+}
+
+.markdown-body pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.markdown-body code {
+  white-space: pre-wrap;
+  word-break: break-all;
+}

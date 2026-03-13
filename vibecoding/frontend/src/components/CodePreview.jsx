@@ -1,5 +1,7 @@
 import React, { useRef } from 'react';
 import { Eye, Code, Copy, Check, RefreshCw, Download, Sparkles } from 'lucide-react';
+import { Button } from './ui/button';
+import { cn } from '@/lib/utils';
 import FileTree from './FileTree';
 
 const CodePreview = ({ 
@@ -203,39 +205,48 @@ const CodePreview = ({
               </span>
             )}
             
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={onCopyCode}
-              className={`p-2 rounded-md transition-colors ${
+              className={cn(
+                'h-8 w-8',
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-              }`}
+              )}
               title="Copy Code"
             >
               {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={handleRefresh}
-              className={`p-2 rounded-md transition-colors ${
+              className={cn(
+                'h-8 w-8',
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-              }`}
+              )}
               title="Refresh"
             >
               <RefreshCw className="w-4 h-4" />
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={onDownloadCode}
-              className={`p-2 rounded-md transition-colors ${
+              className={cn(
+                'h-8 w-8',
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-              }`}
+              )}
               title="Download"
             >
               <Download className="w-4 h-4" />
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -273,28 +284,41 @@ const CodePreview = ({
               <div className="flex items-center gap-2 px-4 py-2">
                 {/* Navigation Buttons */}
                 <div className="flex items-center gap-1">
-                  <button className={`p-1.5 rounded hover:bg-opacity-10 ${
-                    darkMode ? 'hover:bg-white' : 'hover:bg-black'
-                  }`}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      'h-8 w-8',
+                      darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                    )}
+                  >
                     <svg className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                     </svg>
-                  </button>
-                  <button className={`p-1.5 rounded hover:bg-opacity-10 ${
-                    darkMode ? 'hover:bg-white' : 'hover:bg-black'
-                  }`}>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      'h-8 w-8',
+                      darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                    )}
+                  >
                     <svg className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
-                  </button>
-                  <button 
+                  </Button>
+                  <Button 
+                    variant="ghost"
+                    size="icon"
                     onClick={handleRefresh}
-                    className={`p-1.5 rounded hover:bg-opacity-10 ${
-                      darkMode ? 'hover:bg-white' : 'hover:bg-black'
-                    }`}
+                    className={cn(
+                      'h-8 w-8',
+                      darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                    )}
                   >
                     <RefreshCw className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} />
-                  </button>
+                  </Button>
                 </div>
 
                 {/* URL Input */}
@@ -313,14 +337,16 @@ const CodePreview = ({
                     }`}
                   />
                   {containerPreviewUrl && (
-                    <button
+                    <Button
+                      size="sm"
                       onClick={() => window.open(containerPreviewUrl, '_blank')}
-                      className={`text-xs px-2 py-0.5 rounded ${
+                      className={cn(
+                        'h-6 px-2 text-xs',
                         darkMode ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-500 text-white hover:bg-blue-600'
-                      }`}
+                      )}
                     >
                       Open
-                    </button>
+                    </Button>
                   )}
                 </div>
 
@@ -330,13 +356,16 @@ const CodePreview = ({
                   <div className={`flex items-center gap-0.5 mr-2 p-0.5 rounded ${
                     darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-200'
                   }`}>
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setDeviceMode('desktop')}
-                      className={`p-1.5 rounded transition-colors ${
+                      className={cn(
+                        'h-8 w-8',
                         deviceMode === 'desktop'
-                          ? darkMode ? 'bg-blue-600 text-white' : 'bg-blue-500 text-white'
+                          ? darkMode ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-500 text-white hover:bg-blue-600'
                           : darkMode ? 'text-[#858585] hover:text-[#cccccc]' : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      )}
                       title="Desktop View"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -344,42 +373,51 @@ const CodePreview = ({
                         <line x1="8" y1="21" x2="16" y2="21" strokeWidth="2" />
                         <line x1="12" y1="17" x2="12" y2="21" strokeWidth="2" />
                       </svg>
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setDeviceMode('tablet')}
-                      className={`p-1.5 rounded transition-colors ${
+                      className={cn(
+                        'h-8 w-8',
                         deviceMode === 'tablet'
-                          ? darkMode ? 'bg-blue-600 text-white' : 'bg-blue-500 text-white'
+                          ? darkMode ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-500 text-white hover:bg-blue-600'
                           : darkMode ? 'text-[#858585] hover:text-[#cccccc]' : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      )}
                       title="Tablet View"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <rect x="5" y="2" width="14" height="20" rx="2" strokeWidth="2" />
                         <line x1="12" y1="18" x2="12" y2="18" strokeWidth="2" strokeLinecap="round" />
                       </svg>
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       onClick={() => setDeviceMode('mobile')}
-                      className={`p-1.5 rounded transition-colors ${
+                      className={cn(
+                        'h-8 w-8',
                         deviceMode === 'mobile'
-                          ? darkMode ? 'bg-blue-600 text-white' : 'bg-blue-500 text-white'
+                          ? darkMode ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-blue-500 text-white hover:bg-blue-600'
                           : darkMode ? 'text-[#858585] hover:text-[#cccccc]' : 'text-gray-500 hover:text-gray-700'
-                      }`}
+                      )}
                       title="Mobile View"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2" />
                         <line x1="12" y1="18" x2="12" y2="18" strokeWidth="2" strokeLinecap="round" />
                       </svg>
-                    </button>
+                    </Button>
                   </div>
 
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={onCopyCode}
-                    className={`p-1.5 rounded hover:bg-opacity-10 ${
-                      darkMode ? 'hover:bg-white' : 'hover:bg-black'
-                    }`}
+                    className={cn(
+                      'h-8 w-8',
+                      darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                    )}
                     title="Copy Code"
                   >
                     {copied ? (
@@ -387,16 +425,19 @@ const CodePreview = ({
                     ) : (
                       <Copy className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} />
                     )}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={onDownloadCode}
-                    className={`p-1.5 rounded hover:bg-opacity-10 ${
-                      darkMode ? 'hover:bg-white' : 'hover:bg-black'
-                    }`}
+                    className={cn(
+                      'h-8 w-8',
+                      darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                    )}
                     title="Download"
                   >
                     <Download className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} />
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
@@ -459,11 +500,14 @@ const CodePreview = ({
                   }`}>
                     Code Files
                   </span>
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={onCopyCode}
-                    className={`p-1 rounded hover:bg-opacity-10 ${
-                      darkMode ? 'hover:bg-white' : 'hover:bg-black'
-                    }`}
+                    className={cn(
+                      'h-7 w-7',
+                      darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                    )}
                     title="Copy All Code"
                   >
                     {copied ? (
@@ -471,7 +515,7 @@ const CodePreview = ({
                     ) : (
                       <Copy className={`w-3.5 h-3.5 ${darkMode ? 'text-[#858585]' : 'text-gray-500'}`} />
                     )}
-                  </button>
+                  </Button>
                 </div>
               </div>
               
@@ -504,15 +548,18 @@ const CodePreview = ({
                   }`}>
                     {(currentFileContent || previewCode).split('\n').length} lines
                   </span>
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={onDownloadCode}
-                    className={`p-1.5 rounded hover:bg-opacity-10 ${
-                      darkMode ? 'hover:bg-white' : 'hover:bg-black'
-                    }`}
+                    className={cn(
+                      'h-8 w-8',
+                      darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                    )}
                     title="Download"
                   >
                     <Download className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} />
-                  </button>
+                  </Button>
                 </div>
               </div>
 

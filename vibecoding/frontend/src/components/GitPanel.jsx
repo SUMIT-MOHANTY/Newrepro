@@ -13,6 +13,7 @@ import {
   PlusCircle,
   MinusCircle
 } from 'lucide-react';
+import { Button } from './ui/button';
 
 const GitPanel = ({ 
   darkMode, 
@@ -181,9 +182,11 @@ const GitPanel = ({
             }`}>Git Integration</h2>
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={fetchGitStatus}
-              className={`p-2 rounded-lg transition-colors ${
+              className={`${
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc]' 
                   : 'hover:bg-gray-100 text-gray-600'
@@ -191,17 +194,19 @@ const GitPanel = ({
               disabled={loading}
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={onClose}
-              className={`p-2 rounded-lg transition-colors ${
+              className={`${
                 darkMode 
                   ? 'hover:bg-[#2d2d30] text-[#cccccc]' 
                   : 'hover:bg-gray-100 text-gray-600'
               }`}
             >
               <X className="w-4 h-4" />
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -212,10 +217,11 @@ const GitPanel = ({
             darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
           }`}>
             {['status', 'commits', 'branches'].map((tab) => (
-              <button
+              <Button
                 key={tab}
+                variant="ghost"
                 onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 capitalize transition-colors ${
+                className={`rounded-none capitalize ${
                   activeTab === tab
                     ? darkMode 
                       ? 'bg-[#0e639c] text-white' 
@@ -226,7 +232,7 @@ const GitPanel = ({
                 }`}
               >
                 {tab}
-              </button>
+              </Button>
             ))}
           </div>
 
@@ -242,16 +248,16 @@ const GitPanel = ({
                 <p className={`mb-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`}>
                   No Git repository found
                 </p>
-                <button
+                <Button
                   onClick={handleGitInit}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  className={`${
                     darkMode 
                       ? 'bg-[#0e639c] text-white hover:bg-[#1177bb]' 
                       : 'bg-gray-900 text-white hover:bg-gray-800'
                   }`}
                 >
                   Initialize Repository
-                </button>
+                </Button>
               </div>
             ) : (
               <>
@@ -299,27 +305,25 @@ const GitPanel = ({
                             darkMode ? 'text-[#cccccc]' : 'text-gray-900'
                           }`}>Changes</h3>
                           <div className="flex gap-2">
-                            <button
+                            <Button
+                              size="sm"
                               onClick={() => handleAddFiles(selectedFiles.size > 0 ? selectedFiles : null)}
-                              className={`px-3 py-1 text-sm rounded-lg transition-colors ${
+                              className={`${
                                 darkMode 
                                   ? 'bg-[#0e639c] text-white hover:bg-[#1177bb]' 
                                   : 'bg-gray-900 text-white hover:bg-gray-800'
                               }`}
                             >
                               {selectedFiles.size > 0 ? `Add Selected (${selectedFiles.size})` : 'Add All'}
-                            </button>
+                            </Button>
                             {selectedFiles.size > 0 && (
-                              <button
+                              <Button
+                                size="sm"
                                 onClick={() => setShowCommitInput(true)}
-                                className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                                  darkMode 
-                                    ? 'bg-green-600 text-white hover:bg-green-700' 
-                                    : 'bg-green-600 text-white hover:bg-green-700'
-                                }`}
+                                className="bg-green-600 text-white hover:bg-green-700"
                               >
                                 Commit
-                              </button>
+                              </Button>
                             )}
                           </div>
                         </div>
@@ -405,26 +409,25 @@ const GitPanel = ({
                           }`}
                         />
                         <div className="flex gap-2 mt-2">
-                          <button
+                          <Button
+                            size="sm"
                             onClick={handleCommit}
-                            className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                              darkMode 
-                                ? 'bg-green-600 text-white hover:bg-green-700' 
-                                : 'bg-green-600 text-white hover:bg-green-700'
-                            }`}
+                            className="bg-green-600 text-white hover:bg-green-700"
                           >
                             Commit Changes
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => setShowCommitInput(false)}
-                            className={`px-3 py-1 text-sm rounded-lg transition-colors ${
+                            className={`${
                               darkMode 
                                 ? 'bg-[#3e3e42] text-[#cccccc] hover:bg-[#2d2d30]' 
                                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                             }`}
                           >
                             Cancel
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     )}
@@ -437,16 +440,17 @@ const GitPanel = ({
                       <h3 className={`font-medium ${
                         darkMode ? 'text-[#cccccc]' : 'text-gray-900'
                       }`}>Branch Management</h3>
-                      <button
+                      <Button
+                        size="sm"
                         onClick={() => setShowBranchInput(true)}
-                        className={`px-3 py-1 text-sm rounded-lg transition-colors ${
+                        className={`${
                           darkMode 
                             ? 'bg-[#0e639c] text-white hover:bg-[#1177bb]' 
                             : 'bg-gray-900 text-white hover:bg-gray-800'
                         }`}
                       >
                         New Branch
-                      </button>
+                      </Button>
                     </div>
 
                     {showBranchInput && (
@@ -465,26 +469,25 @@ const GitPanel = ({
                           }`}
                         />
                         <div className="flex gap-2 mt-2">
-                          <button
+                          <Button
+                            size="sm"
                             onClick={handleCreateBranch}
-                            className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                              darkMode 
-                                ? 'bg-green-600 text-white hover:bg-green-700' 
-                                : 'bg-green-600 text-white hover:bg-green-700'
-                            }`}
+                            className="bg-green-600 text-white hover:bg-green-700"
                           >
                             Create Branch
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => setShowBranchInput(false)}
-                            className={`px-3 py-1 text-sm rounded-lg transition-colors ${
+                            className={`${
                               darkMode 
                                 ? 'bg-[#3e3e42] text-[#cccccc] hover:bg-[#2d2d30]' 
                                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                             }`}
                           >
                             Cancel
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     )}

@@ -1,5 +1,7 @@
 import React from 'react';
 import { Sun, Moon, GitBranch } from 'lucide-react';
+import { Button } from './ui/button';
+import { cn } from '@/lib/utils';
 
 const Header = ({ darkMode, onToggleTheme, onPublish, onGitClick }) => {
   return (
@@ -16,21 +18,24 @@ const Header = ({ darkMode, onToggleTheme, onPublish, onGitClick }) => {
       </div>
       
       <div className="flex items-center gap-3">
-        <button
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={onGitClick}
-          className={`p-2 rounded-lg transition-colors ${
+          className={cn(
+            'rounded-lg',
             darkMode 
               ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
               : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-          }`}
+          )}
           title="Git Integration"
         >
           <GitBranch className="w-4 h-4" />
-        </button>
-        <button
-          onClick={onToggleTheme}
+        </Button>
+        <Button
           variant="ghost"
           size="icon"
+          onClick={onToggleTheme}
           className={cn(
             'rounded-lg',
             darkMode ? 'text-[#cccccc] hover:text-white' : 'text-gray-600 hover:text-gray-900'

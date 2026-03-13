@@ -31,11 +31,47 @@ const ChatPanel = ({
     scrollToBottom();
   }, [messages]);
 
+  const [width, setWidth] = React.useState(384); // Default 96 tailwind class is 384px
+  const isResizing = useRef(false);
+
+  const startResizing = React.useCallback((e) => {
+    isResizing.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none'; // Prevent text selection everywhere during drag
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', stopResizing);
+  }, []);
+
+  const handleMouseMove = React.useCallback((e) => {
+    if (!isResizing.current) return;
+    // Calculate new width: viewport width - mouse X position
+    let newWidth = window.innerWidth - e.clientX;
+    if (newWidth < 300) newWidth = 300; // min width
+    if (newWidth > 800) newWidth = 800; // max width
+    setWidth(newWidth);
+  }, []);
+
+  const stopResizing = React.useCallback(() => {
+    isResizing.current = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', stopResizing);
+  }, [handleMouseMove]);
+
   return (
-    <div className={cn(
-      'w-96 flex flex-col h-screen border-l',
-      darkMode ? 'bg-[#0F0F14] border-white/10' : 'bg-white border-gray-200'
-    )}>
+    <div 
+      className={cn(
+        'flex flex-col h-screen border-l relative',
+        darkMode ? 'bg-[#0F0F14] border-white/10' : 'bg-white border-gray-200'
+      )}
+      style={{ width: `${width}px` }}
+    >
+      {/* Drag handle */}
+      <div 
+        className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-purple-500/50 active:bg-purple-500 transition-colors z-50 -translate-x-1/2"
+        onMouseDown={startResizing}
+      />
       {/* Chat Header */}
       <div className={`flex-shrink-0 flex items-center justify-between px-4 py-3 border-b ${
         darkMode ? 'border-white/10' : 'border-gray-200'
@@ -114,17 +150,18 @@ const ChatPanel = ({
               </div>
               <div className="space-y-2">
                 {suggestions.map((suggestion, idx) => (
-                  <button
+                  <Button
                     key={idx}
+                    variant="ghost"
                     onClick={() => setInput(suggestion)}
-                    className={`w-full text-left px-4 py-3 rounded-lg text-sm transition-all ${
+                    className={`w-full text-left px-4 py-3 h-auto rounded-lg text-sm ${
                       darkMode 
                         ? 'bg-white/5 hover:bg-white/10 text-gray-200 border border-white/10 hover:border-purple-500/50' 
                         : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 hover:border-blue-300'
                     }`}
                   >
                     {suggestion}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>

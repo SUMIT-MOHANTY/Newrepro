@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
 
 function App() {
@@ -202,6 +203,7 @@ function App() {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        toolCalls: response.data.tool_calls_log || null,
         timestamp: new Date().toISOString()
       };
 
@@ -550,6 +552,7 @@ function App() {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        toolCalls: response.data.tool_calls_log || null,
         timestamp: new Date().toISOString()
       };
 
@@ -793,13 +796,15 @@ function App() {
             <>
               <div className="h-6 w-px bg-white/10" />
               <div className="relative version-history-container">
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setShowVersionHistory(!showVersionHistory)}
-                  className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors"
+                  className="flex items-center gap-2 bg-white/5 hover:bg-white/10"
                 >
                   <History className="w-4 h-4" />
                   <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
-                </button>
+                </Button>
                 
                 {/* Version History Dropdown */}
                 {showVersionHistory && (
@@ -810,32 +815,35 @@ function App() {
                     </div>
                     <div className="p-2">
                       {codeVersions.map((version) => (
-                        <button
+                        <Button
                           key={version.version}
+                          variant="ghost"
                           onClick={() => {
                             setCurrentCodeVersion(version.version);
                             setShowVersionHistory(false);
                           }}
-                          className={`w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors ${
+                          className={`w-full text-left px-3 py-2 h-auto rounded-lg mb-1 ${
                             currentCodeVersion === version.version
                               ? 'bg-purple-600/20 border border-purple-500/30'
                               : 'hover:bg-white/5'
                           }`}
                         >
-                          <div className="flex items-center justify-between mb-1">
-                            <span className={`text-sm font-medium ${
-                              currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
-                            }`}>
-                              Version {version.version}
-                            </span>
-                            <span className="text-xs text-gray-500">
-                              {formatTimestamp(version.timestamp)}
-                            </span>
+                          <div className="w-full">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className={`text-sm font-medium ${
+                                currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
+                              }`}>
+                                Version {version.version}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                {formatTimestamp(version.timestamp)}
+                              </span>
+                            </div>
+                            <div className="text-xs text-gray-400 line-clamp-2">
+                              {version.prompt}
+                            </div>
                           </div>
-                          <div className="text-xs text-gray-400 line-clamp-2">
-                            {version.prompt}
-                          </div>
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   </div>
@@ -845,17 +853,19 @@ function App() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button 
+          <Button 
+            variant="ghost"
+            size="sm"
             onClick={handleNewChat}
-            className="px-4 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-medium transition-all flex items-center gap-2"
+            className="bg-white/5 hover:bg-white/10"
             title="Start a new chat"
           >
             <Plus className="w-4 h-4" />
             New Chat
-          </button>
-          <button className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-sm font-medium transition-all">
+          </Button>
+          <Button className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-sm font-medium">
             Deploy
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -864,11 +874,13 @@ function App() {
         {/* Right Panel - Preview/Code */}
         <div className="flex-1 flex flex-col">
           {/* View Tabs */}
-          <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#0F0F14]">
+          <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#0F0F14] sticky top-0 z-10">
             <div className="flex items-center gap-1">
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => setActiveView('preview')}
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                className={`${
                   activeView === 'preview'
                     ? 'bg-white/10 text-white'
                     : 'text-gray-400 hover:text-white hover:bg-white/5'
@@ -876,10 +888,12 @@ function App() {
               >
                 <Eye className="w-4 h-4 inline mr-2" />
                 Preview
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => setActiveView('code')}
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                className={`${
                   activeView === 'code'
                     ? 'bg-white/10 text-white'
                     : 'text-gray-400 hover:text-white hover:bg-white/5'
@@ -887,7 +901,7 @@ function App() {
               >
                 <Code className="w-4 h-4 inline mr-2" />
                 Code
-              </button>
+              </Button>
             </div>
 
             
@@ -895,9 +909,11 @@ function App() {
               <div className="flex items-center gap-2">
                 {/* Screen Size Selector */}
                 <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5">
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => setScreenSize('mobile')}
-                    className={`p-1.5 rounded transition-colors ${
+                    className={`h-8 w-8 ${
                       screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
                     }`}
                     title="Mobile (375px)"
@@ -905,10 +921,12 @@ function App() {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2"/>
                     </svg>
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => setScreenSize('tablet')}
-                    className={`p-1.5 rounded transition-colors ${
+                    className={`h-8 w-8 ${
                       screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
                     }`}
                     title="Tablet (768px)"
@@ -916,10 +934,12 @@ function App() {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2"/>
                     </svg>
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => setScreenSize('desktop')}
-                    className={`p-1.5 rounded transition-colors ${
+                    className={`h-8 w-8 ${
                       screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
                     }`}
                     title="Desktop (100%)"
@@ -929,15 +949,17 @@ function App() {
                       <path d="M8 20h8" strokeWidth="2"/>
                       <path d="M12 16v4" strokeWidth="2"/>
                     </svg>
-                  </button>
+                  </Button>
                 </div>
 
                 {/* Edit Mode Toggle */}
-                <button
+                <Button
+                  variant={editMode ? 'default' : 'ghost'}
+                  size="sm"
                   onClick={() => setEditMode(!editMode)}
-                  className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${
+                  className={`${
                     editMode 
-                      ? 'bg-purple-600 text-white' 
+                      ? 'bg-purple-600 text-white hover:bg-purple-700' 
                       : 'bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white'
                   }`}
                   title="Edit Mode - Click elements to edit"
@@ -946,50 +968,60 @@ function App() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                   </svg>
                   {editMode ? 'Editing' : 'Edit'}
-                </button>
+                </Button>
                 
                 <div className="h-6 w-px bg-white/10" />
                 
-                <button
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={handleRefresh}
-                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
+                  className="bg-white/5 hover:bg-white/10"
                   title="Refresh Preview"
                 >
                   <RefreshCw className="w-4 h-4" />
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={handleCopy}
-                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
+                  className="bg-white/5 hover:bg-white/10"
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
-                </button>
-                <button 
+                </Button>
+                <Button 
+                  variant="ghost"
+                  size="sm"
                   onClick={handleDownload}
-                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
+                  className="bg-white/5 hover:bg-white/10"
                 >
                   <Download className="w-4 h-4" />
                   Download
-                </button>
+                </Button>
               </div>
             )}
             
             {previewCode && activeView === 'code' && (
               <div className="flex items-center gap-2">
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={handleCopy}
-                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
+                  className="bg-white/5 hover:bg-white/10"
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
-                </button>
-                <button 
+                </Button>
+                <Button 
+                  variant="ghost"
+                  size="sm"
                   onClick={handleDownload}
-                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
+                  className="bg-white/5 hover:bg-white/10"
                 >
                   <Download className="w-4 h-4" />
                   Download
-                </button>
+                </Button>
               </div>
             )}
           </div>
@@ -1011,13 +1043,15 @@ function App() {
                 {/* Browser-like URL Bar */}
                 <div className="flex-shrink-0 border-b border-white/10 bg-[#0F0F14]">
                   <div className="flex items-center gap-2 px-4 py-2">
-                    <button 
+                    <Button 
+                      variant="ghost"
+                      size="icon"
                       onClick={handleRefresh}
-                      className="p-1.5 rounded hover:bg-white/10"
+                      className="h-8 w-8 hover:bg-white/10"
                       title="Refresh"
                     >
                       <RefreshCw className="w-4 h-4 text-gray-400" />
-                    </button>
+                    </Button>
                     <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1e1e] border border-white/10">
                       <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
@@ -1029,12 +1063,14 @@ function App() {
                         className="flex-1 bg-transparent text-sm outline-none text-gray-300"
                       />
                       {previewUrl && (
-                        <button
+                        <Button
+                          variant="default"
+                          size="sm"
                           onClick={() => window.open(previewUrl, '_blank')}
-                          className="text-xs px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700"
+                          className="h-6 px-2 text-xs bg-blue-600 text-white hover:bg-blue-700"
                         >
                           Open
-                        </button>
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -1094,17 +1130,19 @@ function App() {
                           </span>
                           <span>Selected</span>
                         </div>
-                        <button
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           onClick={() => {
                             setSelectedElement(null);
                             setEditPrompt('');
                           }}
-                          className="text-gray-400 hover:text-white"
+                          className="h-8 w-8 text-gray-400 hover:text-white"
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                           </svg>
-                        </button>
+                        </Button>
                       </div>
                       <div className="relative">
                         <input
@@ -1120,13 +1158,14 @@ function App() {
                           className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors"
                           autoFocus
                         />
-                        <button
+                        <Button
+                          size="icon"
                           onClick={handleElementEdit}
                           disabled={!editPrompt.trim()}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
                         >
                           <Send className="w-4 h-4" />
-                        </button>
+                        </Button>
                       </div>
                       <div className="mt-2 text-xs text-gray-500">
                         Selected: {selectedElement.textContent?.substring(0, 50)}

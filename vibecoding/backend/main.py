@@ -9,6 +9,7 @@ import re as _re
 from dotenv import load_dotenv
 from ai_config import ai_config
 from project_manager import project_manager
+from web_tools import make_request_with_tools
 
 load_dotenv()
 
@@ -38,6 +39,7 @@ class GenerateResponse(BaseModel):
     project_id: str
     version_id: Optional[str] = None
     preview_url: Optional[str] = None
+    tool_calls_log: Optional[List[dict]] = None
 
 class ProjectCreateRequest(BaseModel):
     name: Optional[str] = None
@@ -56,6 +58,18 @@ class ProjectListResponse(BaseModel):
 
 SYSTEM_PROMPT = """You are an expert full-stack developer and AI assistant for Bourtec VibeCoding platform.
 Your role is to help users build web applications, components, and interfaces through natural language.
+
+🌐 WEB TOOLS AVAILABLE:
+You have access to web tools that you can call dynamically:
+1. **web_search(query)** - Search the web using DuckDuckGo to find documentation, tutorials, examples, API references, or any real-time information.
+2. **fetch_page_content(url)** - Fetch and read the content of any web page to get detailed information, code examples, or documentation.
+
+Use these tools when:
+- The user asks about a library, API, or tool you're not sure about
+- You need current documentation or latest versions of packages
+- The user asks you to research something before building
+- You need to verify API endpoints, syntax, or best practices
+- The user explicitly asks you to search the web
 
 🚨 CRITICAL RULES - NEVER BREAK THESE:
 1. ALWAYS generate MULTIPLE files with file markers - NEVER just one file
@@ -908,18 +922,25 @@ async def generate_code(request: GenerateRequest):
                 "content": msg.content
             })
         
-        # Add current prompt
+        # Add current prompt with a strict tool-calling enforcement
+        prompt_with_instructions = request.prompt
+        if any(word in request.prompt.lower() for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
+            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. DO NOT say you cannot browse the web. You HAVE the ability via function calling.)"
+            
         messages.append({
             "role": "user",
-            "content": request.prompt
+            "content": prompt_with_instructions
         })
 
-        # Call AI API
-        response = ai_config.make_request(messages)
+        # Call AI API with function calling support (web search + page fetch)
+        response = await make_request_with_tools(messages)
+        
+        # Extract tool calls log if any tools were used
+        tool_calls_log = response.pop("_tool_calls_log", None)
         
         # Extract AI response
         if "choices" in response and len(response["choices"]) > 0:
-            ai_response = response["choices"][0]["message"]["content"]
+            ai_response = response["choices"][0]["message"].get("content") or ""
         else:
             raise Exception("Invalid response format from AI API")
 
@@ -967,7 +988,7 @@ REQUIRED:
 Generate the COMPLETE structure with ACTUAL CODE in every file."""
                 })
                 
-                # Make another API call
+                # Make another API call (without tools for the follow-up)
                 response = ai_config.make_request(messages)
                 if "choices" in response and len(response["choices"]) > 0:
                     ai_response = response["choices"][0]["message"]["content"]
@@ -1038,7 +1059,8 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
             code=code,
             project_id=project_id,
             version_id=version_id,
-            preview_url=preview_url
+            preview_url=preview_url,
+            tool_calls_log=tool_calls_log
         )
 
     except Exception as e:
@@ -1052,7 +1074,8 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
             code=None,
             project_id=project_id,
             version_id=None,
-            preview_url=None
+            preview_url=None,
+            tool_calls_log=None
         )
 
 @app.get("/api/health")
