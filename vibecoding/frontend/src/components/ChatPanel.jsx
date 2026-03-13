@@ -4,24 +4,27 @@ import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 import ChatMessage from './ChatMessage';
 import ChatInput from './ChatInput';
+import Typewriter from './Typewriter';
 
-const ChatPanel = ({ 
-  messages, 
-  loading, 
-  input, 
-  setInput, 
-  onSend, 
-  onKeyPress, 
-  darkMode, 
-  codeVersions, 
-  selectedVersion, 
-  onLoadVersion, 
-  onCopyMessage, 
-  onRegenerate, 
+const ChatPanel = ({
+  messages,
+  loading,
+  input,
+  setInput,
+  onSend,
+  onKeyPress,
+  darkMode,
+  codeVersions,
+  selectedVersion,
+  onLoadVersion,
+  onCopyMessage,
+  onRegenerate,
   onClearHistory,
-  suggestions 
+  suggestions
 }) => {
   const messagesEndRef = useRef(null);
+  const [suggestionIndex, setSuggestionIndex] = React.useState(0);
+  const rotationTimeoutRef = useRef(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -30,6 +33,12 @@ const ChatPanel = ({
   React.useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  React.useEffect(() => {
+    return () => {
+      if (rotationTimeoutRef.current) clearTimeout(rotationTimeoutRef.current);
+    };
+  }, []);
 
   const [width, setWidth] = React.useState(384); // Default 96 tailwind class is 384px
   const isResizing = useRef(false);
@@ -60,7 +69,7 @@ const ChatPanel = ({
   }, [handleMouseMove]);
 
   return (
-    <div 
+    <div
       className={cn(
         'flex flex-col h-screen border-l relative',
         darkMode ? 'bg-[#0F0F14] border-white/10' : 'bg-white border-gray-200'
@@ -68,14 +77,13 @@ const ChatPanel = ({
       style={{ width: `${width}px` }}
     >
       {/* Drag handle */}
-      <div 
+      <div
         className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-purple-500/50 active:bg-purple-500 transition-colors z-50 -translate-x-1/2"
         onMouseDown={startResizing}
       />
       {/* Chat Header */}
-      <div className={`flex-shrink-0 flex items-center justify-between px-4 py-3 border-b ${
-        darkMode ? 'border-white/10' : 'border-gray-200'
-      }`}>
+      <div className={`flex-shrink-0 flex items-center justify-between px-4 py-3 border-b ${darkMode ? 'border-white/10' : 'border-gray-200'
+        }`}>
         <div className="flex items-center gap-2">
           <div className={cn(
             'p-2 rounded-lg',
@@ -102,8 +110,8 @@ const ChatPanel = ({
               size="icon"
               className={cn(
                 'rounded-lg',
-                darkMode 
-                  ? 'hover:bg-white/10 text-gray-400 hover:text-white' 
+                darkMode
+                  ? 'hover:bg-white/10 text-gray-400 hover:text-white'
                   : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
               )}
               title="Clear history"
@@ -111,13 +119,13 @@ const ChatPanel = ({
               <RefreshCw className="w-4 h-4" />
             </Button>
           )}
-          <Button 
-            variant="ghost" 
+          <Button
+            variant="ghost"
             size="icon"
             className={cn(
               'rounded-lg',
-              darkMode 
-                ? 'hover:bg-white/10 text-gray-400 hover:text-white' 
+              darkMode
+                ? 'hover:bg-white/10 text-gray-400 hover:text-white'
                 : 'hover:bg-gray-100 text-gray-600'
             )}
           >
@@ -129,45 +137,56 @@ const ChatPanel = ({
       {/* Messages - Fixed height with scroll */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 custom-scrollbar min-h-0">
         {messages.length === 0 && suggestions && (
-          <div className="space-y-4">
-            <div className={`text-center py-8 ${
-              darkMode ? 'text-gray-400' : 'text-gray-500'
-            }`}>
+          <div className="space-y-4 ">
+            <div className={`text-center py-8 ${darkMode ? 'text-gray-400' : 'text-gray-500'
+              }`}>
               <Sparkles className="w-10 h-10 mx-auto mb-3 opacity-50" />
               <p className="text-sm font-medium mb-1">Start Building</p>
               <p className="text-xs">Describe what you want to create</p>
             </div>
-            
+
             {/* Suggestions */}
             <div>
-              <div className="flex items-center gap-2 mb-3 px-2">
-                <div className={`w-1 h-4 rounded-full ${
-                  darkMode ? 'bg-purple-500' : 'bg-blue-500'
-                }`} />
-                <span className={`text-xs font-semibold uppercase tracking-wide ${
-                  darkMode ? 'text-gray-500' : 'text-gray-500'
-                }`}>Suggestions</span>
+              <div className="flex items-center gap-2 mb-3 px-2 pt-24" >
+                <div className={`w-1 h-4 rounded-full ${darkMode ? 'bg-purple-500' : 'bg-blue-500'
+                  }`} />
+                <span className={`text-xs font-semibold uppercase tracking-wide ${darkMode ? 'text-gray-500' : 'text-gray-500'
+                  }`}>Suggestions</span>
               </div>
               <div className="space-y-2">
-                {suggestions.map((suggestion, idx) => (
+                {suggestions && suggestions.length > 0 && (
                   <Button
-                    key={idx}
                     variant="ghost"
-                    onClick={() => setInput(suggestion)}
-                    className={`w-full text-left px-4 py-3 h-auto rounded-lg text-sm ${
-                      darkMode 
-                        ? 'bg-white/5 hover:bg-white/10 text-gray-200 border border-white/10 hover:border-purple-500/50' 
-                        : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 hover:border-blue-300'
-                    }`}
+                    onClick={() => setInput(suggestions[suggestionIndex])}
+                    className={`w-full text-left px-4 py-4 h-auto rounded-xl text-sm transition-all duration-500 flex items-start ${darkMode
+                      ? 'bg-white/5 hover:bg-white/10 text-gray-200 border border-white/10 hover:border-purple-500/50'
+                      : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 hover:border-blue-300'
+                      }`}
                   >
-                    {suggestion}
+                    <div className="flex items-center gap-3 w-full">
+                      <Sparkles className={cn(
+                        "w-4 h-4 opacity-70 mt-0.5 flex-shrink-0",
+                        darkMode ? "text-purple-400" : "text-blue-500"
+                      )} />
+                      <div className="flex-1 min-w-0 break-words whitespace-normal leading-relaxed text-balance">
+                        <Typewriter
+                          key={suggestionIndex}
+                          text={suggestions[suggestionIndex]}
+                          delay={40}
+                          waitBeforeDelete={2000}
+                          onComplete={() => {
+                            setSuggestionIndex((prev) => (prev + 1) % suggestions.length);
+                          }}
+                        />
+                      </div>
+                    </div>
                   </Button>
-                ))}
+                )}
               </div>
             </div>
           </div>
         )}
-        
+
         {messages.map((message, idx) => (
           <ChatMessage
             key={idx}
@@ -183,24 +202,19 @@ const ChatPanel = ({
 
         {loading && (
           <div className="flex gap-3">
-            <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
-              darkMode ? 'bg-white/5' : 'bg-gray-100'
-            }`}>
+            <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${darkMode ? 'bg-white/5' : 'bg-gray-100'
+              }`}>
               <Bot className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
             </div>
-            <div className={`px-4 py-3 rounded-lg ${
-              darkMode ? 'bg-white/5' : 'bg-gray-100'
-            }`}>
+            <div className={`px-4 py-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100'
+              }`}>
               <div className="flex gap-1.5">
-                <span className={`w-2 h-2 rounded-full animate-bounce ${
-                  darkMode ? 'bg-purple-500' : 'bg-gray-400'
-                }`} style={{ animationDelay: '0ms' }}></span>
-                <span className={`w-2 h-2 rounded-full animate-bounce ${
-                  darkMode ? 'bg-purple-500' : 'bg-gray-400'
-                }`} style={{ animationDelay: '150ms' }}></span>
-                <span className={`w-2 h-2 rounded-full animate-bounce ${
-                  darkMode ? 'bg-purple-500' : 'bg-gray-400'
-                }`} style={{ animationDelay: '300ms' }}></span>
+                <span className={`w-2 h-2 rounded-full animate-bounce ${darkMode ? 'bg-purple-500' : 'bg-gray-400'
+                  }`} style={{ animationDelay: '0ms' }}></span>
+                <span className={`w-2 h-2 rounded-full animate-bounce ${darkMode ? 'bg-purple-500' : 'bg-gray-400'
+                  }`} style={{ animationDelay: '150ms' }}></span>
+                <span className={`w-2 h-2 rounded-full animate-bounce ${darkMode ? 'bg-purple-500' : 'bg-gray-400'
+                  }`} style={{ animationDelay: '300ms' }}></span>
               </div>
             </div>
           </div>

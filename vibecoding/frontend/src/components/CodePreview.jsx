@@ -2,6 +2,13 @@ import React, { useRef } from 'react';
 import { Eye, Code, Copy, Check, RefreshCw, Download, Sparkles } from 'lucide-react';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
+import { 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue 
+} from './ui/select';
 import FileTree from './FileTree';
 
 const CodePreview = ({ 
@@ -107,7 +114,7 @@ const CodePreview = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0" style={{ position: 'relative', overflow: 'visible' }}>
+    <div className="flex-1 flex flex-col min-h-0 bg-[#0A0A0F]" style={{ position: 'relative', overflow: 'hidden' }}>
       {/* Tab Bar - Always Visible */}
       <div 
         className="flex items-center gap-2 px-6 py-3 border-b flex-shrink-0"
@@ -119,9 +126,6 @@ const CodePreview = ({
           display: 'flex',
           visibility: 'visible',
           opacity: 1,
-          position: 'sticky',
-          top: 0,
-          zIndex: 9999,
           width: '100%'
         }}
       >
@@ -569,19 +573,19 @@ const CodePreview = ({
               }`}>
                 <div className="flex h-full">
                   {/* Line Numbers */}
-                  <div className={`py-4 px-3 select-none ${
-                    darkMode ? 'bg-[#1e1e1e] text-[#858585]' : 'bg-gray-50 text-gray-400'
-                  }`}>
+                  <div className={`py-4 px-4 select-none border-r ${
+                    darkMode ? 'bg-[#1e1e1e] text-[#858585] border-[#3e3e42]' : 'bg-gray-50 text-gray-400 border-gray-200'
+                  }`} style={{ minWidth: '3.5rem' }}>
                     <pre className="text-xs font-mono leading-relaxed text-right">
                       {(currentFileContent || previewCode).split('\n').map((_, idx) => (
-                        <div key={idx}>{idx + 1}</div>
+                        <div key={idx} className="h-6 flex items-center justify-end">{idx + 1}</div>
                       ))}
                     </pre>
                   </div>
                   
                   {/* Code Content */}
-                  <div className="flex-1 py-4 px-4 overflow-x-auto overflow-y-auto">
-                    <pre className={`text-sm font-mono leading-relaxed whitespace-pre-wrap break-words ${
+                  <div className="flex-1 py-4 px-4 overflow-auto custom-scrollbar bg-transparent">
+                    <pre className={`text-sm font-mono leading-relaxed whitespace-pre w-fit min-w-full ${
                       darkMode ? 'text-[#d4d4d4]' : 'text-gray-800'
                     }`}>
                       <code>{currentFileContent || previewCode}</code>

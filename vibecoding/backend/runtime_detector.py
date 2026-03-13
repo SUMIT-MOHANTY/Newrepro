@@ -212,7 +212,11 @@ class RuntimeDetector:
                 'image': 'vibecoding-code-executor:latest',
                 'port': 80,
                 'filename': 'index.html',
-                'patterns': []
+                'patterns': [],
+                'env': {
+                    'NGINX_ROOT': '/app',
+                    'NGINX_PORT': '80'
+                }
             }
         }
     

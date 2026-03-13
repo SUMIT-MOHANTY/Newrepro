@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
+from git_manager import git_manager
 
 load_dotenv()
 
@@ -53,6 +54,16 @@ class ProjectResponse(BaseModel):
 
 class ProjectListResponse(BaseModel):
     projects: List[ProjectResponse]
+
+class GitRequest(BaseModel):
+    project_id: str
+    files: Optional[List[str]] = None
+    message: Optional[str] = None
+    branch_name: Optional[str] = None
+    remote_url: Optional[str] = None
+    remote_name: Optional[str] = "origin"
+    username: Optional[str] = None
+    token: Optional[str] = None
 
 # AI Configuration is now handled by ai_config.py
 
@@ -1180,6 +1191,88 @@ async def download_project(project_id: str):
         )
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Git Integration Endpoints
+
+@app.post("/api/git/status")
+async def git_status(request: GitRequest):
+    try:
+        status = git_manager.get_status(request.project_id)
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/init")
+async def git_init(request: GitRequest):
+    try:
+        result = git_manager.init_repo(request.project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/add")
+async def git_add(request: GitRequest):
+    try:
+        result = git_manager.add_files(request.project_id, request.files)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/commit")
+async def git_commit(request: GitRequest):
+    try:
+        if not request.message:
+            raise HTTPException(status_code=400, detail="Commit message is required")
+        result = git_manager.commit(request.project_id, request.message)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/branch")
+async def git_branch(request: GitRequest):
+    try:
+        if not request.branch_name:
+            raise HTTPException(status_code=400, detail="Branch name is required")
+        result = git_manager.create_branch(request.project_id, request.branch_name)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/branches")
+async def git_branches(request: GitRequest):
+    try:
+        result = git_manager.list_branches(
+            request.project_id,
+            request.username,
+            request.token
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/remote")
+async def git_remote(request: GitRequest):
+    try:
+        if not request.remote_url:
+            raise HTTPException(status_code=400, detail="Remote URL is required")
+        result = git_manager.add_remote(request.project_id, request.remote_url, request.remote_name)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/push")
+async def git_push(request: GitRequest):
+    try:
+        result = git_manager.push(
+            request.project_id, 
+            request.remote_name, 
+            request.branch_name or "main",
+            request.username,
+            request.token
+        )
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

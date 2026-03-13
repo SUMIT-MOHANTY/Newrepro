@@ -12,6 +12,7 @@ from pathlib import Path
 import json
 import logging
 from runtime_detector import runtime_detector
+from git_manager import git_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -231,6 +232,12 @@ class ProjectManager:
         # Automatically create ZIP after saving
         self.create_project_zip(project_id)
         
+        # Sync to git workspace for version control
+        try:
+            git_manager.sync_workspace(project_id, version_dir)
+        except Exception as e:
+            logger.error(f"Failed to sync git workspace: {e}")
+
         logger.info(f"✅ Saved version {version_id} for project {project_id}")
         return version_id, main_file_path
     
@@ -307,23 +314,34 @@ class ProjectManager:
             # Create container with detected runtime
             logger.info(f"🏗️ Building container: {container_name}")
             
+            # Use default mount path /app or runtime specific one
+            mount_path = metadata.get('mount_path', '/app')
+            
+            # Prepare environment variables
+            env_vars = {
+                'PYTHONUNBUFFERED': '1',
+                'PORT': str(port),
+            }
+            
+            # Add any runtime-specific env vars from metadata
+            runtime_env = metadata.get('env', {})
+            if runtime_env:
+                env_vars.update(runtime_env)
+            
             container = self.docker_client.containers.run(
                 docker_image,
                 name=container_name,
                 ports={f'{port}/tcp': None},  # Auto-assign host port
                 volumes={
                     str(version_dir.absolute()): {
-                        'bind': '/app',
+                        'bind': mount_path,
                         'mode': 'rw'
                     }
                 },
-                working_dir='/app',
+                working_dir=mount_path,
                 detach=True,
                 remove=False,
-                environment={
-                    'PYTHONUNBUFFERED': '1',
-                    'PORT': str(port),
-                }
+                environment=env_vars
             )
             
             # Store container reference

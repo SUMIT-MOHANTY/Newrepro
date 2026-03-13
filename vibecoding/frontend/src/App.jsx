@@ -3,6 +3,10 @@ import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
+import CodePreview from './components/CodePreview';
+import GitPanel from './components/GitPanel';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 function App() {
   const [currentProjectId, setCurrentProjectId] = useState(() => {
@@ -57,6 +61,7 @@ function App() {
   const [deployStatus, setDeployStatus] = useState(null); // 'success', 'error', or null
   const [errorHeader, setErrorHeader] = useState(null);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [showGitPanel, setShowGitPanel] = useState(false);
   const iframeRef = useRef(null);
 
   // Save chat history whenever messages change
@@ -196,7 +201,7 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/generate', {
+      const response = await axios.post(`${API_BASE_URL}/api/generate`, {
         prompt: currentInput,
         history: messages,
         project_id: currentProjectId
@@ -330,7 +335,7 @@ function App() {
       await new Promise(resolve => setTimeout(resolve, 1500));
       
       // Step 2: Call download API to prepare build
-      const response = await axios.get(`http://localhost:8000/api/projects/${currentProjectId}/download`, {
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/download`, {
         responseType: 'blob'
       });
       
@@ -564,9 +569,8 @@ function App() {
     setMessages(prev => [...prev, editMessage]);
     setEditPrompt('');
     setLoading(true);
-
     try {
-      const response = await axios.post('http://localhost:8000/api/generate', {
+      const response = await axios.post(`${API_BASE_URL}/api/generate`, {
         prompt: editMessage.content,
         history: messages,
         project_id: currentProjectId
@@ -850,65 +854,6 @@ function App() {
           </div>
           <div className="h-6 w-px bg-white/10" />
           <span className="text-sm text-gray-400">Chat v{chatVersion}</span>
-          {codeVersions.length > 0 && (
-            <>
-              <div className="h-6 w-px bg-white/10" />
-              <div className="relative version-history-container">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowVersionHistory(!showVersionHistory)}
-                  className="flex items-center gap-2 bg-white/5 hover:bg-white/10"
-                >
-                  <History className="w-4 h-4" />
-                  <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
-                </Button>
-                
-                {/* Version History Dropdown */}
-                {showVersionHistory && (
-                  <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
-                    <div className="p-3 border-b border-white/10">
-                      <div className="text-sm font-semibold text-white">Code Version History</div>
-                      <div className="text-xs text-gray-400 mt-1">{codeVersions.length} versions saved</div>
-                    </div>
-                    <div className="p-2">
-                      {codeVersions.map((version) => (
-                        <Button
-                          key={version.version}
-                          variant="ghost"
-                          onClick={() => {
-                            setCurrentCodeVersion(version.version);
-                            setShowVersionHistory(false);
-                          }}
-                          className={`w-full text-left px-3 py-2 h-auto rounded-lg mb-1 ${
-                            currentCodeVersion === version.version
-                              ? 'bg-purple-600/20 border border-purple-500/30'
-                              : 'hover:bg-white/5'
-                          }`}
-                        >
-                          <div className="w-full">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className={`text-sm font-medium ${
-                                currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
-                              }`}>
-                                Version {version.version}
-                              </span>
-                              <span className="text-xs text-gray-500">
-                                {formatTimestamp(version.timestamp)}
-                              </span>
-                            </div>
-                            <div className="text-xs text-gray-400 line-clamp-2">
-                              {version.prompt}
-                            </div>
-                          </div>
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <Button 
@@ -920,6 +865,16 @@ function App() {
           >
             <Plus className="w-4 h-4" />
             New Chat
+          </Button>
+          <Button 
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowGitPanel(true)}
+            className="bg-white/5 hover:bg-white/10"
+            title="Git Integration"
+          >
+            <History className="w-4 h-4" />
+            Git
           </Button>
           <Button 
             disabled={isDeploying || !previewCode}
@@ -968,455 +923,23 @@ function App() {
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Right Panel - Preview/Code */}
-        <div className="flex-1 flex flex-col">
-          {/* View Tabs */}
-          <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#0F0F14] sticky top-0 z-10">
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setActiveView('preview')}
-                className={`${
-                  activeView === 'preview'
-                    ? 'bg-white/10 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                <Eye className="w-4 h-4 inline mr-2" />
-                Preview
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setActiveView('code')}
-                className={`${
-                  activeView === 'code'
-                    ? 'bg-white/10 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                <Code className="w-4 h-4 inline mr-2" />
-                Code
-              </Button>
-            </div>
-
-            
-            {previewCode && activeView === 'preview' && (
-              <div className="flex items-center gap-2">
-                {/* Screen Size Selector */}
-                <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setScreenSize('mobile')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
-                    }`}
-                    title="Mobile (375px)"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2"/>
-                    </svg>
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setScreenSize('tablet')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
-                    }`}
-                    title="Tablet (768px)"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2"/>
-                    </svg>
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setScreenSize('desktop')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
-                    }`}
-                    title="Desktop (100%)"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="2" y="4" width="20" height="12" rx="2" strokeWidth="2"/>
-                      <path d="M8 20h8" strokeWidth="2"/>
-                      <path d="M12 16v4" strokeWidth="2"/>
-                    </svg>
-                  </Button>
-                </div>
-
-                {/* Edit Mode Toggle */}
-                <Button
-                  variant={editMode ? 'default' : 'ghost'}
-                  size="sm"
-                  onClick={() => setEditMode(!editMode)}
-                  className={`${
-                    editMode 
-                      ? 'bg-purple-600 text-white hover:bg-purple-700' 
-                      : 'bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white'
-                  }`}
-                  title="Edit Mode - Click elements to edit"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                  </svg>
-                  {editMode ? 'Editing' : 'Edit'}
-                </Button>
-                
-                <div className="h-6 w-px bg-white/10" />
-                
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleRefresh}
-                  className="bg-white/5 hover:bg-white/10"
-                  title="Refresh Preview"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleCopy}
-                  className="bg-white/5 hover:bg-white/10"
-                >
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button 
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleDownload}
-                  className="bg-white/5 hover:bg-white/10"
-                >
-                  <Download className="w-4 h-4" />
-                  Download
-                </Button>
-              </div>
-            )}
-            
-            {previewCode && activeView === 'code' && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleCopy}
-                  className="bg-white/5 hover:bg-white/10"
-                >
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button 
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleDownload}
-                  className="bg-white/5 hover:bg-white/10"
-                >
-                  <Download className="w-4 h-4" />
-                  Download
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {/* Content Area */}
-          <div className="flex-1 relative bg-[#0A0A0F]">
-            {!previewCode ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="text-center">
-                  <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mx-auto mb-4">
-                    <Sparkles className="w-10 h-10 text-purple-400" />
-                  </div>
-                  <h3 className="text-xl font-semibold mb-2">No Preview Yet</h3>
-                  <p className="text-gray-400">Start chatting to generate your app</p>
-                </div>
-              </div>
-            ) : activeView === 'preview' ? (
-              <div className="h-full flex flex-col">
-                {/* Browser-like URL Bar */}
-                <div className="flex-shrink-0 border-b border-white/10 bg-[#0F0F14]">
-                  <div className="flex items-center gap-2 px-4 py-2">
-                    <Button 
-                      variant="ghost"
-                      size="icon"
-                      onClick={handleRefresh}
-                      className="h-8 w-8 hover:bg-white/10"
-                      title="Refresh"
-                    >
-                      <RefreshCw className="w-4 h-4 text-gray-400" />
-                    </Button>
-                    <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1e1e] border border-white/10">
-                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                      </svg>
-                      <input
-                        type="text"
-                        value={previewUrl || 'your-app.vibecoding.app'}
-                        readOnly
-                        className="flex-1 bg-transparent text-sm outline-none text-gray-300"
-                      />
-                      {previewUrl && (
-                        <Button
-                          variant="default"
-                          size="sm"
-                          onClick={() => window.open(previewUrl, '_blank')}
-                          className="h-6 px-2 text-xs bg-blue-600 text-white hover:bg-blue-700"
-                        >
-                          Open
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                
-                {/* Edit Mode Banner */}
-                {editMode && (
-                  <div className="flex-shrink-0 bg-purple-600/20 border-b border-purple-500/30 px-4 py-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-sm text-purple-200">
-                        <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                        <span>Edit Mode — hover over any element to highlight it, click to select and edit</span>
-                      </div>
-                      {selectedElement && (
-                        <button
-                          onClick={() => { setSelectedElement(null); setHoveredElement(null); }}
-                          className="text-purple-300 hover:text-white text-xs px-2 py-0.5 rounded border border-purple-500/40 hover:border-purple-400"
-                        >
-                          Clear selection
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-                
-                {/* Preview iframe with responsive sizing */}
-                {/* The iframe source NEVER changes when toggle edit mode.
-                    Editor script is always injected into srcDoc; it stays dormant until activated. */}
-                <div 
-                  className={`flex-1 relative flex items-center justify-center bg-[#0A0A0F]`}
-                >
-                  <div 
-                    className={`h-full transition-all duration-300 relative ${
-                      screenSize === 'mobile' ? 'w-[375px]' :
-                      screenSize === 'tablet' ? 'w-[768px]' :
-                      'w-full'
-                    }`}
-                    style={{
-                      boxShadow: screenSize !== 'desktop' ? (editMode ? '0 0 0 1px rgba(0,0,0,0.1)' : '0 0 0 1px rgba(255,255,255,0.1)') : 'none'
-                    }}
-                  >
-                    <iframe
-                      ref={iframeRef}
-                      key={iframeKey}
-                      src={previewUrl || undefined}
-                      srcDoc={!previewUrl ? injectEditorScript(getPreviewHtml()) : undefined}
-                      className="w-full h-full border-0"
-                      title="Preview"
-                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                      onLoad={() => {
-                        // Notify injected script of current edit mode state after (re)load
-                        const iframe = iframeRef.current;
-                        if (iframe && iframe.contentWindow) {
-                          iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
-                        }
-                      }}
-                    />
-
-                    {/* Overlay container – pointer-events none preserves iframe scrolling */}
-                    <div
-                      ref={iframeContainerRef}
-                      className="absolute inset-0 pointer-events-none"
-                      style={{ zIndex: 10 }}
-                    >
-                      {/* Hover highlight */}
-                      {editMode && hoveredElement && !selectedElement && (
-                        <div
-                          className="absolute pointer-events-none transition-all duration-75"
-                          style={{
-                            top: hoveredElement.rect.top,
-                            left: hoveredElement.rect.left,
-                            width: hoveredElement.rect.width,
-                            height: hoveredElement.rect.height,
-                            outline: '2px solid #a855f7',
-                            outlineOffset: '1px',
-                            boxShadow: '0 0 0 4px rgba(168, 85, 247, 0.15)',
-                          }}
-                        >
-                          <div
-                            className="absolute px-2 py-0.5 bg-purple-600 text-white text-xs rounded font-mono whitespace-nowrap"
-                            style={{ top: '-22px', left: 0 }}
-                          >
-                            {hoveredElement.tagName?.toLowerCase()}
-                            {hoveredElement.id && <span className="text-purple-200">#{hoveredElement.id}</span>}
-                            {hoveredElement.className && <span className="text-purple-200">.{hoveredElement.className.trim().split(/\s+/)[0]}</span>}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Selection highlight */}
-                      {editMode && selectedElement && (
-                        <div
-                          className="absolute pointer-events-none"
-                          style={{
-                            top: selectedElement.rect.top,
-                            left: selectedElement.rect.left,
-                            width: selectedElement.rect.width,
-                            height: selectedElement.rect.height,
-                            outline: '2px solid #8b5cf6',
-                            outlineOffset: '1px',
-                            background: 'rgba(139, 92, 246, 0.08)',
-                            boxShadow: '0 0 0 4px rgba(139, 92, 246, 0.25)',
-                          }}
-                        >
-                          <div
-                            className="absolute px-2 py-0.5 bg-violet-600 text-white text-xs rounded font-mono whitespace-nowrap flex items-center gap-1"
-                            style={{ top: '-22px', left: 0 }}
-                          >
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                            {selectedElement.tagName?.toLowerCase()}
-                            {selectedElement.id && <span className="text-violet-200">#{selectedElement.id}</span>}
-                            {selectedElement.className && <span className="text-violet-200">.{selectedElement.className.trim().split(/\s+/)[0]}</span>}
-                          </div>
-                          {['tl','tr','bl','br'].map(c => (
-                            <div key={c} className={`absolute w-2.5 h-2.5 bg-violet-500 rounded-sm border border-white ${
-                              c==='tl' ? '-top-1.5 -left-1.5' : c==='tr' ? '-top-1.5 -right-1.5' : c==='bl' ? '-bottom-1.5 -left-1.5' : '-bottom-1.5 -right-1.5'
-                            }`} />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Screen size label */}
-                  {screenSize !== 'desktop' && (
-                    <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-sm text-xs text-white">
-                      {screenSize === 'mobile' ? '375px' : '768px'}
-                    </div>
-                  )}
-                </div>
-                
-                {/* Edit Prompt Panel */}
-                {editMode && selectedElement && (
-                  <div className="flex-shrink-0 border-t border-white/10 bg-[#0F0F14] p-4">
-                    <div className="max-w-4xl mx-auto">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-sm text-gray-400">
-                          <span className="px-2 py-0.5 rounded bg-purple-600/20 text-purple-300 font-mono text-xs">
-                            {selectedElement.tagName?.toLowerCase()}
-                            {selectedElement.id && `#${selectedElement.id}`}
-                            {selectedElement.className && `.${selectedElement.className.split(' ')[0]}`}
-                          </span>
-                          <span>Selected</span>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => {
-                            setSelectedElement(null);
-                            setEditPrompt('');
-                          }}
-                          className="h-8 w-8 text-gray-400 hover:text-white"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </Button>
-                      </div>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={editPrompt}
-                          onChange={(e) => setEditPrompt(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && editPrompt.trim()) {
-                              handleElementEdit();
-                            }
-                          }}
-                          placeholder={`Edit this ${selectedElement.tagName?.toLowerCase()}... (e.g., "change color to blue", "make text bigger")`}
-                          className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors"
-                          autoFocus
-                        />
-                        <Button
-                          size="icon"
-                          onClick={handleElementEdit}
-                          disabled={!editPrompt.trim()}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
-                        >
-                          <Send className="w-4 h-4" />
-                        </Button>
-                      </div>
-                      <div className="mt-2 text-xs text-gray-500">
-                        Selected: {selectedElement.textContent?.substring(0, 50)}
-                        {selectedElement.textContent?.length > 50 && '...'}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="h-full flex">
-                {/* File Tree Sidebar */}
-                <div className="w-64 border-r border-white/10 bg-[#0F0F14] overflow-y-auto">
-                  <div className="p-3 border-b border-white/10">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                      <Folder className="w-4 h-4" />
-                      <span>Files</span>
-                      <span className="ml-auto text-gray-500">{fileTree.length}</span>
-                    </div>
-                  </div>
-                  <div className="p-2">
-                    {renderFileTree(fileTree)}
-                  </div>
-                </div>
-
-                {/* Code Editor */}
-                <div className="flex-1 flex flex-col">
-                  {/* File Header */}
-                  <div className="px-4 py-2 border-b border-white/10 bg-[#0F0F14] flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <File className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-300">
-                        {selectedFile?.name || 'No file selected'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500">
-                        {(selectedFile?.content || previewCode).split('\n').length} lines
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Code Content */}
-                  <div className="flex-1 overflow-auto">
-                    <div className="flex h-full">
-                      {/* Line Numbers */}
-                      <div className="py-4 px-3 select-none bg-[#0A0A0F] text-gray-600 border-r border-white/10">
-                        <pre className="text-xs font-mono leading-relaxed text-right">
-                          {(selectedFile?.content || previewCode).split('\n').map((_, idx) => (
-                            <div key={idx}>{idx + 1}</div>
-                          ))}
-                        </pre>
-                      </div>
-                      
-                      {/* Code Content */}
-                      <div className="flex-1 py-4 px-4 overflow-x-auto bg-[#0A0A0F]">
-                        <pre className="text-sm font-mono leading-relaxed text-gray-300">
-                          <code>{selectedFile?.content || previewCode}</code>
-                        </pre>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+        <div className="flex-1 flex flex-col min-w-0">
+          <CodePreview
+            previewCode={fullCode || previewCode}
+            activeTab={activeView}
+            setActiveTab={setActiveView}
+            darkMode={true}
+            copied={copied}
+            onCopyCode={handleCopy}
+            onRefreshPreview={handleRefresh}
+            onDownloadCode={handleDownload}
+            codeVersions={codeVersions.map(v => ({ id: v.version, timestamp: v.timestamp }))}
+            selectedVersion={currentCodeVersion}
+            onLoadVersion={(id) => setCurrentCodeVersion(id)}
+            containerPreviewUrl={previewUrl}
+          />
         </div>
+
 
         {/* Right Panel - Chat */}
         <ChatPanel
@@ -1457,6 +980,13 @@ function App() {
           ]}
         />
       </div>
+
+      <GitPanel 
+        isVisible={showGitPanel}
+        onClose={() => setShowGitPanel(false)}
+        projectId={currentProjectId}
+        darkMode={true}
+      />
     </div>
   );
 }
