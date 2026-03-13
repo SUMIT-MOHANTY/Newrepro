@@ -38,6 +38,7 @@ function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewCode, setPreviewCode] = useState('');
+  const [fullCode, setFullCode] = useState(''); // Store full code for edit mode
   const [previewUrl, setPreviewUrl] = useState('');
   const [activeView, setActiveView] = useState('preview'); // preview or code
   const [copied, setCopied] = useState(false);
@@ -206,11 +207,13 @@ function App() {
       setMessages(prev => [...prev, aiMessage]);
       
       if (response.data.code) {
-        setPreviewCode(response.data.code);
+        const fullCodeContent = response.data.code;
+        setFullCode(fullCodeContent); // Store full code
+        setPreviewCode(fullCodeContent);
         setIframeKey(prev => prev + 1); // Force iframe refresh
         
         // Parse code to build file tree
-        const code = response.data.code;
+        const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
         
@@ -248,8 +251,7 @@ function App() {
           setSelectedFile(firstFile);
         }
         
-        // For preview, extract the first HTML file or use full code
-        let previewContent = code;
+        // For preview display (not edit mode), extract the first HTML file or use full code
         const findPreviewHtmlFile = (items) => {
           // First, look for preview.html (standalone preview)
           for (const item of items) {
@@ -277,7 +279,7 @@ function App() {
         
         const htmlContent = findPreviewHtmlFile(files);
         if (htmlContent) {
-          // Found HTML file, use it for preview
+          // Found HTML file, use it for preview display
           setPreviewCode(htmlContent);
         } else if (files.length === 1 && files[0].type === 'file') {
           // Single file, use its content
@@ -355,109 +357,161 @@ function App() {
   useEffect(() => {
     if (!editMode) {
       setSelectedElement(null);
-    } else {
-      // Force iframe reload when edit mode is enabled
-      setIframeKey(prev => prev + 1);
     }
+    // Don't force iframe reload - let React handle it naturally
   }, [editMode]);
 
   // Prepare preview code with edit mode script injected
   const getPreviewContent = () => {
-    if (!previewCode) return '';
+    // Use fullCode for edit mode to preserve all styles and structure
+    const codeToUse = fullCode || previewCode;
+    if (!codeToUse) return '';
     
-    if (!editMode) return previewCode;
+    if (!editMode) return codeToUse;
 
     // Inject edit mode script into the HTML
     const editModeScript = `
       <style id="vibe-edit-style">
+        * {
+          cursor: crosshair !important;
+        }
         .vibe-edit-hover {
           outline: 3px solid #a855f7 !important;
           outline-offset: 2px !important;
-          cursor: pointer !important;
           box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.2) !important;
+          position: relative !important;
+          z-index: 999999 !important;
         }
         .vibe-edit-selected {
           outline: 4px solid #8b5cf6 !important;
           outline-offset: 2px !important;
           background: rgba(168, 85, 247, 0.15) !important;
           box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.3) !important;
-        }
-        body * {
-          cursor: crosshair !important;
+          position: relative !important;
+          z-index: 999999 !important;
         }
       </style>
       <script id="vibe-edit-script">
         (function() {
-          console.log('Edit mode active');
+          console.log('🎨 Edit mode script loaded');
           let currentHover = null;
-          
-          // Wait for DOM to be ready
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initEditMode);
-          } else {
-            initEditMode();
-          }
+          let isInitialized = false;
           
           function initEditMode() {
-            console.log('Initializing edit mode handlers');
+            if (isInitialized) {
+              console.log('⚠️ Edit mode already initialized');
+              return;
+            }
             
-            // Hover effect
-            document.addEventListener('mouseover', function(e) {
-              const target = e.target;
-              if (target.tagName !== 'HTML' && target.tagName !== 'BODY' && target.tagName !== 'SCRIPT' && target.tagName !== 'STYLE') {
-                if (currentHover && currentHover !== target) {
-                  currentHover.classList.remove('vibe-edit-hover');
-                }
-                target.classList.add('vibe-edit-hover');
-                currentHover = target;
+            console.log('✅ Initializing edit mode handlers');
+            isInitialized = true;
+            
+            // Prevent default link behavior
+            document.addEventListener('click', function(e) {
+              if (e.target.tagName === 'A') {
+                e.preventDefault();
               }
+            }, true);
+            
+            // Hover effect - use capture phase
+            document.addEventListener('mouseover', function(e) {
+              e.stopPropagation();
+              const target = e.target;
+              
+              if (!target || target.tagName === 'HTML' || target.tagName === 'BODY' || 
+                  target.tagName === 'SCRIPT' || target.tagName === 'STYLE' ||
+                  target.id === 'vibe-edit-style' || target.id === 'vibe-edit-script') {
+                return;
+              }
+              
+              if (currentHover && currentHover !== target) {
+                currentHover.classList.remove('vibe-edit-hover');
+              }
+              
+              target.classList.add('vibe-edit-hover');
+              currentHover = target;
+              console.log('👆 Hovering:', target.tagName, target.className);
             }, true);
             
             document.addEventListener('mouseout', function(e) {
+              e.stopPropagation();
               const target = e.target;
-              if (target.tagName !== 'HTML' && target.tagName !== 'BODY') {
+              if (target && target.tagName !== 'HTML' && target.tagName !== 'BODY') {
                 target.classList.remove('vibe-edit-hover');
               }
             }, true);
             
-            // Click to select
+            // Click to select - use capture phase
             document.addEventListener('click', function(e) {
               const target = e.target;
-              if (target.tagName !== 'HTML' && target.tagName !== 'BODY' && target.tagName !== 'SCRIPT' && target.tagName !== 'STYLE') {
-                e.preventDefault();
-                e.stopPropagation();
-                
-                console.log('Element clicked:', target.tagName);
-                
-                // Remove previous selection highlights
-                document.querySelectorAll('.vibe-edit-selected').forEach(el => {
-                  el.classList.remove('vibe-edit-selected');
-                });
-                
-                // Highlight clicked element
-                target.classList.add('vibe-edit-selected');
-                target.classList.remove('vibe-edit-hover');
-                
-                // Send element info to parent
+              
+              if (!target || target.tagName === 'HTML' || target.tagName === 'BODY' || 
+                  target.tagName === 'SCRIPT' || target.tagName === 'STYLE') {
+                return;
+              }
+              
+              e.preventDefault();
+              e.stopPropagation();
+              
+              console.log('🎯 Element clicked:', target.tagName, target.className);
+              
+              // Remove previous selection highlights
+              document.querySelectorAll('.vibe-edit-selected').forEach(function(el) {
+                el.classList.remove('vibe-edit-selected');
+              });
+              
+              // Highlight clicked element
+              target.classList.add('vibe-edit-selected');
+              target.classList.remove('vibe-edit-hover');
+              
+              // Get clean className without edit classes
+              const cleanClassName = target.className
+                .replace(/vibe-edit-hover/g, '')
+                .replace(/vibe-edit-selected/g, '')
+                .trim();
+              
+              // Send element info to parent
+              try {
                 window.parent.postMessage({
                   type: 'element-selected',
                   tagName: target.tagName,
-                  className: target.className.replace('vibe-edit-hover', '').replace('vibe-edit-selected', '').trim(),
-                  id: target.id,
-                  textContent: target.textContent?.substring(0, 100),
-                  innerHTML: target.innerHTML?.substring(0, 200)
+                  className: cleanClassName,
+                  id: target.id || '',
+                  textContent: (target.textContent || '').substring(0, 100),
+                  innerHTML: (target.innerHTML || '').substring(0, 200)
                 }, '*');
+                console.log('📤 Message sent to parent');
+              } catch (err) {
+                console.error('❌ Error sending message:', err);
               }
             }, true);
             
-            console.log('Edit mode ready');
+            console.log('✨ Edit mode ready!');
           }
+          
+          // Try multiple initialization methods
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initEditMode);
+            console.log('⏳ Waiting for DOMContentLoaded');
+          } else {
+            console.log('⚡ DOM already loaded, initializing immediately');
+            initEditMode();
+          }
+          
+          // Backup: also try on window load
+          window.addEventListener('load', function() {
+            console.log('🔄 Window loaded, ensuring edit mode is initialized');
+            initEditMode();
+          });
+          
+          // Immediate attempt
+          setTimeout(initEditMode, 100);
         })();
       </script>
     `;
 
     // Inject before closing </body> tag, or before </html> if no body, or at the end
-    let modifiedCode = previewCode;
+    let modifiedCode = codeToUse;
     if (modifiedCode.toLowerCase().includes('</body>')) {
       modifiedCode = modifiedCode.replace(/<\/body>/i, editModeScript + '</body>');
     } else if (modifiedCode.toLowerCase().includes('</html>')) {
@@ -501,10 +555,12 @@ function App() {
       setMessages(prev => [...prev, aiMessage]);
       
       if (response.data.code) {
-        setPreviewCode(response.data.code);
+        const fullCodeContent = response.data.code;
+        setFullCode(fullCodeContent);
+        setPreviewCode(fullCodeContent);
         setIframeKey(prev => prev + 1);
         
-        const code = response.data.code;
+        const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
         
@@ -996,7 +1052,7 @@ function App() {
                 )}
                 
                 {/* Preview iframe with responsive sizing */}
-                <div className="flex-1 relative flex items-center justify-center bg-[#0A0A0F]">
+                <div className={`flex-1 relative flex items-center justify-center ${editMode ? 'bg-white' : 'bg-[#0A0A0F]'}`}>
                   <div 
                     className={`h-full transition-all duration-300 ${
                       screenSize === 'mobile' ? 'w-[375px]' :
@@ -1004,14 +1060,12 @@ function App() {
                       'w-full'
                     }`}
                     style={{
-                      boxShadow: screenSize !== 'desktop' ? '0 0 0 1px rgba(255,255,255,0.1)' : 'none'
+                      boxShadow: screenSize !== 'desktop' ? (editMode ? '0 0 0 1px rgba(0,0,0,0.1)' : '0 0 0 1px rgba(255,255,255,0.1)') : 'none'
                     }}
                   >
                     <iframe
                       key={iframeKey}
-                      src={editMode 
-                        ? `data:text/html;charset=utf-8,${encodeURIComponent(getPreviewContent())}`
-                        : (previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewCode)}`)}
+                      src={previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(editMode ? getPreviewContent() : (fullCode || previewCode))}`}
                       className="w-full h-full border-0"
                       title="Preview"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
