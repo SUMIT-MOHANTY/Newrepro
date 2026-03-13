@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut } from 'lucide-react';
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import LandingPage from './components/LandingPage';
 import LoginPage from './components/LoginPage';
 import SignupPage from './components/SignupPage';
 import Header from './components/Header';
+import GitPanel from './components/GitPanel';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
@@ -60,6 +61,7 @@ function AuthLayout({ children }) {
 function Workspace({ user, logout }) {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showChatHistory, setShowChatHistory] = useState(false);
+  const [showGitPanel, setShowGitPanel] = useState(false);
   const [allChats, setAllChats] = useState([]);
   const [currentProjectId, setCurrentProjectId] = useState(() => {
     // Load or create workspace ID
@@ -1079,114 +1081,78 @@ Please suggest improvements or modifications for this element.`;
 
   return (
     <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
-      {/* Top Header - Base44 Style */}
-      <div className="h-14 border-b border-white/10 flex items-center justify-between px-6 bg-[#0F0F14]">
-        <div className="flex items-center gap-3">
-          <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <img src={bourntecLogo} alt="Bourntec" className="h-7 w-auto" />
-            <div className="h-6 w-px bg-white/10" />
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-                <Zap className="w-4 h-4" />
+      <Header 
+        chatVersion={`v${chatVersion}`}
+        user={user}
+        showUserMenu={showUserMenu}
+        setShowUserMenu={setShowUserMenu}
+        onNewChat={handleNewChat}
+        onGitClick={() => setShowGitPanel(true)}
+        onDeploy={handleDeploy}
+        isDeploying={isDeploying}
+        deployStatus={deployStatus}
+        previewCode={previewCode}
+        loading={loading}
+        onLogout={logout}
+      />
+
+      {codeVersions.length > 0 && (
+        <div className="bg-[#0F0F14] border-b border-white/10 px-6 py-2 flex items-center gap-3">
+          <div className="relative version-history-container">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowVersionHistory(!showVersionHistory)}
+              className="flex items-center gap-2 bg-white/5 hover:bg-white/10 text-white"
+            >
+              <History className="w-4 h-4" />
+              <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
+            </Button>
+            
+            {showVersionHistory && (
+              <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
+                <div className="p-3 border-b border-white/10">
+                  <div className="text-sm font-semibold text-white">Code Version History</div>
+                  <div className="text-xs text-gray-400 mt-1">{codeVersions.length} versions saved</div>
+                </div>
+                <div className="p-2">
+                  {codeVersions.map((version) => (
+                    <Button
+                      key={version.version}
+                      variant="ghost"
+                      onClick={() => {
+                        setCurrentCodeVersion(version.version);
+                        setShowVersionHistory(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 h-auto rounded-lg mb-1 ${
+                        currentCodeVersion === version.version
+                          ? 'bg-purple-600/20 border border-purple-500/30'
+                          : 'hover:bg-white/5'
+                      }`}
+                    >
+                      <div className="w-full">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className={`text-sm font-medium ${
+                            currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
+                          }`}>
+                            Version {version.version}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {formatTimestamp(version.timestamp)}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-400 line-clamp-2">
+                          {version.prompt}
+                        </div>
+                      </div>
+                    </Button>
+                  ))}
+                </div>
               </div>
-              <span className="font-bold text-base text-white">VibeCoding</span>
-            </div>
-          </Link>
-          <div className="h-6 w-px bg-white/10" />
-          <span className="text-sm text-gray-400">Chat v{chatVersion}</span>
-          {codeVersions.length > 0 && (
-            <>
-              <div className="h-6 w-px bg-white/10" />
-              <div className="relative version-history-container">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowVersionHistory(!showVersionHistory)}
-                  className="flex items-center gap-2 bg-white/5 hover:bg-white/10"
-                >
-                  <History className="w-4 h-4" />
-                  <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
-                </Button>
-                
-                {/* Version History Dropdown */}
-                {showVersionHistory && (
-                  <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
-                    <div className="p-3 border-b border-white/10">
-                      <div className="text-sm font-semibold text-white">Code Version History</div>
-                      <div className="text-xs text-gray-400 mt-1">{codeVersions.length} versions saved</div>
-                    </div>
-                    <div className="p-2">
-                      {codeVersions.map((version) => (
-                        <Button
-                          key={version.version}
-                          variant="ghost"
-                          onClick={() => {
-                            setCurrentCodeVersion(version.version);
-                            setShowVersionHistory(false);
-                          }}
-                          className={`w-full text-left px-3 py-2 h-auto rounded-lg mb-1 ${
-                            currentCodeVersion === version.version
-                              ? 'bg-purple-600/20 border border-purple-500/30'
-                              : 'hover:bg-white/5'
-                          }`}
-                        >
-                          <div className="w-full">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className={`text-sm font-medium ${
-                                currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
-                              }`}>
-                                Version {version.version}
-                              </span>
-                              <span className="text-xs text-gray-500">
-                                {formatTimestamp(version.timestamp)}
-                              </span>
-                            </div>
-                            <div className="text-xs text-gray-400 line-clamp-2">
-                              {version.prompt}
-                            </div>
-                          </div>
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button 
-            variant="ghost"
-            size="sm"
-            onClick={handleNewChat}
-            className="bg-white/5 hover:bg-white/10"
-            title="Start a new chat"
-          >
-            <Plus className="w-4 h-4" />
-            New Chat
-          </Button>
-          <Button 
-            disabled={isDeploying || !previewCode}
-            onClick={handleDeploy}
-            className={`transition-all duration-300 ${
-              deployStatus === 'success' ? 'bg-green-600 hover:bg-green-700' :
-              deployStatus === 'error' ? 'bg-red-600 hover:bg-red-700' :
-              'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700'
-            } text-sm font-medium min-w-[100px] flex items-center justify-center gap-2`}
-          >
-            {isDeploying ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : deployStatus === 'success' ? (
-              <Check className="w-4 h-4" />
-            ) : deployStatus === 'error' ? (
-              <Zap className="w-4 h-4" />
-            ) : null}
-            {isDeploying ? 'Deploying...' : 
-             deployStatus === 'success' ? 'Deployed!' : 
-             deployStatus === 'error' ? 'Failed' : 'Deploy'}
-          </Button>
-        </div>
-      </div>
+      )}
 
       {/* Error/Status Banner */}
       {(errorHeader || deployStatus === 'success') && (
@@ -1701,6 +1667,14 @@ Please suggest improvements or modifications for this element.`;
           ]}
         />
       </div>
+
+      {/* Git Panel */}
+      <GitPanel
+        isVisible={showGitPanel}
+        onClose={() => setShowGitPanel(false)}
+        darkMode={true}
+        projectId={currentProjectId}
+      />
     </div>
   );
 }

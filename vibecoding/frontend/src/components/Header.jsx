@@ -49,7 +49,7 @@ const Header = ({
             variant="ghost"
             size="sm"
             onClick={onNewChat}
-            className="bg-white/5 hover:bg-white/10"
+            className="bg-white/5 hover:bg-white/10 text-white"
             title="Start a new chat"
           >
             <Plus className="w-4 h-4" />
@@ -59,7 +59,7 @@ const Header = ({
             variant="ghost"
             size="sm"
             onClick={onGitClick}
-            className="bg-white/5 hover:bg-white/10"
+            className="bg-white/5 hover:bg-white/10 text-white"
             title="Git Integration"
           >
             <History className="w-4 h-4" />
