@@ -56,21 +56,21 @@ const ChatMessage = ({
         <div className={cn(
           'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
           isUser
-            ? darkMode ? 'bg-[#0e639c]' : 'bg-blue-500'
-            : darkMode ? 'bg-[#2d2d30]' : 'bg-gray-100'
+            ? darkMode ? 'bg-gradient-to-r from-purple-600 to-pink-600' : 'bg-blue-500'
+            : darkMode ? 'bg-white/5' : 'bg-gray-100'
         )}>
           {isUser ? (
             <User className="w-4 h-4 text-white" />
           ) : (
-            <Bot className={cn('w-4 h-4', darkMode ? 'text-[#cccccc]' : 'text-gray-600')} />
+            <Bot className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
           )}
         </div>
         <div className="flex-1">
           <div className={cn(
             'rounded-lg px-4 py-3',
             isUser
-              ? darkMode ? 'bg-[#0e639c] text-white' : 'bg-blue-500 text-white'
-              : darkMode ? 'bg-[#2d2d30] text-[#cccccc]' : 'bg-gray-100 text-gray-900'
+              ? darkMode ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white' : 'bg-blue-500 text-white'
+              : darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900'
           )}>
             <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
             {message.code && (
@@ -82,7 +82,7 @@ const ChatMessage = ({
                     <div className={`mt-3 pt-3 border-t ${
                       message.role === 'user'
                         ? 'border-white/20'
-                        : darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
+                        : darkMode ? 'border-white/10' : 'border-gray-200'
                     }`}>
                       <div className={`flex flex-wrap gap-2 ${
                         message.role === 'user'
@@ -96,7 +96,7 @@ const ChatMessage = ({
                               message.role === 'user'
                                 ? 'bg-white/10'
                                 : darkMode
-                                  ? 'bg-[#1e1e1e]'
+                                  ? 'bg-[#0A0A0F]'
                                   : 'bg-white border border-gray-200'
                             }`}
                           >
@@ -121,12 +121,12 @@ const ChatMessage = ({
                 <div className={`mt-3 pt-3 border-t flex items-center justify-between ${
                   message.role === 'user'
                     ? 'border-white/20'
-                    : darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
+                    : darkMode ? 'border-white/10' : 'border-gray-200'
                 }`}>
                   <div className={`flex items-center gap-2 text-xs ${
                     message.role === 'user'
                       ? 'text-white/80'
-                      : darkMode ? 'text-[#858585]' : 'text-gray-500'
+                      : darkMode ? 'text-gray-500' : 'text-gray-500'
                   }`}>
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     <span>Code generated</span>
@@ -137,12 +137,12 @@ const ChatMessage = ({
                       className={`text-xs px-2 py-1 rounded transition-colors ${
                         selectedVersion === msgVersion.id
                           ? darkMode
-                            ? 'bg-[#0e639c] text-white'
+                            ? 'bg-purple-600 text-white'
                             : 'bg-blue-500 text-white'
                           : message.role === 'user'
                             ? 'text-white/80 hover:bg-white/10'
                             : darkMode
-                              ? 'text-[#858585] hover:bg-[#3e3e42]'
+                              ? 'text-gray-500 hover:bg-white/10'
                               : 'text-gray-500 hover:bg-gray-200'
                       }`}
                     >
@@ -157,7 +157,7 @@ const ChatMessage = ({
             <div className={cn(
               'text-xs mt-1',
               isUser ? 'text-right' : 'text-left',
-              darkMode ? 'text-[#858585]' : 'text-gray-400'
+              darkMode ? 'text-gray-500' : 'text-gray-400'
             )}>
               {new Date(message.timestamp).toLocaleTimeString()}
             </div>

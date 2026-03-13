@@ -33,28 +33,28 @@ const ChatPanel = ({
 
   return (
     <div className={cn(
-      'w-full md:w-[420px] lg:w-[450px] flex flex-col h-screen border-l',
-      darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-white border-gray-200'
+      'w-96 flex flex-col h-screen border-l',
+      darkMode ? 'bg-[#0F0F14] border-white/10' : 'bg-white border-gray-200'
     )}>
       {/* Chat Header */}
       <div className={`flex-shrink-0 flex items-center justify-between px-4 py-3 border-b ${
-        darkMode ? 'border-[#3e3e42]' : 'border-gray-200'
+        darkMode ? 'border-white/10' : 'border-gray-200'
       }`}>
         <div className="flex items-center gap-2">
           <div className={cn(
             'p-2 rounded-lg',
-            darkMode ? 'bg-[#0e639c]' : 'bg-blue-500'
+            darkMode ? 'bg-gradient-to-br from-purple-500 to-pink-500' : 'bg-blue-500'
           )}>
             <Sparkles className="w-4 h-4 text-white" />
           </div>
           <div>
             <span className={cn(
               'text-sm font-semibold block',
-              darkMode ? 'text-[#cccccc]' : 'text-gray-900'
+              darkMode ? 'text-white' : 'text-gray-900'
             )}>AI Assistant</span>
             <span className={cn(
               'text-xs',
-              darkMode ? 'text-[#858585]' : 'text-gray-500'
+              darkMode ? 'text-gray-400' : 'text-gray-500'
             )}>{messages.length} messages</span>
           </div>
         </div>
@@ -67,7 +67,7 @@ const ChatPanel = ({
               className={cn(
                 'rounded-lg',
                 darkMode 
-                  ? 'hover:bg-[#2d2d30] text-[#858585] hover:text-[#cccccc]' 
+                  ? 'hover:bg-white/10 text-gray-400 hover:text-white' 
                   : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
               )}
               title="Clear history"
@@ -81,7 +81,7 @@ const ChatPanel = ({
             className={cn(
               'rounded-lg',
               darkMode 
-                ? 'hover:bg-[#2d2d30] text-[#cccccc]' 
+                ? 'hover:bg-white/10 text-gray-400 hover:text-white' 
                 : 'hover:bg-gray-100 text-gray-600'
             )}
           >
@@ -95,21 +95,21 @@ const ChatPanel = ({
         {messages.length === 0 && suggestions && (
           <div className="space-y-4">
             <div className={`text-center py-8 ${
-              darkMode ? 'text-[#858585]' : 'text-gray-500'
+              darkMode ? 'text-gray-400' : 'text-gray-500'
             }`}>
               <Sparkles className="w-10 h-10 mx-auto mb-3 opacity-50" />
-              <p className="text-sm font-medium mb-1">Start a conversation</p>
-              <p className="text-xs">Choose a suggestion below or type your own</p>
+              <p className="text-sm font-medium mb-1">Start Building</p>
+              <p className="text-xs">Describe what you want to create</p>
             </div>
             
             {/* Suggestions */}
             <div>
               <div className="flex items-center gap-2 mb-3 px-2">
                 <div className={`w-1 h-4 rounded-full ${
-                  darkMode ? 'bg-[#0e639c]' : 'bg-blue-500'
+                  darkMode ? 'bg-purple-500' : 'bg-blue-500'
                 }`} />
                 <span className={`text-xs font-semibold uppercase tracking-wide ${
-                  darkMode ? 'text-[#858585]' : 'text-gray-500'
+                  darkMode ? 'text-gray-500' : 'text-gray-500'
                 }`}>Suggestions</span>
               </div>
               <div className="space-y-2">
@@ -119,7 +119,7 @@ const ChatPanel = ({
                     onClick={() => setInput(suggestion)}
                     className={`w-full text-left px-4 py-3 rounded-lg text-sm transition-all ${
                       darkMode 
-                        ? 'bg-[#2d2d30] hover:bg-[#3e3e42] text-[#cccccc] border border-[#3e3e42] hover:border-[#0e639c]' 
+                        ? 'bg-white/5 hover:bg-white/10 text-gray-200 border border-white/10 hover:border-purple-500/50' 
                         : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 hover:border-blue-300'
                     }`}
                   >
@@ -147,22 +147,22 @@ const ChatPanel = ({
         {loading && (
           <div className="flex gap-3">
             <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
-              darkMode ? 'bg-[#2d2d30]' : 'bg-gray-100'
+              darkMode ? 'bg-white/5' : 'bg-gray-100'
             }`}>
-              <Bot className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} />
+              <Bot className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
             </div>
             <div className={`px-4 py-3 rounded-lg ${
-              darkMode ? 'bg-[#2d2d30]' : 'bg-gray-100'
+              darkMode ? 'bg-white/5' : 'bg-gray-100'
             }`}>
               <div className="flex gap-1.5">
                 <span className={`w-2 h-2 rounded-full animate-bounce ${
-                  darkMode ? 'bg-[#858585]' : 'bg-gray-400'
+                  darkMode ? 'bg-purple-500' : 'bg-gray-400'
                 }`} style={{ animationDelay: '0ms' }}></span>
                 <span className={`w-2 h-2 rounded-full animate-bounce ${
-                  darkMode ? 'bg-[#858585]' : 'bg-gray-400'
+                  darkMode ? 'bg-purple-500' : 'bg-gray-400'
                 }`} style={{ animationDelay: '150ms' }}></span>
                 <span className={`w-2 h-2 rounded-full animate-bounce ${
-                  darkMode ? 'bg-[#858585]' : 'bg-gray-400'
+                  darkMode ? 'bg-purple-500' : 'bg-gray-400'
                 }`} style={{ animationDelay: '300ms' }}></span>
               </div>
             </div>
