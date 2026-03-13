@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button } from './components/ui/button';
 import ChatPanel from './components/ChatPanel';
+import CodePreview from './components/CodePreview';
+import EditElementMenu from './components/EditElementMenu';
 
 function App() {
   const [currentProjectId, setCurrentProjectId] = useState(() => {
@@ -54,6 +56,11 @@ function App() {
   const [editPrompt, setEditPrompt] = useState('');
   const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [editMenu, setEditMenu] = useState({
+    visible: false,
+    element: null,
+    position: { x: 0, y: 0 }
+  });
   const iframeRef = useRef(null);
 
   // Save chat history whenever messages change
@@ -329,9 +336,34 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'code.html';
+    a.download = 'vibecoding-code.txt';
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleSendElementToAI = (elementInfo) => {
+    const prompt = `Please modify this ${elementInfo.tagName} element. Current details:
+- Tag: ${elementInfo.tagName}
+- ID: ${elementInfo.id || 'none'}
+- Classes: ${elementInfo.className || 'none'}
+- Current text: ${elementInfo.textContent || 'none'}
+- Current styles: ${JSON.stringify(elementInfo.styles)}
+
+Please suggest improvements or modifications for this element.`;
+    
+    setInput(prompt);
+    // Focus on chat input
+    document.getElementById('chat-input')?.focus();
+  };
+
+  const handleUpdateCode = (updatedHTML) => {
+    setPreviewCode(updatedHTML);
+    setFullCode(updatedHTML);
+    
+    // Save as new version
+    saveCodeVersion(updatedHTML, previewUrl, fileTree, 'Element edited in preview');
   };
 
   // ─── VISUAL EDITOR: postMessage-based architecture ───────────────────────────
@@ -351,11 +383,21 @@ function App() {
 
       // Listen for edit-mode toggle from parent
       window.addEventListener('message', function(e) {
-        if (e.data && e.data.type === 'set-edit-mode') {
+        if (!e.data || !e.data.type) return;
+
+        if (e.data.type === 'set-edit-mode') {
           editMode = e.data.value;
           if (!editMode) {
             clearHover();
             clearSelection();
+          }
+        } else if (e.data.type === 'update-element-property') {
+          if (selectedEl && e.data.property) {
+            if (e.data.property === 'textContent' || e.data.property === 'innerHTML' || e.data.property === 'innerText') {
+              selectedEl[e.data.property] = e.data.value;
+            } else {
+              selectedEl.style[e.data.property] = e.data.value;
+            }
           }
         }
       });
@@ -404,7 +446,10 @@ function App() {
         var el = e.target;
         if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
         selectedEl = el;
-        window.parent.postMessage({ type: 'element-selected', data: getElementInfo(el) }, '*');
+        var info = getElementInfo(el);
+        info.mouseX = e.clientX;
+        info.mouseY = e.clientY;
+        window.parent.postMessage({ type: 'element-selected', data: info }, '*');
       }, true);
 
       // Scroll events: re-broadcast hover rect when page scrolls
@@ -467,7 +512,8 @@ function App() {
         const containerRect = container.getBoundingClientRect();
         const offsetTop = iframeRect.top - containerRect.top;
         const offsetLeft = iframeRect.left - containerRect.left;
-        setSelectedElement({
+        
+        const elementData = {
           ...msg.data,
           rect: {
             top: msg.data.rect.top + offsetTop,
@@ -475,9 +521,25 @@ function App() {
             width: msg.data.rect.width,
             height: msg.data.rect.height,
           }
+        };
+        
+        setSelectedElement(elementData);
+        
+        // Position menu at mouse click position (offset from iframe top-left)
+        const menuX = iframeRect.left + (msg.data.mouseX || (msg.data.rect.left + msg.data.rect.width / 2));
+        const menuY = iframeRect.top  + (msg.data.mouseY || msg.data.rect.top);
+        // Clamp so menu doesn't go off-screen right/bottom
+        const clampedX = Math.min(menuX, window.innerWidth - 220);
+        const clampedY = Math.min(menuY, window.innerHeight - 320);
+
+        setEditMenu({
+          visible: true,
+          element: elementData,
+          position: { x: clampedX, y: clampedY }
         });
       } else if (msg.type === 'element-deselect') {
         setSelectedElement(null);
+        setEditMenu({ ...editMenu, visible: false });
       }
     };
 
@@ -1081,14 +1143,12 @@ function App() {
                         className="flex-1 bg-transparent text-sm outline-none text-gray-300"
                       />
                       {previewUrl && (
-                        <Button
-                          variant="default"
-                          size="sm"
+                        <button
                           onClick={() => window.open(previewUrl, '_blank')}
-                          className="h-6 px-2 text-xs bg-blue-600 text-white hover:bg-blue-700"
+                          className="text-xs px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700"
                         >
                           Open
-                        </Button>
+                        </button>
                       )}
                     </div>
                   </div>
@@ -1235,19 +1295,19 @@ function App() {
                           </span>
                           <span>Selected</span>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
+                        <button
                           onClick={() => {
                             setSelectedElement(null);
                             setEditPrompt('');
                           }}
-                          className="h-8 w-8 text-gray-400 hover:text-white"
+                          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: '4px', borderRadius: '4px', display: 'flex', alignItems: 'center' }}
+                          onMouseEnter={e => e.currentTarget.style.color = '#fff'}
+                          onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                           </svg>
-                        </Button>
+                        </button>
                       </div>
                       <div className="relative">
                         <input
@@ -1263,14 +1323,20 @@ function App() {
                           className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors"
                           autoFocus
                         />
-                        <Button
-                          size="icon"
+                        <button
                           onClick={handleElementEdit}
                           disabled={!editPrompt.trim()}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
+                          style={{
+                            position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
+                            height: '32px', width: '32px', borderRadius: '8px', border: 'none',
+                            background: !editPrompt.trim() ? '#4b5563' : 'linear-gradient(to right, #9333ea, #ec4899)',
+                            cursor: !editPrompt.trim() ? 'not-allowed' : 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            color: 'white',
+                          }}
                         >
-                          <Send className="w-4 h-4" />
-                        </Button>
+                          <Send size={16} />
+                        </button>
                       </div>
                       <div className="mt-2 text-xs text-gray-500">
                         Selected: {selectedElement.textContent?.substring(0, 50)}
@@ -1378,6 +1444,47 @@ function App() {
           ]}
         />
       </div>
+      
+      {/* Edit Element Menu */}
+      {editMenu.visible && (
+        <EditElementMenu
+          element={editMenu.element}
+          position={editMenu.position}
+          onClose={() => setEditMenu({ ...editMenu, visible: false })}
+          onEditProperties={(element, property, value) => {
+            const iframe = iframeRef.current;
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'update-element-property',
+                property: property,
+                value: value
+              }, '*');
+            }
+            
+            // Sync local state so UI reflects it immediately if menu re-renders
+            if (property === 'textContent') {
+              setEditMenu(prev => ({ ...prev, element: { ...prev.element, textContent: value } }));
+            } else {
+              setEditMenu(prev => ({
+                ...prev,
+                element: { ...prev.element, styles: { ...prev.element.styles, [property]: value } }
+              }));
+            }
+          }}
+          onEditCode={(element) => {
+            const prompt = `Edit the ${element.tagName?.toLowerCase()} element: ${element.textContent}`;
+            setInput(prompt);
+            setEditMenu({ ...editMenu, visible: false });
+          }}
+          onSendToAI={handleSendElementToAI}
+          onDelete={(element) => {
+            const prompt = `Remove the ${element.tagName?.toLowerCase()} element from the code`;
+            setInput(prompt);
+            setEditMenu({ ...editMenu, visible: false });
+          }}
+          darkMode={true}
+        />
+      )}
     </div>
   );
 }

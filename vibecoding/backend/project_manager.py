@@ -24,9 +24,19 @@ EDITOR_INJECTION_SCRIPT = """
   var editMode = false;
 
   window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'set-edit-mode') {
+    if (!e.data || !e.data.type) return;
+    
+    if (e.data.type === 'set-edit-mode') {
       editMode = e.data.value;
       if (!editMode) { clearHover(); clearSelection(); }
+    } else if (e.data.type === 'update-element-property') {
+      if (selectedEl && e.data.property) {
+        if (e.data.property === 'textContent' || e.data.property === 'innerHTML' || e.data.property === 'innerText') {
+          selectedEl[e.data.property] = e.data.value;
+        } else {
+          selectedEl.style[e.data.property] = e.data.value;
+        }
+      }
     }
   });
 
@@ -65,7 +75,10 @@ EDITOR_INJECTION_SCRIPT = """
     var el = e.target;
     if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
     selectedEl = el;
-    window.parent.postMessage({ type: 'element-selected', data: getElementInfo(el) }, '*');
+    var info = getElementInfo(el);
+    info.mouseX = e.clientX;
+    info.mouseY = e.clientY;
+    window.parent.postMessage({ type: 'element-selected', data: info }, '*');
   }, true);
 
   document.addEventListener('scroll', function() {
