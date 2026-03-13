@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
 import ChatPanel from './components/ChatPanel';
 
 function App() {
@@ -25,9 +25,21 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
   
+  const [codeVersions, setCodeVersions] = useState(() => {
+    // Load code versions for current chat
+    const saved = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`);
+    return saved ? JSON.parse(saved) : [];
+  });
+  
+  const [currentCodeVersion, setCurrentCodeVersion] = useState(() => {
+    const saved = localStorage.getItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`);
+    return saved ? parseInt(saved) : 0;
+  });
+  
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewCode, setPreviewCode] = useState('');
+  const [fullCode, setFullCode] = useState(''); // Store full code for edit mode
   const [previewUrl, setPreviewUrl] = useState('');
   const [activeView, setActiveView] = useState('preview'); // preview or code
   const [copied, setCopied] = useState(false);
@@ -39,6 +51,7 @@ function App() {
   const [selectedElement, setSelectedElement] = useState(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
 
   // Save chat history whenever messages change
   useEffect(() => {
@@ -47,6 +60,53 @@ function App() {
       localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
     }
   }, [messages, currentProjectId, chatVersion]);
+
+  // Save code versions whenever they change
+  useEffect(() => {
+    if (codeVersions.length > 0) {
+      localStorage.setItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`, JSON.stringify(codeVersions));
+      localStorage.setItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`, currentCodeVersion.toString());
+    }
+  }, [codeVersions, currentCodeVersion, currentProjectId, chatVersion]);
+
+  // Load code version when switching
+  useEffect(() => {
+    if (codeVersions.length > 0 && currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
+      const version = codeVersions[currentCodeVersion - 1];
+      setPreviewCode(version.code);
+      setPreviewUrl(version.previewUrl || '');
+      setFileTree(version.fileTree || []);
+      if (version.fileTree && version.fileTree.length > 0) {
+        const findFirstFile = (items) => {
+          for (const item of items) {
+            if (item.type === 'file') return item;
+            if (item.type === 'folder' && item.children) {
+              const found = findFirstFile(item.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        const firstFile = findFirstFile(version.fileTree);
+        if (firstFile) setSelectedFile(firstFile);
+      }
+      setIframeKey(prev => prev + 1);
+    }
+  }, [currentCodeVersion]);
+
+  // Function to save a new code version
+  const saveCodeVersion = (code, previewUrl, fileTree, prompt) => {
+    const newVersion = {
+      version: codeVersions.length + 1,
+      code,
+      previewUrl,
+      fileTree,
+      prompt,
+      timestamp: new Date().toISOString()
+    };
+    setCodeVersions(prev => [...prev, newVersion]);
+    setCurrentCodeVersion(newVersion.version);
+  };
 
   // Function to start a new chat
   const handleNewChat = () => {
@@ -59,6 +119,8 @@ function App() {
     setSelectedFile(null);
     setEditMode(false);
     setSelectedElement(null);
+    setCodeVersions([]);
+    setCurrentCodeVersion(0);
     localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
   };
 
@@ -121,7 +183,7 @@ function App() {
   const handleSend = async () => {
     if (!input.trim() || loading) return;
 
-    const userMessage = { role: 'user', content: input };
+    const userMessage = { role: 'user', content: input, timestamp: new Date().toISOString() };
     setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
     setInput('');
@@ -140,18 +202,24 @@ function App() {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        timestamp: new Date().toISOString()
       };
 
       setMessages(prev => [...prev, aiMessage]);
       
       if (response.data.code) {
-        setPreviewCode(response.data.code);
+        const fullCodeContent = response.data.code;
+        setFullCode(fullCodeContent); // Store full code
+        setPreviewCode(fullCodeContent);
         setIframeKey(prev => prev + 1); // Force iframe refresh
         
         // Parse code to build file tree
-        const code = response.data.code;
+        const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
+        
+        // Save this as a new code version
+        saveCodeVersion(code, response.data.preview_url || '', files, currentInput);
         
         // Expand all folders by default
         const allFolderPaths = new Set();
@@ -184,8 +252,7 @@ function App() {
           setSelectedFile(firstFile);
         }
         
-        // For preview, extract the first HTML file or use full code
-        let previewContent = code;
+        // For preview display (not edit mode), extract the first HTML file or use full code
         const findPreviewHtmlFile = (items) => {
           // First, look for preview.html (standalone preview)
           for (const item of items) {
@@ -213,7 +280,7 @@ function App() {
         
         const htmlContent = findPreviewHtmlFile(files);
         if (htmlContent) {
-          // Found HTML file, use it for preview
+          // Found HTML file, use it for preview display
           setPreviewCode(htmlContent);
         } else if (files.length === 1 && files[0].type === 'file') {
           // Single file, use its content
@@ -235,7 +302,8 @@ function App() {
       console.error('Error:', error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: 'Sorry, there was an error. Please try again.'
+        content: 'Sorry, there was an error. Please try again.',
+        timestamp: new Date().toISOString()
       }]);
     } finally {
       setLoading(false);
@@ -274,113 +342,177 @@ function App() {
     return () => window.removeEventListener('message', handleMessage);
   }, []);
 
+  // Close version history dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showVersionHistory && !event.target.closest('.version-history-container')) {
+        setShowVersionHistory(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showVersionHistory]);
+
   // Inject edit mode script when editMode changes
   useEffect(() => {
     if (!editMode) {
       setSelectedElement(null);
-    } else {
-      // Force iframe reload when edit mode is enabled
-      setIframeKey(prev => prev + 1);
     }
+    // Don't force iframe reload - let React handle it naturally
   }, [editMode]);
 
   // Prepare preview code with edit mode script injected
   const getPreviewContent = () => {
-    if (!previewCode) return '';
+    // Use fullCode for edit mode to preserve all styles and structure
+    const codeToUse = fullCode || previewCode;
+    if (!codeToUse) return '';
     
-    if (!editMode) return previewCode;
+    if (!editMode) return codeToUse;
 
     // Inject edit mode script into the HTML
     const editModeScript = `
       <style id="vibe-edit-style">
+        * {
+          cursor: crosshair !important;
+        }
         .vibe-edit-hover {
           outline: 3px solid #a855f7 !important;
           outline-offset: 2px !important;
-          cursor: pointer !important;
           box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.2) !important;
+          position: relative !important;
+          z-index: 999999 !important;
         }
         .vibe-edit-selected {
           outline: 4px solid #8b5cf6 !important;
           outline-offset: 2px !important;
           background: rgba(168, 85, 247, 0.15) !important;
           box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.3) !important;
-        }
-        body * {
-          cursor: crosshair !important;
+          position: relative !important;
+          z-index: 999999 !important;
         }
       </style>
       <script id="vibe-edit-script">
         (function() {
-          console.log('Edit mode active');
+          console.log('🎨 Edit mode script loaded');
           let currentHover = null;
-          
-          // Wait for DOM to be ready
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initEditMode);
-          } else {
-            initEditMode();
-          }
+          let isInitialized = false;
           
           function initEditMode() {
-            console.log('Initializing edit mode handlers');
+            if (isInitialized) {
+              console.log('⚠️ Edit mode already initialized');
+              return;
+            }
             
-            // Hover effect
-            document.addEventListener('mouseover', function(e) {
-              const target = e.target;
-              if (target.tagName !== 'HTML' && target.tagName !== 'BODY' && target.tagName !== 'SCRIPT' && target.tagName !== 'STYLE') {
-                if (currentHover && currentHover !== target) {
-                  currentHover.classList.remove('vibe-edit-hover');
-                }
-                target.classList.add('vibe-edit-hover');
-                currentHover = target;
+            console.log('✅ Initializing edit mode handlers');
+            isInitialized = true;
+            
+            // Prevent default link behavior
+            document.addEventListener('click', function(e) {
+              if (e.target.tagName === 'A') {
+                e.preventDefault();
               }
+            }, true);
+            
+            // Hover effect - use capture phase
+            document.addEventListener('mouseover', function(e) {
+              e.stopPropagation();
+              const target = e.target;
+              
+              if (!target || target.tagName === 'HTML' || target.tagName === 'BODY' || 
+                  target.tagName === 'SCRIPT' || target.tagName === 'STYLE' ||
+                  target.id === 'vibe-edit-style' || target.id === 'vibe-edit-script') {
+                return;
+              }
+              
+              if (currentHover && currentHover !== target) {
+                currentHover.classList.remove('vibe-edit-hover');
+              }
+              
+              target.classList.add('vibe-edit-hover');
+              currentHover = target;
+              console.log('👆 Hovering:', target.tagName, target.className);
             }, true);
             
             document.addEventListener('mouseout', function(e) {
+              e.stopPropagation();
               const target = e.target;
-              if (target.tagName !== 'HTML' && target.tagName !== 'BODY') {
+              if (target && target.tagName !== 'HTML' && target.tagName !== 'BODY') {
                 target.classList.remove('vibe-edit-hover');
               }
             }, true);
             
-            // Click to select
+            // Click to select - use capture phase
             document.addEventListener('click', function(e) {
               const target = e.target;
-              if (target.tagName !== 'HTML' && target.tagName !== 'BODY' && target.tagName !== 'SCRIPT' && target.tagName !== 'STYLE') {
-                e.preventDefault();
-                e.stopPropagation();
-                
-                console.log('Element clicked:', target.tagName);
-                
-                // Remove previous selection highlights
-                document.querySelectorAll('.vibe-edit-selected').forEach(el => {
-                  el.classList.remove('vibe-edit-selected');
-                });
-                
-                // Highlight clicked element
-                target.classList.add('vibe-edit-selected');
-                target.classList.remove('vibe-edit-hover');
-                
-                // Send element info to parent
+              
+              if (!target || target.tagName === 'HTML' || target.tagName === 'BODY' || 
+                  target.tagName === 'SCRIPT' || target.tagName === 'STYLE') {
+                return;
+              }
+              
+              e.preventDefault();
+              e.stopPropagation();
+              
+              console.log('🎯 Element clicked:', target.tagName, target.className);
+              
+              // Remove previous selection highlights
+              document.querySelectorAll('.vibe-edit-selected').forEach(function(el) {
+                el.classList.remove('vibe-edit-selected');
+              });
+              
+              // Highlight clicked element
+              target.classList.add('vibe-edit-selected');
+              target.classList.remove('vibe-edit-hover');
+              
+              // Get clean className without edit classes
+              const cleanClassName = target.className
+                .replace(/vibe-edit-hover/g, '')
+                .replace(/vibe-edit-selected/g, '')
+                .trim();
+              
+              // Send element info to parent
+              try {
                 window.parent.postMessage({
                   type: 'element-selected',
                   tagName: target.tagName,
-                  className: target.className.replace('vibe-edit-hover', '').replace('vibe-edit-selected', '').trim(),
-                  id: target.id,
-                  textContent: target.textContent?.substring(0, 100),
-                  innerHTML: target.innerHTML?.substring(0, 200)
+                  className: cleanClassName,
+                  id: target.id || '',
+                  textContent: (target.textContent || '').substring(0, 100),
+                  innerHTML: (target.innerHTML || '').substring(0, 200)
                 }, '*');
+                console.log('📤 Message sent to parent');
+              } catch (err) {
+                console.error('❌ Error sending message:', err);
               }
             }, true);
             
-            console.log('Edit mode ready');
+            console.log('✨ Edit mode ready!');
           }
+          
+          // Try multiple initialization methods
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initEditMode);
+            console.log('⏳ Waiting for DOMContentLoaded');
+          } else {
+            console.log('⚡ DOM already loaded, initializing immediately');
+            initEditMode();
+          }
+          
+          // Backup: also try on window load
+          window.addEventListener('load', function() {
+            console.log('🔄 Window loaded, ensuring edit mode is initialized');
+            initEditMode();
+          });
+          
+          // Immediate attempt
+          setTimeout(initEditMode, 100);
         })();
       </script>
     `;
 
     // Inject before closing </body> tag, or before </html> if no body, or at the end
-    let modifiedCode = previewCode;
+    let modifiedCode = codeToUse;
     if (modifiedCode.toLowerCase().includes('</body>')) {
       modifiedCode = modifiedCode.replace(/<\/body>/i, editModeScript + '</body>');
     } else if (modifiedCode.toLowerCase().includes('</html>')) {
@@ -399,7 +531,8 @@ function App() {
 
     const editMessage = {
       role: 'user',
-      content: `Edit the ${selectedElement.tagName?.toLowerCase()} element: ${editPrompt}\n\nCurrent element: <${selectedElement.tagName?.toLowerCase()}${selectedElement.id ? ` id="${selectedElement.id}"` : ''}${selectedElement.className ? ` class="${selectedElement.className}"` : ''}>${selectedElement.textContent?.substring(0, 50)}</${selectedElement.tagName?.toLowerCase()}>\n\nOnly modify this specific element, keep everything else the same.`
+      content: `Edit the ${selectedElement.tagName?.toLowerCase()} element: ${editPrompt}\n\nCurrent element: <${selectedElement.tagName?.toLowerCase()}${selectedElement.id ? ` id="${selectedElement.id}"` : ''}${selectedElement.className ? ` class="${selectedElement.className}"` : ''}>${selectedElement.textContent?.substring(0, 50)}</${selectedElement.tagName?.toLowerCase()}>\n\nOnly modify this specific element, keep everything else the same.`,
+      timestamp: new Date().toISOString()
     };
 
     setMessages(prev => [...prev, editMessage]);
@@ -417,17 +550,23 @@ function App() {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        timestamp: new Date().toISOString()
       };
 
       setMessages(prev => [...prev, aiMessage]);
       
       if (response.data.code) {
-        setPreviewCode(response.data.code);
+        const fullCodeContent = response.data.code;
+        setFullCode(fullCodeContent);
+        setPreviewCode(fullCodeContent);
         setIframeKey(prev => prev + 1);
         
-        const code = response.data.code;
+        const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
+        
+        // Save this as a new code version
+        saveCodeVersion(code, response.data.preview_url || '', files, editMessage.content);
         
         const allFolderPaths = new Set();
         const collectFolders = (items) => {
@@ -498,11 +637,35 @@ function App() {
       console.error('Error:', error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: 'Sorry, there was an error editing the element. Please try again.'
+        content: 'Sorry, there was an error editing the element. Please try again.',
+        timestamp: new Date().toISOString()
       }]);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Format timestamp for display
+  const formatTimestamp = (timestamp) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    
+    // Show time for today, date for older
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) {
+      return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    }
+    
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   };
 
   // Parse code to extract files and build tree structure
@@ -626,6 +789,60 @@ function App() {
           </div>
           <div className="h-6 w-px bg-white/10" />
           <span className="text-sm text-gray-400">Chat v{chatVersion}</span>
+          {codeVersions.length > 0 && (
+            <>
+              <div className="h-6 w-px bg-white/10" />
+              <div className="relative version-history-container">
+                <button
+                  onClick={() => setShowVersionHistory(!showVersionHistory)}
+                  className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors"
+                >
+                  <History className="w-4 h-4" />
+                  <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
+                </button>
+                
+                {/* Version History Dropdown */}
+                {showVersionHistory && (
+                  <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
+                    <div className="p-3 border-b border-white/10">
+                      <div className="text-sm font-semibold text-white">Code Version History</div>
+                      <div className="text-xs text-gray-400 mt-1">{codeVersions.length} versions saved</div>
+                    </div>
+                    <div className="p-2">
+                      {codeVersions.map((version) => (
+                        <button
+                          key={version.version}
+                          onClick={() => {
+                            setCurrentCodeVersion(version.version);
+                            setShowVersionHistory(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors ${
+                            currentCodeVersion === version.version
+                              ? 'bg-purple-600/20 border border-purple-500/30'
+                              : 'hover:bg-white/5'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className={`text-sm font-medium ${
+                              currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
+                            }`}>
+                              Version {version.version}
+                            </span>
+                            <span className="text-xs text-gray-500">
+                              {formatTimestamp(version.timestamp)}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-400 line-clamp-2">
+                            {version.prompt}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button 
@@ -836,7 +1053,7 @@ function App() {
                 )}
                 
                 {/* Preview iframe with responsive sizing */}
-                <div className="flex-1 relative flex items-center justify-center bg-[#0A0A0F]">
+                <div className={`flex-1 relative flex items-center justify-center ${editMode ? 'bg-white' : 'bg-[#0A0A0F]'}`}>
                   <div 
                     className={`h-full transition-all duration-300 ${
                       screenSize === 'mobile' ? 'w-[375px]' :
@@ -844,14 +1061,12 @@ function App() {
                       'w-full'
                     }`}
                     style={{
-                      boxShadow: screenSize !== 'desktop' ? '0 0 0 1px rgba(255,255,255,0.1)' : 'none'
+                      boxShadow: screenSize !== 'desktop' ? (editMode ? '0 0 0 1px rgba(0,0,0,0.1)' : '0 0 0 1px rgba(255,255,255,0.1)') : 'none'
                     }}
                   >
                     <iframe
                       key={iframeKey}
-                      src={editMode 
-                        ? `data:text/html;charset=utf-8,${encodeURIComponent(getPreviewContent())}`
-                        : (previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewCode)}`)}
+                      src={previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(editMode ? getPreviewContent() : (fullCode || previewCode))}`}
                       className="w-full h-full border-0"
                       title="Preview"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
@@ -994,9 +1209,11 @@ function App() {
             }
           }}
           darkMode={true}
-          codeVersions={[]}
-          selectedVersion={null}
-          onLoadVersion={() => {}}
+          codeVersions={codeVersions}
+          selectedVersion={currentCodeVersion}
+          onLoadVersion={(versionId) => {
+            setCurrentCodeVersion(versionId);
+          }}
           onCopyMessage={async (text) => {
             await navigator.clipboard.writeText(text);
           }}
@@ -1007,6 +1224,8 @@ function App() {
             setPreviewUrl('');
             setFileTree([]);
             setSelectedFile(null);
+            setCodeVersions([]);
+            setCurrentCodeVersion(0);
           }}
           suggestions={[
             'Create a beautiful landing page with gradient background',
