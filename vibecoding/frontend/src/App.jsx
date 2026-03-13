@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown } from 'lucide-react';
 
@@ -15,6 +15,10 @@ function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileTree, setFileTree] = useState([]);
   const [expandedFolders, setExpandedFolders] = useState(new Set());
+  const [editMode, setEditMode] = useState(false);
+  const [selectedElement, setSelectedElement] = useState(null);
+  const [editPrompt, setEditPrompt] = useState('');
+  const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
 
   const toggleFolder = (folderPath) => {
     setExpandedFolders(prev => {
@@ -214,6 +218,130 @@ function App() {
     a.download = 'code.html';
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Listen for element selection from iframe
+  useEffect(() => {
+    const handleMessage = (event) => {
+      if (event.data.type === 'element-selected') {
+        setSelectedElement(event.data);
+      }
+    };
+    
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  // Handle element edit
+  const handleElementEdit = async () => {
+    if (!editPrompt.trim() || !selectedElement) return;
+
+    const editMessage = {
+      role: 'user',
+      content: `Edit the ${selectedElement.tagName?.toLowerCase()} element: ${editPrompt}\n\nCurrent element: <${selectedElement.tagName?.toLowerCase()}${selectedElement.id ? ` id="${selectedElement.id}"` : ''}${selectedElement.className ? ` class="${selectedElement.className}"` : ''}>${selectedElement.textContent?.substring(0, 50)}</${selectedElement.tagName?.toLowerCase()}>\n\nOnly modify this specific element, keep everything else the same.`
+    };
+
+    setMessages(prev => [...prev, editMessage]);
+    setEditPrompt('');
+    setLoading(true);
+
+    try {
+      const response = await axios.post('http://localhost:8000/api/generate', {
+        prompt: editMessage.content,
+        history: messages,
+        project_id: currentProjectId
+      });
+
+      const aiMessage = {
+        role: 'assistant',
+        content: response.data.message,
+        code: response.data.code,
+      };
+
+      setMessages(prev => [...prev, aiMessage]);
+      
+      if (response.data.code) {
+        setPreviewCode(response.data.code);
+        setIframeKey(prev => prev + 1);
+        
+        const code = response.data.code;
+        const files = parseCodeToFiles(code);
+        setFileTree(files);
+        
+        const allFolderPaths = new Set();
+        const collectFolders = (items) => {
+          items.forEach(item => {
+            if (item.type === 'folder') {
+              allFolderPaths.add(item.path);
+              if (item.children) {
+                collectFolders(item.children);
+              }
+            }
+          });
+        };
+        collectFolders(files);
+        setExpandedFolders(allFolderPaths);
+        
+        const findFirstFile = (items) => {
+          for (const item of items) {
+            if (item.type === 'file') return item;
+            if (item.type === 'folder' && item.children) {
+              const found = findFirstFile(item.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        const firstFile = findFirstFile(files);
+        if (firstFile) {
+          setSelectedFile(firstFile);
+        }
+        
+        const findPreviewHtmlFile = (items) => {
+          for (const item of items) {
+            if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
+              return item.content;
+            }
+            if (item.type === 'folder' && item.children) {
+              const found = findPreviewHtmlFile(item.children);
+              if (found) return found;
+            }
+          }
+          
+          for (const item of items) {
+            if (item.type === 'file' && item.name.endsWith('.html')) {
+              return item.content;
+            }
+            if (item.type === 'folder' && item.children) {
+              const found = findPreviewHtmlFile(item.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        
+        const htmlContent = findPreviewHtmlFile(files);
+        if (htmlContent) {
+          setPreviewCode(htmlContent);
+        } else if (files.length === 1 && files[0].type === 'file') {
+          setPreviewCode(files[0].content);
+        }
+      }
+      
+      if (response.data.preview_url) {
+        setPreviewUrl(response.data.preview_url);
+      }
+      
+      setSelectedElement(null);
+    } catch (error) {
+      console.error('Error:', error);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Sorry, there was an error editing the element. Please try again.'
+      }]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Parse code to extract files and build tree structure
@@ -470,8 +598,65 @@ function App() {
               </button>
             </div>
             
-            {previewCode && (
+            {previewCode && activeView === 'preview' && (
               <div className="flex items-center gap-2">
+                {/* Screen Size Selector */}
+                <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5">
+                  <button
+                    onClick={() => setScreenSize('mobile')}
+                    className={`p-1.5 rounded transition-colors ${
+                      screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
+                    }`}
+                    title="Mobile (375px)"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2"/>
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => setScreenSize('tablet')}
+                    className={`p-1.5 rounded transition-colors ${
+                      screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
+                    }`}
+                    title="Tablet (768px)"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2"/>
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => setScreenSize('desktop')}
+                    className={`p-1.5 rounded transition-colors ${
+                      screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
+                    }`}
+                    title="Desktop (100%)"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="2" y="4" width="20" height="12" rx="2" strokeWidth="2"/>
+                      <path d="M8 20h8" strokeWidth="2"/>
+                      <path d="M12 16v4" strokeWidth="2"/>
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Edit Mode Toggle */}
+                <button
+                  onClick={() => setEditMode(!editMode)}
+                  className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${
+                    editMode 
+                      ? 'bg-purple-600 text-white' 
+                      : 'bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white'
+                  }`}
+                  title="Edit Mode - Click elements to edit"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                  {editMode ? 'Editing' : 'Edit'}
+                </button>
+                
+                <div className="h-6 w-px bg-white/10" />
+                
                 <button
                   onClick={handleRefresh}
                   className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
@@ -479,6 +664,25 @@ function App() {
                 >
                   <RefreshCw className="w-4 h-4" />
                 </button>
+                <button
+                  onClick={handleCopy}
+                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
+                >
+                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+                <button 
+                  onClick={handleDownload}
+                  className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
+                >
+                  <Download className="w-4 h-4" />
+                  Download
+                </button>
+              </div>
+            )}
+            
+            {previewCode && activeView === 'code' && (
+              <div className="flex items-center gap-2">
                 <button
                   onClick={handleCopy}
                   className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm transition-colors flex items-center gap-2"
@@ -543,16 +747,153 @@ function App() {
                   </div>
                 </div>
                 
-                {/* Preview iframe */}
-                <div className="flex-1 relative">
-                  <iframe
-                    key={iframeKey}
-                    src={previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewCode)}`}
-                    className="w-full h-full border-0"
-                    title="Preview"
-                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                  />
+                {/* Edit Mode Banner */}
+                {editMode && (
+                  <div className="flex-shrink-0 bg-purple-600/20 border-b border-purple-500/30 px-4 py-2">
+                    <div className="flex items-center gap-2 text-sm text-purple-200">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>Edit Mode Active - Click any element in the preview to edit it</span>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Preview iframe with responsive sizing */}
+                <div className="flex-1 relative flex items-center justify-center bg-[#0A0A0F]">
+                  <div 
+                    className={`h-full transition-all duration-300 ${
+                      screenSize === 'mobile' ? 'w-[375px]' :
+                      screenSize === 'tablet' ? 'w-[768px]' :
+                      'w-full'
+                    }`}
+                    style={{
+                      boxShadow: screenSize !== 'desktop' ? '0 0 0 1px rgba(255,255,255,0.1)' : 'none'
+                    }}
+                  >
+                    <iframe
+                      key={iframeKey}
+                      src={previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewCode)}`}
+                      className="w-full h-full border-0"
+                      title="Preview"
+                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                      onLoad={(e) => {
+                        if (editMode) {
+                          // Inject edit mode script into iframe
+                          try {
+                            const iframeDoc = e.target.contentDocument || e.target.contentWindow.document;
+                            const script = iframeDoc.createElement('script');
+                            script.textContent = `
+                              document.addEventListener('click', function(e) {
+                                if (e.target.tagName !== 'HTML' && e.target.tagName !== 'BODY') {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  
+                                  // Remove previous highlights
+                                  document.querySelectorAll('.vibe-edit-highlight').forEach(el => {
+                                    el.classList.remove('vibe-edit-highlight');
+                                  });
+                                  
+                                  // Highlight clicked element
+                                  e.target.classList.add('vibe-edit-highlight');
+                                  
+                                  // Send element info to parent
+                                  window.parent.postMessage({
+                                    type: 'element-selected',
+                                    tagName: e.target.tagName,
+                                    className: e.target.className.replace('vibe-edit-highlight', '').trim(),
+                                    id: e.target.id,
+                                    textContent: e.target.textContent?.substring(0, 100),
+                                    innerHTML: e.target.innerHTML?.substring(0, 200)
+                                  }, '*');
+                                }
+                              }, true);
+                              
+                              // Add highlight styles
+                              const style = document.createElement('style');
+                              style.textContent = \`
+                                .vibe-edit-highlight {
+                                  outline: 2px solid #a855f7 !important;
+                                  outline-offset: 2px !important;
+                                  cursor: pointer !important;
+                                }
+                                * {
+                                  cursor: crosshair !important;
+                                }
+                              \`;
+                              document.head.appendChild(style);
+                            `;
+                            iframeDoc.body.appendChild(script);
+                          } catch (err) {
+                            console.log('Could not inject edit mode script:', err);
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                  
+                  {/* Screen size label */}
+                  {screenSize !== 'desktop' && (
+                    <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-sm text-xs text-white">
+                      {screenSize === 'mobile' ? '375px' : '768px'}
+                    </div>
+                  )}
                 </div>
+                
+                {/* Edit Prompt Panel */}
+                {editMode && selectedElement && (
+                  <div className="flex-shrink-0 border-t border-white/10 bg-[#0F0F14] p-4">
+                    <div className="max-w-4xl mx-auto">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-sm text-gray-400">
+                          <span className="px-2 py-0.5 rounded bg-purple-600/20 text-purple-300 font-mono text-xs">
+                            {selectedElement.tagName?.toLowerCase()}
+                            {selectedElement.id && `#${selectedElement.id}`}
+                            {selectedElement.className && `.${selectedElement.className.split(' ')[0]}`}
+                          </span>
+                          <span>Selected</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setSelectedElement(null);
+                            setEditPrompt('');
+                          }}
+                          className="text-gray-400 hover:text-white"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={editPrompt}
+                          onChange={(e) => setEditPrompt(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && editPrompt.trim()) {
+                              handleElementEdit();
+                            }
+                          }}
+                          placeholder={`Edit this ${selectedElement.tagName?.toLowerCase()}... (e.g., "change color to blue", "make text bigger")`}
+                          className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors"
+                          autoFocus
+                        />
+                        <button
+                          onClick={handleElementEdit}
+                          disabled={!editPrompt.trim()}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="mt-2 text-xs text-gray-500">
+                        Selected: {selectedElement.textContent?.substring(0, 50)}
+                        {selectedElement.textContent?.length > 50 && '...'}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="h-full flex">
