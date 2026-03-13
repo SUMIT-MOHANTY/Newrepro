@@ -1,9 +1,29 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus } from 'lucide-react';
 
 function App() {
-  const [messages, setMessages] = useState([]);
+  const [currentProjectId, setCurrentProjectId] = useState(() => {
+    // Load or create workspace ID
+    const saved = localStorage.getItem('vibecoding_workspace_id');
+    if (saved) return saved;
+    const newId = `workspace_${Date.now()}`;
+    localStorage.setItem('vibecoding_workspace_id', newId);
+    return newId;
+  });
+  
+  const [chatVersion, setChatVersion] = useState(() => {
+    // Load current chat version for this workspace
+    const saved = localStorage.getItem(`vibecoding_${currentProjectId}_version`);
+    return saved ? parseInt(saved) : 1;
+  });
+
+  const [messages, setMessages] = useState(() => {
+    // Load chat history for current workspace and version
+    const saved = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`);
+    return saved ? JSON.parse(saved) : [];
+  });
+  
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewCode, setPreviewCode] = useState('');
@@ -11,7 +31,6 @@ function App() {
   const [activeView, setActiveView] = useState('preview'); // preview or code
   const [copied, setCopied] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
-  const [currentProjectId] = useState('default-project');
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileTree, setFileTree] = useState([]);
   const [expandedFolders, setExpandedFolders] = useState(new Set());
@@ -19,6 +38,28 @@ function App() {
   const [selectedElement, setSelectedElement] = useState(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
+
+  // Save chat history whenever messages change
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
+      localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
+    }
+  }, [messages, currentProjectId, chatVersion]);
+
+  // Function to start a new chat
+  const handleNewChat = () => {
+    const newVersion = chatVersion + 1;
+    setChatVersion(newVersion);
+    setMessages([]);
+    setPreviewCode('');
+    setPreviewUrl('');
+    setFileTree([]);
+    setSelectedFile(null);
+    setEditMode(false);
+    setSelectedElement(null);
+    localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
+  };
 
   const toggleFolder = (folderPath) => {
     setExpandedFolders(prev => {
@@ -583,9 +624,17 @@ function App() {
             <span className="font-bold text-lg">VibeCoding</span>
           </div>
           <div className="h-6 w-px bg-white/10" />
-          <span className="text-sm text-gray-400">Untitled Project</span>
+          <span className="text-sm text-gray-400">Chat v{chatVersion}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button 
+            onClick={handleNewChat}
+            className="px-4 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-medium transition-all flex items-center gap-2"
+            title="Start a new chat"
+          >
+            <Plus className="w-4 h-4" />
+            New Chat
+          </button>
           <button className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-sm font-medium transition-all">
             Deploy
           </button>
