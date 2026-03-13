@@ -21,7 +21,7 @@ class AIConfig:
         if not self.model:
             raise ValueError("AI_MODEL environment variable is required")
         
-        self.max_tokens = int(os.getenv("AI_MAX_TOKENS", "4096"))
+        self.max_tokens = int(os.getenv("AI_MAX_TOKENS", ""))
         self.temperature = float(os.getenv("AI_TEMPERATURE", "1.0"))
         self.top_p = float(os.getenv("AI_TOP_P", "1.0"))
         self.frequency_penalty = float(os.getenv("AI_FREQUENCY_PENALTY", "0.0"))

@@ -259,7 +259,7 @@ async def execute_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
 
 async def make_request_with_tools(
     messages: List[Dict[str, Any]],
-    max_tool_rounds: int = 5,
+    max_tool_rounds: int = 10,
     **kwargs
 ) -> Dict[str, Any]:
     """
