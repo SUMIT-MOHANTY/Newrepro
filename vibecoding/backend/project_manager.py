@@ -440,13 +440,27 @@ class ProjectManager:
         """Get code for specific version"""
         project_dir = self.artifacts_dir / project_id
         version_dir = project_dir / "versions" / version_id
-        code_file = version_dir / "index.html"
         
-        if not code_file.exists():
-            return None
+        # Try metadata first to find the main file
+        metadata_file = version_dir / "metadata.json"
+        if metadata_file.exists():
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+                main_file = metadata.get('main_file')
+                if main_file:
+                    code_file = version_dir / main_file
+                    if code_file.exists():
+                        with open(code_file, 'r', encoding='utf-8') as f:
+                            return f.read()
+
+        # Fallback to common entry points
+        for filename in ["index.html", "preview.html", "app.py", "main.py", "index.js", "server.js"]:
+            code_file = version_dir / filename
+            if code_file.exists():
+                with open(code_file, 'r', encoding='utf-8') as f:
+                    return f.read()
         
-        with open(code_file, 'r', encoding='utf-8') as f:
-            return f.read()
+        return None
     
     def list_projects(self) -> List[Dict]:
         """List all projects"""

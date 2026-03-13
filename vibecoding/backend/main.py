@@ -925,7 +925,7 @@ async def generate_code(request: GenerateRequest):
         # Add current prompt with a strict tool-calling enforcement
         prompt_with_instructions = request.prompt
         if any(word in request.prompt.lower() for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
-            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. DO NOT say you cannot browse the web. You HAVE the ability via function calling.)"
+            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. After you have gathered the necessary information about the page, you MUST generate the COMPLETE project code with ALL necessary files using the `// FILE: path/to/file.ext` format. DO NOT just describe the page; build it.)"
             
         messages.append({
             "role": "user",
@@ -945,19 +945,24 @@ async def generate_code(request: GenerateRequest):
             raise Exception("Invalid response format from AI API")
 
         # Extract code if present
+        import re as _re
         code = None
-        if "```python" in ai_response:
-            code_start = ai_response.find("```python") + 10
-            code_end = ai_response.find("```", code_start)
-            code = ai_response[code_start:code_end].strip()
-        elif "```html" in ai_response:
-            code_start = ai_response.find("```html") + 7
-            code_end = ai_response.find("```", code_start)
-            code = ai_response[code_start:code_end].strip()
-        elif "```" in ai_response:
-            code_start = ai_response.find("```") + 3
-            code_end = ai_response.find("```", code_start)
-            code = ai_response[code_start:code_end].strip()
+        
+        has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
+        if has_markers:
+            # AI provided file markers. Keep the entire response but strip markdown code wrappers
+            # so the frontend can split by file markers cleanly without including ` ```html ` in the file content.
+            cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response)
+            cleaned = cleaned.replace('```', '')
+            code = cleaned.strip()
+        else:
+            # No file markers. Extract all markdown code blocks and join them.
+            blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
+            if blocks:
+                code = "\n\n".join(blocks).strip()
+            elif '<html' in ai_response.lower() or '<!doctype' in ai_response.lower():
+                # Fallback if no markdown but HTML is present
+                code = ai_response.strip()
         
         # Validate that code has multiple files with file markers
         if code:
