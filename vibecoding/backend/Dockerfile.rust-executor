@@ -1,0 +1,33 @@
+FROM rust:1.75-slim
+
+WORKDIR /app
+
+# Install curl
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -s http://localhost:8080/ > /dev/null || exit 1
+
+# Auto-compile and run Rust
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "🚀 Rust Auto-Runner Starting..."\n\
+\n\
+if [ -f "/app/Cargo.toml" ]; then\n\
+    cargo run\n\
+else\n\
+    RUST_FILE=$(find /app -name "*.rs" | head -n 1)\n\
+    if [ -n "$RUST_FILE" ]; then\n\
+        rustc $RUST_FILE -o /app/program\n\
+        /app/program\n\
+    else\n\
+        echo "❌ No Rust file found"\n\
+        exit 1\n\
+    fi\n\
+fi\n\
+' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

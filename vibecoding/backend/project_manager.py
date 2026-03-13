@@ -73,19 +73,65 @@ class ProjectManager:
         version_dir = project_dir / "versions" / version_id
         version_dir.mkdir(exist_ok=True)
         
-        # 🚀 AUTO-DETECT RUNTIME (Like Base44/Replit)
-        runtime_name, runtime_config = runtime_detector.detect(code)
-        filename = runtime_detector.get_filename(runtime_name)
+        # Check if code contains file markers
+        import re
+        file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
+        matches = list(re.finditer(file_marker_regex, code))
+        
+        main_file_path = None
+        runtime_name = None
+        runtime_config = None
+        
+        if matches and len(matches) > 0:
+            # Multi-file structure - parse and save each file
+            logger.info(f"📁 Multi-file structure detected: {len(matches)} files")
+            
+            for i, match in enumerate(matches):
+                filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                start_pos = match.end()
+                end_pos = matches[i + 1].start() if i < len(matches) - 1 else len(code)
+                file_content = code[start_pos:end_pos].strip()
+                
+                # Create file path
+                file_path = version_dir / filename
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Save file
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(file_content)
+                
+                logger.info(f"  ✅ Saved: {filename}")
+                
+                # Detect runtime from first file if not detected yet
+                if runtime_name is None:
+                    runtime_name, runtime_config = runtime_detector.detect(file_content)
+                
+                # Set main file (first Python/JS/HTML file)
+                if main_file_path is None:
+                    if filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx')):
+                        main_file_path = file_path
+            
+            # If no main file found, use first file
+            if main_file_path is None:
+                filename = (matches[0].group(1) or matches[0].group(2) or matches[0].group(3)).strip()
+                main_file_path = version_dir / filename
+        else:
+            # Single file - use auto-detection
+            runtime_name, runtime_config = runtime_detector.detect(code)
+            filename = runtime_detector.get_filename(runtime_name)
+            
+            logger.info(f"📄 Single file detected")
+            logger.info(f"🔍 Detected runtime: {runtime_name}")
+            logger.info(f"📝 Using filename: {filename}")
+            
+            # Save code file
+            main_file_path = version_dir / filename
+            with open(main_file_path, 'w', encoding='utf-8') as f:
+                f.write(code)
         
         logger.info(f"🔍 Detected runtime: {runtime_name}")
-        logger.info(f"📝 Using filename: {filename}")
         logger.info(f"🐳 Docker image: {runtime_config['image']}")
         logger.info(f"🔌 Port: {runtime_config['port']}")
-        
-        # Save code file with correct name
-        code_file = version_dir / filename
-        with open(code_file, 'w', encoding='utf-8') as f:
-            f.write(code)
         
         # Save version metadata
         version_metadata = {
@@ -93,9 +139,11 @@ class ProjectManager:
             "prompt": prompt,
             "created_at": datetime.now().isoformat(),
             "runtime": runtime_name,
-            "filename": filename,
+            "main_file": str(main_file_path.relative_to(version_dir)),
             "docker_image": runtime_config['image'],
             "port": runtime_config['port'],
+            "is_multi_file": len(matches) > 0 if matches else False,
+            "file_count": len(matches) if matches else 1,
         }
         
         with open(version_dir / "metadata.json", "w") as f:
@@ -108,7 +156,7 @@ class ProjectManager:
         self.create_project_zip(project_id)
         
         logger.info(f"✅ Saved version {version_id} for project {project_id}")
-        return version_id, code_file
+        return version_id, main_file_path
     
     def _update_project_metadata(self, project_id: str, version_id: str, prompt: str):
         """Update project metadata with new version"""
@@ -140,23 +188,27 @@ class ProjectManager:
                 metadata = json.load(f)
             
             runtime = metadata.get('runtime', 'static-html')
-            filename = metadata.get('filename', 'app.py')
+            main_file = metadata.get('main_file', metadata.get('filename', 'index.html'))
             docker_image = metadata.get('docker_image', 'vibecoding-code-executor:latest')
             port = metadata.get('port', 80)
+            is_multi_file = metadata.get('is_multi_file', False)
             
             logger.info(f"🚀 Creating container with runtime: {runtime}")
             logger.info(f"🐳 Docker image: {docker_image}")
             logger.info(f"🔌 Port: {port}")
+            logger.info(f"📁 Multi-file: {is_multi_file}")
             
         except Exception as e:
             logger.error(f"Failed to read metadata: {e}")
             return None
         
-        code_file = version_dir / filename
-        
-        if not code_file.exists():
-            logger.error(f"Code file not found: {code_file}")
-            return None
+        # For multi-file projects, mount the entire version directory
+        # For single file, we still need the file to exist
+        if not is_multi_file:
+            code_file = version_dir / main_file
+            if not code_file.exists():
+                logger.error(f"Code file not found: {code_file}")
+                return None
         
         container_name = f"vibecoding_{project_id}_{version_id}"
         

@@ -1,0 +1,36 @@
+FROM ruby:3.2-slim
+
+WORKDIR /app
+
+# Install curl and bundler
+RUN apt-get update && apt-get install -y curl build-essential && rm -rf /var/lib/apt/lists/*
+RUN gem install bundler sinatra rails
+
+EXPOSE 3000 4567
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -s http://localhost:3000/ > /dev/null || curl -s http://localhost:4567/ > /dev/null || exit 1
+
+# Auto-run Ruby
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "🚀 Ruby Auto-Runner Starting..."\n\
+\n\
+if [ -f "/app/Gemfile" ]; then\n\
+    bundle install\n\
+    bundle exec ruby app.rb\n\
+elif [ -f "/app/app.rb" ]; then\n\
+    ruby app.rb\n\
+else\n\
+    RUBY_FILE=$(ls /app/*.rb 2>/dev/null | head -n 1)\n\
+    if [ -n "$RUBY_FILE" ]; then\n\
+        ruby $RUBY_FILE\n\
+    else\n\
+        echo "❌ No Ruby file found"\n\
+        exit 1\n\
+    fi\n\
+fi\n\
+' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

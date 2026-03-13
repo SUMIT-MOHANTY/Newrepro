@@ -14,6 +14,63 @@ function App() {
   const [currentProjectId] = useState('default-project');
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileTree, setFileTree] = useState([]);
+  const [expandedFolders, setExpandedFolders] = useState(new Set());
+
+  const toggleFolder = (folderPath) => {
+    setExpandedFolders(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(folderPath)) {
+        newSet.delete(folderPath);
+      } else {
+        newSet.add(folderPath);
+      }
+      return newSet;
+    });
+  };
+
+  const renderFileTree = (items, level = 0) => {
+    return items.map((item, idx) => {
+      if (item.type === 'folder') {
+        const isExpanded = expandedFolders.has(item.path);
+        return (
+          <div key={item.path}>
+            <div
+              onClick={() => toggleFolder(item.path)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors text-gray-400 hover:bg-white/5 hover:text-white"
+              style={{ paddingLeft: `${12 + level * 16}px` }}
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-4 h-4 flex-shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 flex-shrink-0" />
+              )}
+              <Folder className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </div>
+            {isExpanded && item.children && (
+              <div>{renderFileTree(item.children, level + 1)}</div>
+            )}
+          </div>
+        );
+      } else {
+        return (
+          <div
+            key={item.path}
+            onClick={() => setSelectedFile(item)}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+              selectedFile?.path === item.path
+                ? 'bg-white/10 text-white'
+                : 'text-gray-400 hover:bg-white/5 hover:text-white'
+            }`}
+            style={{ paddingLeft: `${12 + level * 16}px` }}
+          >
+            <File className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate">{item.name}</span>
+          </div>
+        );
+      }
+    });
+  };
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -49,9 +106,74 @@ function App() {
         const code = response.data.code;
         const files = parseCodeToFiles(code);
         setFileTree(files);
-        if (files.length > 0) {
-          setSelectedFile(files[0]);
+        
+        // Expand all folders by default
+        const allFolderPaths = new Set();
+        const collectFolders = (items) => {
+          items.forEach(item => {
+            if (item.type === 'folder') {
+              allFolderPaths.add(item.path);
+              if (item.children) {
+                collectFolders(item.children);
+              }
+            }
+          });
+        };
+        collectFolders(files);
+        setExpandedFolders(allFolderPaths);
+        
+        // Select first file
+        const findFirstFile = (items) => {
+          for (const item of items) {
+            if (item.type === 'file') return item;
+            if (item.type === 'folder' && item.children) {
+              const found = findFirstFile(item.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        const firstFile = findFirstFile(files);
+        if (firstFile) {
+          setSelectedFile(firstFile);
         }
+        
+        // For preview, extract the first HTML file or use full code
+        let previewContent = code;
+        const findPreviewHtmlFile = (items) => {
+          // First, look for preview.html (standalone preview)
+          for (const item of items) {
+            if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
+              return item.content;
+            }
+            if (item.type === 'folder' && item.children) {
+              const found = findPreviewHtmlFile(item.children);
+              if (found) return found;
+            }
+          }
+          
+          // If no preview.html, look for any HTML file
+          for (const item of items) {
+            if (item.type === 'file' && item.name.endsWith('.html')) {
+              return item.content;
+            }
+            if (item.type === 'folder' && item.children) {
+              const found = findPreviewHtmlFile(item.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        
+        const htmlContent = findPreviewHtmlFile(files);
+        if (htmlContent) {
+          // Found HTML file, use it for preview
+          setPreviewCode(htmlContent);
+        } else if (files.length === 1 && files[0].type === 'file') {
+          // Single file, use its content
+          setPreviewCode(files[0].content);
+        }
+        // Otherwise keep the full code for preview
       }
       
       if (response.data.preview_url) {
@@ -94,37 +216,42 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  // Parse code to extract files
+  // Parse code to extract files and build tree structure
   const parseCodeToFiles = (code) => {
     // Check if code contains file markers
-    const fileMarkers = code.match(/\/\/\s*FILE:\s*(.+)|#\s*FILE:\s*(.+)|<!--\s*FILE:\s*(.+)\s*-->/gi);
+    const fileMarkerRegex = /\/\/\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->/gi;
+    const matches = [...code.matchAll(fileMarkerRegex)];
     
-    if (fileMarkers && fileMarkers.length > 0) {
+    if (matches.length > 0) {
       // Multi-file structure
       const files = [];
-      const parts = code.split(/\/\/\s*FILE:\s*|#\s*FILE:\s*|<!--\s*FILE:\s*|\s*-->/gi);
       
-      for (let i = 1; i < parts.length; i += 2) {
-        const filename = parts[i].trim();
-        const content = parts[i + 1] || '';
+      for (let i = 0; i < matches.length; i++) {
+        const match = matches[i];
+        const filename = (match[1] || match[2] || match[3]).trim();
+        const startPos = match.index + match[0].length;
+        const endPos = i < matches.length - 1 ? matches[i + 1].index : code.length;
+        const content = code.substring(startPos, endPos).trim();
+        
         files.push({
-          name: filename,
+          name: filename.split('/').pop(),
           path: filename,
-          content: content.trim(),
+          content: content,
           type: 'file'
         });
       }
       
-      return files;
+      // Build tree structure from flat file list
+      return buildFileTree(files);
     } else {
       // Single file - detect type
       let filename = 'app.py';
       if (code.includes('from flask') || code.includes('Flask(')) {
         filename = 'app.py';
       } else if (code.includes('from django')) {
-        filename = 'app.py';
+        filename = 'manage.py';
       } else if (code.includes('from fastapi')) {
-        filename = 'app.py';
+        filename = 'main.py';
       } else if (code.includes('<!DOCTYPE') || code.includes('<html')) {
         filename = 'index.html';
       } else if (code.includes('import React') || code.includes('from react')) {
@@ -137,9 +264,64 @@ function App() {
         name: filename,
         path: filename,
         content: code,
-        type: 'file'
+        type: 'file',
+        isExpanded: false
       }];
     }
+  };
+
+  // Build hierarchical tree from flat file list
+  const buildFileTree = (files) => {
+    const tree = [];
+    const folderMap = new Map();
+    
+    // Sort files by path to ensure folders come before their contents
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    
+    files.forEach(file => {
+      const parts = file.path.split('/');
+      
+      if (parts.length === 1) {
+        // Root level file
+        tree.push({
+          ...file,
+          isExpanded: false
+        });
+      } else {
+        // Nested file - create folder structure
+        let currentPath = '';
+        let currentLevel = tree;
+        
+        for (let i = 0; i < parts.length - 1; i++) {
+          const folderName = parts[i];
+          currentPath = currentPath ? `${currentPath}/${folderName}` : folderName;
+          
+          let folder = folderMap.get(currentPath);
+          
+          if (!folder) {
+            folder = {
+              name: folderName,
+              path: currentPath,
+              type: 'folder',
+              children: [],
+              isExpanded: true
+            };
+            folderMap.set(currentPath, folder);
+            currentLevel.push(folder);
+          }
+          
+          currentLevel = folder.children;
+        }
+        
+        // Add file to its parent folder
+        currentLevel.push({
+          ...file,
+          isExpanded: false
+        });
+      }
+    });
+    
+    return tree;
   };
 
   return (
@@ -380,23 +562,11 @@ function App() {
                     <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
                       <Folder className="w-4 h-4" />
                       <span>Files</span>
+                      <span className="ml-auto text-gray-500">{fileTree.length}</span>
                     </div>
                   </div>
                   <div className="p-2">
-                    {fileTree.map((file, idx) => (
-                      <div
-                        key={idx}
-                        onClick={() => setSelectedFile(file)}
-                        className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
-                          selectedFile?.path === file.path
-                            ? 'bg-white/10 text-white'
-                            : 'text-gray-400 hover:bg-white/5 hover:text-white'
-                        }`}
-                      >
-                        <File className="w-4 h-4 flex-shrink-0" />
-                        <span className="truncate">{file.name}</span>
-                      </div>
-                    ))}
+                    {renderFileTree(fileTree)}
                   </div>
                 </div>
 
