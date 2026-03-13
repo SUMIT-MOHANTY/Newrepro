@@ -1,9 +1,9 @@
-# Minimal base image - AI agent installs everything dynamically
+# Universal agent runtime with Python and Node.js pre-installed
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install ONLY essentials: curl for health checks, and basic build tools
+# Install Python, Node.js, and essentials in one layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
@@ -11,16 +11,34 @@ RUN apt-get update && \
         ca-certificates \
         git \
         build-essential \
+        python3 \
+        python3-pip \
+        python3-venv \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy intelligent agent entrypoint (bash script, no Python dependency)
-COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
-RUN chmod +x /usr/local/bin/agent-entrypoint.sh
+# Copy supervisor and AI agent scripts
+COPY supervisor.py /usr/local/bin/supervisor.py
+COPY ai-agent.py /usr/local/bin/ai-agent.py
+COPY agent-entrypoint-selfheal.sh /usr/local/bin/agent-entrypoint.sh
+
+# Fix line endings (Windows CRLF to Unix LF)
+RUN sed -i 's/\r$//' /usr/local/bin/supervisor.py && \
+    sed -i 's/\r$//' /usr/local/bin/ai-agent.py && \
+    sed -i 's/\r$//' /usr/local/bin/agent-entrypoint.sh
+
+# Make executable
+RUN chmod +x /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/agent-entrypoint.sh
+
+# Install requests for AI agent
+RUN pip3 install requests
 
 # Health check - try common ports
 HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=5 \
-    CMD curl -f http://localhost:8000/ || curl -f http://localhost:5000/ || curl -f http://localhost:3000/ || exit 1
+    CMD curl -f http://localhost:5000/ || curl -f http://localhost:3000/ || exit 1
 
-ENTRYPOINT ["/usr/local/bin/agent-entrypoint.sh"]
+# Use supervisor as entrypoint (it manages version switching)
+ENTRYPOINT ["/usr/local/bin/supervisor.py"]
