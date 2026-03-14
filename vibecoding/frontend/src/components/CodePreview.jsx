@@ -3,24 +3,24 @@ import { Eye, Code, Copy, Check, RefreshCw, Download, Sparkles } from 'lucide-re
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { cn } from '@/lib/utils';
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
 } from './ui/select';
 import FileTree from './FileTree';
 import EditElementMenu from './EditElementMenu';
 
-const CodePreview = ({ 
-  previewCode, 
-  activeTab, 
-  setActiveTab, 
-  darkMode, 
-  copied, 
-  onCopyCode, 
-  onRefreshPreview, 
+const CodePreview = ({
+  previewCode,
+  activeTab,
+  setActiveTab,
+  darkMode,
+  copied,
+  onCopyCode,
+  onRefreshPreview,
   onDownloadCode,
   codeVersions,
   selectedVersion,
@@ -74,12 +74,12 @@ const CodePreview = ({
   const handleIframeLoad = () => {
     setIsLoading(false);
     console.log('🌐 iframe loaded with src:', containerPreviewUrl || 'data URL');
-    
+
     // Add element selection functionality to iframe
     const iframe = iframeRef.current;
     if (iframe && iframe.contentDocument) {
       const doc = iframe.contentDocument;
-      
+
       // Add click handler to all elements
       const addClickHandlers = () => {
         const allElements = doc.querySelectorAll('*');
@@ -89,28 +89,28 @@ const CodePreview = ({
             e.stopPropagation();
             showEditMenu(element, e);
           });
-          
+
           // Add hover effect
           element.addEventListener('mouseenter', () => {
             element.style.outline = '2px solid #3b82f6';
             element.style.outlineOffset = '2px';
           });
-          
+
           element.addEventListener('mouseleave', () => {
             element.style.outline = '';
             element.style.outlineOffset = '';
           });
         });
       };
-      
+
       // Initial setup
       addClickHandlers();
-      
+
       // Watch for DOM changes
       const observer = new MutationObserver(() => {
         addClickHandlers();
       });
-      
+
       observer.observe(doc.body, {
         childList: true,
         subtree: true
@@ -134,7 +134,7 @@ const CodePreview = ({
   // Handle element property changes
   const handleEditProperties = (element, property, value) => {
     element.style[property] = value;
-    
+
     // Update the code in the parent
     if (onUpdateCode) {
       const iframe = iframeRef.current;
@@ -151,7 +151,7 @@ const CodePreview = ({
     const newHTML = prompt('Edit HTML:', currentHTML);
     if (newHTML !== null && newHTML !== currentHTML) {
       element.outerHTML = newHTML;
-      
+
       // Update the code in the parent
       if (onUpdateCode) {
         const iframe = iframeRef.current;
@@ -173,7 +173,7 @@ const CodePreview = ({
   // Handle element deletion
   const handleDeleteElement = (element) => {
     element.remove();
-    
+
     // Update the code in the parent
     if (onUpdateCode) {
       const iframe = iframeRef.current;
@@ -201,29 +201,29 @@ const CodePreview = ({
   // Format code with proper indentation
   const formatCode = (code) => {
     if (!code) return '';
-    
+
     try {
       let formatted = code;
       let indent = 0;
       const lines = formatted.split('\n');
       const formattedLines = lines.map(line => {
         const trimmed = line.trim();
-        
+
         if (trimmed.startsWith('</') || trimmed.startsWith('}') || trimmed.startsWith(']')) {
           indent = Math.max(0, indent - 1);
         }
-        
+
         const indentedLine = '  '.repeat(indent) + trimmed;
-        
+
         if (trimmed.startsWith('<') && !trimmed.startsWith('</') && !trimmed.endsWith('/>') && !trimmed.includes('</')) {
           indent++;
         } else if (trimmed.endsWith('{') || trimmed.endsWith('[')) {
           indent++;
         }
-        
+
         return indentedLine;
       });
-      
+
       return formattedLines.join('\n');
     } catch {
       return code;
@@ -233,7 +233,7 @@ const CodePreview = ({
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-[#0A0A0F]" style={{ position: 'relative', overflow: 'hidden' }}>
       {/* Tab Bar - Always Visible */}
-      <div 
+      <div
         className="flex items-center gap-2 px-6 py-3 border-b flex-shrink-0"
         style={{
           backgroundColor: darkMode ? '#252526' : '#f9fafb',
@@ -288,7 +288,7 @@ const CodePreview = ({
           <Code className="w-4 h-4 mr-2" />
           Code
         </Button>
-        
+
         <div className="ml-auto flex items-center gap-2" style={{ minWidth: '200px' }}>
           {/* Version Selector - Always visible when code exists */}
           <div className="flex items-center gap-2">
@@ -300,8 +300,8 @@ const CodePreview = ({
               <Select value={String(selectedVersion || codeVersions[codeVersions.length - 1]?.id || '')} onValueChange={(val) => onLoadVersion?.(Number(val))}>
                 <SelectTrigger className={cn(
                   'w-[180px] px-2 py-1 rounded-md text-xs',
-                  darkMode 
-                    ? 'bg-[#2d2d30] text-[#cccccc] border border-[#3e3e42] hover:bg-[#3e3e42]' 
+                  darkMode
+                    ? 'bg-[#2d2d30] text-[#cccccc] border border-[#3e3e42] hover:bg-[#3e3e42]'
                     : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
                 )}>
                   <SelectValue placeholder="Select version" />
@@ -325,15 +325,15 @@ const CodePreview = ({
                 {previewCode ? 'v1 - Current' : 'No versions'}
               </span>
             )}
-            
+
             <Button
               variant="ghost"
               size="icon"
               onClick={onCopyCode}
               className={cn(
                 'h-8 w-8',
-                darkMode 
-                  ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
+                darkMode
+                  ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white'
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
               )}
               title="Copy Code"
@@ -346,8 +346,8 @@ const CodePreview = ({
               onClick={handleRefresh}
               className={cn(
                 'h-8 w-8',
-                darkMode 
-                  ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
+                darkMode
+                  ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white'
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
               )}
               title="Refresh"
@@ -360,8 +360,8 @@ const CodePreview = ({
               onClick={onDownloadCode}
               className={cn(
                 'h-8 w-8',
-                darkMode 
-                  ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white' 
+                darkMode
+                  ? 'hover:bg-[#2d2d30] text-[#cccccc] hover:text-white'
                   : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
               )}
               title="Download"
@@ -373,21 +373,19 @@ const CodePreview = ({
       </div>
 
       {/* Preview/Code Area */}
-      <div 
-        className={`flex-1 min-h-0 flex flex-col overflow-auto`}
+      <div
+        className={`flex-1 min-h-0 flex flex-col overflow-hidden`}
         style={{ flex: '1 1 auto', minHeight: 0 }}
       >
         {!previewCode ? (
           <div className="flex-1 min-h-0 flex items-center justify-center">
             <div className="text-center">
-              <div className={`w-20 h-20 rounded-2xl mx-auto mb-4 flex items-center justify-center ${
-                darkMode ? 'bg-[#2d2d30]' : 'bg-gray-100'
-              }`}>
+              <div className={`w-20 h-20 rounded-2xl mx-auto mb-4 flex items-center justify-center ${darkMode ? 'bg-[#2d2d30]' : 'bg-gray-100'
+                }`}>
                 <Sparkles className={`w-10 h-10 ${darkMode ? 'text-[#858585]' : 'text-gray-400'}`} />
               </div>
-              <h3 className={`text-base font-medium mb-2 ${
-                darkMode ? 'text-[#cccccc]' : 'text-gray-600'
-              }`}>
+              <h3 className={`text-base font-medium mb-2 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'
+                }`}>
                 Start building your idea
               </h3>
               <p className={`text-sm ${darkMode ? 'text-[#858585]' : 'text-gray-400'}`}>
@@ -398,9 +396,8 @@ const CodePreview = ({
         ) : activeTab === 'preview' ? (
           <div className="relative w-full h-full flex flex-col">
             {/* Browser-like Top Bar */}
-            <div className={`flex-shrink-0 border-b ${
-              darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-gray-100 border-gray-300'
-            }`}>
+            <div className={`flex-shrink-0 border-b ${darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-gray-100 border-gray-300'
+              }`}>
               {/* URL Bar */}
               <div className="flex items-center gap-2 px-4 py-2">
                 {/* Navigation Buttons */}
@@ -429,7 +426,7 @@ const CodePreview = ({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </Button>
-                  <Button 
+                  <Button
                     variant="ghost"
                     size="icon"
                     onClick={handleRefresh}
@@ -443,9 +440,8 @@ const CodePreview = ({
                 </div>
 
                 {/* URL Input */}
-                <div className={`flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg ${
-                  darkMode ? 'bg-[#1e1e1e] border border-[#3e3e42]' : 'bg-white border border-gray-300'
-                }`}>
+                <div className={`flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg ${darkMode ? 'bg-[#1e1e1e] border border-[#3e3e42]' : 'bg-white border border-gray-300'
+                  }`}>
                   <svg className={`w-4 h-4 ${darkMode ? 'text-[#858585]' : 'text-gray-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                   </svg>
@@ -453,9 +449,8 @@ const CodePreview = ({
                     type="text"
                     value={containerPreviewUrl || 'your-app.vibecoding.app'}
                     readOnly
-                    className={`flex-1 bg-transparent text-sm outline-none ${
-                      darkMode ? 'text-[#cccccc]' : 'text-gray-700'
-                    }`}
+                    className={`flex-1 bg-transparent text-sm outline-none ${darkMode ? 'text-[#cccccc]' : 'text-gray-700'
+                      }`}
                   />
                   {containerPreviewUrl && (
                     <Button
@@ -474,9 +469,8 @@ const CodePreview = ({
                 {/* Action Buttons */}
                 <div className="flex items-center gap-1">
                   {/* Device Switcher */}
-                  <div className={`flex items-center gap-0.5 mr-2 p-0.5 rounded ${
-                    darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-200'
-                  }`}>
+                  <div className={`flex items-center gap-0.5 mr-2 p-0.5 rounded ${darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-200'
+                    }`}>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -564,27 +558,23 @@ const CodePreview = ({
             </div>
 
             {/* Preview Content */}
-            <div className={`flex-1 relative flex items-center justify-center ${
-              darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-50'
-            }`}>
+            <div className={`flex-1 relative flex items-center justify-center ${darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-50'
+              }`}>
               {isLoading && (
-                <div className={`absolute inset-0 flex items-center justify-center z-10 ${
-                  darkMode ? 'bg-[#1e1e1e] bg-opacity-80' : 'bg-white bg-opacity-80'
-                }`}>
+                <div className={`absolute inset-0 flex items-center justify-center z-10 ${darkMode ? 'bg-[#1e1e1e] bg-opacity-80' : 'bg-white bg-opacity-80'
+                  }`}>
                   <div className="text-center">
-                    <RefreshCw className={`w-8 h-8 animate-spin mx-auto mb-2 ${
-                      darkMode ? 'text-[#858585]' : 'text-gray-400'
-                    }`} />
+                    <RefreshCw className={`w-8 h-8 animate-spin mx-auto mb-2 ${darkMode ? 'text-[#858585]' : 'text-gray-400'
+                      }`} />
                     <p className={`text-sm ${darkMode ? 'text-[#858585]' : 'text-gray-500'}`}>
                       Loading preview...
                     </p>
                   </div>
                 </div>
               )}
-              <div 
-                className={`transition-all duration-300 ${
-                  deviceMode === 'desktop' ? 'w-full h-full' : 'shadow-2xl rounded-lg overflow-hidden'
-                }`}
+              <div
+                className={`transition-all duration-300 ${deviceMode === 'desktop' ? 'w-full h-full' : 'shadow-2xl rounded-lg overflow-hidden'
+                  }`}
                 style={{
                   width: deviceDimensions.width,
                   height: deviceDimensions.height,
@@ -610,19 +600,16 @@ const CodePreview = ({
           </div>
         ) : (
           // Code View with File Tree
-          <div className={`h-full flex ${darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-50'}`}>
+          <div className={`flex-1 flex min-h-0 min-w-0 ${darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-50'}`}>
             {/* Left Sidebar - File Tree */}
-            <div className={`w-64 flex-shrink-0 border-r ${
-              darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-gray-100 border-gray-300'
-            }`}>
-              {/* File Tree Header */}
-              <div className={`px-3 py-2 border-b ${
-                darkMode ? 'border-[#3e3e42]' : 'border-gray-300'
+            <div className={`w-64 flex-shrink-0 border-r ${darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-gray-100 border-gray-300'
               }`}>
+              {/* File Tree Header */}
+              <div className={`px-3 py-2 border-b ${darkMode ? 'border-[#3e3e42]' : 'border-gray-300'
+                }`}>
                 <div className="flex items-center justify-between">
-                  <span className={`text-xs font-semibold uppercase tracking-wide ${
-                    darkMode ? 'text-[#858585]' : 'text-gray-500'
-                  }`}>
+                  <span className={`text-xs font-semibold uppercase tracking-wide ${darkMode ? 'text-[#858585]' : 'text-gray-500'
+                    }`}>
                     Code Files
                   </span>
                   <Button
@@ -643,7 +630,7 @@ const CodePreview = ({
                   </Button>
                 </div>
               </div>
-              
+
               {/* File Tree */}
               <FileTree
                 code={previewCode}
@@ -654,23 +641,20 @@ const CodePreview = ({
             </div>
 
             {/* Right Side - Code Editor */}
-            <div className="flex-1 flex flex-col">
+            <div className="flex-1 flex flex-col min-w-0">
               {/* File Header */}
-              <div className={`px-4 py-2 border-b flex items-center justify-between ${
-                darkMode ? 'bg-[#1e1e1e] border-[#3e3e42]' : 'bg-white border-gray-300'
-              }`}>
+              <div className={`px-4 py-2 border-b flex items-center justify-between ${darkMode ? 'bg-[#1e1e1e] border-[#3e3e42]' : 'bg-white border-gray-300'
+                }`}>
                 <div className="flex items-center gap-2">
                   <Code className={`w-4 h-4 ${darkMode ? 'text-[#858585]' : 'text-gray-500'}`} />
-                  <span className={`text-sm font-medium ${
-                    darkMode ? 'text-[#cccccc]' : 'text-gray-700'
-                  }`}>
+                  <span className={`text-sm font-medium ${darkMode ? 'text-[#cccccc]' : 'text-gray-700'
+                    }`}>
                     {selectedFile || 'Generated Code'}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className={`text-xs ${
-                    darkMode ? 'text-[#858585]' : 'text-gray-500'
-                  }`}>
+                  <span className={`text-xs ${darkMode ? 'text-[#858585]' : 'text-gray-500'
+                    }`}>
                     {(currentFileContent || previewCode).split('\n').length} lines
                   </span>
                   <Button
@@ -689,26 +673,23 @@ const CodePreview = ({
               </div>
 
               {/* Code Content */}
-              <div className={`flex-1 overflow-auto custom-scrollbar ${
-                darkMode ? 'bg-[#1e1e1e]' : 'bg-white'
-              }`}>
+              <div className={`flex-1 overflow-auto custom-scrollbar ${darkMode ? 'bg-[#1e1e1e]' : 'bg-white'
+                }`}>
                 <div className="flex h-full">
                   {/* Line Numbers */}
-                  <div className={`py-4 px-4 select-none border-r ${
-                    darkMode ? 'bg-[#1e1e1e] text-[#858585] border-[#3e3e42]' : 'bg-gray-50 text-gray-400 border-gray-200'
-                  }`} style={{ minWidth: '3.5rem' }}>
+                  <div className={`py-4 px-4 select-none border-r ${darkMode ? 'bg-[#1e1e1e] text-[#858585] border-[#3e3e42]' : 'bg-gray-50 text-gray-400 border-gray-200'
+                    }`} style={{ minWidth: '3.5rem' }}>
                     <pre className="text-xs font-mono leading-relaxed text-right">
                       {(currentFileContent || previewCode).split('\n').map((_, idx) => (
                         <div key={idx} className="h-6 flex items-center justify-end">{idx + 1}</div>
                       ))}
                     </pre>
                   </div>
-                  
+
                   {/* Code Content */}
-                  <div className="flex-1 py-4 px-4 overflow-auto custom-scrollbar bg-transparent">
-                    <pre className={`text-sm font-mono leading-relaxed whitespace-pre w-fit min-w-full ${
-                      darkMode ? 'text-[#d4d4d4]' : 'text-gray-800'
-                    }`}>
+                  <div className="flex-1 py-4 px-4 overflow-x-auto overflow-y-hidden custom-scrollbar bg-transparent min-w-0">
+                    <pre className={`text-sm font-mono leading-relaxed whitespace-pre w-fit min-w-full ${darkMode ? 'text-[#d4d4d4]' : 'text-gray-800'
+                      }`}>
                       <code>{currentFileContent || previewCode}</code>
                     </pre>
                   </div>
@@ -718,7 +699,7 @@ const CodePreview = ({
           </div>
         )}
       </div>
-      
+
       {/* Edit Element Menu */}
       {editMenu.visible && (
         <EditElementMenu

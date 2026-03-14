@@ -1094,65 +1094,13 @@ Please suggest improvements or modifications for this element.`;
         previewCode={previewCode}
         loading={loading}
         onLogout={logout}
+        codeVersions={codeVersions}
+        currentCodeVersion={currentCodeVersion}
+        setCurrentCodeVersion={setCurrentCodeVersion}
+        formatTimestamp={formatTimestamp}
       />
 
-      {codeVersions.length > 0 && (
-        <div className="bg-[#0F0F14] border-b border-white/10 px-6 py-2 flex items-center gap-3">
-          <div className="relative version-history-container">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowVersionHistory(!showVersionHistory)}
-              className="flex items-center gap-2 bg-white/5 hover:bg-white/10 text-white"
-            >
-              <History className="w-4 h-4" />
-              <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
-            </Button>
-            
-            {showVersionHistory && (
-              <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
-                <div className="p-3 border-b border-white/10">
-                  <div className="text-sm font-semibold text-white">Code Version History</div>
-                  <div className="text-xs text-gray-400 mt-1">{codeVersions.length} versions saved</div>
-                </div>
-                <div className="p-2">
-                  {codeVersions.map((version) => (
-                    <Button
-                      key={version.version}
-                      variant="ghost"
-                      onClick={() => {
-                        setCurrentCodeVersion(version.version);
-                        setShowVersionHistory(false);
-                      }}
-                      className={`w-full text-left px-3 py-2 h-auto rounded-lg mb-1 ${
-                        currentCodeVersion === version.version
-                          ? 'bg-purple-600/20 border border-purple-500/30'
-                          : 'hover:bg-white/5'
-                      }`}
-                    >
-                      <div className="w-full">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className={`text-sm font-medium ${
-                            currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
-                          }`}>
-                            Version {version.version}
-                          </span>
-                          <span className="text-xs text-gray-500">
-                            {formatTimestamp(version.timestamp)}
-                          </span>
-                        </div>
-                        <div className="text-xs text-gray-400 line-clamp-2">
-                          {version.prompt}
-                        </div>
-                      </div>
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+
 
       {/* Error/Status Banner */}
       {(errorHeader || deployStatus === 'success') && (
@@ -1179,7 +1127,7 @@ Please suggest improvements or modifications for this element.`;
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Right Panel - Preview/Code */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col min-w-0">
           {/* View Tabs */}
           <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#0F0F14] sticky top-0 z-10">
             <div className="flex items-center gap-1">
@@ -1334,7 +1282,7 @@ Please suggest improvements or modifications for this element.`;
           </div>
 
           {/* Content Area */}
-          <div className="flex-1 relative bg-[#0A0A0F]">
+          <div className="flex-1 relative bg-[#0A0A0F] overflow-hidden min-h-0 flex flex-col">
             {!previewCode ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
@@ -1570,7 +1518,7 @@ Please suggest improvements or modifications for this element.`;
                 )}
               </div>
             ) : (
-              <div className="h-full flex">
+              <div className="flex-1 flex min-h-0 overflow-hidden">
                 {/* File Tree Sidebar */}
                 <div className="w-64 border-r border-white/10 bg-[#0F0F14] overflow-y-auto">
                   <div className="p-3 border-b border-white/10">
@@ -1586,7 +1534,7 @@ Please suggest improvements or modifications for this element.`;
                 </div>
 
                 {/* Code Editor */}
-                <div className="flex-1 flex flex-col">
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden min-w-0">
                   {/* File Header */}
                   <div className="px-4 py-2 border-b border-white/10 bg-[#0F0F14] flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -1603,7 +1551,7 @@ Please suggest improvements or modifications for this element.`;
                   </div>
 
                   {/* Code Content */}
-                  <div className="flex-1 overflow-auto">
+                  <div className="flex-1 overflow-auto min-h-0">
                     <div className="flex h-full">
                       {/* Line Numbers */}
                       <div className="py-4 px-3 select-none bg-[#0A0A0F] text-gray-600 border-r border-white/10">
@@ -1615,7 +1563,7 @@ Please suggest improvements or modifications for this element.`;
                       </div>
                       
                       {/* Code Content */}
-                      <div className="flex-1 py-4 px-4 overflow-x-auto bg-[#0A0A0F]">
+                      <div className="flex-1 py-4 px-4 overflow-x-auto overflow-y-hidden bg-[#0A0A0F] min-w-0">
                         <pre className="text-sm font-mono leading-relaxed text-gray-300">
                           <code>{selectedFile?.content || previewCode}</code>
                         </pre>
