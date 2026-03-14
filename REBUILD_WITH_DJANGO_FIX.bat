@@ -16,7 +16,7 @@ docker rmi vibecoding-agent-runtime:latest 2>nul
 
 echo.
 echo Step 2: Building with Django fixes...
-docker build --no-cache -f backend\docker\agent-runtime.Dockerfile -t vibecoding-agent-runtime:latest backend\docker
+docker build --no-cache -f vibecoding\backend\docker\agent-runtime.Dockerfile -t vibecoding-agent-runtime:latest vibecoding\backend\docker
 
 if %ERRORLEVEL% EQU 0 (
     echo.

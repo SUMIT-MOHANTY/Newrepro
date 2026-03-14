@@ -132,7 +132,7 @@ class ProjectManager:
         """Generate unique project ID"""
         return str(uuid.uuid4())[:8]
     
-    def create_project_directory(self, project_id: str) -> Path:
+    def create_project_directory(self, project_id: str, metadata: dict = None) -> Path:
         """Create project directory with version subdirectories"""
         project_dir = self.artifacts_dir / project_id
         project_dir.mkdir(exist_ok=True)
@@ -142,15 +142,18 @@ class ProjectManager:
         versions_dir.mkdir(exist_ok=True)
         
         # Create project metadata
-        metadata = {
+        project_meta = {
             "project_id": project_id,
+            "name": metadata.get("name") if metadata else f"Project {project_id[:8]}",
+            "description": metadata.get("description") if metadata else "",
+            "owner_id": metadata.get("owner_id") if metadata else None,
             "created_at": datetime.now().isoformat(),
             "versions": [],
             "current_version": None
         }
         
         with open(project_dir / "metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
+            json.dump(project_meta, f, indent=2)
         
         return project_dir
     
@@ -270,6 +273,18 @@ class ProjectManager:
         logger.info(f"✅ Saved version {version_id} for project {project_id}")
         return version_id, main_file_path
     
+    def update_project_metadata(self, project_id: str, metadata: dict):
+        """Update existing project metadata"""
+        project_dir = self.artifacts_dir / project_id
+        metadata_file = project_dir / "metadata.json"
+        
+        if not metadata_file.exists():
+            return False
+            
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        return True
+
     def _update_project_metadata(self, project_id: str, version_id: str, prompt: str):
         """Update project metadata with new version"""
         project_dir = self.artifacts_dir / project_id
@@ -554,8 +569,20 @@ except Exception as e:
         if not metadata_file.exists():
             return None
         
-        with open(metadata_file, 'r') as f:
-            return json.load(f)
+        try:
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            # Fallback for missing fields in legacy projects
+            if "name" not in metadata:
+                metadata["name"] = f"Project {metadata.get('project_id', 'Unknown')[:8]}"
+            if "description" not in metadata:
+                metadata["description"] = ""
+                
+            return metadata
+        except Exception as e:
+            print(f"Error loading metadata for {project_id}: {e}")
+            return None
     
     def get_version_code(self, project_id: str, version_id: str) -> Optional[str]:
         """Get code for specific version"""
@@ -565,10 +592,14 @@ except Exception as e:
         # Try metadata first to find the main file
         metadata_file = version_dir / "metadata.json"
         if metadata_file.exists():
-            with open(metadata_file, 'r') as f:
-                metadata = json.load(f)
+            try:
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
                 main_file = metadata.get('main_file')
-                if main_file:
+            except Exception:
+                main_file = None
+            
+            if main_file:
                     code_file = version_dir / main_file
                     if code_file.exists():
                         with open(code_file, 'r', encoding='utf-8') as f:
@@ -583,17 +614,34 @@ except Exception as e:
         
         return None
     
-    def list_projects(self) -> List[Dict]:
-        """List all projects"""
+    def list_projects(self, owner_id: Optional[int] = None) -> List[Dict]:
+        """List projects, optionally filtered by owner_id"""
         projects = []
         
         for project_dir in self.artifacts_dir.iterdir():
             if project_dir.is_dir():
                 metadata_file = project_dir / "metadata.json"
                 if metadata_file.exists():
-                    with open(metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                    projects.append(metadata)
+                    try:
+                        with open(metadata_file, 'r') as f:
+                            metadata = json.load(f)
+                        
+                        # Fallback for missing fields in legacy projects
+                        if "name" not in metadata:
+                            metadata["name"] = f"Project {metadata.get('project_id', 'Unknown')[:8]}"
+                        if "description" not in metadata:
+                            metadata["description"] = ""
+                        
+                        # Filter by owner_id if specified (STRICT)
+                        if owner_id is not None:
+                            project_owner = metadata.get("owner_id")
+                            # Only show if owner matches
+                            if project_owner != owner_id:
+                                continue
+                            
+                        projects.append(metadata)
+                    except Exception as e:
+                        print(f"Error loading metadata for {project_dir.name}: {e}")
         
         return projects
     

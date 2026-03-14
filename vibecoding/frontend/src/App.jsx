@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut } from 'lucide-react';
-import { Routes, Route, Navigate, useNavigate, Link } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import LandingPage from './components/LandingPage';
 import LoginPage from './components/LoginPage';
@@ -32,11 +32,17 @@ function App() {
     );
   }
 
+  const location = useLocation();
+
   return (
     <Routes>
       <Route path="/" element={
-        isAuthenticated ? <Workspace user={user} logout={logout} /> : 
+        isAuthenticated ? <Workspace key="default" user={user} logout={logout} isAuthenticated={isAuthenticated} /> : 
         <LandingPage onGetStarted={() => navigate('/signup')} onSignIn={() => navigate('/login')} />
+      } />
+      <Route path="/a/:project_id" element={
+        isAuthenticated ? <Workspace key={location.pathname} user={user} logout={logout} isAuthenticated={isAuthenticated} /> : 
+        <Navigate to="/login" replace />
       } />
       <Route path="/login" element={
         isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><LoginPage onSwitchToSignup={() => navigate('/signup')} /></AuthLayout>
@@ -58,40 +64,44 @@ function AuthLayout({ children }) {
   );
 }
 
-function Workspace({ user, logout }) {
+function Workspace({ user, logout, isAuthenticated }) {
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showProjectDropdown, setShowProjectDropdown] = useState(false);
   const [showChatHistory, setShowChatHistory] = useState(false);
   const [showGitPanel, setShowGitPanel] = useState(false);
+  const [projects, setProjects] = useState([]);
   const [allChats, setAllChats] = useState([]);
-  const [currentProjectId, setCurrentProjectId] = useState(() => {
-    // Load or create workspace ID
-    const saved = localStorage.getItem('vibecoding_workspace_id');
-    if (saved) return saved;
-    const newId = `workspace_${Date.now()}`;
-    localStorage.setItem('vibecoding_workspace_id', newId);
-    return newId;
-  });
+  const { project_id: urlParamId } = useParams();
+  
+  // Determine IDs once for all state initializers
+  const params = new URLSearchParams(window.location.search);
+  const activeProjectId = urlParamId || params.get('project_id') || localStorage.getItem('vibecoding_workspace_id') || 'local_workspace';
+  
+  const [currentProjectId, setCurrentProjectId] = useState(activeProjectId);
   
   const [chatVersion, setChatVersion] = useState(() => {
     // Load current chat version for this workspace
-    const saved = localStorage.getItem(`vibecoding_${currentProjectId}_version`);
+    const saved = localStorage.getItem(`vibecoding_${activeProjectId}_version`);
     return saved ? parseInt(saved) : 1;
   });
 
   const [messages, setMessages] = useState(() => {
     // Load chat history for current workspace and version
-    const saved = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`);
+    // Use the chatVersion determined above logic locally or determine it here
+    const vSaved = localStorage.getItem(`vibecoding_${activeProjectId}_version`);
+    const v = vSaved ? parseInt(vSaved) : 1;
+    const saved = localStorage.getItem(`vibecoding_chat_${activeProjectId}_v${v}`);
     return saved ? JSON.parse(saved) : [];
   });
   
   const [codeVersions, setCodeVersions] = useState(() => {
-    // Load code versions for current chat
-    const saved = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`);
+    // Code versions are now project-wide
+    const saved = localStorage.getItem(`vibecoding_code_versions_${activeProjectId}`);
     return saved ? JSON.parse(saved) : [];
   });
   
   const [currentCodeVersion, setCurrentCodeVersion] = useState(() => {
-    const saved = localStorage.getItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`);
+    const saved = localStorage.getItem(`vibecoding_current_code_version_${activeProjectId}`);
     return saved ? parseInt(saved) : 0;
   });
   
@@ -116,40 +126,56 @@ function Workspace({ user, logout }) {
   const [errorHeader, setErrorHeader] = useState(null);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const iframeRef = useRef(null);
+  const prevProjectIdRef = useRef(activeProjectId);
 
-  const loadChatHistory = () => {
-    const chats = [];
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith(`vibecoding_chat_${currentProjectId}_v`)) {
-            const vStr = key.split('_v')[1];
-            const v = parseInt(vStr);
-            if (!isNaN(v)) {
-                try {
-                    const msgsStr = localStorage.getItem(key);
-                    const msgs = msgsStr ? JSON.parse(msgsStr) : [];
-                    const codeVersStr = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${v}`);
-                    const codeVers = codeVersStr ? JSON.parse(codeVersStr) : [];
-                    
-                    chats.push({
-                        version: v,
-                        messageCount: msgs.length,
-                        title: msgs.find(m => m.role === 'user')?.content.substring(0, 40) + '...' || `Chat ${v}`,
-                        timestamp: msgs.length > 0 ? msgs[0].timestamp : null
-                    });
-                } catch(e) {}
-            }
-        }
+  useEffect(() => {
+    prevProjectIdRef.current = currentProjectId;
+  }, [currentProjectId]);
+
+  const fetchProjects = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/projects`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+      });
+      setProjects(response.data.projects || []);
+    } catch (error) {
+      console.error('Failed to fetch projects:', error);
     }
-    chats.sort((a, b) => b.version - a.version);
-    setAllChats(chats);
   };
 
   useEffect(() => {
-    if (showChatHistory) {
-      loadChatHistory();
+    const initProject = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const urlProjectId = params.get('project_id') || window.location.pathname.split('/a/')[1];
+      const projectName = params.get('name');
+
+      if (urlProjectId) {
+        try {
+          // Attempt to create/ensure project exists on backend
+          await axios.post(`${API_BASE_URL}/api/projects`, {
+            project_id: urlProjectId,
+            name: projectName || urlProjectId
+          }, {
+             headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+          });
+          
+          setCurrentProjectId(urlProjectId);
+          localStorage.setItem('vibecoding_workspace_id', urlProjectId);
+          
+          // Clear URL params without reloading
+          window.history.replaceState({}, '', `/a/${urlProjectId}`);
+        } catch (error) {
+          console.error('Failed to initialize project from URL:', error);
+        }
+      }
+      
+      fetchProjects();
+    };
+
+    if (isAuthenticated) {
+      initProject();
     }
-  }, [showChatHistory, currentProjectId]);
+  }, [isAuthenticated]);
 
   const loadHistoricalChat = (v) => {
     setChatVersion(v);
@@ -184,7 +210,8 @@ function Workspace({ user, logout }) {
 
   // Save chat history whenever messages change
   useEffect(() => {
-    if (messages.length > 0) {
+    // Only save if we are on the same project we started this effect with
+    if (messages.length > 0 && currentProjectId === prevProjectIdRef.current) {
       localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
       localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
     }
@@ -192,11 +219,12 @@ function Workspace({ user, logout }) {
 
   // Save code versions whenever they change
   useEffect(() => {
-    if (codeVersions.length > 0) {
-      localStorage.setItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`, JSON.stringify(codeVersions));
-      localStorage.setItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`, currentCodeVersion.toString());
+    // Only save if we are on the same project we started this effect with
+    if (codeVersions.length > 0 && currentProjectId === prevProjectIdRef.current) {
+      localStorage.setItem(`vibecoding_code_versions_${currentProjectId}`, JSON.stringify(codeVersions));
+      localStorage.setItem(`vibecoding_current_code_version_${currentProjectId}`, currentCodeVersion.toString());
     }
-  }, [codeVersions, currentCodeVersion, currentProjectId, chatVersion]);
+  }, [codeVersions, currentCodeVersion, currentProjectId]);
 
   // Force iframe reload when preview URL changes
   useEffect(() => {
@@ -301,17 +329,17 @@ function Workspace({ user, logout }) {
 
   // Function to start a new chat
   const handleNewChat = () => {
+    // If there is current code that isn't saved as a version, save it first
+    if (previewCode && codeVersions.length === 0) {
+      saveCodeVersion(previewCode, previewUrl, fileTree, 'Snapshot before new chat');
+    }
+
     const newVersion = chatVersion + 1;
     setChatVersion(newVersion);
     setMessages([]);
-    setPreviewCode('');
-    setPreviewUrl('');
-    setFileTree([]);
-    setSelectedFile(null);
+    // Do NOT clear codeVersions or previewCode - they are project-wide history now
     setEditMode(false);
     setSelectedElement(null);
-    setCodeVersions([]);
-    setCurrentCodeVersion(0);
     localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
   };
 
@@ -1086,6 +1114,11 @@ Please suggest improvements or modifications for this element.`;
         user={user}
         showUserMenu={showUserMenu}
         setShowUserMenu={setShowUserMenu}
+        projects={projects}
+        currentProjectId={currentProjectId}
+        setCurrentProjectId={setCurrentProjectId}
+        showProjectDropdown={showProjectDropdown}
+        setShowProjectDropdown={setShowProjectDropdown}
         onNewChat={handleNewChat}
         onGitClick={() => setShowGitPanel(true)}
         onDeploy={handleDeploy}

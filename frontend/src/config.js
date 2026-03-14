@@ -2,6 +2,7 @@
 // Uses environment variables with fallback defaults
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const VIBE_WORKSPACE_URL = import.meta.env.VITE_VIBE_WORKSPACE_URL || 'http://localhost:3000';
 
 // API Endpoints
 export const API_ENDPOINTS = {

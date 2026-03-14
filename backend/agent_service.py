@@ -2085,10 +2085,13 @@ On the following lines, provide a short 1-3 sentence justification."""
 AGENT_RUNTIME_IMAGE = "brd-agent-runtime:v5"
 AGENT_RUNTIME_DOCKERFILE = os.path.join(
     os.path.dirname(__file__),
+    "..",
+    "vibecoding",
+    "backend",
     "docker",
     "agent-runtime.Dockerfile",
 )
-AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(__file__)
+AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(AGENT_RUNTIME_DOCKERFILE)
 DOCKER_BASE_IMAGE = AGENT_RUNTIME_IMAGE
 
 

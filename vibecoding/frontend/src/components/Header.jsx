@@ -1,8 +1,11 @@
 import React from 'react';
-import { Zap, Plus, History, RefreshCw, Check, LogOut } from 'lucide-react';
+import { Zap, Plus, History, RefreshCw, Check, LogOut, Folder, ChevronDown, LayoutGrid } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from './ui/button';
 import bourntecLogo from '../../assets/bourntec_logo.png';
+import axios from 'axios';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const Header = ({
   chatVersion,
@@ -17,12 +20,39 @@ const Header = ({
   previewCode,
   loading,
   onLogout,
+  projects = [],
+  currentProjectId,
+  setCurrentProjectId,
+  showProjectDropdown,
+  setShowProjectDropdown,
   codeVersions = [],
   currentCodeVersion = 1,
   setCurrentCodeVersion,
   formatTimestamp,
 }) => {
   const [showVersionHistory, setShowVersionHistory] = React.useState(false);
+  const navigate = useNavigate();
+
+  const handleCreateProject = async () => {
+    try {
+      const name = prompt('Enter project name:');
+      if (!name) return;
+      
+      const response = await axios.post(`${API_BASE_URL}/api/projects`, { name }, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+      });
+      
+      const newProjectId = response.data.project_id;
+      setCurrentProjectId(newProjectId);
+      localStorage.setItem('vibecoding_workspace_id', newProjectId);
+      setShowProjectDropdown(false);
+      window.location.href = `/a/${newProjectId}`;
+    } catch (error) {
+      console.error('Failed to create project:', error);
+    }
+  };
+
+  const currentProject = projects.find(p => p.project_id === currentProjectId) || { name: 'Select Project' };
 
   return (
     <div className="h-14 border-b border-white/10 flex items-center justify-between px-6 bg-[#0F0F14]">
@@ -45,6 +75,77 @@ const Header = ({
         
         {user && (
           <>
+            <div className="h-6 w-px bg-white/10" />
+            
+            {/* Project Selection Dropdown */}
+            <div className="relative project-dropdown-container">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowProjectDropdown(!showProjectDropdown)}
+                className="flex items-center gap-2 bg-white/5 hover:bg-white/10 text-white h-9 px-3 border border-white/10"
+              >
+                <Folder className="w-4 h-4 text-purple-400" />
+                <span className="text-sm font-medium truncate max-w-[150px]">{currentProject.name}</span>
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showProjectDropdown ? 'rotate-180' : ''}`} />
+              </Button>
+
+              {showProjectDropdown && (
+                <div className="absolute top-full left-0 mt-2 w-64 bg-[#1a1a1f] border border-white/10 rounded-xl shadow-2xl z-[100] backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="p-3 border-b border-white/10 flex items-center justify-between">
+                    <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Your Projects</span>
+                    <button 
+                      onClick={handleCreateProject}
+                      className="p-1.5 rounded-lg bg-purple-600/20 text-purple-400 hover:bg-purple-600/30 transition-colors"
+                      title="Create New Project"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
+                  
+                  <div className="p-2 max-h-[400px] overflow-y-auto">
+                    {projects.length === 0 ? (
+                      <div className="py-8 px-4 text-center">
+                        <LayoutGrid className="w-8 h-8 text-gray-600 mx-auto mb-2 opacity-50" />
+                        <p className="text-xs text-gray-500">No projects found</p>
+                      </div>
+                    ) : (
+                      projects.map((project) => (
+                        <button
+                          key={project.project_id}
+                          onClick={() => {
+                            localStorage.setItem('vibecoding_workspace_id', project.project_id);
+                            window.location.href = `/a/${project.project_id}`;
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all mb-1 ${
+                            currentProjectId === project.project_id
+                              ? 'bg-purple-600/20 border border-purple-500/30 text-purple-300'
+                              : 'hover:bg-white/5 border border-transparent text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          <div className={`w-2 h-2 rounded-full ${currentProjectId === project.project_id ? 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]' : 'bg-gray-700'}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium truncate">{project.name}</div>
+                            <div className="text-[10px] opacity-50 truncate">{project.project_id}</div>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  
+                  <div className="p-2 border-t border-white/10">
+                    <button
+                      onClick={handleCreateProject}
+                      className="w-full flex items-center justify-center gap-2 py-2 text-xs font-bold text-white bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all shadow-lg active:scale-95"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Create New Project
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="h-6 w-px bg-white/10" />
             <span className="text-sm text-gray-400 whitespace-nowrap">Chat v{chatVersion}</span>
             

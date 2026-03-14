@@ -45,14 +45,17 @@ class GenerateResponse(BaseModel):
     tool_calls_log: Optional[List[dict]] = None
 
 class ProjectCreateRequest(BaseModel):
+    project_id: Optional[str] = None
     name: Optional[str] = None
+    description: Optional[str] = None
 
 class ProjectResponse(BaseModel):
     project_id: str
-    name: str
+    name: Optional[str] = None
     created_at: str
     versions: List[dict]
     current_version: Optional[str] = None
+    owner_id: Optional[int] = None
 
 class ProjectListResponse(BaseModel):
     projects: List[ProjectResponse]
@@ -1176,37 +1179,51 @@ async def health_check():
 # Project Management Endpoints
 
 @app.post("/api/projects", response_model=ProjectResponse)
-async def create_project(request: ProjectCreateRequest):
+async def create_project(request: ProjectCreateRequest, user: dict = Depends(get_current_user)):
     try:
-        project_id = project_manager.generate_project_id()
-        project_dir = project_manager.create_project_directory(project_id)
+        project_id = request.project_id or project_manager.generate_project_id()
+        user_id = user["id"]
+        
+        # Check if project already exists
+        project_info = project_manager.get_project_info(project_id)
+        if project_info:
+            # If project exists but has no owner, claim it for this user
+            if project_info.get("owner_id") is None:
+                project_info["owner_id"] = user_id
+                project_manager.update_project_metadata(project_id, project_info)
+            return ProjectResponse(**project_info)
+            
+        project_manager.create_project_directory(project_id, metadata={
+            "name": request.name,
+            "description": request.description,
+            "owner_id": user_id
+        })
         
         project_info = project_manager.get_project_info(project_id)
-        project_info["name"] = request.name or f"Project {project_id[:8]}"
-        
-        # Update project metadata with name
-        with open(project_dir / "metadata.json", "w") as f:
-            import json
-            json.dump(project_info, f, indent=2)
-        
         return ProjectResponse(**project_info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/projects", response_model=ProjectListResponse)
-async def list_projects():
+async def list_projects(user: dict = Depends(get_current_user)):
     try:
-        projects = project_manager.list_projects()
+        user_id = user["id"]
+        projects = project_manager.list_projects(owner_id=user_id)
         return ProjectListResponse(projects=projects)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str):
+async def get_project(project_id: str, user: dict = Depends(get_current_user)):
     try:
         project_info = project_manager.get_project_info(project_id)
         if not project_info:
             raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Check ownership (Strict)
+        if project_info.get("owner_id") is not None and project_info.get("owner_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
         return ProjectResponse(**project_info)
     except HTTPException:
         raise
