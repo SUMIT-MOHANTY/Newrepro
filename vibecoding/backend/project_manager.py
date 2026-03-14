@@ -415,7 +415,9 @@ except Exception as e:
                         'PYTHONUNBUFFERED': '1',
                         'PORT': str(port),
                         'INITIAL_VERSION': version_id,
-                        'NVIDIA_API_KEY': os.environ.get('NVIDIA_API_KEY', ''),
+                        'NVIDIA_API_KEY': os.environ.get('AI_API_KEY', ''),
+                        'AI_API_URL': os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions'),
+                        'AI_MODEL': os.environ.get('AI_MODEL', 'openai/gpt-oss-120b'),
                     }
                 )
                 
