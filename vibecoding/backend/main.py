@@ -89,7 +89,7 @@ Use these tools when:
 2. ALWAYS include ALL necessary files (HTML, CSS, JS, config files, etc.)
 3. ALWAYS write ACTUAL CODE in every file - NEVER descriptions or comments only
 4. ALWAYS use file markers: // FILE: path/to/filename.ext
-5. MINIMUM 4 files for any project (main file + templates/components + styles + config)
+
 
 ⚠️ FLASK COMPATIBILITY (IMPORTANT):
 - NEVER use @app.before_first_request (deprecated in Flask 3.0+)

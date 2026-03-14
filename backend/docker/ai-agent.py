@@ -32,7 +32,8 @@ class AIAgent:
                     os.chdir(self.workspace)
         
         self.api_key = os.environ.get('NVIDIA_API_KEY', '')
-        self.api_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        self.api_url = os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions')
+        self.ai_model = os.environ.get('AI_MODEL', 'openai/gpt-oss-120b')  # Read from environment
         
     def log(self, emoji, message):
         print(f"{emoji} {message}", flush=True)
@@ -228,6 +229,47 @@ class AIAgent:
                 except:
                     pass
         
+        # Fix 9: Missing webpack or webpack-cli
+        if 'webpack' in error_log and ('not found' in error_log.lower() or 'command failed' in error_log.lower()):
+            self.log("🔧", "Installing webpack...")
+            try:
+                subprocess.run(['npm', 'install', '--save-dev', 'webpack', 'webpack-cli', 'webpack-dev-server'], 
+                             check=True, timeout=120)
+                fixed = True
+            except:
+                pass
+        
+        # Fix 10: Missing react-scripts
+        if 'react-scripts' in error_log and ('not found' in error_log.lower() or 'command failed' in error_log.lower()):
+            self.log("🔧", "Installing react-scripts...")
+            try:
+                subprocess.run(['npm', 'install', '--save', 'react-scripts'], 
+                             check=True, timeout=120)
+                fixed = True
+            except:
+                pass
+        
+        # Fix 11: Missing Node.js dependencies (general)
+        if project_type == 'nodejs' and os.path.exists('package.json'):
+            if 'cannot find module' in error_log.lower() or 'error:' in error_log.lower() or 'not found' in error_log.lower():
+                self.log("🔧", "Reinstalling Node.js dependencies...")
+                try:
+                    # Clear node_modules and reinstall
+                    subprocess.run(['rm', '-rf', 'node_modules'], timeout=30)
+                    subprocess.run(['npm', 'install'], check=True, timeout=180)
+                    fixed = True
+                except:
+                    pass
+        
+        # Fix 12: Missing tzdata for Django
+        if 'tzdata' in error_log and 'ModuleNotFoundError' in error_log:
+            self.log("🔧", "Installing tzdata...")
+            try:
+                subprocess.run(['pip3', 'install', '-q', 'tzdata'], check=True, timeout=60)
+                fixed = True
+            except:
+                pass
+        
         if fixed:
             self.log("✅", "Basic fix applied")
         
@@ -236,7 +278,7 @@ class AIAgent:
     def call_ai_for_fix(self, error_log, project_type, files_content):
         """Call AI to analyze error and suggest fix"""
         if not self.api_key:
-            self.log("⚠️", "No NVIDIA_API_KEY found in environment")
+            self.log("❌", "No NVIDIA_API_KEY found in environment")
             return None
         
         self.log("🤖", "Consulting AI for error analysis...")
@@ -275,8 +317,13 @@ Respond in JSON format:
         
         try:
             import requests
+            import json
             
-            self.log("📡", f"Calling AI API: {self.api_url}")
+            self.log("📡", f"Calling AI API...")
+            self.log("🔍", f"Error snippet: {error_log[-200:]}")
+            self.log("🔑", f"API Key present: {bool(self.api_key)}")
+            self.log("🌐", f"API URL: {self.api_url}")
+            self.log("🤖", f"Model: {self.ai_model}")
             
             response = requests.post(
                 self.api_url,
@@ -285,7 +332,7 @@ Respond in JSON format:
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+                    "model": self.ai_model,
                     "messages": [
                         {"role": "system", "content": "You are an expert debugging AI that analyzes errors and provides precise fixes in JSON format."},
                         {"role": "user", "content": prompt}
@@ -301,24 +348,36 @@ Respond in JSON format:
             if response.status_code == 200:
                 ai_response = response.json()['choices'][0]['message']['content']
                 self.log("✅", "AI response received")
+                self.log("📄", f"AI response preview: {ai_response[:200]}...")
                 
                 # Extract JSON from response
                 import re
                 json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
                 if json_match:
-                    import json
                     fix_data = json.loads(json_match.group())
                     self.log("🔍", f"AI diagnosis: {fix_data.get('diagnosis', 'N/A')[:100]}")
                     return fix_data
                 else:
                     self.log("⚠️", "Could not parse JSON from AI response")
+                    self.log("📄", f"Full response: {ai_response}")
+            elif response.status_code == 401:
+                self.log("❌", "AI API authentication failed - check NVIDIA_API_KEY")
+            elif response.status_code == 429:
+                self.log("❌", "AI API rate limit exceeded - too many requests")
             else:
-                self.log("❌", f"AI API error: {response.status_code} - {response.text[:200]}")
+                self.log("❌", f"AI API error: {response.status_code}")
+                self.log("📄", f"Response: {response.text[:500]}")
             
         except ImportError:
-            self.log("❌", "requests library not installed")
+            self.log("❌", "requests library not installed in container")
+        except requests.exceptions.Timeout:
+            self.log("❌", "AI API request timed out (30s)")
+        except requests.exceptions.ConnectionError:
+            self.log("❌", "Cannot connect to AI API - check internet connection")
+        except json.JSONDecodeError as e:
+            self.log("❌", f"Failed to parse AI response as JSON: {e}")
         except Exception as e:
-            self.log("❌", f"AI call failed: {e}")
+            self.log("❌", f"AI call failed: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
         
@@ -329,22 +388,28 @@ Respond in JSON format:
         if not fix_data:
             return False
         
-        self.log("🔧", f"Applying fix: {fix_data.get('diagnosis', 'Unknown issue')}")
+        self.log("🔧", f"Applying fix: {fix_data.get('diagnosis', 'Unknown issue')[:100]}")
         
         fix_type = fix_data.get('fix_type')
         details = fix_data.get('fix_details', {})
         
         try:
             if fix_type == 'install_package':
-                package = details.get('package') or details.get('command', '').replace('pip install ', '')
-                self.log("📦", f"Installing package: {package}")
-                subprocess.run(['pip3', 'install', '-q', package], check=True)
+                package = details.get('package') or details.get('command', '').replace('pip install ', '').replace('npm install ', '')
+                
+                # Detect if it's Python or Node.js package
+                if 'npm' in details.get('command', '') or os.path.exists('package.json'):
+                    self.log("📦", f"Installing Node.js package: {package}")
+                    subprocess.run(['npm', 'install', package], check=True, timeout=120)
+                else:
+                    self.log("📦", f"Installing Python package: {package}")
+                    subprocess.run(['pip3', 'install', '-q', package], check=True, timeout=60)
                 return True
             
             elif fix_type == 'run_command':
                 command = details.get('command')
                 self.log("⚙️", f"Running command: {command}")
-                subprocess.run(command, shell=True, check=True)
+                subprocess.run(command, shell=True, check=True, timeout=120)
                 return True
             
             elif fix_type == 'code_change':
@@ -374,10 +439,19 @@ Respond in JSON format:
             elif fix_type == 'config_change':
                 # Handle configuration changes
                 self.log("⚙️", "Applying configuration changes...")
+                command = details.get('command')
+                if command:
+                    subprocess.run(command, shell=True, check=True, timeout=60)
                 return True
         
+        except subprocess.TimeoutExpired:
+            self.log("❌", "Fix command timed out")
+            return False
+        except subprocess.CalledProcessError as e:
+            self.log("❌", f"Fix command failed with exit code {e.returncode}")
+            return False
         except Exception as e:
-            self.log("❌", f"Failed to apply fix: {e}")
+            self.log("❌", f"Failed to apply fix: {type(e).__name__}: {e}")
             return False
         
         return False
@@ -404,6 +478,15 @@ Respond in JSON format:
     def run_with_healing(self):
         """Main loop: run app, detect errors, heal, retry"""
         self.log("🤖", "AI-Powered Self-Healing Agent Starting...")
+        
+        # Log AI configuration
+        if self.api_key:
+            masked_key = self.api_key[:8] + '...' + self.api_key[-4:] if len(self.api_key) > 12 else '***'
+            self.log("🔑", f"AI API Key: {masked_key}")
+            self.log("🌐", f"API URL: {self.api_url}")
+            self.log("🤖", f"AI Model: {self.ai_model}")
+        else:
+            self.log("⚠️", "No AI API key - AI fixes disabled")
         self.log("📂", f"Workspace: {self.workspace}")
         
         # Verify workspace has files
@@ -562,17 +645,30 @@ Respond in JSON format:
                     continue
                 
                 # If basic fixes didn't work, try AI
+                self.log("🤖", "Basic fixes didn't work, trying AI...")
                 if self.api_key:
+                    self.log("🔑", "API key found, calling AI...")
                     fix_data = self.call_ai_for_fix(error_log, project_type, files_content)
                     
-                    if fix_data and fix_data.get('confidence') != 'low':
-                        if self.apply_fix(fix_data):
-                            self.log("✅", "AI fix applied, retrying...")
-                            self.retry_count += 1
-                            files_content = self.get_project_files_content()
-                            continue
+                    if fix_data:
+                        self.log("📋", f"AI Response: {json.dumps(fix_data, indent=2)}")
+                        
+                        if fix_data.get('confidence') == 'low':
+                            self.log("⚠️", "AI confidence is low, skipping fix")
+                        else:
+                            self.log("🔧", f"AI suggests: {fix_data.get('fix_type')}")
+                            if self.apply_fix(fix_data):
+                                self.log("✅", "AI fix applied, retrying...")
+                                self.retry_count += 1
+                                files_content = self.get_project_files_content()
+                                continue
+                            else:
+                                self.log("❌", "AI fix failed to apply")
+                    else:
+                        self.log("❌", "AI returned no fix suggestion")
                 else:
-                    self.log("⚠️", "No AI API key available, using basic fixes only")
+                    self.log("⚠️", "No AI API key available (NVIDIA_API_KEY not set)")
+                    self.log("💡", "Set NVIDIA_API_KEY environment variable to enable AI fixes")
                 
                 # No fix available or fix failed
                 self.log("❌", "Could not auto-fix the error")
