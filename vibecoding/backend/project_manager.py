@@ -114,6 +114,44 @@ class ProjectManager:
                 return None
         return self._docker_client
     
+    def _build_runtime_image(self, image_name: str) -> bool:
+        """Build the runtime image from Dockerfile"""
+        try:
+            dockerfile_path = Path(__file__).parent / "docker" / "agent-runtime.Dockerfile"
+            if not dockerfile_path.exists():
+                logger.error(f"❌ Dockerfile not found at {dockerfile_path}")
+                return False
+            
+            logger.info(f"🏗️ Building image {image_name} from {dockerfile_path}...")
+            # Use the docker/ folder as context
+            image, build_logs = self.docker_client.images.build(
+                path=str(dockerfile_path.parent),
+                dockerfile=dockerfile_path.name,
+                tag=image_name,
+                rm=True
+            )
+            logger.info(f"✅ Successfully built {image_name}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to build image: {e}")
+            return False
+
+    def _ensure_image_exists(self, image_name: str) -> bool:
+        """Check if image exists, build if it's the standard runtime"""
+        if self.docker_client is None:
+            return False
+            
+        try:
+            self.docker_client.images.get(image_name)
+            return True
+        except docker.errors.ImageNotFound:
+            if "vibecoding-agent-runtime" in image_name:
+                return self._build_runtime_image(image_name)
+            return False
+        except Exception as e:
+            logger.error(f"Error checking image: {e}")
+            return False
+
     def _stream_container_logs(self, container, container_name: str):
         """Stream container logs to console in a separate thread"""
         try:
@@ -366,7 +404,7 @@ except Exception as e:
                 metadata = json.load(f)
             
             runtime = metadata.get('runtime', 'static-html')
-            docker_image = metadata.get('docker_image', 'vibecoding-code-executor:latest')
+            docker_image = metadata.get('docker_image', 'vibecoding-agent-runtime:latest')
             port = metadata.get('port', 80)
             
             logger.info(f"🚀 Switching to version {version_id}")
@@ -384,6 +422,11 @@ except Exception as e:
         if self.docker_client is None:
             logger.error("❌ Docker client not available - cannot create container")
             logger.error("Please ensure Docker Desktop is installed and running")
+            return None
+        
+        # Ensure image exists before running
+        if not self._ensure_image_exists(docker_image):
+            logger.error(f"❌ Image {docker_image} not found and could not be built")
             return None
         
         try:

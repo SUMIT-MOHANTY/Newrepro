@@ -131,10 +131,18 @@ class VersionSupervisor:
         
         # Initial boot
         init_v = os.environ.get('INITIAL_VERSION')
+        prompt = os.environ.get('USER_PROMPT')
+
         if init_v:
             self.start_version(init_v)
+        elif prompt:
+            self.log("🎨", "Found USER_PROMPT. Triggering Stage 1 Codegen...")
+            threading.Thread(
+                target=lambda: subprocess.run(["python3", "/usr/local/bin/codegen.py"]), 
+                daemon=True
+            ).start()
             
-        server.settimeout(5.0)
+        server.settimeout(1.0)
         try:
             while self.running:
                 try:

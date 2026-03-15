@@ -4,24 +4,29 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PORT=8080
 
-# Install ONLY the bare minimum to run the Python AI Agent
+# Install bare minimum + Node.js (for React builds)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
     python3 \
     python3-pip \
+    python3-venv \
+    gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /project
 
-# Copy the "Intelligence" (Supervisor and AI Agent)
+# Copy the "Intelligence" (Supervisor, AI Agent, and Codegen)
 COPY supervisor.py /usr/local/bin/supervisor.py
 COPY ai-agent.py /usr/local/bin/ai-agent.py
+COPY codegen.py /usr/local/bin/codegen.py
 
 # Fix line endings (Windows CRLF → Unix LF) and make executable
-RUN sed -i 's/\r$//' /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py && \
-    chmod +x /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py
+RUN sed -i 's/\r$//' /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py && \
+    chmod +x /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py
 
 # Install absolute essentials for the Agent's own AI communication
 RUN pip3 install requests

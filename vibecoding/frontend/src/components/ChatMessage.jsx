@@ -6,30 +6,29 @@ import remarkGfm from 'remark-gfm';
 // Extract file structure from code
 const extractFileStructure = (code) => {
   if (!code) return [];
-  
+
   const files = [];
-  
-  // Check for specific sections/components
-  const sections = [];
-  if (code.toLowerCase().includes('hero')) sections.push({ name: 'Hero', type: 'section' });
-  if (code.toLowerCase().includes('about')) sections.push({ name: 'About', type: 'section' });
-  if (code.toLowerCase().includes('project')) sections.push({ name: 'Projects', type: 'section' });
-  if (code.toLowerCase().includes('contact')) sections.push({ name: 'Contact', type: 'section' });
-  if (code.toLowerCase().includes('navbar') || code.toLowerCase().includes('<nav')) sections.push({ name: 'Navbar', type: 'section' });
-  if (code.toLowerCase().includes('footer')) sections.push({ name: 'Footer', type: 'section' });
-  if (code.toLowerCase().includes('home')) sections.push({ name: 'Home Page', type: 'section' });
-  
-  // Check for HTML structure
-  if (code.includes('<!DOCTYPE html>') || code.includes('<html')) {
-    files.push({ name: 'index', type: 'html' });
+  // Match file markers like // FILE: path/to/file.ext
+  const fileMarkerRegex = /\/\/\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->/g;
+  let match;
+
+  while ((match = fileMarkerRegex.exec(code)) !== null) {
+    const fileName = (match[1] || match[2] || match[3]).trim();
+    const extension = fileName.split('.').pop().toLowerCase();
+    files.push({
+      name: fileName,
+      type: extension === 'html' ? 'html' : extension === 'js' || extension === 'jsx' ? 'js' : 'text'
+    });
   }
-  
-  // Check for CSS/Tailwind
-  if (code.includes('tailwind')) {
-    files.push({ name: 'tailwind.config', type: 'config' });
+
+  // Fallback to old logic if no markers found (legacy support)
+  if (files.length === 0) {
+    if (code.includes('<!DOCTYPE html>') || code.includes('<html')) {
+      files.push({ name: 'index', type: 'html' });
+    }
   }
-  
-  return [...files, ...sections];
+
+  return files;
 };
 
 // Tool Calls Display Component
@@ -68,7 +67,7 @@ const ToolCallsDisplay = ({ toolCalls, darkMode }) => {
   // Try to parse result preview for richer display
   const parseResultPreview = (preview) => {
     try {
-      const data = JSON.parse(preview.replace(/\.\.\.$/,''));
+      const data = JSON.parse(preview.replace(/\.\.\.$/, ''));
       return data;
     } catch {
       return null;
@@ -81,7 +80,7 @@ const ToolCallsDisplay = ({ toolCalls, darkMode }) => {
         const info = getToolInfo(tc);
         const isExpanded = expandedIdx === idx;
         const parsed = parseResultPreview(tc.result_preview || '');
-        
+
         return (
           <div key={idx} className={`rounded-md border text-xs ${info.bgColor}`}>
             <button
@@ -96,7 +95,7 @@ const ToolCallsDisplay = ({ toolCalls, darkMode }) => {
               {parsed?.status === 'success' && (
                 <CheckCircle2 className="w-3 h-3 text-green-500 flex-shrink-0" />
               )}
-              {isExpanded 
+              {isExpanded
                 ? <ChevronDown className={`w-3 h-3 flex-shrink-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} />
                 : <ChevronRight className={`w-3 h-3 flex-shrink-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} />
               }
@@ -139,20 +138,48 @@ const ToolCallsDisplay = ({ toolCalls, darkMode }) => {
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 
-const ChatMessage = ({ 
-  message, 
-  darkMode, 
-  codeVersions, 
-  selectedVersion, 
-  onLoadVersion, 
-  onCopyMessage, 
-  onRegenerate 
+const ChatMessage = ({
+  message,
+  darkMode,
+  codeVersions,
+  selectedVersion,
+  onLoadVersion,
+  onCopyMessage,
+  onRegenerate
 }) => {
-  const msgVersion = message.code ? codeVersions.find(v => 
+  const msgVersion = message.code ? codeVersions.find(v =>
     Math.abs(new Date(v.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000
   ) : null;
 
   const isUser = message.role === 'user';
+
+  // Function to clean message content for non-technical users
+  const cleanMessageContent = (content) => {
+    if (!content || isUser) return content;
+
+    // 1. Remove anything starting from the first // FILE: marker
+    let cleaned = content.split(/\/\/\s*FILE:|\/\*\s*FILE:|#\s*FILE:|<!--\s*FILE:/i)[0];
+
+    // 2. Remove code blocks that look like full file contents
+    // Usually these are inside the // FILE: sections we already split, 
+    // but just in case they aren't, we can do some extra cleaning
+    cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
+      // If the code block is very long (more than 10 lines), it's probably file content
+      if (match.split('\n').length > 10) return '';
+      // If it contains markers, it's definitely file content
+      if (match.includes('// FILE:')) return '';
+      return match;
+    });
+
+    return cleaned.trim();
+  };
+
+  const displayContent = cleanMessageContent(message.content);
+
+  // If we cleaned EVERYTHING out and there's no narrative, show a default success message
+  const finalContent = (!isUser && !displayContent && message.code)
+    ? "I've built the application according to your requirements. You can see the preview on the preview section."
+    : displayContent;
 
   return (
     <div className="message-item">
@@ -184,27 +211,27 @@ const ChatMessage = ({
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
             <div className="text-sm leading-relaxed whitespace-pre-wrap break-words markdown-body overflow-x-hidden">
-              <ReactMarkdown 
+              <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  p: ({node, ...props}) => <p className="mb-3 last:mb-0 break-words" {...props} />,
-                  a: ({node, ...props}) => <a className="text-blue-500 hover:text-blue-400 hover:underline transition-colors break-words [word-break:break-word]" target="_blank" rel="noreferrer" {...props} />,
-                  ul: ({node, ...props}) => <ul className="list-disc list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
-                  ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
-                  li: ({node, ...props}) => <li className="pl-1 break-words" {...props} />,
-                  h1: ({node, ...props}) => <h1 className="text-xl font-bold mb-3 mt-5 break-words" {...props} />,
-                  h2: ({node, ...props}) => <h2 className="text-lg font-bold mb-3 mt-4 break-words" {...props} />,
-                  h3: ({node, ...props}) => <h3 className="text-md font-semibold mb-2 mt-3 break-words" {...props} />,
-                  strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
-                  table: ({node, ...props}) => (
+                  p: ({ node, ...props }) => <p className="mb-3 last:mb-0 break-words" {...props} />,
+                  a: ({ node, ...props }) => <a className="text-blue-500 hover:text-blue-400 hover:underline transition-colors break-words [word-break:break-word]" target="_blank" rel="noreferrer" {...props} />,
+                  ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
+                  ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
+                  li: ({ node, ...props }) => <li className="pl-1 break-words" {...props} />,
+                  h1: ({ node, ...props }) => <h1 className="text-xl font-bold mb-3 mt-5 break-words" {...props} />,
+                  h2: ({ node, ...props }) => <h2 className="text-lg font-bold mb-3 mt-4 break-words" {...props} />,
+                  h3: ({ node, ...props }) => <h3 className="text-md font-semibold mb-2 mt-3 break-words" {...props} />,
+                  strong: ({ node, ...props }) => <strong className="font-semibold" {...props} />,
+                  table: ({ node, ...props }) => (
                     <div className="overflow-x-auto mb-4 border rounded-lg border-white/10 dark:border-white/10 border-black/10">
                       <table className="w-full text-sm text-left divide-y divide-white/10 dark:divide-white/10 divide-black/10 break-words" {...props} />
                     </div>
                   ),
-                  thead: ({node, ...props}) => <thead className="bg-black/5 dark:bg-white/5" {...props} />,
-                  th: ({node, ...props}) => <th className="px-4 py-3 font-medium" {...props} />,
-                  td: ({node, ...props}) => <td className="px-4 py-3 border-t border-white/10 dark:border-white/10 border-black/10" {...props} />,
-                  code: ({node, inline, className, children, ...props}) => {
+                  thead: ({ node, ...props }) => <thead className="bg-black/5 dark:bg-white/5" {...props} />,
+                  th: ({ node, ...props }) => <th className="px-4 py-3 font-medium" {...props} />,
+                  td: ({ node, ...props }) => <td className="px-4 py-3 border-t border-white/10 dark:border-white/10 border-black/10" {...props} />,
+                  code: ({ node, inline, className, children, ...props }) => {
                     const match = /language-(\w+)/.exec(className || '');
                     return inline ? (
                       <code className="bg-black/10 dark:bg-white/10 rounded px-1.5 py-0.5 text-[0.85em] font-mono break-words" {...props}>
@@ -225,13 +252,13 @@ const ChatMessage = ({
                       </div>
                     );
                   },
-                  blockquote: ({node, ...props}) => (
+                  blockquote: ({ node, ...props }) => (
                     <blockquote className="border-l-4 border-blue-500/50 pl-4 py-2 mb-3 text-gray-700 dark:text-gray-300 italic bg-blue-500/5 dark:bg-blue-500/10 rounded-r-lg break-words [word-break:break-word]" {...props} />
                   ),
-                  hr: ({node, ...props}) => <hr className="my-4 border-white/10 dark:border-white/10 border-black/10" {...props} />
+                  hr: ({ node, ...props }) => <hr className="my-4 border-white/10 dark:border-white/10 border-black/10" {...props} />
                 }}
               >
-                {message.content}
+                {finalContent}
               </ReactMarkdown>
             </div>
             {message.code && (
@@ -240,36 +267,31 @@ const ChatMessage = ({
                 {(() => {
                   const fileStructure = extractFileStructure(message.code);
                   return fileStructure.length > 0 && (
-                    <div className={`mt-3 pt-3 border-t ${
-                      message.role === 'user'
+                    <div className={`mt-3 pt-3 border-t ${message.role === 'user'
                         ? 'border-white/20'
                         : darkMode ? 'border-white/10' : 'border-gray-200'
-                    }`}>
-                      <div className={`flex flex-wrap gap-2 ${
-                        message.role === 'user'
+                      }`}>
+                      <div className={`flex flex-wrap gap-2 ${message.role === 'user'
                           ? 'text-white/90'
                           : darkMode ? 'text-[#cccccc]' : 'text-gray-700'
-                      }`}>
+                        }`}>
                         {fileStructure.map((file, idx) => (
                           <div
                             key={idx}
-                            className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded ${
-                              message.role === 'user'
+                            className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded ${message.role === 'user'
                                 ? 'bg-white/10'
                                 : darkMode
                                   ? 'bg-[#0A0A0F]'
                                   : 'bg-white border border-gray-200'
-                            }`}
+                              }`}
                           >
-                            {file.type === 'html' || file.type === 'config' ? (
+                            {file.type === 'html' || file.type === 'js' ? (
                               <FileCode className="w-3 h-3" />
                             ) : (
                               <FileText className="w-3 h-3" />
                             )}
                             <span className="font-medium">
-                              {file.type === 'section' ? '' : 'Wrote '}
-                              {file.name}
-                              {file.type === 'section' ? '' : file.type === 'html' ? '.html' : file.type === 'config' ? '.js' : ''}
+                              Wrote {file.name}
                             </span>
                           </div>
                         ))}
@@ -277,18 +299,16 @@ const ChatMessage = ({
                     </div>
                   );
                 })()}
-                
+
                 {/* Code Generated Badge */}
-                <div className={`mt-3 pt-3 border-t flex items-center justify-between ${
-                  message.role === 'user'
+                <div className={`mt-3 pt-3 border-t flex items-center justify-between ${message.role === 'user'
                     ? 'border-white/20'
                     : darkMode ? 'border-white/10' : 'border-gray-200'
-                }`}>
-                  <div className={`flex items-center gap-2 text-xs ${
-                    message.role === 'user'
+                  }`}>
+                  <div className={`flex items-center gap-2 text-xs ${message.role === 'user'
                       ? 'text-white/80'
                       : darkMode ? 'text-gray-500' : 'text-gray-500'
-                  }`}>
+                    }`}>
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     <span>Code generated</span>
                   </div>
@@ -297,8 +317,7 @@ const ChatMessage = ({
                       variant="ghost"
                       size="sm"
                       onClick={() => onLoadVersion(msgVersion.id)}
-                      className={`text-xs px-2 py-1 h-auto ${
-                        selectedVersion === msgVersion.id
+                      className={`text-xs px-2 py-1 h-auto ${selectedVersion === msgVersion.id
                           ? darkMode
                             ? 'bg-purple-600 text-white hover:bg-purple-700'
                             : 'bg-blue-500 text-white hover:bg-blue-600'
@@ -307,7 +326,7 @@ const ChatMessage = ({
                             : darkMode
                               ? 'text-gray-500 hover:bg-white/10'
                               : 'text-gray-500 hover:bg-gray-200'
-                      }`}
+                        }`}
                     >
                       {selectedVersion === msgVersion.id ? 'Current' : 'View'}
                     </Button>

@@ -2082,7 +2082,7 @@ On the following lines, provide a short 1-3 sentence justification."""
 
 # ── Docker Configuration ────────────────────────────────────────────────────
 
-AGENT_RUNTIME_IMAGE = "brd-agent-runtime:v5"
+AGENT_RUNTIME_IMAGE = "vibecoding-agent-runtime:latest"
 AGENT_RUNTIME_DOCKERFILE = os.path.join(
     os.path.dirname(__file__),
     "..",

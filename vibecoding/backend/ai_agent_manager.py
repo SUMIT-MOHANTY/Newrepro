@@ -32,11 +32,11 @@ class AIAgentManager:
         try:
             logger.info("🏗️ Building AI agent image...")
             
-            # Build from Dockerfile.ai-agent
+            # Build from docker/agent-runtime.Dockerfile
             image, build_logs = self.docker_client.images.build(
-                path=str(Path(__file__).parent),
-                dockerfile="Dockerfile.ai-agent",
-                tag="vibecoding-ai-agent:latest",
+                path=str(Path(__file__).parent / "docker"),
+                dockerfile="agent-runtime.Dockerfile",
+                tag="vibecoding-agent-runtime:latest",
                 rm=True
             )
             
@@ -60,7 +60,7 @@ class AIAgentManager:
         try:
             # Check if image exists, build if not
             try:
-                self.docker_client.images.get("vibecoding-ai-agent:latest")
+                self.docker_client.images.get("vibecoding-agent-runtime:latest")
             except docker.errors.ImageNotFound:
                 logger.info("Image not found, building...")
                 if not self.build_agent_image():
@@ -83,11 +83,11 @@ class AIAgentManager:
                 env_vars["OPENAI_API_KEY"] = api_key
             
             self.agent_container = self.docker_client.containers.run(
-                "vibecoding-ai-agent:latest",
+                "vibecoding-agent-runtime:latest",
                 name="vibecoding-ai-agent",
                 detach=True,
                 remove=False,
-                ports={'8001/tcp': None},  # Auto-assign port
+                ports={'8080/tcp': None},  # Auto-assign port
                 environment=env_vars,
                 volumes={
                     '/var/run/docker.sock': {
@@ -99,7 +99,7 @@ class AIAgentManager:
             
             # Get assigned port
             self.agent_container.reload()
-            port_bindings = self.agent_container.ports.get('8001/tcp', [])
+            port_bindings = self.agent_container.ports.get('8080/tcp', [])
             if not port_bindings:
                 logger.error("No port binding found")
                 return None
