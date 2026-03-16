@@ -10,122 +10,54 @@ logger = logging.getLogger(__name__)
 
 
 class AgentRouter:
-    """Routes user messages to appropriate agent"""
-    
-    # Keywords that indicate code generation request
-    CODE_KEYWORDS = [
-        'create', 'build', 'make', 'generate', 'develop',
-        'code', 'app', 'application', 'website', 'web app',
-        'api', 'backend', 'frontend', 'fullstack',
-        'project', 'program', 'script', 'tool',
-        'implement', 'write code', 'develop',
-        'todo', 'calculator', 'dashboard', 'portal',
-        'system', 'platform', 'service'
-    ]
-    
-    # Phrases that indicate general chat
-    CHAT_PHRASES = [
-        'what is', 'what are', 'how does', 'how do',
-        'explain', 'tell me about', 'difference between',
-        'should i', 'which is better', 'recommend',
-        'hello', 'hi', 'hey', 'thanks', 'thank you',
-        'help', 'can you help'
-    ]
+    """Routes user messages to appropriate agent using AI classification"""
     
     @classmethod
-    def route(cls, message: str) -> Tuple[str, float]:
+    async def route(cls, message: str) -> Tuple[str, float]:
         """
-        Determine which agent should handle the message
-        
-        Returns:
-            Tuple of (agent_type, confidence)
-            agent_type: 'code' or 'chat'
-            confidence: 0.0 to 1.0
+        Determine which agent should handle the message using an LLM call.
         """
-        message_lower = message.lower()
+        from ai_config import ai_config
         
-        # Check for explicit code generation requests
-        code_score = cls._calculate_code_score(message_lower)
-        chat_score = cls._calculate_chat_score(message_lower)
-        
-        logger.info(f"Routing scores - Code: {code_score:.2f}, Chat: {chat_score:.2f}")
-        
-        if code_score > chat_score:
-            return 'code', code_score
-        else:
-            return 'chat', chat_score
-    
+        # Guard for very short greetings/greetings
+        greetings = ['hi', 'hello', 'hey', 'thanks', 'thank you']
+        if message.lower().strip() in greetings:
+            return 'chat', 1.0
+
+        prompt = f"""Classify the following user message into ONE of two categories:
+1. 'CODE': If the user is asking to build, create, generate, modify, or implement a project, app, software, or script.
+2. 'CHAT': If the user is asking a general question, seeking an explanation, or just having a conversation.
+
+USER MESSAGE: "{message}"
+
+Return ONLY the word 'CODE' or 'CHAT'. No other text."""
+
+        try:
+            # Using a very low max_tokens for speed
+            response = ai_config.make_request([
+                {"role": "system", "content": "You are a routing assistant. Respond with 'CODE' or 'CHAT' only."},
+                {"role": "user", "content": prompt}
+            ])
+            
+            result = ""
+            if "choices" in response and len(response["choices"]) > 0:
+                result = response["choices"][0]["message"].get("content", "").upper()
+            
+            if 'CODE' in result:
+                return 'code', 0.9
+            else:
+                return 'chat', 0.9
+
+        except Exception as e:
+            logger.error(f"Router AI error: {e}")
+            # Fallback to a very basic keyword check if AI fails
+            if any(k in message.lower() for k in ['create', 'build', 'make', 'generate', 'code', 'app']):
+                return 'code', 0.5
+            return 'chat', 0.5
+
     @classmethod
-    def _calculate_code_score(cls, message: str) -> float:
-        """Calculate likelihood this is a code generation request"""
-        score = 0.0
-        
-        # Check for code keywords
-        for keyword in cls.CODE_KEYWORDS:
-            if keyword in message:
-                score += 0.3
-        
-        # Check for programming language mentions
-        languages = ['python', 'javascript', 'java', 'go', 'rust', 'php', 'ruby', 'c++', 'c#']
-        for lang in languages:
-            if lang in message:
-                score += 0.2
-        
-        # Check for framework mentions
-        frameworks = ['flask', 'django', 'fastapi', 'react', 'vue', 'angular', 'express', 'nextjs']
-        for fw in frameworks:
-            if fw in message:
-                score += 0.2
-        
-        # Check for action verbs
-        action_verbs = ['create', 'build', 'make', 'develop', 'implement', 'write']
-        for verb in action_verbs:
-            if message.startswith(verb):
-                score += 0.4
-        
-        return min(score, 1.0)
-    
-    @classmethod
-    def _calculate_chat_score(cls, message: str) -> float:
-        """Calculate likelihood this is a general chat request"""
-        score = 0.0
-        
-        # Check for chat phrases
-        for phrase in cls.CHAT_PHRASES:
-            if phrase in message:
-                score += 0.4
-        
-        # Check for question marks (usually questions, not code requests)
-        if '?' in message and not any(kw in message for kw in ['how to create', 'how to build']):
-            score += 0.3
-        
-        # Short messages are usually chat
-        if len(message.split()) < 5:
-            score += 0.2
-        
-        return min(score, 1.0)
-    
-    @classmethod
-    def is_code_request(cls, message: str) -> bool:
+    async def is_code_request(cls, message: str) -> bool:
         """Simple boolean check if message is a code request"""
-        agent_type, confidence = cls.route(message)
-        return agent_type == 'code' and confidence > 0.3
+        agent_type, _ = await cls.route(message)
+        return agent_type == 'code'
 
-
-# Test the router
-if __name__ == "__main__":
-    test_messages = [
-        "What is Flask?",
-        "Create a todo app with Flask",
-        "How does React work?",
-        "Build a REST API with FastAPI",
-        "Hello!",
-        "Make a calculator in Python",
-        "Explain the difference between Flask and Django",
-        "Generate a dashboard with charts"
-    ]
-    
-    for msg in test_messages:
-        agent_type, confidence = AgentRouter.route(msg)
-        print(f"{msg}")
-        print(f"  → {agent_type.upper()} agent (confidence: {confidence:.2f})\n")

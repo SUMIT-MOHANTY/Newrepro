@@ -184,18 +184,27 @@ const Header = ({
                         >
                           <div className="w-full">
                             <div className="flex items-center justify-between mb-1">
-                              <span className={`text-xs font-bold ${
-                                currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
-                              }`}>
-                                Version {version.version}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-xs font-bold ${
+                                  currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
+                                }`}>
+                                  Version {version.version}
+                                </span>
+                                {version.versionId && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-600/20 text-green-400 font-mono">
+                                    {version.versionId}
+                                  </span>
+                                )}
+                              </div>
                               <span className="text-[10px] text-gray-500">
                                 {formatTimestamp(version.timestamp)}
                               </span>
                             </div>
-                            <div className="text-[11px] text-gray-400 line-clamp-2 leading-relaxed italic">
-                              "{version.prompt}"
-                            </div>
+                            {version.prompt && (
+                              <div className="text-[11px] text-gray-400 line-clamp-2 leading-relaxed italic">
+                                "{version.prompt}"
+                              </div>
+                            )}
                           </div>
                         </Button>
                       ))}

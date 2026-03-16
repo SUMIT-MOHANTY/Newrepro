@@ -312,12 +312,12 @@ const ChatMessage = ({
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     <span>Code generated</span>
                   </div>
-                  {msgVersion && (
+                  {(msgVersion || message.versionId) && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => onLoadVersion(msgVersion.id)}
-                      className={`text-xs px-2 py-1 h-auto ${selectedVersion === msgVersion.id
+                      onClick={() => onLoadVersion(message.versionId || msgVersion.id)}
+                      className={`text-xs px-2 py-1 h-auto ${selectedVersion === (message.versionId || msgVersion.id)
                         ? darkMode
                           ? 'bg-purple-600 text-white hover:bg-purple-700'
                           : 'bg-blue-500 text-white hover:bg-blue-600'
@@ -328,7 +328,7 @@ const ChatMessage = ({
                             : 'text-gray-500 hover:bg-gray-200'
                         }`}
                     >
-                      {selectedVersion === msgVersion.id ? 'Current' : 'View'}
+                      {selectedVersion === (message.versionId || msgVersion.id) ? 'Current' : 'Checkpoint'}
                     </Button>
                   )}
                 </div>

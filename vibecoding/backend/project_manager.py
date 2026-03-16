@@ -12,8 +12,8 @@ from datetime import datetime
 from pathlib import Path
 import json
 import logging
-from runtime_detector import runtime_detector
 from git_manager import git_manager
+from ai_config import ai_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -94,7 +94,11 @@ EDITOR_INJECTION_SCRIPT = """
 class ProjectManager:
     """Manages container-based code execution and project artifacts"""
     
-    def __init__(self, artifacts_dir: str = "project_artifacts"):
+    DEFAULT_IMAGE = os.environ.get("AGENT_IMAGE", "vibecoding-agent-runtime:latest")
+    DEFAULT_PORT = int(os.environ.get("AGENT_PORT", "8080"))
+    DEFAULT_RUNTIME = os.environ.get("DEFAULT_RUNTIME", "universal")
+
+    def __init__(self, artifacts_dir: str = os.environ.get("ARTIFACTS_DIR", "project_artifacts")):
         self.artifacts_dir = Path(artifacts_dir)
         self.artifacts_dir.mkdir(exist_ok=True)
         self._docker_client = None
@@ -204,7 +208,7 @@ class ProjectManager:
         # Generate version ID
         version_id = f"v{len(list(project_dir.glob('versions/*'))) + 1:03d}"
         version_dir = project_dir / "versions" / version_id
-        version_dir.mkdir(exist_ok=True)
+        version_dir.mkdir(parents=True, exist_ok=True)
         
         # Check if code contains file markers
         import re
@@ -242,13 +246,14 @@ class ProjectManager:
                 
                 logger.info(f"  ✅ Saved: {filename}")
                 
-                # Detect runtime from first file if not detected yet
+                # Set universal defaults
                 if runtime_name is None:
-                    runtime_name, runtime_config = runtime_detector.detect(file_content)
+                    runtime_name = self.DEFAULT_RUNTIME
+                    runtime_config = {'image': self.DEFAULT_IMAGE, 'port': self.DEFAULT_PORT}
                 
-                # Set main file (first Python/JS/HTML file)
+                # Set main file
                 if main_file_path is None:
-                    if filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx')):
+                    if filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx', '.go', '.rs', '.java')):
                         main_file_path = file_path
             
             # If no main file found, use first file
@@ -256,9 +261,10 @@ class ProjectManager:
                 filename = (matches[0].group(1) or matches[0].group(2) or matches[0].group(3)).strip()
                 main_file_path = version_dir / filename
         else:
-            # Single file - use auto-detection
-            runtime_name, runtime_config = runtime_detector.detect(code)
-            filename = runtime_detector.get_filename(runtime_name)
+            # Single file - use universal defaults
+            runtime_name = "universal"
+            runtime_config = {'image': self.DEFAULT_IMAGE, 'port': self.DEFAULT_PORT}
+            filename = "app.py" if any(k in code for k in ["import ", "def ", "class "]) else "index.html"
             
             logger.info(f"📄 Single file detected")
             logger.info(f"🔍 Detected runtime: {runtime_name}")
@@ -305,11 +311,128 @@ class ProjectManager:
         # Sync to git workspace for version control
         try:
             git_manager.sync_workspace(project_id, version_dir)
+            # Auto-commit the new version
+            git_manager.auto_commit_version(project_id, version_id, prompt)
         except Exception as e:
-            logger.error(f"Failed to sync git workspace: {e}")
+            logger.error(f"Failed to sync or commit git workspace: {e}")
 
         logger.info(f"✅ Saved version {version_id} for project {project_id}")
         return version_id, main_file_path
+
+    def archive_workspace_to_version(self, project_id: str, prompt: str = "Chat Session Snapshot") -> str:
+        """Create a permanent version folder from the current workspace state."""
+        project_dir = self.artifacts_dir / project_id
+        workspace_dir = project_dir / "workspace"
+        
+        if not workspace_dir.exists():
+            return "v000"
+
+        # 1. Determine next version ID
+        versions_dir = project_dir / "versions"
+        versions_dir.mkdir(exist_ok=True)
+        version_id = f"v{len(list(versions_dir.iterdir())) + 1:03d}"
+        version_dir = versions_dir / version_id
+        version_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 2. Copy files (excluding .git)
+        import shutil
+        for item in workspace_dir.iterdir():
+            if item.name == ".git":
+                continue
+            if item.is_dir():
+                shutil.copytree(item, version_dir / item.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, version_dir / item.name)
+        
+        # 3. Save metadata
+        metadata = {
+            "version_id": version_id,
+            "prompt": prompt,
+            "created_at": datetime.now().isoformat(),
+            "is_archive": True
+        }
+        with open(version_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+            
+        # Update project metadata
+        self._update_project_metadata(project_id, version_id, prompt)
+        
+        logger.info(f"📁 Archived workspace to version {version_id}")
+        return version_id
+
+    def update_workspace_from_code(self, project_id: str, code: str, prompt: str) -> Tuple[str, Path]:
+        """Update the git workspace directly with new code and commit it."""
+        project_dir = self.artifacts_dir / project_id
+        workspace_dir = project_dir / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure git is initialized
+        if not (workspace_dir / ".git").exists():
+            git_manager.init_repo(project_id)
+            git_manager._run_git_command(project_id, ["config", "user.email", "vibe@engineer.com"])
+            git_manager._run_git_command(project_id, ["config", "user.name", "Vibe Engineer"])
+
+        # 1. Parse code into files and write to workspace
+        import re
+        file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
+        matches = list(re.finditer(file_marker_regex, code))
+        
+        main_file_path = None
+        
+        if matches and len(matches) > 0:
+            for i, match in enumerate(matches):
+                filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                start_pos = match.end()
+                end_pos = matches[i + 1].start() if i < len(matches) - 1 else len(code)
+                file_content = code[start_pos:end_pos].strip()
+                
+                file_path = workspace_dir / filename
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Inject editor script into HTML files
+                if filename.endswith('.html'):
+                    if '</body>' in file_content:
+                        file_content = file_content.replace('</body>', f'{EDITOR_INJECTION_SCRIPT}</body>')
+                    else:
+                        file_content += EDITOR_INJECTION_SCRIPT
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(file_content)
+                
+                if main_file_path is None and filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx')):
+                    main_file_path = file_path
+            
+            if main_file_path is None:
+                filename = (matches[0].group(1) or matches[0].group(2) or matches[0].group(3)).strip()
+                main_file_path = workspace_dir / filename
+        else:
+            # Single file
+            filename = "app.py" if any(k in code for k in ["import ", "def ", "class "]) else "index.html"
+            if filename.endswith('.html'):
+                if '</body>' in code:
+                    code = code.replace('</body>', f'{EDITOR_INJECTION_SCRIPT}</body>')
+                else:
+                    code += EDITOR_INJECTION_SCRIPT
+            
+            main_file_path = workspace_dir / filename
+            with open(main_file_path, 'w', encoding='utf-8') as f:
+                f.write(code)
+
+        # 2. Commit the changes
+        git_manager.add_files(project_id)
+        # Check if there are changes to commit
+        status = git_manager.get_status(project_id)
+        has_changes = status.get("modified_files") or status.get("added_files") or status.get("deleted_files") or status.get("untracked_files")
+        
+        if has_changes:
+            git_manager.commit(project_id, prompt)
+        
+        # Get the commit hash to use as version_id/checkpoint_id
+        hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
+        commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
+        
+        logger.info(f"✅ Committed workspace changes: {commit_hash[:8]}")
+        return commit_hash, main_file_path
     
     def update_project_metadata(self, project_id: str, metadata: dict):
         """Update existing project metadata"""
@@ -341,31 +464,23 @@ class ProjectManager:
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
     
+    SUPERVISOR_SOCKET = os.environ.get("SUPERVISOR_SOCKET", "/tmp/supervisor.sock")
+
     def _send_switch_command(self, container, version_id: str) -> bool:
         """Send version switch command to supervisor inside container"""
         try:
-            import json
-            command = json.dumps({'action': 'switch', 'version_id': version_id})
-            
-            # Use docker exec to send command via socket
-            # Create a Python script to send the command properly
+            # Create a Python script to send the command properly via the supervisor socket
             python_cmd = f"""
-import socket
-import json
-import sys
-
+import socket, json, sys
 try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect('/tmp/supervisor.sock')
-    s.send(json.dumps({{'action': 'switch', 'version_id': '{version_id}'}}).encode())
-    response = s.recv(1024).decode()
-    print(response)
-    s.close()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect('{self.SUPERVISOR_SOCKET}')
+        s.send(json.dumps({{'action': 'switch', 'version_id': '{version_id}'}}).encode())
+        print(s.recv(1024).decode())
 except Exception as e:
     print(f'Error: {{e}}', file=sys.stderr)
     sys.exit(1)
 """
-            
             exec_result = container.exec_run(
                 ['python3', '-c', python_cmd],
                 demux=True
@@ -374,22 +489,31 @@ except Exception as e:
             if exec_result.exit_code == 0:
                 response = exec_result.output[0].decode() if exec_result.output[0] else ""
                 logger.info(f"📨 Supervisor response: {response}")
-                
-                # Check if response indicates success
-                try:
-                    resp_data = json.loads(response)
-                    return resp_data.get('success', False)
-                except:
-                    return True  # Assume success if we got a response
+                return True
             else:
                 error = exec_result.output[1].decode() if exec_result.output[1] else ""
                 logger.error(f"❌ Failed to send switch command: {error}")
                 return False
-                
         except Exception as e:
             logger.error(f"❌ Error sending switch command: {e}")
-            import traceback
-            traceback.print_exc()
+            return False
+
+    async def switch_to_workspace(self, project_id: str) -> bool:
+        """Switch the container to run from the workspace directory (Git state)"""
+        container_name = f"vibecoding_{project_id}"
+        
+        if self.docker_client is None:
+            return False
+            
+        try:
+            container = self.docker_client.containers.get(container_name)
+            if container.status != 'running':
+                container.start()
+                await asyncio.sleep(2)
+                
+            return self._send_switch_command(container, "workspace")
+        except Exception as e:
+            logger.error(f"Failed to switch to workspace: {e}")
             return False
     
     async def create_container_for_code(self, project_id: str, version_id: str) -> Optional[str]:
@@ -405,11 +529,15 @@ except Exception as e:
             
             runtime = metadata.get('runtime', 'static-html')
             docker_image = metadata.get('docker_image', 'vibecoding-agent-runtime:latest')
-            port = metadata.get('port', 80)
+            
+            # Support multiple ports
+            primary_port = metadata.get('port', 80)
+            additional_ports = metadata.get('additional_ports', [])
+            all_ports = [primary_port] + [p for p in additional_ports if p != primary_port]
             
             logger.info(f"🚀 Switching to version {version_id}")
             logger.info(f"🔍 Runtime: {runtime}")
-            logger.info(f"🔌 Port: {port}")
+            logger.info(f"🔌 Ports: {all_ports}")
             
         except Exception as e:
             logger.error(f"Failed to read metadata: {e}")
@@ -462,11 +590,14 @@ except Exception as e:
             
             # Create new container only if doesn't exist or switch failed
             if existing_container is None:
+                # Prepare port bindings for all required ports
+                port_bindings = {f'{p}/tcp': None for p in all_ports}
+                
                 # Mount the ENTIRE project directory so all versions are accessible
                 container = self.docker_client.containers.run(
                     docker_image,
                     name=container_name,
-                    ports={f'{port}/tcp': None},  # Auto-assign host port
+                    ports=port_bindings,
                     volumes={
                         str(project_dir.absolute()): {
                             'bind': '/project',
@@ -478,11 +609,12 @@ except Exception as e:
                     remove=False,
                     environment={
                         'PYTHONUNBUFFERED': '1',
-                        'PORT': str(port),
+                        'PORT': str(primary_port),
+                        'ADDITIONAL_PORTS': ','.join(map(str, additional_ports)),
                         'INITIAL_VERSION': version_id,
-                        'NVIDIA_API_KEY': os.environ.get('AI_API_KEY', ''),
-                        'AI_API_URL': os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions'),
-                        'AI_MODEL': os.environ.get('AI_MODEL', 'openai/gpt-oss-120b'),
+                        'AI_API_KEY': ai_config.api_key,
+                        'AI_API_URL': ai_config.base_url,
+                        'AI_MODEL': ai_config.model,
                     }
                 )
                 
@@ -503,14 +635,14 @@ except Exception as e:
             log_thread.start()
             self.log_threads[container_name] = log_thread
             
-            # Get assigned host port
+            # Get assigned host port for the primary port
             container.reload()
-            port_bindings = container.ports.get(f'{port}/tcp', [])
-            if not port_bindings:
-                logger.error(f"No port binding found for {port}/tcp")
+            primary_port_bindings = container.ports.get(f'{primary_port}/tcp', [])
+            if not primary_port_bindings:
+                logger.error(f"No port binding found for {primary_port}/tcp")
                 return None
             
-            host_port = port_bindings[0].get('HostPort')
+            host_port = primary_port_bindings[0].get('HostPort')
             if not host_port:
                 logger.error(f"Failed to get host port")
                 return None
@@ -602,11 +734,32 @@ except Exception as e:
             
             logger.info(f"Created project ZIP: {zip_path}")
             return zip_path
-            
         except Exception as e:
             logger.error(f"Failed to create ZIP: {str(e)}")
             return None
     
+    async def save_chat_version(self, project_id: str, version_id: str, messages: List[Dict]):
+        """Save chat history for a specific project version"""
+        project_dir = self.artifacts_dir / project_id
+        chats_dir = project_dir / "chats"
+        chats_dir.mkdir(exist_ok=True)
+        
+        chat_file = chats_dir / f"{version_id}.json"
+        with open(chat_file, 'w', encoding='utf-8') as f:
+            json.dump(messages, f, indent=2)
+        return True
+
+    async def get_chat_version(self, project_id: str, version_id: str) -> Optional[List[Dict]]:
+        """Get chat history for a specific project version"""
+        project_dir = self.artifacts_dir / project_id
+        chat_file = project_dir / "chats" / f"{version_id}.json"
+        
+        if not chat_file.exists():
+            return None
+            
+        with open(chat_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
     def get_project_info(self, project_id: str) -> Optional[Dict]:
         """Get project information"""
         project_dir = self.artifacts_dir / project_id
@@ -633,7 +786,14 @@ except Exception as e:
     def get_version_code(self, project_id: str, version_id: str) -> Optional[str]:
         """Get code for specific version"""
         project_dir = self.artifacts_dir / project_id
-        version_dir = project_dir / "versions" / version_id
+        
+        if version_id == "workspace":
+            version_dir = project_dir / "workspace"
+        else:
+            version_dir = project_dir / "versions" / version_id
+        
+        if not version_dir.exists():
+            return None
         
         # Try metadata first to find the main file or entrypoint
         metadata_file = version_dir / "metadata.json"
@@ -660,6 +820,63 @@ except Exception as e:
                     continue
         
         return None
+
+    def get_version_all_files(self, project_id: str, version_id: str) -> Optional[Dict]:
+        """Get ALL files for a specific version as { filepath: content }"""
+        project_dir = self.artifacts_dir / project_id
+        
+        if version_id == "workspace":
+            version_dir = project_dir / "workspace"
+        else:
+            version_dir = project_dir / "versions" / version_id
+        
+        if not version_dir.exists():
+            return None
+        
+        files = {}
+        for file_path in version_dir.rglob('*'):
+            if file_path.is_file() and file_path.name != 'metadata.json':
+                try:
+                    rel_path = str(file_path.relative_to(version_dir)).replace('\\', '/')
+                    files[rel_path] = file_path.read_text(encoding='utf-8')
+                except Exception:
+                    continue
+        
+        return files
+
+    def get_all_versions(self, project_id: str) -> List[Dict]:
+        """Get metadata for all versions of a project, sorted by version_id"""
+        project_dir = self.artifacts_dir / project_id
+        versions_dir = project_dir / "versions"
+        
+        if not versions_dir.exists():
+            return []
+        
+        versions = []
+        for vdir in sorted(versions_dir.iterdir()):
+            if vdir.is_dir():
+                meta_file = vdir / "metadata.json"
+                if meta_file.exists():
+                    try:
+                        with open(meta_file, 'r') as f:
+                            meta = json.load(f)
+                        versions.append(meta)
+                    except Exception:
+                        # Fallback: create basic metadata from directory name
+                        versions.append({
+                            "version_id": vdir.name,
+                            "prompt": "",
+                            "created_at": datetime.fromtimestamp(vdir.stat().st_mtime).isoformat()
+                        })
+                else:
+                    # No metadata file, create basic entry
+                    versions.append({
+                        "version_id": vdir.name,
+                        "prompt": "",
+                        "created_at": datetime.fromtimestamp(vdir.stat().st_mtime).isoformat()
+                    })
+        
+        return versions
     
     def list_projects(self, owner_id: Optional[int] = None) -> List[Dict]:
         """List projects, optionally filtered by owner_id"""

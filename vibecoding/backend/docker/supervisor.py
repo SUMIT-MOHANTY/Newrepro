@@ -11,6 +11,7 @@ import json
 import socket
 import threading
 import time
+from typing import Optional
 from pathlib import Path
 
 class VersionSupervisor:
@@ -20,8 +21,8 @@ class VersionSupervisor:
             'socket_path': os.environ.get('SUPERVISOR_SOCKET', '/tmp/supervisor.sock'),
             'port': os.environ.get('PORT', '8080')
         }
-        self.current_process = None
-        self.current_version = None
+        self.current_process: Optional[subprocess.Popen] = None
+        self.current_version: Optional[str] = None
         self.running = True
         
     def log(self, emoji, message):
@@ -86,6 +87,39 @@ class VersionSupervisor:
             self.log("❌", f"Activation failed: {e}")
             return False
 
+    def start_workspace(self):
+        """Spawn the AI Agent for the workspace (direct git state)"""
+        workspace_path = Path(self.config['project_dir']) / "workspace"
+        
+        if not workspace_path.exists():
+            self.log("❌", f"Workspace missing: {workspace_path}")
+            return False
+        
+        self.stop_current_process()
+        
+        self.log("🚀", "Activating Workspace (Git State)")
+        
+        try:
+            self.current_process = subprocess.Popen(
+                ["python3", "/usr/local/bin/ai-agent.py"],
+                cwd=str(workspace_path),
+                preexec_fn=os.setsid,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                env={
+                    **os.environ,
+                    'PORT': self.config['port'],
+                    'CURRENT_VERSION': 'workspace',
+                    'PYTHONUNBUFFERED': '1'
+                }
+            )
+            self.current_version = 'workspace'
+            self.log("✅", f"Agent started in Workspace (PID: {self.current_process.pid})")
+            return True
+        except Exception as e:
+            self.log("❌", f"Workspace activation failed: {e}")
+            return False
+
     def handle_client(self, conn):
         """Unified command handler for the control socket"""
         try:
@@ -97,7 +131,10 @@ class VersionSupervisor:
             
             if action == 'switch':
                 vid = data.get('version_id')
-                success = self.start_version(vid)
+                if vid == 'workspace':
+                    success = self.start_workspace()
+                else:
+                    success = self.start_version(vid)
                 resp = {'status': 'ok' if success else 'error', 'version': vid}
             elif action == 'status':
                 resp = {
@@ -108,6 +145,16 @@ class VersionSupervisor:
             elif action == 'stop':
                 self.stop_current_process()
                 resp = {'status': 'stopped'}
+            elif action == 'restart':
+                # Restart current version
+                vid = self.current_version
+                if vid == 'workspace':
+                    success = self.start_workspace()
+                elif vid:
+                    success = self.start_version(vid)
+                else:
+                    success = False
+                resp = {'status': 'ok' if success else 'error'}
             else:
                 resp = {'status': 'unknown_command'}
                 

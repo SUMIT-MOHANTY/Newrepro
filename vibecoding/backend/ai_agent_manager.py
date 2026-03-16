@@ -6,6 +6,7 @@ import docker
 import logging
 import requests
 import time
+from ai_config import ai_config
 from typing import Optional, Dict
 from pathlib import Path
 
@@ -72,15 +73,21 @@ class AIAgentManager:
             # Start new container
             logger.info("🚀 Starting AI agent container...")
             
+            # Prepare environment variables dynamically
             env_vars = {
                 "AI_PROVIDER": provider,
-                "PYTHONUNBUFFERED": "1"
+                "AI_API_KEY": api_key,
+                "AI_API_URL": ai_config.base_url,
+                "AI_MODEL": ai_config.ai_model if hasattr(ai_config, 'ai_model') else ai_config.model,
+                "AI_TIMEOUT": "120"
             }
             
-            if provider == "anthropic":
+            # Also forward provider-specific keys for backward compatibility
+            if "anthropic" in provider.lower():
                 env_vars["ANTHROPIC_API_KEY"] = api_key
-            else:
+            elif "openai" in provider.lower():
                 env_vars["OPENAI_API_KEY"] = api_key
+            
             
             self.agent_container = self.docker_client.containers.run(
                 "vibecoding-agent-runtime:latest",

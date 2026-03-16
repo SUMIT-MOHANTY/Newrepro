@@ -94,16 +94,9 @@ function Workspace({ user, logout, isAuthenticated }) {
     return saved ? JSON.parse(saved) : [];
   });
   
-  const [codeVersions, setCodeVersions] = useState(() => {
-    // Code versions are now project-wide
-    const saved = localStorage.getItem(`vibecoding_code_versions_${activeProjectId}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [currentCodeVersion, setCurrentCodeVersion] = useState(() => {
-    const saved = localStorage.getItem(`vibecoding_current_code_version_${activeProjectId}`);
-    return saved ? parseInt(saved) : 0;
-  });
+  const [codeVersions, setCodeVersions] = useState([]);
+  const [currentCodeVersion, setCurrentCodeVersion] = useState(0);
+  const [versionsLoaded, setVersionsLoaded] = useState(false);
   
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -143,11 +136,104 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   };
 
+  // Load code versions from backend for the current project
+  const loadVersionsFromBackend = async (projectId) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions`);
+      const backendVersions = response.data.versions || [];
+      
+      if (backendVersions.length > 0) {
+        console.log(`📦 Found ${backendVersions.length} versions on backend for project ${projectId}`);
+        
+        // Convert backend versions to frontend format
+        const frontendVersions = backendVersions.map((v, index) => ({
+          version: index + 1,
+          versionId: v.version_id,
+          prompt: v.prompt || '',
+          timestamp: v.created_at || new Date().toISOString(),
+          code: null,       // Will be lazy-loaded when selected
+          fileTree: [],
+          previewUrl: ''
+        }));
+        
+        setCodeVersions(frontendVersions);
+        
+        // Load the latest version's files
+        const latestVersion = frontendVersions[frontendVersions.length - 1];
+        try {
+          const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions/${latestVersion.versionId}/files`);
+          const filesMap = filesResp.data.files || {};
+          
+          // Build code string with file markers
+          let fullCode = '';
+          Object.entries(filesMap).forEach(([filePath, content]) => {
+            fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+          });
+          
+          // Parse into file tree
+          const fileTree = parseCodeToFiles(fullCode);
+          
+          // Update the latest version with loaded data
+          setCodeVersions(prev => prev.map((v, i) => 
+            i === prev.length - 1 ? { ...v, code: fullCode, fileTree } : v
+          ));
+          
+          setCurrentCodeVersion(latestVersion.version);
+          setPreviewCode(fullCode);
+          setFileTree(fileTree);
+          
+          // Select first file
+          const findFirstFile = (items) => {
+            for (const item of items) {
+              if (item.type === 'file') return item;
+              if (item.type === 'folder' && item.children) {
+                const found = findFirstFile(item.children);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+          const firstFile = findFirstFile(fileTree);
+          if (firstFile) setSelectedFile(firstFile);
+          
+        } catch (err) {
+          console.error('Failed to load latest version files:', err);
+        }
+      } else {
+        // No backend versions, try localStorage fallback
+        const saved = localStorage.getItem(`vibecoding_code_versions_${projectId}`);
+        if (saved) {
+          const localVersions = JSON.parse(saved);
+          setCodeVersions(localVersions);
+          if (localVersions.length > 0) {
+            setCurrentCodeVersion(localVersions[localVersions.length - 1].version);
+          }
+        }
+      }
+      
+      setVersionsLoaded(true);
+    } catch (err) {
+      console.error('Failed to load versions from backend:', err);
+      // Fallback to localStorage
+      const saved = localStorage.getItem(`vibecoding_code_versions_${projectId}`);
+      if (saved) {
+        const localVersions = JSON.parse(saved);
+        setCodeVersions(localVersions);
+        if (localVersions.length > 0) {
+          setCurrentCodeVersion(localVersions[localVersions.length - 1].version);
+        }
+      }
+      setVersionsLoaded(true);
+    }
+  };
+
   useEffect(() => {
     const initProject = async () => {
       const params = new URLSearchParams(window.location.search);
       const urlProjectId = params.get('project_id') || window.location.pathname.split('/a/')[1];
       const projectName = params.get('name');
+
+      let projectIdToLoad = currentProjectId;
 
       if (urlProjectId) {
         try {
@@ -161,6 +247,7 @@ function Workspace({ user, logout, isAuthenticated }) {
           
           setCurrentProjectId(urlProjectId);
           localStorage.setItem('vibecoding_workspace_id', urlProjectId);
+          projectIdToLoad = urlProjectId;
           
           // Clear URL params without reloading
           window.history.replaceState({}, '', `/a/${urlProjectId}`);
@@ -170,6 +257,9 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
       
       fetchProjects();
+      
+      // Load code versions from the backend
+      await loadVersionsFromBackend(projectIdToLoad);
     };
 
     if (isAuthenticated) {
@@ -177,13 +267,27 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   }, [isAuthenticated]);
 
-  const loadHistoricalChat = (v) => {
+  const loadHistoricalChat = async (v) => {
     setChatVersion(v);
     localStorage.setItem(`vibecoding_${currentProjectId}_version`, v.toString());
     
-    const msgsStr = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${v}`);
-    const msgs = msgsStr ? JSON.parse(msgsStr) : [];
-    setMessages(msgs);
+    // Try to load from backend first
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/v${v}`);
+      if (response.data && response.data.history && response.data.history.length > 0) {
+        setMessages(response.data.history);
+      } else {
+        // Fallback to localStorage
+        const msgsStr = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${v}`);
+        const msgs = msgsStr ? JSON.parse(msgsStr) : [];
+        setMessages(msgs);
+      }
+    } catch (err) {
+      console.error("Failed to load chat from backend, falling back to local storage:", err);
+      const msgsStr = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${v}`);
+      const msgs = msgsStr ? JSON.parse(msgsStr) : [];
+      setMessages(msgs);
+    }
     
     const codeVersStr = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${v}`);
     const codeVers = codeVersStr ? JSON.parse(codeVersStr) : [];
@@ -210,10 +314,28 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   // Save chat history whenever messages change
   useEffect(() => {
-    // Only save if we are on the same project we started this effect with
-    if (messages.length > 0 && currentProjectId === prevProjectIdRef.current) {
-      localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
-      localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
+    const saveChat = async () => {
+      if (messages.length > 0 && currentProjectId === prevProjectIdRef.current) {
+        try {
+          // Save to backend
+          await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/v${chatVersion}`, {
+            history: messages
+          });
+          
+          // Sync with local storage for backup
+          localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
+          localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
+        } catch (err) {
+          console.error("Failed to save chat to backend:", err);
+          // Always fallback to local storage
+          localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
+          localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
+        }
+      }
+    };
+    
+    if (messages.length > 0) {
+      saveChat();
     }
   }, [messages, currentProjectId, chatVersion]);
 
@@ -247,61 +369,114 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   // Load code version when switching
   useEffect(() => {
-    if (codeVersions.length > 0 && currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
-      const version = codeVersions[currentCodeVersion - 1];
-      setPreviewCode(version.code);
-      setFileTree(version.fileTree || []);
-      
-      // Trigger version switch in container
-      if (version.versionId && currentProjectId) {
-        axios.post(`http://localhost:8000/api/projects/${currentProjectId}/versions/${version.versionId}/preview`)
-          .then(response => {
-            const newPreviewUrl = response.data.preview_url;
-            // Add cache-busting parameter to force iframe reload
-            const separator = newPreviewUrl.includes('?') ? '&' : '?';
-            const urlWithVersion = `${newPreviewUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
-            setPreviewUrl(urlWithVersion);
-            console.log(`🔄 Switched to version ${version.versionId}: ${urlWithVersion}`);
-          })
-          .catch(error => {
-            console.error('Failed to switch version:', error);
-            // Fallback to stored URL
-            const baseUrl = version.previewUrl || '';
-            if (baseUrl) {
-              const separator = baseUrl.includes('?') ? '&' : '?';
-              const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
-              setPreviewUrl(urlWithVersion);
-            } else {
-              setPreviewUrl('');
-            }
-          });
-      } else {
-        // No version ID, use stored URL
-        const baseUrl = version.previewUrl || '';
-        if (baseUrl) {
-          const separator = baseUrl.includes('?') ? '&' : '?';
-          const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
-          setPreviewUrl(urlWithVersion);
-        } else {
-          setPreviewUrl('');
-        }
-      }
-      
-      if (version.fileTree && version.fileTree.length > 0) {
-        const findFirstFile = (items) => {
-          for (const item of items) {
-            if (item.type === 'file') return item;
-            if (item.type === 'folder' && item.children) {
-              const found = findFirstFile(item.children);
-              if (found) return found;
-            }
+    const loadAndSwitchVersion = async () => {
+      if (codeVersions.length > 0 && currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
+        let version = codeVersions[currentCodeVersion - 1];
+        
+        // If code is null, lazy-load it from backend
+        if (version.code === null && version.versionId && currentProjectId) {
+          try {
+            console.log(`📥 Lazy-loading version ${version.versionId} from backend...`);
+            const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${version.versionId}/files`);
+            const filesMap = filesResp.data.files || {};
+            
+            // Build code string with file markers
+            let fullCode = '';
+            Object.entries(filesMap).forEach(([filePath, content]) => {
+              fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+            });
+            
+            // Parse into file tree
+            const loadedFileTree = parseCodeToFiles(fullCode);
+            
+            // Update the version in state with loaded data
+            setCodeVersions(prev => prev.map((v, i) => 
+              i === currentCodeVersion - 1 ? { ...v, code: fullCode, fileTree: loadedFileTree } : v
+            ));
+            
+            // Use loaded data directly (don't wait for state update)
+            version = { ...version, code: fullCode, fileTree: loadedFileTree };
+          } catch (err) {
+            console.error('Failed to lazy-load version from backend:', err);
           }
-          return null;
-        };
-        const firstFile = findFirstFile(version.fileTree);
-        if (firstFile) setSelectedFile(firstFile);
+        }
+        
+        setPreviewCode(version.code || '');
+        setFileTree(version.fileTree || []);
+        
+        // Trigger version switch in container
+        if (version.versionId && currentProjectId) {
+          // Switch git checkpoint internally
+          axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
+            project_id: currentProjectId,
+            version_id: version.versionId
+          }).catch(err => console.error('Failed to switch git checkpoint:', err));
+
+          axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${version.versionId}/preview`)
+            .then(response => {
+              const newPreviewUrl = response.data.preview_url;
+              // Add cache-busting parameter to force iframe reload
+              const separator = newPreviewUrl.includes('?') ? '&' : '?';
+              const urlWithVersion = `${newPreviewUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
+              setPreviewUrl(urlWithVersion);
+              console.log(`🔄 Switched to version ${version.versionId}: ${urlWithVersion}`);
+            })
+            .catch(error => {
+              console.error('Failed to switch version:', error);
+              // Fallback to stored URL
+              const baseUrl = version.previewUrl || '';
+              if (baseUrl) {
+                const separator = baseUrl.includes('?') ? '&' : '?';
+                const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
+                setPreviewUrl(urlWithVersion);
+              } else {
+                setPreviewUrl('');
+              }
+            });
+        } else {
+          // No version ID, use stored URL
+          const baseUrl = version.previewUrl || '';
+          if (baseUrl) {
+            const separator = baseUrl.includes('?') ? '&' : '?';
+            const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
+            setPreviewUrl(urlWithVersion);
+          } else {
+            setPreviewUrl('');
+          }
+        }
+        
+        if (version.fileTree && version.fileTree.length > 0) {
+          const findFirstFile = (items) => {
+            for (const item of items) {
+              if (item.type === 'file') return item;
+              if (item.type === 'folder' && item.children) {
+                const found = findFirstFile(item.children);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+          const firstFile = findFirstFile(version.fileTree);
+          if (firstFile) setSelectedFile(firstFile);
+        }
+        setIframeKey(prev => prev + 1);
       }
-      setIframeKey(prev => prev + 1);
+    };
+    
+    loadAndSwitchVersion();
+    
+    // Also load chat history for this version if it exists
+    if (currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
+      const version = codeVersions[currentCodeVersion - 1];
+      if (version && version.versionId) {
+        axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/${version.versionId}`)
+          .then(response => {
+            if (response.data && response.data.history && response.data.history.length > 0) {
+              setMessages(response.data.history);
+            }
+          })
+          .catch(err => console.error("Failed to load chat for version:", err));
+      }
     }
   }, [currentCodeVersion]);
 
@@ -314,9 +489,10 @@ function Workspace({ user, logout, isAuthenticated }) {
   }, [previewUrl]);
 
   // Function to save a new code version
-  const saveCodeVersion = (code, previewUrl, fileTree, prompt) => {
+  const saveCodeVersion = (code, previewUrl, fileTree, prompt, backendVersionId = null) => {
     const newVersion = {
       version: codeVersions.length + 1,
+      versionId: backendVersionId,
       code,
       previewUrl,
       fileTree,
@@ -328,7 +504,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   };
 
   // Function to start a new chat
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
     // If there is current code that isn't saved as a version, save it first
     if (previewCode && codeVersions.length === 0) {
       saveCodeVersion(previewCode, previewUrl, fileTree, 'Snapshot before new chat');
@@ -338,9 +514,22 @@ function Workspace({ user, logout, isAuthenticated }) {
     setChatVersion(newVersion);
     setMessages([]);
     // Do NOT clear codeVersions or previewCode - they are project-wide history now
-    setEditMode(false);
-    setSelectedElement(null);
-    localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
+      setEditMode(false);
+      setSelectedElement(null);
+      localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
+
+      // Create a new Git branch for this chat session
+      try {
+        await axios.post(`${API_BASE_URL}/api/chat/new`, {
+          project_id: currentProjectId,
+          chat_version: newVersion
+        });
+        console.log(`🌿 Created new git branch for chat v${newVersion}`);
+        // Refresh versions list from backend
+        await loadVersionsFromBackend(currentProjectId);
+      } catch (err) {
+        console.error('Failed to create new git branch:', err);
+      }
   };
 
   const toggleFolder = (folderPath) => {
@@ -415,12 +604,11 @@ function Workspace({ user, logout, isAuthenticated }) {
         project_id: currentProjectId
       });
 
-      console.log('🔍 API Response:', response.data);
-
       const aiMessage = {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        versionId: response.data.version_id,
         toolCalls: response.data.tool_calls_log || null,
         timestamp: new Date().toISOString()
       };
@@ -438,8 +626,8 @@ function Workspace({ user, logout, isAuthenticated }) {
         const files = parseCodeToFiles(code);
         setFileTree(files);
         
-        // Save this as a new code version
-        saveCodeVersion(code, response.data.preview_url || '', files, currentInput);
+        // We no longer save a new folder version for every chat message (git commits instead)
+        // saveCodeVersion(code, response.data.preview_url || '', files, currentInput, response.data.version_id);
         
         // Expand all folders by default
         const allFolderPaths = new Set();
@@ -1625,8 +1813,33 @@ Please suggest improvements or modifications for this element.`;
           darkMode={true}
           codeVersions={codeVersions}
           selectedVersion={currentCodeVersion}
-          onLoadVersion={(versionId) => {
+          onLoadVersion={async (versionId) => {
             setCurrentCodeVersion(versionId);
+            try {
+              // Try to checkout the checkpoint via git
+              const response = await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
+                project_id: currentProjectId,
+                version_id: versionId
+              });
+              
+              if (response.data.status === 'success') {
+                // After successful checkout, refresh files from the workspace
+                const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
+                const filesMap = filesResp.data.files || {};
+                
+                let fullCodeStr = '';
+                Object.entries(filesMap).forEach(([filePath, content]) => {
+                  fullCodeStr += `// FILE: ${filePath}\n${content}\n\n`;
+                });
+                
+                const files = parseCodeToFiles(fullCodeStr);
+                setFileTree(files);
+                setPreviewCode(fullCodeStr);
+                setIframeKey(prev => prev + 1);
+              }
+            } catch (err) {
+              console.error('Failed to load checkpoint:', err);
+            }
           }}
           onCopyMessage={async (text) => {
             await navigator.clipboard.writeText(text);

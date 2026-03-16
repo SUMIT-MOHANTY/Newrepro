@@ -13,10 +13,16 @@ from web_tools import make_request_with_tools
 from git_manager import git_manager
 from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user
 from dual_agent_handler import get_dual_agent_handler
+from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
+
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-app = FastAPI(title="Bourtec VibeCoding API")
+app = FastAPI(title=f"{APP_NAME} API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,46 +75,12 @@ class GitRequest(BaseModel):
     remote_name: Optional[str] = "origin"
     username: Optional[str] = None
     token: Optional[str] = None
+    chat_version: Optional[int] = None
+    version_id: Optional[str] = None
 
 # AI Configuration is now handled by ai_config.py
 
-SYSTEM_PROMPT = """You are an expert full-stack developer and AI assistant for Bourtec VibeCoding platform.
-Your role is to help users build web applications, components, and interfaces through natural language.
-
-🌐 WEB TOOLS AVAILABLE:
-You have access to web tools that you can call dynamically:
-1. **web_search(query)** - Search the web using DuckDuckGo to find documentation, tutorials, examples, API references, or any real-time information.
-2. **fetch_page_content(url)** - Fetch and read the content of any web page to get detailed information, code examples, or documentation.
-
-Use these tools when:
-- The user asks about a library, API, or tool you're not sure about
-- You need current documentation or latest versions of packages
-- The user asks you to research something before building
-- You need to verify API endpoints, syntax, or best practices
-- The user explicitly asks you to search the web
-
-🚨 CRITICAL RULES - NEVER BREAK THESE:
-1. ALWAYS generate MULTIPLE files with file markers - NEVER just one file
-2. ALWAYS include ALL necessary files (HTML, CSS, JS, config files, etc.)
-3. ALWAYS write ACTUAL CODE in every file - NEVER descriptions or comments only
-4. ALWAYS use file markers: // FILE: path/to/filename.ext
-5. 🗣️ NON-TECHNICAL NARRATION (CRITICAL): When explaining what you have built or answering the user, use non-technical, user-friendly language. DO NOT include code snippets, file markers (like // FILE:), or technical jargon in your conversational response. ONLY include the code behind the // FILE: markers at the end of your response.
-6. 🤫 HIDE THE PLUMBING: The user is non-technical. Do not talk about "rendering templates", "API endpoints", or "backend logic". Describe features in terms of what the USER sees and experiences (e.g., "I've added a contact form" instead of "I've created a POST route for the contact form").
-
-
-7. NO TECH-SPECIFIC LOCK-IN: Build everything from static landing pages to complex full-stack apps using the most appropriate tools for the job.
-8. AUTOMATIC ENTRY POINT: Always ensure there is a clear entry point (e.g., app.py, main.py, index.html) that can be run immediately.
-
-CRITICAL: Generate ACTUAL CODE for EVERY FILE, not folder structure descriptions or comments!
-
-FILE MARKER FORMAT:
-Use this EXACT format to separate files:
-// FILE: path/to/filename.ext
-
-Response format:
-1. Brief non-technical explanation (1-2 sentences)
-2. Complete code with file markers
-3. NO folder structure diagrams"""
+SYSTEM_PROMPT = MAIN_SYSTEM_PROMPT
 
 # ─── Auth Endpoints ─────────────────────────────────────────────────────────────
 @app.post("/api/auth/signup")
@@ -137,7 +109,7 @@ async def verify_token(user: dict = Depends(get_current_user)):
 
 @app.get("/")
 async def root():
-    return {"message": "Bourtec VibeCoding API is running"}
+    return {"message": f"{APP_NAME} API is running"}
 
 @app.post("/api/chat/dual-agent")
 async def dual_agent_chat(request: GenerateRequest):
@@ -160,11 +132,26 @@ async def dual_agent_chat(request: GenerateRequest):
             # Get or create project ID
             project_id = request.project_id or project_manager.generate_project_id()
             
+            # Save code version if code was generated
+            version_id = None
+            code = result.get("code")
+            if code:
+                # Use git-based workspace update
+                version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
+                
+                # Also save chat history for this version
+                history.append({"role": "user", "content": request.prompt})
+                history.append({"role": "assistant", "content": result.get("message", "")})
+                await project_manager.save_chat_version(project_id, version_id, history)
+                
+                # Switch container to workspace mode
+                await project_manager.switch_to_workspace(project_id)
+            
             return {
                 "message": result.get("message", ""),
-                "code": result.get("code"),
+                "code": code,
                 "project_id": project_id,
-                "version_id": None,
+                "version_id": version_id,
                 "preview_url": result.get("preview_url"),
                 "agent_type": result.get("agent_type"),
                 "tool_calls_log": None
@@ -228,7 +215,13 @@ async def generate_code(request: GenerateRequest):
             # No file markers. Extract all markdown code blocks and join them.
             blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
             if blocks:
-                code = "\n\n".join(blocks).strip()
+                # Universal Code Extraction (Regex)
+                import re
+                code_match = re.search(r"```(?:\w+)?\n?(.*?)\n?```", ai_response, re.DOTALL)
+                if code_match:
+                    code = code_match.group(1).strip()
+                else:
+                    code = "\n\n".join(blocks).strip()
             elif '<html' in ai_response.lower() or '<!doctype' in ai_response.lower():
                 # Fallback if no markdown but HTML is present
                 code = ai_response.strip()
@@ -267,19 +260,6 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
                 if "choices" in response and len(response["choices"]) > 0:
                     ai_response = response["choices"][0]["message"]["content"]
                     
-                    # Re-extract code
-                    if "```python" in ai_response:
-                        code_start = ai_response.find("```python") + 10
-                        code_end = ai_response.find("```", code_start)
-                        code = ai_response[code_start:code_end].strip()
-                    elif "```html" in ai_response:
-                        code_start = ai_response.find("```html") + 7
-                        code_end = ai_response.find("```", code_start)
-                        code = ai_response[code_start:code_end].strip()
-                    elif "```" in ai_response:
-                        code_start = ai_response.find("```") + 3
-                        code_end = ai_response.find("```", code_start)
-                        code = ai_response[code_start:code_end].strip()
         
         # Clean up integrity and crossorigin attributes from CDN links
         if code:
@@ -313,20 +293,31 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
         preview_url = None
         
         if code:
-            version_id, _ = project_manager.save_code_version(project_id, code, request.prompt)
+            # Use git-based workspace update
+            version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
+            
+            # Save chat history for this version
+            try:
+                history = [{"role": msg.role, "content": msg.content} for msg in request.history]
+                history.append({"role": "user", "content": request.prompt})
+                history.append({"role": "assistant", "content": message if message else "I've generated the code for you!"})
+                await project_manager.save_chat_version(project_id, version_id, history)
+            except Exception as e:
+                print(f"Failed to save chat history: {e}")
             
             # Check if Docker is available before attempting to create container
             if project_manager.docker_client is None:
                 print("⚠️ Docker not available - preview functionality disabled")
-                print("Please ensure Docker Desktop is installed and running")
                 preview_url = None
             else:
-                # Create container for preview
+                # Switch container to workspace mode
                 try:
-                    preview_url = await project_manager.create_container_for_code(project_id, version_id)
+                    await project_manager.switch_to_workspace(project_id)
+                    # Get preview URL for the workspace
+                    preview_url = await project_manager.create_container_for_code(project_id, "workspace")
                 except Exception as e:
-                    print(f"Failed to create container: {str(e)}")
-                    # Continue without container if it fails
+                    print(f"Failed to switch container: {str(e)}")
+                    preview_url = None
 
         return GenerateResponse(
             message=message if message else "I've generated the code for you!",
@@ -410,6 +401,15 @@ async def get_project(project_id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/projects/{project_id}/versions")
+async def list_versions(project_id: str):
+    """List all versions for a project with their metadata"""
+    try:
+        versions = project_manager.get_all_versions(project_id)
+        return {"versions": versions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/projects/{project_id}/versions/{version_id}/code")
 async def get_version_code(project_id: str, version_id: str):
     try:
@@ -417,6 +417,19 @@ async def get_version_code(project_id: str, version_id: str):
         if not code:
             raise HTTPException(status_code=404, detail="Version not found")
         return {"code": code}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/projects/{project_id}/versions/{version_id}/files")
+async def get_version_files(project_id: str, version_id: str):
+    """Get all files for a specific version"""
+    try:
+        files = project_manager.get_version_all_files(project_id, version_id)
+        if files is None:
+            raise HTTPException(status_code=404, detail="Version not found")
+        return {"files": files, "version_id": version_id}
     except HTTPException:
         raise
     except Exception as e:
@@ -466,6 +479,27 @@ async def download_project(project_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Chat Persistence Endpoints
+
+@app.get("/api/projects/{project_id}/chat/{version_id}")
+async def get_chat_history(project_id: str, version_id: str):
+    try:
+        history = await project_manager.get_chat_version(project_id, version_id)
+        if history is None:
+            return {"history": []}
+        return {"history": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/projects/{project_id}/chat/{version_id}")
+async def save_chat_history(project_id: str, version_id: str, request: dict):
+    try:
+        history = request.get("history", [])
+        await project_manager.save_chat_version(project_id, version_id, history)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Git Integration Endpoints
 
 @app.post("/api/git/status")
@@ -508,6 +542,20 @@ async def git_branch(request: GitRequest):
         if not request.branch_name:
             raise HTTPException(status_code=400, detail="Branch name is required")
         result = git_manager.create_branch(request.project_id, request.branch_name)
+        # Switch container to workspace to reflect the new branch state
+        await project_manager.switch_to_workspace(request.project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/checkout")
+async def git_checkout(request: GitRequest):
+    try:
+        if not request.branch_name:
+            raise HTTPException(status_code=400, detail="Branch name is required")
+        result = git_manager.checkout_branch(request.project_id, request.branch_name)
+        # Switch container to workspace to reflect the checked out branch
+        await project_manager.switch_to_workspace(request.project_id)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -545,6 +593,71 @@ async def git_push(request: GitRequest):
             request.token
         )
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/chat/new")
+async def start_new_chat(request: GitRequest):
+    try:
+        project_id = request.project_id
+        if not request.chat_version:
+            raise HTTPException(status_code=400, detail="chat_version is required")
+            
+        # 1. Archive current workspace to a version folder before branching
+        try:
+            prev_v = int(request.chat_version) - 1
+            project_manager.archive_workspace_to_version(project_id, f"Archive of Chat v{prev_v}")
+        except Exception as e:
+            logger.warning(f"Failed to archive workspace: {e}")
+
+        # 2. Create new branch
+        branch_name = f"chat-v{request.chat_version}"
+        
+        workspace_dir = git_manager._get_workspace_dir(project_id)
+        if not (workspace_dir / ".git").exists():
+            git_manager.init_repo(project_id)
+            
+        result = git_manager.create_branch(project_id, branch_name)
+        # Switch container to workspace to reflect the new branch
+        await project_manager.switch_to_workspace(project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/git/checkpoint")
+async def git_checkpoint(request: GitRequest):
+    """Switch to a specific version's checkpoint (commit)"""
+    try:
+        project_id = request.project_id
+        version_id = request.version_id
+        
+        if not version_id:
+            raise HTTPException(status_code=400, detail="version_id is required")
+            
+        # 1. Try checking out as a direct commit hash or branch
+        checkout_res = git_manager.checkout_commit(project_id, version_id)
+        
+        if checkout_res["status"] == "success":
+            # Tell the supervisor to switch the container to the workspace
+            await project_manager.switch_to_workspace(project_id)
+            return checkout_res
+            
+        # 2. Try searching for [version_id] in commit messages (legacy support)
+        res = git_manager._run_git_command(project_id, ["log", "--all", f"--grep={version_id}", "--pretty=format:%H", "-n", "1"])
+        if res["status"] == "success" and res["stdout"].strip():
+            commit_hash = res["stdout"].strip()
+            checkout_res = git_manager.checkout_commit(project_id, commit_hash)
+            await project_manager.switch_to_workspace(project_id)
+            return checkout_res
+            
+        # 3. Fallback: if not found in Git, sync workspace from version dir
+        version_dir = project_manager.artifacts_dir / project_id / "versions" / version_id
+        if version_dir.exists():
+            git_manager.sync_workspace(project_id, version_dir)
+            await project_manager.switch_to_workspace(project_id)
+            return {"status": "success", "message": "Synced from version directory"}
+            
+        return {"status": "error", "message": f"Checkpoint for {version_id} not found"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

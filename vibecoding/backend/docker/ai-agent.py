@@ -52,17 +52,20 @@ from threading import Thread
 
 @dataclass
 class Config:
-    api_key: str = field(
-        default_factory=lambda: os.environ.get('AI_API_KEY') or os.environ.get('NVIDIA_API_KEY', '')
+    api_key: Optional[str] = field(
+        default_factory=lambda: os.environ.get('AI_API_KEY')
     )
-    api_url: str = field(
-        default_factory=lambda: os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions')
+    api_url: Optional[str] = field(
+        default_factory=lambda: os.environ.get('AI_API_URL') or os.environ.get('AI_URL')
     )
-    ai_model: str = field(
-        default_factory=lambda: os.environ.get('AI_MODEL', 'openai/gpt-oss-120b')
+    ai_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get('AI_MODEL')
     )
     port: str = field(
         default_factory=lambda: os.environ.get('PORT', '8080')
+    )
+    additional_ports: list = field(
+        default_factory=lambda: [p.strip() for p in os.environ.get('ADDITIONAL_PORTS', '').split(',') if p.strip()]
     )
     max_retries: int = field(
         default_factory=lambda: int(os.environ.get('MAX_RETRIES', '3'))
@@ -74,7 +77,7 @@ class Config:
         default_factory=lambda: int(os.environ.get('STARTUP_TIMEOUT', '20'))
     )
     ai_timeout: int = field(
-        default_factory=lambda: int(os.environ.get('AI_TIMEOUT', '60'))
+        default_factory=lambda: int(os.environ.get('AI_TIMEOUT', '120'))
     )
     max_file_size: int = field(
         default_factory=lambda: int(os.environ.get('MAX_FILE_SIZE', '30000'))
@@ -283,25 +286,26 @@ class AIAgent:
     # ------------------------------------------------------------------
 
     def get_ai_execution_plan(self, files: list) -> Optional[dict]:
+        """Ask AI for execution plan based on file analysis"""
         if not self.config.api_key:
-            fallback_cmd = (
-                self.config.fallback_run_cmd
-                or f"python3 -m http.server {self.config.port}"
-            )
-            self.log("⚠️", f"No AI key — fallback: {fallback_cmd}")
-            return {
-                "project_type": "unknown",
-                "processes": [
-                    {
-                        "name": "fallback-server",
-                        "command": fallback_cmd,
-                        "type": "primary",
-                        "ready_signal": None
-                    }
-                ],
-                "success_patterns": self.config.success_keywords,
-                "analysis": "Fallback mode: no AI API key provided",
-            }
+            if self.config.fallback_run_cmd:
+                self.log("📜", f"No AI key, using configured fallback: {self.config.fallback_run_cmd}")
+                return {
+                    "project_type": "unknown",
+                    "processes": [
+                        {
+                            "name": "fallback-server",
+                            "command": self.config.fallback_run_cmd,
+                            "type": "primary",
+                            "ready_signal": None
+                        }
+                    ],
+                    "success_patterns": self.config.success_keywords,
+                    "analysis": "Configured fallback mode (No AI key)",
+                }
+            
+            self.log("❌", "No AI key provided and no fallback command found. Cannot determine execution plan.")
+            return None
 
         self.log("🤖", "AI is analyzing project structure and requirements...")
 
@@ -332,17 +336,17 @@ Return ONLY a raw JSON object (no markdown fences, no extra text):
 
 PROCESS TYPES:
 - setup      → one-time commands that must complete before anything runs (install deps, build assets, etc.).
-- background → long-running side processes needed before the primary starts.
-               Must include a ready_signal so the agent waits for it before starting primary.
-- primary    → exactly ONE entry — the main server the agent monitors and heals.
+- background → long-running processes (e.g. backend API, database).
+               Must include a ready_signal so the agent waits for it before starting next steps.
+- primary    → exactly ONE entry — the main server (e.g. Frontend) the agent monitors and heals.
                This MUST be the last entry in the array.
 
 CONSTRAINTS:
-- Running inside Docker (Ubuntu 22.04, Python3 + Node.js available). Install deps globally. NEVER use venv/virtualenv.
+- Running inside Docker (Ubuntu 22.04, Python3 + Node.js available).
 - The primary server MUST bind to port {self.config.port} on ALL interfaces (0.0.0.0).
-- If a 'run.sh' file exists, prefer using it as the primary command: 'bash run.sh'
-- Only ONE process may bind to port {self.config.port}. If the project has both frontend and backend, build the frontend in a setup step and let the backend serve the built assets.
-- NEVER start a separate frontend dev server alongside the backend — that requires two ports which is not supported.
+- ADDITIONAL PORTS AVAILABLE: {", ".join(self.config.additional_ports) or "None"}.
+- If the project requires separate Frontend and Backend, they can run on DIFFERENT ports.
+- Services should discover each other via environment variables or relative paths.
 """
         result = self._call_ai(prompt, temperature=0.1)
         if result:

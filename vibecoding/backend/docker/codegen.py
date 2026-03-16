@@ -104,65 +104,37 @@ class CodegenAgent:
 
         self.log("🏗️", f"Generating Version {version_id}...")
 
-        ai_prompt = f"""You are an expert developer generating code for a SINGLE-CONTAINER Docker deployment. The entire app runs as ONE process on ONE port inside a container.
+        ai_prompt = f"""You are an expert developer generating code for a SINGLE-CONTAINER Docker deployment.
+The entire project runs inside ONE container, but it can have MULTIPLE processes (e.g. a separate frontend and backend) on DIFFERENT ports if needed.
 
 ════════════════════════════════════════════════════
- UNDERSTAND THE DEPLOYMENT FIRST
+ UNDERSTAND THE NETWORKING
 ════════════════════════════════════════════════════
-Browser → Host Port → Docker Container
-                          └── ONE server process (managed by an AI Agent)
+Browser → Host Ports → Docker Container
+                           └── Multiple processes managed by an AI Supervisor
 
-There is NO Nginx, NO docker-compose, NO multiple containers. ONE container. ONE process. ONE port ({self.port}).
-
-YOU decide the best structure (folders, files, etc.). Do not force 'frontend/' or 'backend/' folders unless that structure genuinely fits the project.
+DEFAULT PRIMARY PORT: {{self.port}} (Usually for the Frontend)
 
 ════════════════════════════════════════════════════
- ABSOLUTE RULES — NEVER BREAK THESE
+ ABSOLUTE RULES
 ════════════════════════════════════════════════════
 
 RULE 1 — PORT BINDING
-  ✅ Server MUST bind to host 0.0.0.0
-  ✅ Read port from PORT environment variable, fallback to {self.port}
-     e.g. port = int(os.environ.get("PORT", {self.port}))
-  ❌ NEVER hardcode any port other than {self.port}
-  ❌ NEVER bind to 127.0.0.1 or localhost
+  ✅ Servers MUST bind to 0.0.0.0 (NOT 127.0.0.1)
+  ✅ Primary service should use PORT environment variable (default {self.port})
+  ✅ Secondary services should use unique ports (e.g. 5000, 3000).
 
-RULE 2 — IF THE PROJECT HAS AN API
-  ✅ ALL API routes MUST be prefixed with /api/
-  ❌ NEVER create a route at GET "/" if a frontend exists
-  ❌ NEVER create bare routes like /users, /todos at root level
+RULE 2 — MULTI-SERVICE DISCOVERY
+  ✅ If you have a separate Backend and Frontend, the Frontend must know how to find the Backend.
+  ✅ Use relative paths if possible, or environment variables.
 
-RULE 3 — IF THE PROJECT HAS A FRONTEND
-  ✅ The server must serve the frontend at "/"
-  ✅ For SPA frameworks (React, Vue, Svelte, etc.) the server MUST return index.html for ALL paths that don't match API routes or static files.
-  ❌ NEVER spin up a dev server at runtime (no vite dev, npm start, etc.)
-  ❌ NEVER use CDN links for frameworks (no unpkg, jsdelivr, etc.). Use npm/yarn.
-  ✅ Always use the framework's standard build tool to generate static output.
-
-RULE 4 — API CALLS
-  ✅ ALL fetch/axios/http calls MUST use relative URLs (e.g. fetch('/api/todos'))
-  ❌ NEVER hardcode hostname, IP, or port in API calls.
-
-RULE 5 — CORS
-  ❌ NEVER add CORS middleware unless requested. It's unnecessary on the same port.
-
-RULE 6 — RUN SCRIPT (CRITICAL)
+RULE 3 — RUN SCRIPT (CRITICAL)
   ✅ ALWAYS include a 'run.sh' bash script at the project root.
-  ✅ run.sh MUST handle: dependency installation → build (if needed) → start server.
-  ✅ This script is the primary entrypoint for the AI Agent.
+  ✅ run.sh MUST start ALL required services.
+  ✅ Use '&' for background processes and 'wait' at the end, or similar.
 
-RULE 7 — DOCKERFILE
-  ✅ Include a Dockerfile as a production reference. 
-  ✅ Use multi-stage builds if a build step is needed.
-  ✅ Final stage must run ONE process on port {self.port}.
-
-════════════════════════════════════════════════════
- SPA FALLBACK LOGIC
-════════════════════════════════════════════════════
-Implement this in your server:
-  if path starts with "/api/"    → handle as API
-  elif static file exists        → serve the file
-  else                           → serve index.html
+RULE 4 — SPA FALLBACK
+  ✅ If you use a frontend framework, the server MUST handle routing (serve index.html for unknown paths).
 
 ════════════════════════════════════════════════════
  EXPECTED JSON STRUCTURE
@@ -170,12 +142,13 @@ Implement this in your server:
 Return ONLY a raw JSON object:
 {{
     "files": {{
-        "path/to/file1": "...complete content...",
-        "run.sh": "#!/bin/bash\\n...",
-        "Dockerfile": "...",
+        "path/to/file1": "...content...",
+        "run.sh": "#!/bin/bash\n# start backend\npython app.py &\n# start frontend\nnpm start",
         "metadata.json": {{
-            "project_type": "stack name",
-            "entrypoint": "main file"
+            "project_type": "React + Flask",
+            "port": {self.port},
+            "additional_ports": [5000],
+            "entrypoint": "run.sh"
         }}
     }}
 }}
@@ -199,12 +172,21 @@ USER REQUEST: {prompt}
 
             self.log("✅", f"Successfully wrote {len(files)} files to {version_path}")
             
-            # The user might want us to also save the prompt for self-healing context
-            (version_path / "metadata.json").write_text(json.dumps({
+            # Merge system metadata with AI-generated metadata if any
+            metadata = {}
+            existing_metadata_path = version_path / "metadata.json"
+            if existing_metadata_path.exists():
+                try:
+                    metadata = json.loads(existing_metadata_path.read_text())
+                except:
+                    pass
+            
+            metadata.update({
                 "prompt": prompt,
                 "version": version_id,
                 "timestamp": time.time()
-            }, indent=2))
+            })
+            existing_metadata_path.write_text(json.dumps(metadata, indent=2))
 
             self._signal_supervisor(version_id)
             return version_id

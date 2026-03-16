@@ -45,6 +45,13 @@ class GitManager:
         """Sync files from a version directory to the workspace directory."""
         workspace_dir = self._get_workspace_dir(project_id)
         
+        # Initialize repo if not exists
+        if not (workspace_dir / ".git").exists():
+            self.init_repo(project_id)
+            # Create an initial commit to avoid issues with branching empty repos
+            self._run_git_command(project_id, ["config", "user.email", "vibe@engineer.com"])
+            self._run_git_command(project_id, ["config", "user.name", "Vibe Engineer"])
+        
         # Don't delete .git folder
         if (workspace_dir / ".git").exists():
             # Only delete things that are NOT .git
@@ -210,7 +217,44 @@ class GitManager:
         return self._run_git_command(project_id, ["commit", "-m", message])
 
     def create_branch(self, project_id: str, branch_name: str) -> Dict[str, Any]:
-        return self._run_git_command(project_id, ["checkout", "-b", branch_name])
+        # Check if branch already exists
+        res = self._run_git_command(project_id, ["branch", "--list", branch_name])
+        if res["status"] == "success" and res["stdout"].strip():
+            # Switch to it
+            return self.checkout_branch(project_id, branch_name)
+        else:
+            # Create and switch
+            return self._run_git_command(project_id, ["checkout", "-b", branch_name])
+
+    def auto_commit_version(self, project_id: str, version_id: str, message: str) -> Dict[str, Any]:
+        """Automatically stage all changes and commit with version ID."""
+        self.add_files(project_id)
+        return self.commit(project_id, f"[{version_id}] {message}")
+
+    def get_commit_history(self, project_id: str) -> Dict[str, Any]:
+        """Get commit history for current branch."""
+        # Get current branch
+        status = self.get_status(project_id)
+        if status["status"] != "success":
+            return status
+            
+        res = self._run_git_command(project_id, ["log", "--pretty=format:%H|%an|%ar|%s", "-n", "20"])
+        commits = []
+        if res["status"] == "success":
+            for line in res["stdout"].splitlines():
+                if not line: continue
+                parts = line.split("|")
+                if len(parts) >= 4:
+                    commits.append({
+                        "hash": parts[0],
+                        "author": parts[1],
+                        "date": parts[2],
+                        "message": parts[3]
+                    })
+        return {"status": "success", "commits": commits, "branch": status["branch"]}
+
+    def checkout_commit(self, project_id: str, commit_hash: str) -> Dict[str, Any]:
+        return self._run_git_command(project_id, ["checkout", commit_hash])
 
     def add_remote(self, project_id: str, remote_url: str, remote_name: str = "origin") -> Dict[str, Any]:
         # Check if remote exists

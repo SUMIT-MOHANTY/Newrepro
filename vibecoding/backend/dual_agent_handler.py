@@ -6,6 +6,7 @@ from typing import Dict, List
 from agent_router import AgentRouter
 from ai_agent_manager import get_agent_manager
 from ai_config import ai_config
+from prompts import CHAT_SYSTEM_PROMPT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class DualAgentHandler:
         history = history or []
         
         # Route the message
-        agent_type, confidence = self.router.route(message)
+        agent_type, confidence = await self.router.route(message)
         
         logger.info(f"📍 Routing to {agent_type.upper()} agent (confidence: {confidence:.2f})")
         
@@ -51,14 +52,7 @@ class DualAgentHandler:
             messages = []
             
             # Add system prompt for chat agent
-            chat_system_prompt = """You are a helpful AI assistant for developers.
-You answer questions about programming, explain concepts, provide advice, and have general conversations.
-
-When users ask about programming concepts, frameworks, or tools, provide clear explanations.
-If they ask for code examples, provide small snippets to illustrate concepts.
-
-If a user asks you to BUILD, CREATE, or GENERATE a complete application, 
-politely let them know that you can help with that, and they should ask more specifically."""
+            chat_system_prompt = CHAT_SYSTEM_PROMPT
             
             messages.append({"role": "system", "content": chat_system_prompt})
             
@@ -108,8 +102,8 @@ politely let them know that you can help with that, and they should ask more spe
                 logger.info("🚀 Starting AI agent container...")
                 
                 # Get API key from config
-                api_key = ai_config.get_api_key()
-                provider = "anthropic" if "anthropic" in ai_config.ai_api_url.lower() else "openai"
+                api_key = ai_config.api_key
+                provider = "anthropic" if "anthropic" in ai_config.base_url.lower() else "openai"
                 
                 agent_url = self.agent_manager.start_agent_container(api_key, provider)
                 
