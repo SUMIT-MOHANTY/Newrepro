@@ -1275,7 +1275,7 @@ Please suggest improvements or modifications for this element.`;
                 className={`${
                   activeView === 'preview'
                     ? 'bg-white/10 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
+                    : 'text-white hover:bg-white/5'
                 }`}
               >
                 <Eye className="w-4 h-4 inline mr-2" />
@@ -1288,7 +1288,7 @@ Please suggest improvements or modifications for this element.`;
                 className={`${
                   activeView === 'code'
                     ? 'bg-white/10 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
+                    : 'text-white hover:bg-white/5'
                 }`}
               >
                 <Code className="w-4 h-4 inline mr-2" />
@@ -1306,7 +1306,7 @@ Please suggest improvements or modifications for this element.`;
                     size="icon"
                     onClick={() => setScreenSize('mobile')}
                     className={`h-8 w-8 ${
-                      screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
+                      screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-white'
                     }`}
                     title="Mobile (375px)"
                   >
@@ -1319,7 +1319,7 @@ Please suggest improvements or modifications for this element.`;
                     size="icon"
                     onClick={() => setScreenSize('tablet')}
                     className={`h-8 w-8 ${
-                      screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
+                      screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-white'
                     }`}
                     title="Tablet (768px)"
                   >
@@ -1332,7 +1332,7 @@ Please suggest improvements or modifications for this element.`;
                     size="icon"
                     onClick={() => setScreenSize('desktop')}
                     className={`h-8 w-8 ${
-                      screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
+                      screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-white'
                     }`}
                     title="Desktop (100%)"
                   >
@@ -1352,7 +1352,7 @@ Please suggest improvements or modifications for this element.`;
                   className={`${
                     editMode 
                       ? 'bg-purple-600 text-white hover:bg-purple-700' 
-                      : 'bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white'
+                      : 'bg-white/5 hover:bg-white/10 text-white'
                   }`}
                   title="Edit Mode - Click elements to edit"
                 >
@@ -1368,7 +1368,7 @@ Please suggest improvements or modifications for this element.`;
                   variant="ghost"
                   size="icon"
                   onClick={handleRefresh}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                   title="Refresh Preview"
                 >
                   <RefreshCw className="w-4 h-4" />
@@ -1377,7 +1377,7 @@ Please suggest improvements or modifications for this element.`;
                   variant="ghost"
                   size="sm"
                   onClick={handleCopy}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
@@ -1386,7 +1386,7 @@ Please suggest improvements or modifications for this element.`;
                   variant="ghost"
                   size="sm"
                   onClick={handleDownload}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   <Download className="w-4 h-4" />
                   Download
@@ -1400,7 +1400,7 @@ Please suggest improvements or modifications for this element.`;
                   variant="ghost"
                   size="sm"
                   onClick={handleCopy}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
@@ -1409,7 +1409,7 @@ Please suggest improvements or modifications for this element.`;
                   variant="ghost"
                   size="sm"
                   onClick={handleDownload}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   <Download className="w-4 h-4" />
                   Download
