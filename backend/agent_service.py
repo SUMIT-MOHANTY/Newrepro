@@ -2082,13 +2082,16 @@ On the following lines, provide a short 1-3 sentence justification."""
 
 # ── Docker Configuration ────────────────────────────────────────────────────
 
-AGENT_RUNTIME_IMAGE = "brd-agent-runtime:v5"
+AGENT_RUNTIME_IMAGE = "vibecoding-agent-runtime:latest"
 AGENT_RUNTIME_DOCKERFILE = os.path.join(
     os.path.dirname(__file__),
+    "..",
+    "vibecoding",
+    "backend",
     "docker",
     "agent-runtime.Dockerfile",
 )
-AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(__file__)
+AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(AGENT_RUNTIME_DOCKERFILE)
 DOCKER_BASE_IMAGE = AGENT_RUNTIME_IMAGE
 
 
@@ -4382,9 +4385,10 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             )
 
         # 3. Clone repo into /workspace/
-        # For Azure DevOps, use the original URL without embedded credentials
-        # Credentials are handled by credential.helper
-        clone_url = repo_url
+        # For Azure DevOps, credentials are handled by credential.helper (set above).
+        # For GitHub and other providers, embed the token directly in the URL so
+        # the container (which has no TTY) never needs to prompt for credentials.
+        clone_url = _build_git_auth_url(repo_url, token) if token and not _is_azure_devops_url(repo_url) else repo_url
         subprocess.run(
             ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/* /workspace/.* 2>/dev/null || true"],
             capture_output=True, text=True, timeout=10,
@@ -4395,6 +4399,17 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         )
         if clone.returncode != 0:
             return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
+
+        # Ensure the remote URL has credentials embedded so push works without a TTY.
+        # For Azure DevOps this is handled via credential.helper; for GitHub/others we
+        # set the remote URL directly so git never needs to prompt interactively.
+        if token and not _is_azure_devops_url(repo_url):
+            auth_url = _build_git_auth_url(repo_url, token)
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "remote", "set-url", "origin", auth_url],
+                capture_output=True, text=True, timeout=10,
+            )
 
         # 3.5. Pull latest integration branch if it exists (CRITICAL: agents work on latest code)
         fetch_result = subprocess.run(
