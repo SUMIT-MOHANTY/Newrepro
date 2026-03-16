@@ -938,6 +938,7 @@ Please suggest improvements or modifications for this element.`;
     setMessages(prev => [...prev, editMessage]);
     setEditPrompt('');
     setLoading(true);
+    
     try {
       const response = await axios.post(`${API_BASE_URL}/api/generate`, {
         prompt: editMessage.content,
@@ -949,6 +950,7 @@ Please suggest improvements or modifications for this element.`;
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        versionId: response.data.version_id,
         toolCalls: response.data.tool_calls_log || null,
         timestamp: new Date().toISOString()
       };
@@ -959,15 +961,12 @@ Please suggest improvements or modifications for this element.`;
         const fullCodeContent = response.data.code;
         setFullCode(fullCodeContent);
         setPreviewCode(fullCodeContent);
-        setIframeKey(prev => prev + 1);
         
         const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
         
-        // Save this as a new code version
-        saveCodeVersion(code, response.data.preview_url || '', files, editMessage.content);
-        
+        // Expand all folders
         const allFolderPaths = new Set();
         const collectFolders = (items) => {
           items.forEach(item => {
@@ -982,6 +981,7 @@ Please suggest improvements or modifications for this element.`;
         collectFolders(files);
         setExpandedFolders(allFolderPaths);
         
+        // Select first file
         const findFirstFile = (items) => {
           for (const item of items) {
             if (item.type === 'file') return item;
@@ -997,6 +997,7 @@ Please suggest improvements or modifications for this element.`;
           setSelectedFile(firstFile);
         }
         
+        // Find HTML for preview
         const findPreviewHtmlFile = (items) => {
           for (const item of items) {
             if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
@@ -1028,9 +1029,15 @@ Please suggest improvements or modifications for this element.`;
         }
       }
       
+      // Update preview URL if provided
       if (response.data.preview_url) {
+        console.log('🌐 Container preview:', response.data.preview_url);
         setPreviewUrl(response.data.preview_url);
+        setActiveView('preview');
       }
+      
+      // Reload branches to show new commit
+      await loadBranchesFromBackend(currentProjectId);
       
       setSelectedElement(null);
     } catch (error) {

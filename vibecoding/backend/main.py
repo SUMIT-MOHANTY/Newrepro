@@ -206,8 +206,14 @@ async def generate_code(request: GenerateRequest):
                 "content": msg.content
             })
         
-        # Add current prompt with a strict tool-calling enforcement
-        prompt_with_instructions = request.prompt
+        # Add current prompt with explicit instructions for incremental edits
+        if has_existing_code:
+            # Add a reminder to the user's prompt for incremental edits
+            prompt_with_instructions = f"""{request.prompt}
+
+IMPORTANT: If this is a small change (like changing colors, text, or adding a simple feature), output ONLY the files that need to be modified. Do NOT regenerate the entire codebase."""
+        else:
+            prompt_with_instructions = request.prompt
         if any(word in request.prompt.lower() for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
             prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. After you have gathered the necessary information about the page, you MUST generate the COMPLETE project code with ALL necessary files using the `// FILE: path/to/file.ext` format. DO NOT just describe the page; build it.)"
             

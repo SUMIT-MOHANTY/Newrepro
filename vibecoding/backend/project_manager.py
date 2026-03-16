@@ -377,12 +377,20 @@ class ProjectManager:
         files = {}
         file_count = 0
         
+        # Directories to skip (common large/binary directories)
+        skip_dirs = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache'}
+        
         for file_path in sorted(workspace_dir.rglob('*')):
             if file_count >= max_files:
                 break
-                
-            if file_path.is_file() and '.git' not in file_path.parts:
-                try:
+            
+            # Skip if any parent directory is in skip_dirs
+            if any(part in skip_dirs for part in file_path.parts):
+                continue
+            
+            try:
+                # Use exists() first to avoid symlink issues, then check if it's a file
+                if file_path.exists() and file_path.is_file():
                     rel_path = str(file_path.relative_to(workspace_dir)).replace('\\', '/')
                     content = file_path.read_text(encoding='utf-8')
                     
@@ -392,8 +400,10 @@ class ProjectManager:
                     
                     files[rel_path] = content
                     file_count += 1
-                except Exception as e:
-                    logger.warning(f"Could not read {file_path}: {e}")
+            except (OSError, UnicodeDecodeError, PermissionError) as e:
+                # Skip files that can't be accessed (symlinks, binary files, permission issues)
+                logger.debug(f"Skipping {file_path}: {e}")
+                continue
         
         return files
 
@@ -418,9 +428,25 @@ class ProjectManager:
 
         # Auto-detect incremental mode if not specified
         if is_incremental is None:
-            # Count existing files in workspace
-            existing_files = list(workspace_dir.rglob('*'))
-            existing_file_count = sum(1 for f in existing_files if f.is_file() and '.git' not in f.parts)
+            # Count existing files in workspace (skip node_modules and other large dirs)
+            skip_dirs = {'node_modules', '.git', '__pycache__', '.venv', 'venv', 'dist', 'build'}
+            existing_files = []
+            existing_file_count = 0
+            
+            try:
+                for f in workspace_dir.rglob('*'):
+                    # Skip directories in skip list
+                    if any(part in skip_dirs for part in f.parts):
+                        continue
+                    try:
+                        if f.exists() and f.is_file():
+                            existing_file_count += 1
+                    except (OSError, PermissionError):
+                        # Skip files that can't be accessed (symlinks, etc.)
+                        continue
+            except Exception as e:
+                logger.warning(f"Error counting existing files: {e}")
+                existing_file_count = 0
             
             # Parse how many files are in the generated code
             import re
