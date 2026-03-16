@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut, X } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import LandingPage from './components/LandingPage';
@@ -73,13 +73,13 @@ function Workspace({ user, logout, isAuthenticated }) {
   const iframeContainerRef = useRef(null);
   const prevProjectIdRef = useRef(null);
   
-  // Determine active project ID
+  // Determine active project ID from URL
   const params = new URLSearchParams(window.location.search);
-  const activeProjectId = urlParamId || params.get('project_id') || 'local_workspace';
+  const urlProjectId = urlParamId || params.get('project_id');
   
   // Initialize prevProjectIdRef
   if (prevProjectIdRef.current === null) {
-    prevProjectIdRef.current = activeProjectId;
+    prevProjectIdRef.current = urlProjectId;
   }
   
   // State declarations
@@ -89,7 +89,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [showGitPanel, setShowGitPanel] = useState(false);
   const [projects, setProjects] = useState([]);
   const [allChats, setAllChats] = useState([]);
-  const [currentProjectId, setCurrentProjectId] = useState(activeProjectId);
+  const [currentProjectId, setCurrentProjectId] = useState(urlProjectId || null);
   const [chatVersion, setChatVersion] = useState(1);
   const [messages, setMessages] = useState([]);
   const [branches, setBranches] = useState([]);
@@ -98,6 +98,8 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [versionsLoaded, setVersionsLoaded] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [viewingCheckpoint, setViewingCheckpoint] = useState(null); // {hash, message, date}
+  const [showCheckpointSnackbar, setShowCheckpointSnackbar] = useState(false);
   const [previewCode, setPreviewCode] = useState('');
   const [fullCode, setFullCode] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
@@ -126,7 +128,11 @@ function Workspace({ user, logout, isAuthenticated }) {
       const response = await axios.get(`${API_BASE_URL}/api/projects`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
       });
-      setProjects(response.data.projects || []);
+      // Sort projects by created_at descending (most recent first)
+      const sortedProjects = (response.data.projects || []).sort((a, b) => {
+        return new Date(b.created_at) - new Date(a.created_at);
+      });
+      setProjects(sortedProjects);
     } catch (error) {
       console.error('Failed to fetch projects:', error);
     }
@@ -328,16 +334,42 @@ function Workspace({ user, logout, isAuthenticated }) {
   const loadCommitCheckpoint = async (commitHash) => {
     try {
       console.log(`🔖 Loading checkpoint: ${commitHash}`);
+      console.log(`📍 Current project: ${currentProjectId}`);
+      
+      // Find the commit info from branchCommits
+      const commitInfo = branchCommits.find(c => c.hash === commitHash);
       
       // Checkout the commit
-      await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
+      const checkoutResp = await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
         project_id: currentProjectId,
         version_id: commitHash
       });
+      console.log('✅ Checkout response:', checkoutResp.data);
+      
+      if (checkoutResp.data.status === 'error') {
+        console.error('❌ Checkout failed:', checkoutResp.data.message);
+        return;
+      }
+      
+      // Set viewing checkpoint state
+      if (commitInfo) {
+        setViewingCheckpoint({
+          hash: commitHash,
+          message: commitInfo.message,
+          date: commitInfo.date
+        });
+        setShowCheckpointSnackbar(true);
+        
+        // Auto-hide snackbar after 5 seconds
+        setTimeout(() => {
+          setShowCheckpointSnackbar(false);
+        }, 5000);
+      }
       
       // Load files from workspace (now at this commit)
       const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
       const filesMap = filesResp.data.files || {};
+      console.log(`📁 Loaded ${Object.keys(filesMap).length} files from workspace`);
       
       let fullCode = '';
       Object.entries(filesMap).forEach(([filePath, content]) => {
@@ -345,15 +377,75 @@ function Workspace({ user, logout, isAuthenticated }) {
       });
       
       const fileTree = parseCodeToFiles(fullCode);
+      console.log(`🌳 Built file tree with ${fileTree.length} items`);
+      
       setPreviewCode(fullCode);
       setFullCode(fullCode);
       setFileTree(fileTree);
       
-      // Update preview
-      await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
+      // Expand all folders
+      const allFolderPaths = new Set();
+      const collectFolders = (items) => {
+        items.forEach(item => {
+          if (item.type === 'folder') {
+            allFolderPaths.add(item.path);
+            if (item.children) {
+              collectFolders(item.children);
+            }
+          }
+        });
+      };
+      collectFolders(fileTree);
+      setExpandedFolders(allFolderPaths);
+      console.log(`📂 Expanded ${allFolderPaths.size} folders`);
+      
+      // Select first file with unique timestamp to force re-render
+      const findFirstFile = (items) => {
+        for (const item of items) {
+          if (item.type === 'file') return item;
+          if (item.type === 'folder' && item.children) {
+            const found = findFirstFile(item.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const firstFile = findFirstFile(fileTree);
+      if (firstFile) {
+        // Add timestamp to force React to detect change
+        setSelectedFile({ ...firstFile, _loadedAt: Date.now() });
+        console.log('📄 Selected file:', firstFile.name, `(${firstFile.content?.length || 0} chars)`);
+      } else {
+        console.warn('⚠️ No file found to select');
+      }
+      
+      // Get preview URL for the workspace at this commit
+      try {
+        const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
+        if (previewResp.data.preview_url) {
+          console.log('🌐 Checkpoint preview:', previewResp.data.preview_url);
+          
+          // Wait for container to restart with new code (2 seconds)
+          console.log('⏳ Waiting for container to restart...');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          // Force iframe reload by incrementing key and adding cache-busting timestamp
+          const timestamp = Date.now();
+          setPreviewUrl(`${previewResp.data.preview_url}?_=${timestamp}`);
+          setIframeKey(prev => prev + 1);
+          setActiveView('preview');
+          
+          console.log('🔄 Iframe reloaded with checkpoint code');
+        }
+      } catch (previewErr) {
+        console.error('Failed to get preview URL:', previewErr);
+      }
+      
+      console.log('✅ Checkpoint loaded successfully');
       
     } catch (err) {
-      console.error('Failed to load commit checkpoint:', err);
+      console.error('❌ Failed to load commit checkpoint:', err);
+      console.error('Error details:', err.response?.data || err.message);
     }
   };
 
@@ -508,6 +600,12 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
+    
+    // Check if a project is selected
+    if (!currentProjectId) {
+      alert('Please select or create a project first');
+      return;
+    }
 
     const userMessage = { role: 'user', content: input, timestamp: new Date().toISOString() };
     setMessages(prev => [...prev, userMessage]);
@@ -827,68 +925,73 @@ Please suggest improvements or modifications for this element.`;
   // Listen for postMessage events from iframe
   useEffect(() => {
     const handleMessage = (event) => {
-      const msg = event.data;
-      if (!msg || !msg.type) return;
+      try {
+        const msg = event.data;
+        if (!msg || !msg.type) return;
 
-      if (msg.type === 'element-hover') {
-        if (!msg.data) {
-          setHoveredElement(null);
-          return;
+        if (msg.type === 'element-hover') {
+          if (!msg.data) {
+            setHoveredElement(null);
+            return;
+          }
+          // Coordinates from iframe are relative to iframe viewport.
+          // We need to offset by the iframe element's position in parent.
+          const iframe = iframeRef.current;
+          const container = iframeContainerRef.current;
+          if (!iframe || !container) return;
+          const iframeRect = iframe.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          const offsetTop = iframeRect.top - containerRect.top;
+          const offsetLeft = iframeRect.left - containerRect.left;
+          setHoveredElement({
+            ...msg.data,
+            rect: {
+              top: msg.data.rect.top + offsetTop,
+              left: msg.data.rect.left + offsetLeft,
+              width: msg.data.rect.width,
+              height: msg.data.rect.height,
+            }
+          });
+        } else if (msg.type === 'element-selected') {
+          const iframe = iframeRef.current;
+          const container = iframeContainerRef.current;
+          if (!iframe || !container) return;
+          const iframeRect = iframe.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          const offsetTop = iframeRect.top - containerRect.top;
+          const offsetLeft = iframeRect.left - containerRect.left;
+          
+          const elementData = {
+            ...msg.data,
+            rect: {
+              top: msg.data.rect.top + offsetTop,
+              left: msg.data.rect.left + offsetLeft,
+              width: msg.data.rect.width,
+              height: msg.data.rect.height,
+            }
+          };
+          
+          setSelectedElement(elementData);
+          
+          // Position menu at mouse click position (offset from iframe top-left)
+          const menuX = iframeRect.left + (msg.data.mouseX || (msg.data.rect.left + msg.data.rect.width / 2));
+          const menuY = iframeRect.top  + (msg.data.mouseY || msg.data.rect.top);
+          // Clamp so menu doesn't go off-screen right/bottom
+          const clampedX = Math.min(menuX, window.innerWidth - 220);
+          const clampedY = Math.min(menuY, window.innerHeight - 320);
+
+          setEditMenu({
+            visible: true,
+            element: elementData,
+            position: { x: clampedX, y: clampedY }
+          });
+        } else if (msg.type === 'element-deselect') {
+          setSelectedElement(null);
+          setEditMenu({ ...editMenu, visible: false });
         }
-        // Coordinates from iframe are relative to iframe viewport.
-        // We need to offset by the iframe element's position in parent.
-        const iframe = iframeRef.current;
-        const container = iframeContainerRef.current;
-        if (!iframe || !container) return;
-        const iframeRect = iframe.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const offsetTop = iframeRect.top - containerRect.top;
-        const offsetLeft = iframeRect.left - containerRect.left;
-        setHoveredElement({
-          ...msg.data,
-          rect: {
-            top: msg.data.rect.top + offsetTop,
-            left: msg.data.rect.left + offsetLeft,
-            width: msg.data.rect.width,
-            height: msg.data.rect.height,
-          }
-        });
-      } else if (msg.type === 'element-selected') {
-        const iframe = iframeRef.current;
-        const container = iframeContainerRef.current;
-        if (!iframe || !container) return;
-        const iframeRect = iframe.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const offsetTop = iframeRect.top - containerRect.top;
-        const offsetLeft = iframeRect.left - containerRect.left;
-        
-        const elementData = {
-          ...msg.data,
-          rect: {
-            top: msg.data.rect.top + offsetTop,
-            left: msg.data.rect.left + offsetLeft,
-            width: msg.data.rect.width,
-            height: msg.data.rect.height,
-          }
-        };
-        
-        setSelectedElement(elementData);
-        
-        // Position menu at mouse click position (offset from iframe top-left)
-        const menuX = iframeRect.left + (msg.data.mouseX || (msg.data.rect.left + msg.data.rect.width / 2));
-        const menuY = iframeRect.top  + (msg.data.mouseY || msg.data.rect.top);
-        // Clamp so menu doesn't go off-screen right/bottom
-        const clampedX = Math.min(menuX, window.innerWidth - 220);
-        const clampedY = Math.min(menuY, window.innerHeight - 320);
-
-        setEditMenu({
-          visible: true,
-          element: elementData,
-          position: { x: clampedX, y: clampedY }
-        });
-      } else if (msg.type === 'element-deselect') {
-        setSelectedElement(null);
-        setEditMenu({ ...editMenu, visible: false });
+      } catch (err) {
+        // Silently ignore postMessage errors from other sources
+        console.debug('Ignored postMessage error:', err.message);
       }
     };
 
@@ -1243,8 +1346,6 @@ Please suggest improvements or modifications for this element.`;
         onBranchSwitch={switchToBranch}
         formatTimestamp={formatTimestamp}
       />
-
-
 
       {/* Error/Status Banner */}
       {(errorHeader || deployStatus === 'success') && (
@@ -1696,7 +1797,7 @@ Please suggest improvements or modifications for this element.`;
 
                   {/* Code Content */}
                   <div className="flex-1 overflow-auto min-h-0 custom-scrollbar">
-                    <div className="flex min-h-full">
+                    <div className="flex min-h-full" key={selectedFile?._loadedAt || selectedFile?.path || 'no-file'}>
                       {/* Line Numbers */}
                       <div className="py-4 px-3 select-none bg-[#0A0A0F] text-gray-600 border-r border-white/10">
                         <pre className="text-xs font-mono leading-relaxed text-right">
@@ -1709,7 +1810,7 @@ Please suggest improvements or modifications for this element.`;
                       {/* Code Content */}
                       <div className="flex-1 py-4 px-4 overflow-x-auto custom-scrollbar bg-[#0A0A0F] min-w-0">
                         <pre className="text-sm font-mono leading-relaxed text-gray-300">
-                          <code>{selectedFile?.content || previewCode}</code>
+                          <code key={selectedFile?._loadedAt || selectedFile?.path || 'preview'}>{selectedFile?.content || previewCode}</code>
                         </pre>
                       </div>
                     </div>
@@ -1752,6 +1853,7 @@ Please suggest improvements or modifications for this element.`;
             setBranches([]);
             setBranchCommits([]);
           }}
+          disabled={!currentProjectId}
           suggestions={[
             'Create a beautiful landing page with gradient background',
             'Build a todo app with Flask backend',
@@ -1767,6 +1869,34 @@ Please suggest improvements or modifications for this element.`;
         darkMode={true}
         projectId={currentProjectId}
       />
+
+      {/* Checkpoint Snackbar */}
+      {showCheckpointSnackbar && viewingCheckpoint && (
+        <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom duration-300">
+          <div className="bg-amber-600/90 backdrop-blur-sm border border-amber-500/50 rounded-lg shadow-2xl px-4 py-3 min-w-[320px] max-w-md">
+            <div className="flex items-start gap-3">
+              <History className="w-5 h-5 text-amber-200 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-white mb-1">
+                  Checkpoint Loaded
+                </div>
+                <div className="text-xs text-amber-100/80">
+                  {viewingCheckpoint.message}
+                </div>
+                <div className="text-xs text-amber-200/60 mt-1">
+                  {viewingCheckpoint.date}
+                </div>
+              </div>
+              <button
+                onClick={() => setShowCheckpointSnackbar(false)}
+                className="text-amber-200 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -168,18 +168,22 @@ const Header = ({
                   className="flex items-center gap-2 bg-white/5 hover:bg-white/10 text-white h-8 py-0 px-3"
                 >
                   <History className="w-3.5 h-3.5" />
-                  <span className="text-xs">{currentBranch}</span>
+                  <span className="text-xs">
+                    {branches.findIndex(b => b.version_id === currentBranch) >= 0 
+                      ? `Version ${branches.findIndex(b => b.version_id === currentBranch) + 1}`
+                      : currentBranch}
+                  </span>
                   <ChevronDown className={`w-3 h-3 transition-transform ${showVersionHistory ? 'rotate-180' : ''}`} />
                 </Button>
                 
                 {showVersionHistory && (
                   <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-2xl z-50 max-h-[70vh] overflow-y-auto backdrop-blur-md">
                     <div className="p-3 border-b border-white/10 sticky top-0 bg-[#1a1a1f]/90 backdrop-blur-sm z-10">
-                      <div className="text-xs font-semibold text-white uppercase tracking-wider">Branches</div>
-                      <div className="text-[10px] text-gray-400 mt-1">{branches.length} branches • Commits shown in chat</div>
+                      <div className="text-xs font-semibold text-white uppercase tracking-wider">Versions</div>
+                      <div className="text-[10px] text-gray-400 mt-1">{branches.length} versions • Checkpoints shown in chat</div>
                     </div>
                     <div className="p-2">
-                      {branches.map((branch) => (
+                      {branches.map((branch, index) => (
                         <Button
                           key={branch.version_id}
                           variant="ghost"
@@ -199,7 +203,7 @@ const Header = ({
                                 <span className={`text-xs font-bold ${
                                   currentBranch === branch.version_id ? 'text-purple-300' : 'text-white'
                                 }`}>
-                                  {branch.version_id}
+                                  Version {index + 1}
                                 </span>
                                 {branch.is_current && (
                                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-600/20 text-green-400 font-mono">

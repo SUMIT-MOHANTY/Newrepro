@@ -9,7 +9,8 @@ const ChatInput = ({
   onSend, 
   loading, 
   darkMode,
-  onKeyPress
+  onKeyPress,
+  disabled = false
 }) => {
   return (
     <div className={cn(
@@ -22,19 +23,20 @@ const ChatInput = ({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyPress={onKeyPress}
-          placeholder="Describe your app..."
-          disabled={loading}
+          placeholder={disabled ? "Select or create a project to start..." : "Describe your app..."}
+          disabled={loading || disabled}
           rows="3"
           className={cn(
             'w-full px-4 py-3 pr-12 rounded-xl text-sm resize-none transition-colors focus:outline-none focus:ring-2 border max-h-24 overflow-y-auto',
             darkMode 
               ? 'bg-white/5 text-gray-200 placeholder-gray-500 focus:ring-purple-500/50 border-white/10' 
-              : 'bg-gray-50 text-gray-900 placeholder-gray-400 focus:ring-blue-500 border-gray-200'
+              : 'bg-gray-50 text-gray-900 placeholder-gray-400 focus:ring-blue-500 border-gray-200',
+            (loading || disabled) && 'opacity-50 cursor-not-allowed'
           )}
         />
         <Button
           onClick={onSend}
-          disabled={loading || !input.trim()}
+          disabled={loading || !input.trim() || disabled}
           size="icon"
           className={cn(
             'absolute right-3 bottom-3 w-8 h-8 rounded-lg transition-all',
@@ -54,6 +56,7 @@ const ChatInput = ({
           <Button 
             variant="ghost"
             size="sm"
+            disabled={disabled}
             className={cn(
               'flex items-center gap-1 h-6 px-2 text-xs',
               darkMode ? 'hover:text-gray-300' : 'hover:text-gray-600'
@@ -63,7 +66,7 @@ const ChatInput = ({
             <span>Attach</span>
           </Button>
         </div>
-        <span>Press Enter to send</span>
+        <span>{disabled ? 'Select a project first' : 'Press Enter to send'}</span>
       </div>
     </div>
   );

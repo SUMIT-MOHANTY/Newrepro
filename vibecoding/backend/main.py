@@ -822,8 +822,30 @@ async def git_checkpoint(request: GitRequest):
         
         if not version_id:
             raise HTTPException(status_code=400, detail="version_id is required")
+        
+        # First, verify the commit exists in the repository
+        verify_res = git_manager._run_git_command(project_id, ["cat-file", "-t", version_id])
+        if verify_res["status"] != "success" or "commit" not in verify_res["stdout"]:
+            # Commit doesn't exist, try to find it by searching commit messages
+            search_res = git_manager._run_git_command(project_id, ["log", "--all", f"--grep={version_id}", "--pretty=format:%H", "-n", "1"])
+            if search_res["status"] == "success" and search_res["stdout"].strip():
+                version_id = search_res["stdout"].strip()
+            else:
+                return {"status": "error", "message": f"Checkpoint {version_id[:8]} not found in repository"}
+        
+        # Check if there are uncommitted changes
+        status = git_manager.get_status(project_id)
+        has_changes = status.get("modified_files") or status.get("added_files") or status.get("deleted_files") or status.get("untracked_files")
+        
+        if has_changes:
+            # Stash changes so we can restore them later if needed
+            stash_res = git_manager._run_git_command(project_id, ["stash", "push", "-u", "-m", "Auto-stash before checkpoint view"])
+            if stash_res["status"] != "success":
+                # If stash fails, force discard (likely just metadata.json)
+                git_manager._run_git_command(project_id, ["reset", "--hard"])
+                git_manager._run_git_command(project_id, ["clean", "-fd"])
             
-        # 1. Try checking out as a direct commit hash or branch
+        # Checkout the commit
         checkout_res = git_manager.checkout_commit(project_id, version_id)
         
         if checkout_res["status"] == "success":
@@ -831,22 +853,7 @@ async def git_checkpoint(request: GitRequest):
             await project_manager.switch_to_workspace(project_id)
             return checkout_res
             
-        # 2. Try searching for [version_id] in commit messages (legacy support)
-        res = git_manager._run_git_command(project_id, ["log", "--all", f"--grep={version_id}", "--pretty=format:%H", "-n", "1"])
-        if res["status"] == "success" and res["stdout"].strip():
-            commit_hash = res["stdout"].strip()
-            checkout_res = git_manager.checkout_commit(project_id, commit_hash)
-            await project_manager.switch_to_workspace(project_id)
-            return checkout_res
-            
-        # 3. Fallback: if not found in Git, sync workspace from version dir
-        version_dir = project_manager.artifacts_dir / project_id / "versions" / version_id
-        if version_dir.exists():
-            git_manager.sync_workspace(project_id, version_dir)
-            await project_manager.switch_to_workspace(project_id)
-            return {"status": "success", "message": "Synced from version directory"}
-            
-        return {"status": "error", "message": f"Checkpoint for {version_id} not found"}
+        return {"status": "error", "message": f"Failed to checkout commit: {checkout_res.get('stderr', 'Unknown error')}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

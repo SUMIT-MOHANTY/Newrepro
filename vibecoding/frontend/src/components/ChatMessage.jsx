@@ -147,9 +147,10 @@ const ChatMessage = ({
   onCopyMessage,
   onRegenerate
 }) => {
-  const msgVersion = message.code && codeVersions ? codeVersions.find(v =>
-    Math.abs(new Date(v.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000
-  ) : null;
+  // Find the commit that matches this message's versionId (commit hash)
+  const msgVersion = message.versionId && codeVersions ? 
+    codeVersions.find(commit => commit.hash === message.versionId) : 
+    null;
 
   const isUser = message.role === 'user';
 
@@ -316,8 +317,8 @@ const ChatMessage = ({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => onLoadVersion(message.versionId || msgVersion.id)}
-                      className={`text-xs px-2 py-1 h-auto ${selectedVersion === (message.versionId || msgVersion.id)
+                      onClick={() => onLoadVersion(msgVersion?.hash || message.versionId)}
+                      className={`text-xs px-2 py-1 h-auto ${selectedVersion === (msgVersion?.hash || message.versionId)
                         ? darkMode
                           ? 'bg-purple-600 text-white hover:bg-purple-700'
                           : 'bg-blue-500 text-white hover:bg-blue-600'
@@ -328,7 +329,7 @@ const ChatMessage = ({
                             : 'text-gray-500 hover:bg-gray-200'
                         }`}
                     >
-                      {selectedVersion === (message.versionId || msgVersion.id) ? 'Current' : 'Checkpoint'}
+                      {selectedVersion === (msgVersion?.hash || message.versionId) ? 'Current' : 'Checkpoint'}
                     </Button>
                   )}
                 </div>
