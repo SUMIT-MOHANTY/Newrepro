@@ -50,6 +50,20 @@ class VersionSupervisor:
             except Exception as e:
                 self.log("❌", f"Stop error: {e}")
             
+            # Additional cleanup: kill any process using the port
+            port = self.config['port']
+            try:
+                # Use lsof to find and kill processes on the port
+                result = subprocess.run(
+                    ['sh', '-c', f'lsof -ti:{port} | xargs -r kill -9'],
+                    capture_output=True,
+                    timeout=2
+                )
+                if result.returncode == 0 and result.stdout:
+                    self.log("🧹", f"Cleaned up port {port}")
+            except Exception:
+                pass  # lsof might not be available, that's okay
+            
             self.current_process = None
             self.current_version = None
     
@@ -62,6 +76,17 @@ class VersionSupervisor:
             return False
         
         self.stop_current_process()
+        
+        # Clean up port before starting
+        port = self.config['port']
+        try:
+            subprocess.run(
+                ['sh', '-c', f'lsof -ti:{port} | xargs -r kill -9'],
+                capture_output=True,
+                timeout=2
+            )
+        except Exception:
+            pass
         
         self.log("🚀", f"Activating Version: {version_id}")
         
@@ -96,6 +121,17 @@ class VersionSupervisor:
             return False
         
         self.stop_current_process()
+        
+        # Clean up port before starting
+        port = self.config['port']
+        try:
+            subprocess.run(
+                ['sh', '-c', f'lsof -ti:{port} | xargs -r kill -9'],
+                capture_output=True,
+                timeout=2
+            )
+        except Exception:
+            pass
         
         self.log("🚀", "Activating Workspace (Git State)")
         
@@ -181,7 +217,10 @@ class VersionSupervisor:
         prompt = os.environ.get('USER_PROMPT')
 
         if init_v:
-            self.start_version(init_v)
+            if init_v == 'workspace':
+                self.start_workspace()
+            else:
+                self.start_version(init_v)
         elif prompt:
             self.log("🎨", "Found USER_PROMPT. Triggering Stage 1 Codegen...")
             threading.Thread(

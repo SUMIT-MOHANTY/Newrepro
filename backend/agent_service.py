@@ -13240,7 +13240,7 @@ def _detect_project_stack(container_name: str, deployment_hints: Optional[Dict[s
                 module = relative_main.replace(".py", "").replace("/", ".")
             else:
                 module = "main"
-            stack["start_cmd"] = f"cd {workdir} && uvicorn {module}:app --host 0.0.0.0 --port 8000"
+            stack["start_cmd"] = f"cd {workdir} && uvicorn {module}:app --host 0.0.0.0 --00"
             stack["port"] = 8000
         elif "flask" in req_text:
             stack["start_cmd"] = f"cd {workdir} && flask run --host=0.0.0.0 --port 5000"

@@ -360,8 +360,52 @@ class ProjectManager:
         logger.info(f"📁 Archived workspace to version {version_id}")
         return version_id
 
-    def update_workspace_from_code(self, project_id: str, code: str, prompt: str) -> Tuple[str, Path]:
-        """Update the git workspace directly with new code and commit it."""
+    def get_workspace_files(self, project_id: str, max_files: int = 20, max_chars_per_file: int = 2000) -> dict:
+        """Get all files from the workspace as a dictionary {filepath: content}
+        
+        Args:
+            project_id: Project identifier
+            max_files: Maximum number of files to return (to avoid token overflow)
+            max_chars_per_file: Maximum characters per file (to avoid token overflow)
+        """
+        project_dir = self.artifacts_dir / project_id
+        workspace_dir = project_dir / "workspace"
+        
+        if not workspace_dir.exists():
+            return {}
+        
+        files = {}
+        file_count = 0
+        
+        for file_path in sorted(workspace_dir.rglob('*')):
+            if file_count >= max_files:
+                break
+                
+            if file_path.is_file() and '.git' not in file_path.parts:
+                try:
+                    rel_path = str(file_path.relative_to(workspace_dir)).replace('\\', '/')
+                    content = file_path.read_text(encoding='utf-8')
+                    
+                    # Truncate large files
+                    if len(content) > max_chars_per_file:
+                        content = content[:max_chars_per_file] + f"\n... [truncated, {len(content) - max_chars_per_file} more chars]"
+                    
+                    files[rel_path] = content
+                    file_count += 1
+                except Exception as e:
+                    logger.warning(f"Could not read {file_path}: {e}")
+        
+        return files
+
+    def update_workspace_from_code(self, project_id: str, code: str, prompt: str, is_incremental: bool = None) -> Tuple[str, Path]:
+        """Update the git workspace directly with new code and commit it.
+        
+        Args:
+            project_id: The project identifier
+            code: Generated code with file markers
+            prompt: User's prompt for the commit message
+            is_incremental: If None, auto-detect. If True, only update specified files. If False, replace entire workspace.
+        """
         project_dir = self.artifacts_dir / project_id
         workspace_dir = project_dir / "workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -371,6 +415,43 @@ class ProjectManager:
             git_manager.init_repo(project_id)
             git_manager._run_git_command(project_id, ["config", "user.email", "vibe@engineer.com"])
             git_manager._run_git_command(project_id, ["config", "user.name", "Vibe Engineer"])
+
+        # Auto-detect incremental mode if not specified
+        if is_incremental is None:
+            # Count existing files in workspace
+            existing_files = list(workspace_dir.rglob('*'))
+            existing_file_count = sum(1 for f in existing_files if f.is_file() and '.git' not in f.parts)
+            
+            # Parse how many files are in the generated code
+            import re
+            file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
+            generated_file_count = len(re.findall(file_marker_regex, code))
+            
+            # If existing code exists and AI generated fewer files than exist, it's likely incremental
+            # If AI generated many files (5+), it's likely a full regeneration
+            if existing_file_count > 0 and generated_file_count > 0:
+                if generated_file_count < existing_file_count * 0.5:  # Less than 50% of existing files
+                    is_incremental = True
+                    logger.info(f"✏️ Auto-detected incremental mode: {generated_file_count} files generated vs {existing_file_count} existing")
+                else:
+                    is_incremental = False
+                    logger.info(f"🔄 Auto-detected full regeneration: {generated_file_count} files generated vs {existing_file_count} existing")
+            else:
+                is_incremental = False
+                logger.info(f"🆕 New project or full generation")
+
+        # If not incremental, clear workspace (except .git)
+        if not is_incremental:
+            logger.info(f"🔄 Full workspace replacement for {project_id}")
+            for item in workspace_dir.iterdir():
+                if item.name != '.git':
+                    if item.is_dir():
+                        import shutil
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+        else:
+            logger.info(f"✏️ Incremental update for {project_id}")
 
         # 1. Parse code into files and write to workspace
         import re
@@ -399,6 +480,8 @@ class ProjectManager:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(file_content)
                 
+                logger.info(f"  {'📝 Updated' if is_incremental else '📄 Created'}: {filename}")
+                
                 if main_file_path is None and filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx')):
                     main_file_path = file_path
             
@@ -425,13 +508,39 @@ class ProjectManager:
         has_changes = status.get("modified_files") or status.get("added_files") or status.get("deleted_files") or status.get("untracked_files")
         
         if has_changes:
-            git_manager.commit(project_id, prompt)
+            commit_msg = f"{'[Incremental] ' if is_incremental else ''}{prompt}"
+            git_manager.commit(project_id, commit_msg)
         
         # Get the commit hash to use as version_id/checkpoint_id
         hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
         commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
         
         logger.info(f"✅ Committed workspace changes: {commit_hash[:8]}")
+        
+        # 3. Create metadata.json for container creation
+        # This is needed for create_container_for_code to work
+        metadata = {
+            "runtime": "static-html",  # Default runtime
+            "docker_image": "vibecoding-agent-runtime:latest",
+            "port": 80,
+            "additional_ports": [],
+            "created_at": datetime.now().isoformat(),
+            "commit_hash": commit_hash
+        }
+        
+        # Detect runtime from files
+        if any(f.endswith('.py') for f in os.listdir(workspace_dir) if os.path.isfile(workspace_dir / f)):
+            metadata["runtime"] = "python"
+            metadata["port"] = 8000
+        elif any(f.endswith(('.js', '.jsx')) for f in os.listdir(workspace_dir) if os.path.isfile(workspace_dir / f)):
+            if (workspace_dir / "package.json").exists():
+                metadata["runtime"] = "node"
+                metadata["port"] = 3000
+        
+        metadata_file = workspace_dir / "metadata.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
         return commit_hash, main_file_path
     
     def update_project_metadata(self, project_id: str, metadata: dict):
@@ -499,19 +608,28 @@ except Exception as e:
             return False
 
     async def switch_to_workspace(self, project_id: str) -> bool:
-        """Switch the container to run from the workspace directory (Git state)"""
+        """Switch the container to run from the workspace directory (Git state)
+        Creates container if it doesn't exist"""
         container_name = f"vibecoding_{project_id}"
         
         if self.docker_client is None:
             return False
             
         try:
-            container = self.docker_client.containers.get(container_name)
-            if container.status != 'running':
-                container.start()
-                await asyncio.sleep(2)
+            # Try to get existing container
+            try:
+                container = self.docker_client.containers.get(container_name)
+                if container.status != 'running':
+                    container.start()
+                    await asyncio.sleep(2)
+                    
+                return self._send_switch_command(container, "workspace")
+            except docker.errors.NotFound:
+                # Container doesn't exist, create it
+                logger.info(f"🆕 Container not found, creating for project {project_id}")
+                preview_url = await self.create_container_for_code(project_id, "workspace")
+                return preview_url is not None
                 
-            return self._send_switch_command(container, "workspace")
         except Exception as e:
             logger.error(f"Failed to switch to workspace: {e}")
             return False
@@ -519,8 +637,16 @@ except Exception as e:
     async def create_container_for_code(self, project_id: str, version_id: str) -> Optional[str]:
         """Create or reuse Docker container and switch to the specified version"""
         project_dir = self.artifacts_dir / project_id
-        version_dir = project_dir / "versions" / version_id
-        metadata_file = version_dir / "metadata.json"
+        
+        # Handle workspace vs versioned code differently
+        if version_id == "workspace":
+            # For workspace, metadata is in workspace directory
+            version_dir = project_dir / "workspace"
+            metadata_file = version_dir / "metadata.json"
+        else:
+            # For versioned code, metadata is in versions/{version_id}
+            version_dir = project_dir / "versions" / version_id
+            metadata_file = version_dir / "metadata.json"
         
         # Read version metadata to get runtime info
         try:

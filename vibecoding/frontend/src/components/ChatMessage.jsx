@@ -147,7 +147,7 @@ const ChatMessage = ({
   onCopyMessage,
   onRegenerate
 }) => {
-  const msgVersion = message.code ? codeVersions.find(v =>
+  const msgVersion = message.code && codeVersions ? codeVersions.find(v =>
     Math.abs(new Date(v.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000
   ) : null;
 
@@ -214,7 +214,7 @@ const ChatMessage = ({
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  p: ({ node, ...props }) => <p className="mb-3 last:mb-0 break-words" {...props} />,
+                  p: ({ node, ...props }) => <div className="mb-3 last:mb-0 break-words" {...props} />,
                   a: ({ node, ...props }) => <a className="text-blue-500 hover:text-blue-400 hover:underline transition-colors break-words [word-break:break-word]" target="_blank" rel="noreferrer" {...props} />,
                   ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
                   ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,

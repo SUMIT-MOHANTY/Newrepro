@@ -135,24 +135,32 @@ async def dual_agent_chat(request: GenerateRequest):
             # Save code version if code was generated
             version_id = None
             code = result.get("code")
+            preview_url = result.get("preview_url")
+            
             if code:
-                # Use git-based workspace update
+                # Use git-based workspace update (auto-detects incremental vs full)
                 version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
                 
-                # Also save chat history for this version
+                # Save chat history for the current branch (not commit hash)
+                # Get current branch name
+                status = git_manager.get_status(project_id)
+                current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
+                
                 history.append({"role": "user", "content": request.prompt})
                 history.append({"role": "assistant", "content": result.get("message", "")})
-                await project_manager.save_chat_version(project_id, version_id, history)
+                await project_manager.save_chat_version(project_id, current_branch, history)
                 
-                # Switch container to workspace mode
-                await project_manager.switch_to_workspace(project_id)
+                # Create or switch container to workspace mode and get preview URL
+                container_url = await project_manager.create_container_for_code(project_id, "workspace")
+                if container_url:
+                    preview_url = container_url
             
             return {
                 "message": result.get("message", ""),
                 "code": code,
                 "project_id": project_id,
                 "version_id": version_id,
-                "preview_url": result.get("preview_url"),
+                "preview_url": preview_url,
                 "agent_type": result.get("agent_type"),
                 "tool_calls_log": None
             }
@@ -170,8 +178,28 @@ async def generate_code(request: GenerateRequest):
     project_id = request.project_id or project_manager.generate_project_id()
     
     try:
-        # Build conversation history with system prompt
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # Check if there's existing code in the workspace
+        workspace_files = project_manager.get_workspace_files(project_id, max_files=15, max_chars_per_file=1500)
+        has_existing_code = len(workspace_files) > 0
+        
+        # Build conversation history with appropriate system prompt
+        if has_existing_code:
+            # Provide context about existing code and let AI decide whether to do incremental or full edit
+            file_list = "\n".join([f"- {path}" for path in workspace_files.keys()])
+            
+            # Format current files for context
+            current_files_str = ""
+            for path, content in workspace_files.items():
+                current_files_str += f"\n\n// FILE: {path}\n{content}"
+            
+            from prompts import INCREMENTAL_EDIT_PROMPT
+            system_prompt = INCREMENTAL_EDIT_PROMPT.replace("{{file_list}}", file_list).replace("{{current_files}}", current_files_str)
+            logger.info(f"📝 Existing codebase detected - AI will decide edit scope")
+        else:
+            system_prompt = SYSTEM_PROMPT
+            logger.info(f"🆕 New project - full generation mode")
+        
+        messages = [{"role": "system", "content": system_prompt}]
         for msg in request.history:
             messages.append({
                 "role": msg.role,
@@ -293,15 +321,22 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
         preview_url = None
         
         if code:
-            # Use git-based workspace update
+            # Use git-based workspace update (auto-detects incremental vs full)
             version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
             
-            # Save chat history for this version
+            # Save chat history for the current branch (not commit hash)
             try:
+                # Get current branch name
+                status = git_manager.get_status(project_id)
+                current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
+                
                 history = [{"role": msg.role, "content": msg.content} for msg in request.history]
                 history.append({"role": "user", "content": request.prompt})
                 history.append({"role": "assistant", "content": message if message else "I've generated the code for you!"})
-                await project_manager.save_chat_version(project_id, version_id, history)
+                
+                # Save with branch name so it persists across commits in the same branch
+                await project_manager.save_chat_version(project_id, current_branch, history)
+                logger.info(f"💾 Saved chat history to branch: {current_branch}")
             except Exception as e:
                 print(f"Failed to save chat history: {e}")
             
@@ -403,9 +438,45 @@ async def get_project(project_id: str, user: dict = Depends(get_current_user)):
 
 @app.get("/api/projects/{project_id}/versions")
 async def list_versions(project_id: str):
-    """List all versions for a project with their metadata"""
+    """List all Git branches for a project (version history shows branches)"""
     try:
-        versions = project_manager.get_all_versions(project_id)
+        # Get branches from Git
+        branches_result = git_manager.list_branches(project_id)
+        
+        if branches_result["status"] != "success":
+            # Fallback to old version system if Git not initialized
+            versions = project_manager.get_all_versions(project_id)
+            return {"versions": versions}
+        
+        # Save current branch
+        current_status = git_manager.get_status(project_id)
+        current_branch = current_status.get("branch", "")
+        
+        versions = []
+        for branch_info in branches_result.get("branches", []):
+            if branch_info["type"] == "local":  # Only show local branches
+                # Temporarily checkout branch to get its latest commit
+                if branch_info["name"] != current_branch:
+                    git_manager.checkout_branch(project_id, branch_info["name"])
+                
+                commits_result = git_manager.get_commit_history(project_id)
+                commits = commits_result.get("commits", [])
+                
+                # Switch back
+                if branch_info["name"] != current_branch and current_branch:
+                    git_manager.checkout_branch(project_id, current_branch)
+                
+                # Format as version for frontend compatibility
+                latest_commit = commits[0] if commits else None
+                versions.append({
+                    "version_id": branch_info["name"],
+                    "prompt": f"Branch: {branch_info['name']}",
+                    "created_at": latest_commit["date"] if latest_commit else "",
+                    "is_branch": True,
+                    "commit_count": len(commits),
+                    "is_current": branch_info["is_current"]
+                })
+        
         return {"versions": versions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -424,11 +495,36 @@ async def get_version_code(project_id: str, version_id: str):
 
 @app.get("/api/projects/{project_id}/versions/{version_id}/files")
 async def get_version_files(project_id: str, version_id: str):
-    """Get all files for a specific version"""
+    """Get all files for a specific version (branch or commit)"""
     try:
-        files = project_manager.get_version_all_files(project_id, version_id)
-        if files is None:
-            raise HTTPException(status_code=404, detail="Version not found")
+        # Save current branch
+        current_status = git_manager.get_status(project_id)
+        current_branch = current_status.get("branch", "")
+        
+        # If version_id is a branch name, checkout that branch
+        branches_result = git_manager.list_branches(project_id)
+        is_branch = False
+        
+        if branches_result["status"] == "success":
+            branch_names = [b["name"] for b in branches_result.get("branches", []) if b["type"] == "local"]
+            if version_id in branch_names:
+                is_branch = True
+                if version_id != current_branch:
+                    git_manager.checkout_branch(project_id, version_id)
+        
+        # Get files from workspace (current Git state)
+        files = project_manager.get_workspace_files(project_id, max_files=100, max_chars_per_file=100000)
+        
+        # Switch back to original branch
+        if is_branch and version_id != current_branch and current_branch:
+            git_manager.checkout_branch(project_id, current_branch)
+        
+        if files is None or len(files) == 0:
+            # Fallback to old version system
+            files = project_manager.get_version_all_files(project_id, version_id)
+            if files is None:
+                raise HTTPException(status_code=404, detail="Version not found")
+        
         return {"files": files, "version_id": version_id}
     except HTTPException:
         raise
@@ -445,7 +541,27 @@ async def create_preview(project_id: str, version_id: str):
                 detail="Docker not available. Please ensure Docker Desktop is installed and running."
             )
         
-        preview_url = await project_manager.create_container_for_code(project_id, version_id)
+        # Check if version_id is a branch name
+        branches_result = git_manager.list_branches(project_id)
+        is_branch = False
+        
+        if branches_result["status"] == "success":
+            branch_names = [b["name"] for b in branches_result.get("branches", []) if b["type"] == "local"]
+            if version_id in branch_names:
+                is_branch = True
+                # Checkout the branch
+                current_status = git_manager.get_status(project_id)
+                current_branch = current_status.get("branch", "")
+                
+                if version_id != current_branch:
+                    git_manager.checkout_branch(project_id, version_id)
+        
+        # Switch container to workspace (which now reflects the checked out branch)
+        await project_manager.switch_to_workspace(project_id)
+        
+        # Get preview URL
+        preview_url = await project_manager.create_container_for_code(project_id, "workspace")
+        
         if not preview_url:
             raise HTTPException(status_code=500, detail="Failed to create preview")
         return {"preview_url": preview_url}
@@ -569,6 +685,73 @@ async def git_branches(request: GitRequest):
             request.token
         )
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/projects/{project_id}/branches")
+async def get_project_branches(project_id: str):
+    """Get all Git branches for a project (for version history UI)"""
+    try:
+        result = git_manager.list_branches(project_id)
+        if result["status"] != "success":
+            return {"branches": []}
+        
+        branches = []
+        for branch_info in result.get("branches", []):
+            if branch_info["type"] == "local":  # Only show local branches
+                # Get commit history for this branch
+                current_status = git_manager.get_status(project_id)
+                current_branch = current_status.get("branch", "")
+                
+                # Temporarily checkout branch to get its commits
+                if branch_info["name"] != current_branch:
+                    git_manager.checkout_branch(project_id, branch_info["name"])
+                
+                commits_result = git_manager.get_commit_history(project_id)
+                commits = commits_result.get("commits", [])
+                
+                # Switch back to original branch
+                if branch_info["name"] != current_branch and current_branch:
+                    git_manager.checkout_branch(project_id, current_branch)
+                
+                branches.append({
+                    "name": branch_info["name"],
+                    "is_current": branch_info["is_current"],
+                    "commit_count": len(commits),
+                    "latest_commit": commits[0] if commits else None
+                })
+        
+        return {"branches": branches}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/projects/{project_id}/branches/{branch_name}/commits")
+async def get_branch_commits(project_id: str, branch_name: str):
+    """Get all commits for a specific branch (checkpoints in chat)"""
+    try:
+        # Save current branch
+        current_status = git_manager.get_status(project_id)
+        current_branch = current_status.get("branch", "")
+        
+        # Checkout the requested branch
+        if branch_name != current_branch:
+            checkout_result = git_manager.checkout_branch(project_id, branch_name)
+            if checkout_result["status"] != "success":
+                raise HTTPException(status_code=404, detail=f"Branch {branch_name} not found")
+        
+        # Get commits
+        commits_result = git_manager.get_commit_history(project_id)
+        
+        # Switch back to original branch
+        if branch_name != current_branch and current_branch:
+            git_manager.checkout_branch(project_id, current_branch)
+        
+        if commits_result["status"] != "success":
+            return {"commits": []}
+        
+        return {"commits": commits_result.get("commits", [])}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

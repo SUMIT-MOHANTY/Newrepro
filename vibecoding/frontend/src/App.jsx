@@ -65,45 +65,43 @@ function AuthLayout({ children }) {
 }
 
 function Workspace({ user, logout, isAuthenticated }) {
+  // Router hooks must come first
+  const { project_id: urlParamId } = useParams();
+  
+  // Refs
+  const iframeRef = useRef(null);
+  const iframeContainerRef = useRef(null);
+  const prevProjectIdRef = useRef(null);
+  
+  // Determine active project ID
+  const params = new URLSearchParams(window.location.search);
+  const activeProjectId = urlParamId || params.get('project_id') || 'local_workspace';
+  
+  // Initialize prevProjectIdRef
+  if (prevProjectIdRef.current === null) {
+    prevProjectIdRef.current = activeProjectId;
+  }
+  
+  // State declarations
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showProjectDropdown, setShowProjectDropdown] = useState(false);
   const [showChatHistory, setShowChatHistory] = useState(false);
   const [showGitPanel, setShowGitPanel] = useState(false);
   const [projects, setProjects] = useState([]);
   const [allChats, setAllChats] = useState([]);
-  const { project_id: urlParamId } = useParams();
-  
-  // Determine IDs once for all state initializers
-  const params = new URLSearchParams(window.location.search);
-  const activeProjectId = urlParamId || params.get('project_id') || localStorage.getItem('vibecoding_workspace_id') || 'local_workspace';
-  
   const [currentProjectId, setCurrentProjectId] = useState(activeProjectId);
-  
-  const [chatVersion, setChatVersion] = useState(() => {
-    // Load current chat version for this workspace
-    const saved = localStorage.getItem(`vibecoding_${activeProjectId}_version`);
-    return saved ? parseInt(saved) : 1;
-  });
-
-  const [messages, setMessages] = useState(() => {
-    // Load chat history for current workspace and version
-    // Use the chatVersion determined above logic locally or determine it here
-    const vSaved = localStorage.getItem(`vibecoding_${activeProjectId}_version`);
-    const v = vSaved ? parseInt(vSaved) : 1;
-    const saved = localStorage.getItem(`vibecoding_chat_${activeProjectId}_v${v}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [codeVersions, setCodeVersions] = useState([]);
-  const [currentCodeVersion, setCurrentCodeVersion] = useState(0);
+  const [chatVersion, setChatVersion] = useState(1);
+  const [messages, setMessages] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [currentBranch, setCurrentBranch] = useState('main');
+  const [branchCommits, setBranchCommits] = useState([]);
   const [versionsLoaded, setVersionsLoaded] = useState(false);
-  
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewCode, setPreviewCode] = useState('');
-  const [fullCode, setFullCode] = useState(''); // Store full code for edit mode
+  const [fullCode, setFullCode] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
-  const [activeView, setActiveView] = useState('preview'); // preview or code
+  const [activeView, setActiveView] = useState('preview');
   const [copied, setCopied] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -113,13 +111,11 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [selectedElement, setSelectedElement] = useState(null);
   const [hoveredElement, setHoveredElement] = useState(null);
   const [editPrompt, setEditPrompt] = useState('');
-  const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
+  const [screenSize, setScreenSize] = useState('desktop');
   const [isDeploying, setIsDeploying] = useState(false);
-  const [deployStatus, setDeployStatus] = useState(null); // 'success', 'error', or null
+  const [deployStatus, setDeployStatus] = useState(null);
   const [errorHeader, setErrorHeader] = useState(null);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
-  const iframeRef = useRef(null);
-  const prevProjectIdRef = useRef(activeProjectId);
 
   useEffect(() => {
     prevProjectIdRef.current = currentProjectId;
@@ -136,32 +132,29 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   };
 
-  // Load code versions from backend for the current project
-  const loadVersionsFromBackend = async (projectId) => {
+  // Load branches from backend for the current project
+  const loadBranchesFromBackend = async (projectId) => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions`);
-      const backendVersions = response.data.versions || [];
+      const backendBranches = response.data.versions || [];
       
-      if (backendVersions.length > 0) {
-        console.log(`📦 Found ${backendVersions.length} versions on backend for project ${projectId}`);
+      if (backendBranches.length > 0) {
+        console.log(`📦 Found ${backendBranches.length} branches on backend for project ${projectId}`);
         
-        // Convert backend versions to frontend format
-        const frontendVersions = backendVersions.map((v, index) => ({
-          version: index + 1,
-          versionId: v.version_id,
-          prompt: v.prompt || '',
-          timestamp: v.created_at || new Date().toISOString(),
-          code: null,       // Will be lazy-loaded when selected
-          fileTree: [],
-          previewUrl: ''
-        }));
+        // Set branches
+        setBranches(backendBranches);
         
-        setCodeVersions(frontendVersions);
+        // Find current branch
+        const currentBranchData = backendBranches.find(b => b.is_current);
+        const currentBranchName = currentBranchData ? currentBranchData.version_id : backendBranches[0].version_id;
+        setCurrentBranch(currentBranchName);
         
-        // Load the latest version's files
-        const latestVersion = frontendVersions[frontendVersions.length - 1];
+        // Load commits for current branch
+        await loadBranchCommits(projectId, currentBranchName);
+        
+        // Load files for current branch
         try {
-          const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions/${latestVersion.versionId}/files`);
+          const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions/${currentBranchName}/files`);
           const filesMap = filesResp.data.files || {};
           
           // Build code string with file markers
@@ -173,13 +166,8 @@ function Workspace({ user, logout, isAuthenticated }) {
           // Parse into file tree
           const fileTree = parseCodeToFiles(fullCode);
           
-          // Update the latest version with loaded data
-          setCodeVersions(prev => prev.map((v, i) => 
-            i === prev.length - 1 ? { ...v, code: fullCode, fileTree } : v
-          ));
-          
-          setCurrentCodeVersion(latestVersion.version);
           setPreviewCode(fullCode);
+          setFullCode(fullCode);
           setFileTree(fileTree);
           
           // Select first file
@@ -196,34 +184,39 @@ function Workspace({ user, logout, isAuthenticated }) {
           const firstFile = findFirstFile(fileTree);
           if (firstFile) setSelectedFile(firstFile);
           
-        } catch (err) {
-          console.error('Failed to load latest version files:', err);
-        }
-      } else {
-        // No backend versions, try localStorage fallback
-        const saved = localStorage.getItem(`vibecoding_code_versions_${projectId}`);
-        if (saved) {
-          const localVersions = JSON.parse(saved);
-          setCodeVersions(localVersions);
-          if (localVersions.length > 0) {
-            setCurrentCodeVersion(localVersions[localVersions.length - 1].version);
+          // Get or create preview URL for the current branch
+          try {
+            const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${projectId}/versions/${currentBranchName}/preview`);
+            if (previewResp.data.preview_url) {
+              console.log('🌐 Restored container preview:', previewResp.data.preview_url);
+              setPreviewUrl(previewResp.data.preview_url);
+            }
+          } catch (previewErr) {
+            console.error('Failed to get preview URL:', previewErr);
           }
+          
+        } catch (err) {
+          console.error('Failed to load branch files:', err);
         }
       }
       
       setVersionsLoaded(true);
     } catch (err) {
-      console.error('Failed to load versions from backend:', err);
-      // Fallback to localStorage
-      const saved = localStorage.getItem(`vibecoding_code_versions_${projectId}`);
-      if (saved) {
-        const localVersions = JSON.parse(saved);
-        setCodeVersions(localVersions);
-        if (localVersions.length > 0) {
-          setCurrentCodeVersion(localVersions[localVersions.length - 1].version);
-        }
-      }
+      console.error('Failed to load branches from backend:', err);
       setVersionsLoaded(true);
+    }
+  };
+
+  // Load commits for a specific branch
+  const loadBranchCommits = async (projectId, branchName) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/branches/${branchName}/commits`);
+      const commits = response.data.commits || [];
+      console.log(`📝 Found ${commits.length} commits in branch ${branchName}`);
+      setBranchCommits(commits);
+    } catch (err) {
+      console.error('Failed to load branch commits:', err);
+      setBranchCommits([]);
     }
   };
 
@@ -246,7 +239,6 @@ function Workspace({ user, logout, isAuthenticated }) {
           });
           
           setCurrentProjectId(urlProjectId);
-          localStorage.setItem('vibecoding_workspace_id', urlProjectId);
           projectIdToLoad = urlProjectId;
           
           // Clear URL params without reloading
@@ -258,8 +250,18 @@ function Workspace({ user, logout, isAuthenticated }) {
       
       fetchProjects();
       
-      // Load code versions from the backend
-      await loadVersionsFromBackend(projectIdToLoad);
+      // Load branches from the backend (this will also restore preview URL)
+      await loadBranchesFromBackend(projectIdToLoad);
+      
+      // Load chat history for the current version
+      try {
+        const chatResp = await axios.get(`${API_BASE_URL}/api/projects/${projectIdToLoad}/chat/v${chatVersion}`);
+        if (chatResp.data && chatResp.data.history && chatResp.data.history.length > 0) {
+          setMessages(chatResp.data.history);
+        }
+      } catch (err) {
+        console.error("Failed to load chat history:", err);
+      }
     };
 
     if (isAuthenticated) {
@@ -267,49 +269,92 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   }, [isAuthenticated]);
 
-  const loadHistoricalChat = async (v) => {
-    setChatVersion(v);
-    localStorage.setItem(`vibecoding_${currentProjectId}_version`, v.toString());
-    
-    // Try to load from backend first
+  // Switch to a different branch
+  const switchToBranch = async (branchName) => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/v${v}`);
-      if (response.data && response.data.history && response.data.history.length > 0) {
-        setMessages(response.data.history);
-      } else {
-        // Fallback to localStorage
-        const msgsStr = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${v}`);
-        const msgs = msgsStr ? JSON.parse(msgsStr) : [];
-        setMessages(msgs);
+      console.log(`🔀 Switching to branch: ${branchName}`);
+      
+      // Checkout the branch on backend
+      await axios.post(`${API_BASE_URL}/api/git/checkout`, {
+        project_id: currentProjectId,
+        branch_name: branchName
+      });
+      
+      setCurrentBranch(branchName);
+      
+      // Load commits for this branch
+      await loadBranchCommits(currentProjectId, branchName);
+      
+      // Load files for this branch
+      const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${branchName}/files`);
+      const filesMap = filesResp.data.files || {};
+      
+      let fullCode = '';
+      Object.entries(filesMap).forEach(([filePath, content]) => {
+        fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+      });
+      
+      const fileTree = parseCodeToFiles(fullCode);
+      setPreviewCode(fullCode);
+      setFullCode(fullCode);
+      setFileTree(fileTree);
+      
+      // Update preview
+      const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${branchName}/preview`);
+      if (previewResp.data.preview_url) {
+        setPreviewUrl(previewResp.data.preview_url);
       }
+      
+      // Load chat history for this branch
+      try {
+        const chatResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/${branchName}`);
+        if (chatResp.data && chatResp.data.history) {
+          setMessages(chatResp.data.history);
+        } else {
+          setMessages([]);
+        }
+      } catch (err) {
+        console.error('Failed to load chat for branch:', err);
+        setMessages([]);
+      }
+      
+      setShowVersionHistory(false);
     } catch (err) {
-      console.error("Failed to load chat from backend, falling back to local storage:", err);
-      const msgsStr = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${v}`);
-      const msgs = msgsStr ? JSON.parse(msgsStr) : [];
-      setMessages(msgs);
+      console.error('Failed to switch branch:', err);
     }
-    
-    const codeVersStr = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${v}`);
-    const codeVers = codeVersStr ? JSON.parse(codeVersStr) : [];
-    setCodeVersions(codeVers);
-    
-    const currCodeVStr = localStorage.getItem(`vibecoding_current_code_version_${currentProjectId}_v${v}`);
-    let currCodeV = currCodeVStr ? parseInt(currCodeVStr) : -1;
-    if (currCodeV === -1 && codeVers.length > 0) {
-      currCodeV = codeVers[codeVers.length - 1].version;
-    } else if (currCodeV === -1) {
-      currCodeV = 0;
+  };
+
+  // Load code from a specific commit (checkpoint)
+  const loadCommitCheckpoint = async (commitHash) => {
+    try {
+      console.log(`🔖 Loading checkpoint: ${commitHash}`);
+      
+      // Checkout the commit
+      await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
+        project_id: currentProjectId,
+        version_id: commitHash
+      });
+      
+      // Load files from workspace (now at this commit)
+      const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
+      const filesMap = filesResp.data.files || {};
+      
+      let fullCode = '';
+      Object.entries(filesMap).forEach(([filePath, content]) => {
+        fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+      });
+      
+      const fileTree = parseCodeToFiles(fullCode);
+      setPreviewCode(fullCode);
+      setFullCode(fullCode);
+      setFileTree(fileTree);
+      
+      // Update preview
+      await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
+      
+    } catch (err) {
+      console.error('Failed to load commit checkpoint:', err);
     }
-    setCurrentCodeVersion(currCodeV);
-    
-    if (codeVers.length === 0) {
-        setPreviewCode('');
-        setPreviewUrl('');
-        setFileTree([]);
-        setSelectedFile(null);
-    }
-    
-    setShowChatHistory(false);
   };
 
   // Save chat history whenever messages change
@@ -317,19 +362,12 @@ function Workspace({ user, logout, isAuthenticated }) {
     const saveChat = async () => {
       if (messages.length > 0 && currentProjectId === prevProjectIdRef.current) {
         try {
-          // Save to backend
+          // Save to backend only
           await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/v${chatVersion}`, {
             history: messages
           });
-          
-          // Sync with local storage for backup
-          localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
-          localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
         } catch (err) {
           console.error("Failed to save chat to backend:", err);
-          // Always fallback to local storage
-          localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
-          localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
         }
       }
     };
@@ -338,15 +376,6 @@ function Workspace({ user, logout, isAuthenticated }) {
       saveChat();
     }
   }, [messages, currentProjectId, chatVersion]);
-
-  // Save code versions whenever they change
-  useEffect(() => {
-    // Only save if we are on the same project we started this effect with
-    if (codeVersions.length > 0 && currentProjectId === prevProjectIdRef.current) {
-      localStorage.setItem(`vibecoding_code_versions_${currentProjectId}`, JSON.stringify(codeVersions));
-      localStorage.setItem(`vibecoding_current_code_version_${currentProjectId}`, currentCodeVersion.toString());
-    }
-  }, [codeVersions, currentCodeVersion, currentProjectId]);
 
   // Force iframe reload when preview URL changes
   useEffect(() => {
@@ -367,118 +396,8 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   }, [previewUrl]);
 
-  // Load code version when switching
-  useEffect(() => {
-    const loadAndSwitchVersion = async () => {
-      if (codeVersions.length > 0 && currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
-        let version = codeVersions[currentCodeVersion - 1];
-        
-        // If code is null, lazy-load it from backend
-        if (version.code === null && version.versionId && currentProjectId) {
-          try {
-            console.log(`📥 Lazy-loading version ${version.versionId} from backend...`);
-            const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${version.versionId}/files`);
-            const filesMap = filesResp.data.files || {};
-            
-            // Build code string with file markers
-            let fullCode = '';
-            Object.entries(filesMap).forEach(([filePath, content]) => {
-              fullCode += `// FILE: ${filePath}\n${content}\n\n`;
-            });
-            
-            // Parse into file tree
-            const loadedFileTree = parseCodeToFiles(fullCode);
-            
-            // Update the version in state with loaded data
-            setCodeVersions(prev => prev.map((v, i) => 
-              i === currentCodeVersion - 1 ? { ...v, code: fullCode, fileTree: loadedFileTree } : v
-            ));
-            
-            // Use loaded data directly (don't wait for state update)
-            version = { ...version, code: fullCode, fileTree: loadedFileTree };
-          } catch (err) {
-            console.error('Failed to lazy-load version from backend:', err);
-          }
-        }
-        
-        setPreviewCode(version.code || '');
-        setFileTree(version.fileTree || []);
-        
-        // Trigger version switch in container
-        if (version.versionId && currentProjectId) {
-          // Switch git checkpoint internally
-          axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
-            project_id: currentProjectId,
-            version_id: version.versionId
-          }).catch(err => console.error('Failed to switch git checkpoint:', err));
-
-          axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${version.versionId}/preview`)
-            .then(response => {
-              const newPreviewUrl = response.data.preview_url;
-              // Add cache-busting parameter to force iframe reload
-              const separator = newPreviewUrl.includes('?') ? '&' : '?';
-              const urlWithVersion = `${newPreviewUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
-              setPreviewUrl(urlWithVersion);
-              console.log(`🔄 Switched to version ${version.versionId}: ${urlWithVersion}`);
-            })
-            .catch(error => {
-              console.error('Failed to switch version:', error);
-              // Fallback to stored URL
-              const baseUrl = version.previewUrl || '';
-              if (baseUrl) {
-                const separator = baseUrl.includes('?') ? '&' : '?';
-                const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
-                setPreviewUrl(urlWithVersion);
-              } else {
-                setPreviewUrl('');
-              }
-            });
-        } else {
-          // No version ID, use stored URL
-          const baseUrl = version.previewUrl || '';
-          if (baseUrl) {
-            const separator = baseUrl.includes('?') ? '&' : '?';
-            const urlWithVersion = `${baseUrl}${separator}v=${version.versionId}&t=${Date.now()}`;
-            setPreviewUrl(urlWithVersion);
-          } else {
-            setPreviewUrl('');
-          }
-        }
-        
-        if (version.fileTree && version.fileTree.length > 0) {
-          const findFirstFile = (items) => {
-            for (const item of items) {
-              if (item.type === 'file') return item;
-              if (item.type === 'folder' && item.children) {
-                const found = findFirstFile(item.children);
-                if (found) return found;
-              }
-            }
-            return null;
-          };
-          const firstFile = findFirstFile(version.fileTree);
-          if (firstFile) setSelectedFile(firstFile);
-        }
-        setIframeKey(prev => prev + 1);
-      }
-    };
-    
-    loadAndSwitchVersion();
-    
-    // Also load chat history for this version if it exists
-    if (currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
-      const version = codeVersions[currentCodeVersion - 1];
-      if (version && version.versionId) {
-        axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/${version.versionId}`)
-          .then(response => {
-            if (response.data && response.data.history && response.data.history.length > 0) {
-              setMessages(response.data.history);
-            }
-          })
-          .catch(err => console.error("Failed to load chat for version:", err));
-      }
-    }
-  }, [currentCodeVersion]);
+  // This effect is no longer needed as we use branches instead of versions
+  // Keeping it empty for now to avoid breaking changes
 
   // Reload iframe when previewUrl changes
   useEffect(() => {
@@ -489,47 +408,46 @@ function Workspace({ user, logout, isAuthenticated }) {
   }, [previewUrl]);
 
   // Function to save a new code version
-  const saveCodeVersion = (code, previewUrl, fileTree, prompt, backendVersionId = null) => {
-    const newVersion = {
-      version: codeVersions.length + 1,
-      versionId: backendVersionId,
-      code,
-      previewUrl,
-      fileTree,
-      prompt,
-      timestamp: new Date().toISOString()
-    };
-    setCodeVersions(prev => [...prev, newVersion]);
-    setCurrentCodeVersion(newVersion.version);
-  };
-
   // Function to start a new chat
   const handleNewChat = async () => {
-    // If there is current code that isn't saved as a version, save it first
-    if (previewCode && codeVersions.length === 0) {
-      saveCodeVersion(previewCode, previewUrl, fileTree, 'Snapshot before new chat');
-    }
-
     const newVersion = chatVersion + 1;
     setChatVersion(newVersion);
     setMessages([]);
-    // Do NOT clear codeVersions or previewCode - they are project-wide history now
-      setEditMode(false);
-      setSelectedElement(null);
-      localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
+    setEditMode(false);
+    setSelectedElement(null);
 
-      // Create a new Git branch for this chat session
-      try {
-        await axios.post(`${API_BASE_URL}/api/chat/new`, {
-          project_id: currentProjectId,
-          chat_version: newVersion
-        });
-        console.log(`🌿 Created new git branch for chat v${newVersion}`);
-        // Refresh versions list from backend
-        await loadVersionsFromBackend(currentProjectId);
-      } catch (err) {
-        console.error('Failed to create new git branch:', err);
-      }
+    // Create a new Git branch for this chat session
+    try {
+      await axios.post(`${API_BASE_URL}/api/chat/new`, {
+        project_id: currentProjectId,
+        chat_version: newVersion
+      });
+      console.log(`🌿 Created new git branch for chat v${newVersion}`);
+      // Refresh branches list from backend
+      await loadBranchesFromBackend(currentProjectId);
+    } catch (err) {
+      console.error('Failed to create new git branch:', err);
+    }
+  };
+
+  // Function to handle new project creation - clears chat and resets state
+  const handleCreateProject = (newProjectId) => {
+    // Clear all chat-related state
+    setMessages([]);
+    setPreviewCode('');
+    setFullCode('');
+    setPreviewUrl('');
+    setFileTree([]);
+    setSelectedFile(null);
+    setBranches([]);
+    setCurrentBranch('main');
+    setBranchCommits([]);
+    setChatVersion(1);
+    setEditMode(false);
+    setSelectedElement(null);
+    setHoveredElement(null);
+    
+    console.log(`🆕 Created new project ${newProjectId}, chat cleared`);
   };
 
   const toggleFolder = (folderPath) => {
@@ -905,9 +823,6 @@ Please suggest improvements or modifications for this element.`;
     }
     return html + script;
   };
-
-  // Track iframe container ref for overlay positioning
-  const iframeContainerRef = useRef(null);
 
   // Listen for postMessage events from iframe
   useEffect(() => {
@@ -1308,6 +1223,7 @@ Please suggest improvements or modifications for this element.`;
         showProjectDropdown={showProjectDropdown}
         setShowProjectDropdown={setShowProjectDropdown}
         onNewChat={handleNewChat}
+        onCreateProject={handleCreateProject}
         onGitClick={() => setShowGitPanel(true)}
         onDeploy={handleDeploy}
         isDeploying={isDeploying}
@@ -1315,9 +1231,9 @@ Please suggest improvements or modifications for this element.`;
         previewCode={previewCode}
         loading={loading}
         onLogout={logout}
-        codeVersions={codeVersions}
-        currentCodeVersion={currentCodeVersion}
-        setCurrentCodeVersion={setCurrentCodeVersion}
+        branches={branches}
+        currentBranch={currentBranch}
+        onBranchSwitch={switchToBranch}
         formatTimestamp={formatTimestamp}
       />
 
@@ -1811,35 +1727,10 @@ Please suggest improvements or modifications for this element.`;
             }
           }}
           darkMode={true}
-          codeVersions={codeVersions}
-          selectedVersion={currentCodeVersion}
-          onLoadVersion={async (versionId) => {
-            setCurrentCodeVersion(versionId);
-            try {
-              // Try to checkout the checkpoint via git
-              const response = await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
-                project_id: currentProjectId,
-                version_id: versionId
-              });
-              
-              if (response.data.status === 'success') {
-                // After successful checkout, refresh files from the workspace
-                const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
-                const filesMap = filesResp.data.files || {};
-                
-                let fullCodeStr = '';
-                Object.entries(filesMap).forEach(([filePath, content]) => {
-                  fullCodeStr += `// FILE: ${filePath}\n${content}\n\n`;
-                });
-                
-                const files = parseCodeToFiles(fullCodeStr);
-                setFileTree(files);
-                setPreviewCode(fullCodeStr);
-                setIframeKey(prev => prev + 1);
-              }
-            } catch (err) {
-              console.error('Failed to load checkpoint:', err);
-            }
+          codeVersions={branchCommits}
+          selectedVersion={null}
+          onLoadVersion={async (commitHash) => {
+            await loadCommitCheckpoint(commitHash);
           }}
           onCopyMessage={async (text) => {
             await navigator.clipboard.writeText(text);
@@ -1851,8 +1742,8 @@ Please suggest improvements or modifications for this element.`;
             setPreviewUrl('');
             setFileTree([]);
             setSelectedFile(null);
-            setCodeVersions([]);
-            setCurrentCodeVersion(0);
+            setBranches([]);
+            setBranchCommits([]);
           }}
           suggestions={[
             'Create a beautiful landing page with gradient background',
