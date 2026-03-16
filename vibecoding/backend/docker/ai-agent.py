@@ -11,7 +11,6 @@ ENV VARS (all optional):
   PORT                          – Port the server must bind to (default: 8080)
   MAX_RETRIES                   – Self-healing retry limit (default: 3)
   STARTUP_TIMEOUT               – Seconds to monitor startup (default: 20)
-  CMD_TIMEOUT                   – Max seconds per setup command (default: 120)
   AI_TIMEOUT                    – Seconds to wait for AI response (default: 60)
   MAX_FILE_SIZE                 – Max bytes per file sent to AI (default: 5000)
   MAX_FILES                     – Max files in AI context (default: 10)
@@ -74,17 +73,14 @@ class Config:
     startup_timeout: int = field(
         default_factory=lambda: int(os.environ.get('STARTUP_TIMEOUT', '20'))
     )
-    cmd_timeout: int = field(
-        default_factory=lambda: int(os.environ.get('CMD_TIMEOUT', '120'))
-    )
     ai_timeout: int = field(
         default_factory=lambda: int(os.environ.get('AI_TIMEOUT', '60'))
     )
     max_file_size: int = field(
-        default_factory=lambda: int(os.environ.get('MAX_FILE_SIZE', '5000'))
+        default_factory=lambda: int(os.environ.get('MAX_FILE_SIZE', '30000'))
     )
     max_files: int = field(
-        default_factory=lambda: int(os.environ.get('MAX_FILES', '10'))
+        default_factory=lambda: int(os.environ.get('MAX_FILES', '20'))
     )
     error_keywords: list = field(
         default_factory=lambda: os.environ.get(
@@ -112,14 +108,14 @@ class Config:
         default_factory=lambda: os.environ.get('FALLBACK_RUN_CMD', '')
     )
     fuzzy_threshold: float = field(
-        default_factory=lambda: float(os.environ.get('FUZZY_PATCH_THRESHOLD', '0.85'))
+        default_factory=lambda: float(os.environ.get('FUZZY_PATCH_THRESHOLD', '0.75'))
     )
     user_prompt: str = field(
         default_factory=lambda: os.environ.get('USER_PROMPT', '')
     )
-    setup_timeout: int = field(
-        default_factory=lambda: int(os.environ.get('SETUP_TIMEOUT', '300'))
-    )
+    # State tracking for monitoring
+    seen_bind_all: bool = False
+    seen_bind_local: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +320,7 @@ Return ONLY a raw JSON object (no markdown fences, no extra text):
     "project_type": "exact runtime/framework",
     "processes": [
         {{
-            "name": "descriptive name (e.g. install-runtime, build-frontend, backend, worker)",
+            "name": "descriptive name",
             "command": "exact shell command",
             "type": "setup | background | primary",
             "ready_signal": "log substring that means this process is ready (null for setup/primary)"
@@ -334,22 +330,19 @@ Return ONLY a raw JSON object (no markdown fences, no extra text):
     "analysis": "one-sentence explanation"
 }}
 
-PROCESS TYPE RULES:
-- setup      → one-time commands that must complete before anything runs
-               (apt installs, npm install, pip install, npm run build, go build, cargo build)
-- background → long-running side processes needed before the primary starts
-               (redis-server, celery worker, a separate frontend dev server, nginx, etc.)
+PROCESS TYPES:
+- setup      → one-time commands that must complete before anything runs (install deps, build assets, etc.).
+- background → long-running side processes needed before the primary starts.
                Must include a ready_signal so the agent waits for it before starting primary.
-- primary    → exactly ONE entry — the main web server the agent monitors and heals.
+- primary    → exactly ONE entry — the main server the agent monitors and heals.
                This MUST be the last entry in the array.
 
-ENVIRONMENT RULES:
-- Running inside Docker — do NOT use venv/virtualenv/conda. Install globally.
-- Use python3 not python.
-- All commands run in /bin/bash.
-- The primary server MUST bind to port {self.config.port}.
-- For pip conflicts: pip3 install --upgrade pip && pip3 install -r requirements.txt --use-deprecated=legacy-resolver
-- Use -y for all apt-get installs.
+CONSTRAINTS:
+- Running inside Docker (Ubuntu 22.04, Python3 + Node.js available). Install deps globally. NEVER use venv/virtualenv.
+- The primary server MUST bind to port {self.config.port} on ALL interfaces (0.0.0.0).
+- If a 'run.sh' file exists, prefer using it as the primary command: 'bash run.sh'
+- Only ONE process may bind to port {self.config.port}. If the project has both frontend and backend, build the frontend in a setup step and let the backend serve the built assets.
+- NEVER start a separate frontend dev server alongside the backend — that requires two ports which is not supported.
 """
         result = self._call_ai(prompt, temperature=0.1)
         if result:
@@ -431,14 +424,15 @@ RULES:
             ordered.update({k: v for k, v in files_content.items() if k not in priority_files})
             files_content = ordered
 
-        tail_chars    = int(os.environ.get('ERROR_LOG_TAIL', '3000'))
-        snippet_chars = int(os.environ.get('FILE_SNIPPET_CHARS', '3000'))
-        max_ctx_files = int(os.environ.get('MAX_CONTEXT_FILES', '5'))
+        tail_chars    = int(os.environ.get('ERROR_LOG_TAIL', '5000'))
+        snippet_chars = int(os.environ.get('FILE_SNIPPET_CHARS', '20000'))
+        max_ctx_files = int(os.environ.get('MAX_CONTEXT_FILES', '8'))
 
-        files_context = "\n\n".join(
-            f"// FILE: {name}\n{content[:snippet_chars]}"
-            for name, content in list(files_content.items())[:max_ctx_files]
-        )
+        files_context = ""
+        for name, content in list(files_content.items())[:max_ctx_files]:
+            # Use the smaller of original content or snippet_chars limit
+            display_content = content[:snippet_chars]
+            files_context += f"// FILE: {name}\n{display_content}\n\n"
 
         prompt = f"""You are an expert debugging engineer. Diagnose this runtime error and provide a surgical fix.
 
@@ -454,7 +448,7 @@ ERROR LOG (last {tail_chars} chars):
 PROJECT FILES:
 {files_context}
 
-Return ONLY a raw JSON object (no markdown fences):
+CRITICAL: Return ONLY the raw JSON object. No narrative, no markdown outside the JSON.
 {{
     "diagnosis": "root cause in one sentence",
     "fix_type": "commands | code_patch | code_change",
@@ -478,12 +472,18 @@ RULES:
 - Prefer fix_type=code_patch for targeted fixes (1-10 lines changed).
 - Prefer fix_type=commands for missing packages/dependencies.
 - Only use fix_type=code_change if the entire file needs restructuring.
-- For code_patch: hunk.search must be verbatim with 1-2 context lines for uniqueness.
-- For package installs, provide the FULL command derived from project_type.
-- ENVIRONMENT: Running inside Docker — never use venv/virtualenv/conda. Install globally.
-- Use python3 not python — no python symlink exists on this system.
-- Use bash syntax — all commands run in /bin/bash.
+- IndentationError, SyntaxError, and EOF errors are often caused by previous truncated fixes. If you see these, provide the FULL, CORRECTED file.
+- 0.0.0.0 BINDING: Servers MUST bind to 0.0.0.0, never localhost.
+- RELATIVE URLs: Frontend-to-backend calls must use relative paths (e.g., fetch('/api/todos')).
+- NAMESPACING: API routes should stay under /api/* prefix.
+- SPA FALLBACK: If fixing a backend that serves a frontend, ensure the fallback to index.html is preserved.
+- NO DEV SERVERS: Fixes should never introduce dev servers (like Vite dev) as the primary process.
+- ENVIRONMENT: Global installs only. No venv/virtualenv. No 'python' (use 'python3'). Bash syntax only.
 - For pip conflicts: pip3 install --upgrade pip && pip3 install -r requirements.txt --use-deprecated=legacy-resolver
+- For structural errors (SyntaxError, IndentationError, EOF errors, or Truncation), use fix_type=code_change to provide a clean, complete version of the file. DO NOT TRUNCATE.
+- NEVER use shell redirection syntax (e.g., 'cat > file <<EOF') inside 'code_change' content. 'code_change' must ONLY contain the literal source code for that file.
+- IGNORE access logs in the error log (e.g., "GET / HTTP/1.1 302" or "200"). These are NORMAL behaviors and not errors.
+- DO NOT assume templates are missing just because you see a redirect to /login. Only fix missing files if there is an explicit "TemplateNotFound" or "FileNotExists" error.
 - NEVER put the server start command inside commands[]. It will time out and kill the fix.
   If the run command needs to change (wrong path, wrong module, wrong port), put the
   corrected command in fix_details.run_command instead.
@@ -605,6 +605,26 @@ RULES:
         self.log("🩹", f"Patched {filepath.name}: {applied}/{len(hunks)} hunks applied")
         return True
 
+    def _resolve_path(self, filename: str) -> Optional[Path]:
+        """Tries to find the intended file within the workspace if direct path fails."""
+        if not filename:
+            return None
+        
+        # 1. Direct match
+        direct = Path(self.workspace) / filename
+        if direct.exists():
+            return direct
+            
+        # 2. Search for filename (basename) in workspace
+        basename = os.path.basename(filename)
+        for root, _, files in os.walk(self.workspace):
+            if basename in files:
+                target = Path(root) / basename
+                self.log("🔍", f"Redirected {filename} -> {target.relative_to(self.workspace)}")
+                return target
+                
+        return None
+
     # ------------------------------------------------------------------
     # Apply fix dispatcher
     # ------------------------------------------------------------------
@@ -630,15 +650,10 @@ RULES:
         try:
             if fix_type == "commands":
                 for cmd in details.get("commands", []):
-                    self.log("⚙️", f"Running: {cmd}")
-                    result = subprocess.run(
-                        cmd, shell=True,
-                        executable='/bin/bash',
-                        capture_output=True, text=True,
-                        timeout=self.config.cmd_timeout,
-                    )
-                    if result.returncode != 0:
-                        self.log("⚠️", f"Exit {result.returncode}: {result.stderr[:300]}")
+                    # Use streaming runner to avoid blind hangs
+                    success, _ = self._run_setup_command(cmd)
+                    if not success:
+                        self.log("⚠️", f"Command failed: {cmd}")
                 return True, new_run_command
 
             elif fix_type == "code_patch":
@@ -647,15 +662,25 @@ RULES:
                 if not filename or not hunks:
                     self.log("⚠️", "code_patch missing file or hunks")
                     return False, None
-                return self._apply_code_patch(Path(self.workspace) / filename, hunks), new_run_command
+                
+                filepath = self._resolve_path(filename)
+                if not filepath:
+                    self.log("❌", f"Patch target not found: {filename}")
+                    return False, None
+                    
+                return self._apply_code_patch(filepath, hunks), new_run_command
 
             elif fix_type == "code_change":
                 filename = details.get("file")
                 content  = details.get("content")
                 append   = details.get("append", False)
                 if filename and content:
-                    filepath = Path(self.workspace) / filename
-                    filepath.parent.mkdir(parents=True, exist_ok=True)
+                    filepath = self._resolve_path(filename)
+                    if not filepath:
+                        # If totally new file, create in root or as specified
+                        filepath = Path(self.workspace) / filename
+                        filepath.parent.mkdir(parents=True, exist_ok=True)
+                    
                     if append:
                         with filepath.open("a", encoding="utf-8") as f:
                             f.write(content)
@@ -680,6 +705,26 @@ RULES:
 
     def _is_error_line(self, line: str) -> bool:
         lower = line.lower()
+        
+        # Track binding signals
+        is_running_msg = any(x in lower for x in ("listening", "running", "serving"))
+        if is_running_msg:
+            if "0.0.0.0" in lower or "all addresses" in lower or "*:" in lower:
+                self.config.seen_bind_all = True
+            elif "127.0.0.1" in lower or "localhost" in lower:
+                self.config.seen_bind_local = True
+
+        # Actual error keywords (ignoring access logs unless they indicate a broken root)
+        # We look for "GET / HTTP/1.1" 404 which usually means the entrypoint is misconfigured
+        if re.search(r'GET /\s+HTTP/.*"\s+404', line, re.IGNORECASE) or \
+           re.search(r'GET /\?.*HTTP/.*"\s+404', line, re.IGNORECASE):
+            self.log("⚠️", "Root path returned 404 — entrypoint might be misconfigured")
+            return True
+
+        if re.search(r'"[A-Z]+\s+.*\s+HTTP/.*"\s+\d{3}', line):
+            # Ignore standard 2xx/3xx/404 on subpaths (which might be user clicking around)
+            return False
+
         return any(kw in lower for kw in self.config.error_keywords)
 
     def _is_success_line(self, line: str, extra_patterns: list) -> bool:
@@ -724,6 +769,8 @@ RULES:
         Returns (output_lines: list, error_flag: bool)
         """
         q, sentinel, reader_thread = self._stream_process(process)
+        # Store queue info so _monitor_runtime can continue later
+        setattr(process, '_q_info', (q, sentinel, reader_thread))
 
         output_lines = []
         error_flag   = False
@@ -748,8 +795,14 @@ RULES:
 
             if self._is_error_line(item):
                 error_flag = True
-            if self._is_success_line(item, success_patterns):
+            if self._is_success_line(item, success_patterns) and not error_flag:
                 self.log("✅", "Startup success signal detected")
+
+        # ── Phase 1.5: Final Binding Validation ──────────────────────────
+        # If we finished the startup window and strictly only saw 127.0.0.1
+        if self.config.seen_bind_local and not self.config.seen_bind_all:
+            self.log("⚠️", "Detected local-only binding — triggering self-healing for 0.0.0.0")
+            error_flag = True
 
         # ── Phase 2: Drain remaining buffer after process exits ──────────
         # Captures the actual error line that arrives after the traceback header
@@ -776,6 +829,104 @@ RULES:
 
         return output_lines, error_flag
 
+    def _monitor_runtime(self, process, success_patterns: list) -> tuple:
+        """
+        Continuously drains and monitors a process after it has successfully started.
+        Maintains real-time log streaming and checks for runtime errors.
+        """
+        self.log("👁️", "Entering runtime monitoring mode...")
+        
+        # Retrieve the queue state from the process (stored by _monitor_process)
+        qinfo = getattr(process, '_q_info', None)
+        if not qinfo:
+            self.log("⚠️", "No queue info found on process — cannot monitor runtime")
+            return [], False
+            
+        q, sentinel, _ = qinfo
+        runtime_lines = []
+        runtime_error = False
+        
+        while True:
+            try:
+                # Use a slightly longer timeout for idle runtime
+                item = q.get(timeout=float(os.environ.get('POLL_INTERVAL', '0.05')))
+            except Empty:
+                if process.poll() is not None:
+                    break
+                continue
+
+            if item is sentinel:
+                break
+
+            print(item, end="", flush=True)
+            runtime_lines.append(item)
+
+            if self._is_error_line(item):
+                self.log("🚨", "Runtime issue detected in logs")
+                runtime_error = True
+                # Break to trigger self-healing
+                break
+                
+        return runtime_lines, runtime_error
+
+    def _run_setup_command(self, cmd: str) -> tuple:
+        """
+        Runs a setup command to completion with live streaming output.
+        Returns (success: bool, output: list)
+        """
+        self.log("⚙️", f"[setup] {cmd}")
+        output_lines = []
+
+        try:
+            process = subprocess.Popen(
+                cmd, shell=True,
+                executable='/bin/bash',
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+
+            q        = Queue()
+            sentinel = object()
+
+            def _reader(stream, queue):
+                try:
+                    for line in iter(stream.readline, ''):
+                        queue.put(line)
+                finally:
+                    queue.put(sentinel)
+                    stream.close()
+
+            Thread(target=_reader, args=(process.stdout, q), daemon=True).start()
+
+            while True:
+                try:
+                    item = q.get(timeout=1.0)
+                except Empty:
+                    # No output for 1s — check if process is still alive
+                    if process.poll() is not None:
+                        break
+                    continue
+
+                if item is sentinel:
+                    break
+
+                print(item, end="", flush=True)
+                output_lines.append(item)
+
+            process.wait()
+
+            if process.returncode != 0:
+                self.log("⚠️", f"Setup exited {process.returncode}")
+                return False, output_lines
+
+            return True, output_lines
+
+        except Exception as e:
+            self.log("❌", f"Setup command failed: {e}")
+            return False, []
+
     # ------------------------------------------------------------------
     # Main execution loop
     # ------------------------------------------------------------------
@@ -795,6 +946,8 @@ RULES:
         if not plan:
             return False
 
+        # Prepare context for AI
+        files_content    = self.scan_project_files()
         project_type     = plan.get("project_type", "unknown")
         processes        = plan.get("processes", [])
         success_patterns = plan.get("success_patterns", [])
@@ -818,17 +971,25 @@ RULES:
         run_command      = primary_proc.get("command", "")
         background_pids  = []   # track for cleanup
 
-        # ── Phase 1: Setup (blocking) ──────────────────────────────────────
         for proc in setup_procs:
             cmd = proc.get("command", "")
-            self.log("⚙️", f"[setup] {cmd}")
-            result = subprocess.run(
-                cmd, shell=True, executable='/bin/bash',
-                capture_output=True, text=True,
-                timeout=self.config.setup_timeout,
-            )
-            if result.returncode != 0:
-                self.log("⚠️", f"Setup warning: {result.stderr[:300]}")
+            success, setup_output = self._run_setup_command(cmd)
+            
+            if not success:
+                self.log("🚨", "Setup failed — attempting AI fix...")
+                error_log = "".join(setup_output)
+                fix = self.call_ai_for_fix(error_log, project_type, files_content)
+                fix_success, _ = self.apply_fix(fix) if fix else (False, None)
+                
+                if fix_success:
+                    self.log("🔄", "Setup fix applied — retrying setup...")
+                    files_content = self.scan_project_files()
+                    # Re-run the current setup command once more
+                    success, _ = self._run_setup_command(cmd)
+                    if not success:
+                        self.log("⚠️", "Retry failed — continuing anyway")
+                else:
+                    self.log("⚠️", "No fix applied — continuing anyway")
 
         # ── Phase 2: Background processes (non-blocking, wait for signal) ──
         for proc in background_procs:
@@ -910,7 +1071,32 @@ RULES:
 
                     if process.poll() is None:
                         self.log("✅", "Project is running successfully!")
-                        process.wait()
+
+                        # Keep draining stdout forever — no more blind waiting
+                        runtime_lines, runtime_error = self._monitor_runtime(process, success_patterns)
+
+                        if runtime_error:
+                            self.log("🚨", "Runtime error detected — invoking AI fix...")
+                            try:
+                                process.terminate()
+                            except Exception:
+                                pass
+
+                            error_log = "".join(output_lines + runtime_lines)
+                            fix = self.call_ai_for_fix(error_log, project_type, files_content)
+                            success, new_run_cmd = self.apply_fix(fix) if fix else (False, None)
+
+                            if success:
+                                if new_run_cmd:
+                                    run_command = new_run_cmd
+                                self.log("✅", "Runtime fix applied — restarting...")
+                                files_content = self.scan_project_files()
+                                continue
+                            else:
+                                self.log("❌", "Runtime fix failed")
+                                self.retry_count += 1
+                                continue
+
                         return True
 
                 except KeyboardInterrupt:

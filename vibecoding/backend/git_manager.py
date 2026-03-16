@@ -60,7 +60,7 @@ class GitManager:
             if item.name == "metadata.json": # Skip version metadata
                 continue
             if item.is_dir():
-                shutil.copytree(item, workspace_dir / item.name)
+                shutil.copytree(item, workspace_dir / item.name, dirs_exist_ok=True)
             else:
                 shutil.copy2(item, workspace_dir / item.name)
 

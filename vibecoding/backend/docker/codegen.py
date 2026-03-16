@@ -104,32 +104,83 @@ class CodegenAgent:
 
         self.log("🏗️", f"Generating Version {version_id}...")
 
-        ai_prompt = f"""Generate a complete, production-ready application based on the user request.
+        ai_prompt = f"""You are an expert developer generating code for a SINGLE-CONTAINER Docker deployment. The entire app runs as ONE process on ONE port inside a container.
 
-USER REQUEST: {prompt}
+════════════════════════════════════════════════════
+ UNDERSTAND THE DEPLOYMENT FIRST
+════════════════════════════════════════════════════
+Browser → Host Port → Docker Container
+                          └── ONE server process (managed by an AI Agent)
 
-CONSTRAINTS:
-- Design a multi-process or single-process architecture as appropriate for the request.
-- The primary web server MUST bind to port {self.port}.
-- If there is a frontend, the backend should ideally serve its static assets from a 'static' or 'public' directory to keep the system on a single port.
-- Include all necessary configuration files, dependency manifests, and metadata.
-- All dependencies must be pinned in the appropriate manifest files.
-- Application should be ready to run within a Linux container environment.
+There is NO Nginx, NO docker-compose, NO multiple containers. ONE container. ONE process. ONE port ({self.port}).
 
-EXPECTED JSON STRUCTURE:
+YOU decide the best structure (folders, files, etc.). Do not force 'frontend/' or 'backend/' folders unless that structure genuinely fits the project.
+
+════════════════════════════════════════════════════
+ ABSOLUTE RULES — NEVER BREAK THESE
+════════════════════════════════════════════════════
+
+RULE 1 — PORT BINDING
+  ✅ Server MUST bind to host 0.0.0.0
+  ✅ Read port from PORT environment variable, fallback to {self.port}
+     e.g. port = int(os.environ.get("PORT", {self.port}))
+  ❌ NEVER hardcode any port other than {self.port}
+  ❌ NEVER bind to 127.0.0.1 or localhost
+
+RULE 2 — IF THE PROJECT HAS AN API
+  ✅ ALL API routes MUST be prefixed with /api/
+  ❌ NEVER create a route at GET "/" if a frontend exists
+  ❌ NEVER create bare routes like /users, /todos at root level
+
+RULE 3 — IF THE PROJECT HAS A FRONTEND
+  ✅ The server must serve the frontend at "/"
+  ✅ For SPA frameworks (React, Vue, Svelte, etc.) the server MUST return index.html for ALL paths that don't match API routes or static files.
+  ❌ NEVER spin up a dev server at runtime (no vite dev, npm start, etc.)
+  ❌ NEVER use CDN links for frameworks (no unpkg, jsdelivr, etc.). Use npm/yarn.
+  ✅ Always use the framework's standard build tool to generate static output.
+
+RULE 4 — API CALLS
+  ✅ ALL fetch/axios/http calls MUST use relative URLs (e.g. fetch('/api/todos'))
+  ❌ NEVER hardcode hostname, IP, or port in API calls.
+
+RULE 5 — CORS
+  ❌ NEVER add CORS middleware unless requested. It's unnecessary on the same port.
+
+RULE 6 — RUN SCRIPT (CRITICAL)
+  ✅ ALWAYS include a 'run.sh' bash script at the project root.
+  ✅ run.sh MUST handle: dependency installation → build (if needed) → start server.
+  ✅ This script is the primary entrypoint for the AI Agent.
+
+RULE 7 — DOCKERFILE
+  ✅ Include a Dockerfile as a production reference. 
+  ✅ Use multi-stage builds if a build step is needed.
+  ✅ Final stage must run ONE process on port {self.port}.
+
+════════════════════════════════════════════════════
+ SPA FALLBACK LOGIC
+════════════════════════════════════════════════════
+Implement this in your server:
+  if path starts with "/api/"    → handle as API
+  elif static file exists        → serve the file
+  else                           → serve index.html
+
+════════════════════════════════════════════════════
+ EXPECTED JSON STRUCTURE
+════════════════════════════════════════════════════
+Return ONLY a raw JSON object:
 {{
     "files": {{
-        "path/to/file1": "...content...",
-        "path/to/file2": "...content...",
+        "path/to/file1": "...complete content...",
+        "run.sh": "#!/bin/bash\\n...",
+        "Dockerfile": "...",
         "metadata.json": {{
-            "project_type": "...",
-            "description": "...",
-            "entrypoint": "..."
+            "project_type": "stack name",
+            "entrypoint": "main file"
         }}
     }}
 }}
 
-CRITICAL: Return ONLY the raw JSON object. No narrative, no markdown outside the JSON.
+USER REQUEST: {prompt}
 """
         try:
             result = self._call_ai(ai_prompt)

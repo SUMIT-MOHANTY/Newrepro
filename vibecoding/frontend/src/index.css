@@ -28,6 +28,7 @@ code {
 
 .custom-scrollbar::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
@@ -36,20 +37,36 @@ code {
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background: rgba(128, 128, 128, 0.4);
-  border-radius: 4px;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(128, 128, 128, 0.6);
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
-/* Dark mode scrollbar */
-.dark .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+.custom-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
-.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+/* Dark mode scrollbar - also apply when in a dark container even without .dark class if needed */
+.dark .custom-scrollbar::-webkit-scrollbar-thumb,
+[data-theme='dark'] .custom-scrollbar::-webkit-scrollbar-thumb,
+.bg-\[\#1e1e1e\] .custom-scrollbar::-webkit-scrollbar-thumb,
+.bg-\[\#0A0A0F\] .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  background-clip: content-box;
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover,
+[data-theme='dark'] .custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.bg-\[\#1e1e1e\] .custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.bg-\[\#0A0A0F\] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: content-box;
 }
 
 /* Ensure proper flex behavior for scrolling */

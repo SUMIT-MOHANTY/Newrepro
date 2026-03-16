@@ -594,6 +594,9 @@ except Exception as e:
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in project_dir.rglob('*'):
                     if file_path.is_file():
+                        # Skip huge, problematic folders like node_modules
+                        if "node_modules" in file_path.parts:
+                            continue
                         arcname = file_path.relative_to(project_dir)
                         zipf.write(file_path, arcname)
             
@@ -632,28 +635,29 @@ except Exception as e:
         project_dir = self.artifacts_dir / project_id
         version_dir = project_dir / "versions" / version_id
         
-        # Try metadata first to find the main file
+        # Try metadata first to find the main file or entrypoint
         metadata_file = version_dir / "metadata.json"
         if metadata_file.exists():
             try:
                 with open(metadata_file, 'r') as f:
                     metadata = json.load(f)
-                main_file = metadata.get('main_file')
+                main_file = metadata.get('entrypoint') or metadata.get('main_file')
             except Exception:
                 main_file = None
             
             if main_file:
-                    code_file = version_dir / main_file
-                    if code_file.exists():
-                        with open(code_file, 'r', encoding='utf-8') as f:
-                            return f.read()
+                code_file = version_dir / main_file
+                if code_file.exists():
+                    with open(code_file, 'r', encoding='utf-8') as f:
+                        return f.read()
 
-        # Fallback to common entry points
-        for filename in ["index.html", "preview.html", "app.py", "main.py", "index.js", "server.js"]:
-            code_file = version_dir / filename
-            if code_file.exists():
-                with open(code_file, 'r', encoding='utf-8') as f:
-                    return f.read()
+        # Final fallback: return the first text-like file found in the root
+        for p in version_dir.iterdir():
+            if p.is_file() and not p.name.startswith(('.', 'metadata.json', 'package-lock.json', 'yarn.lock')):
+                try:
+                    return p.read_text(encoding='utf-8')
+                except Exception:
+                    continue
         
         return None
     

@@ -268,21 +268,21 @@ const ChatMessage = ({
                   const fileStructure = extractFileStructure(message.code);
                   return fileStructure.length > 0 && (
                     <div className={`mt-3 pt-3 border-t ${message.role === 'user'
-                        ? 'border-white/20'
-                        : darkMode ? 'border-white/10' : 'border-gray-200'
+                      ? 'border-white/20'
+                      : darkMode ? 'border-white/10' : 'border-gray-200'
                       }`}>
                       <div className={`flex flex-wrap gap-2 ${message.role === 'user'
-                          ? 'text-white/90'
-                          : darkMode ? 'text-[#cccccc]' : 'text-gray-700'
+                        ? 'text-white/90'
+                        : darkMode ? 'text-[#cccccc]' : 'text-gray-700'
                         }`}>
                         {fileStructure.map((file, idx) => (
                           <div
                             key={idx}
                             className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded ${message.role === 'user'
-                                ? 'bg-white/10'
-                                : darkMode
-                                  ? 'bg-[#0A0A0F]'
-                                  : 'bg-white border border-gray-200'
+                              ? 'bg-white/10'
+                              : darkMode
+                                ? 'bg-[#0A0A0F]'
+                                : 'bg-white border border-gray-200'
                               }`}
                           >
                             {file.type === 'html' || file.type === 'js' ? (
@@ -302,12 +302,12 @@ const ChatMessage = ({
 
                 {/* Code Generated Badge */}
                 <div className={`mt-3 pt-3 border-t flex items-center justify-between ${message.role === 'user'
-                    ? 'border-white/20'
-                    : darkMode ? 'border-white/10' : 'border-gray-200'
+                  ? 'border-white/20'
+                  : darkMode ? 'border-white/10' : 'border-gray-200'
                   }`}>
                   <div className={`flex items-center gap-2 text-xs ${message.role === 'user'
-                      ? 'text-white/80'
-                      : darkMode ? 'text-gray-500' : 'text-gray-500'
+                    ? 'text-white/80'
+                    : darkMode ? 'text-gray-500' : 'text-gray-500'
                     }`}>
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     <span>Code generated</span>
@@ -318,14 +318,14 @@ const ChatMessage = ({
                       size="sm"
                       onClick={() => onLoadVersion(msgVersion.id)}
                       className={`text-xs px-2 py-1 h-auto ${selectedVersion === msgVersion.id
-                          ? darkMode
-                            ? 'bg-purple-600 text-white hover:bg-purple-700'
-                            : 'bg-blue-500 text-white hover:bg-blue-600'
-                          : message.role === 'user'
-                            ? 'text-white/80 hover:bg-white/10'
-                            : darkMode
-                              ? 'text-gray-500 hover:bg-white/10'
-                              : 'text-gray-500 hover:bg-gray-200'
+                        ? darkMode
+                          ? 'bg-purple-600 text-white hover:bg-purple-700'
+                          : 'bg-blue-500 text-white hover:bg-blue-600'
+                        : message.role === 'user'
+                          ? 'text-white/80 hover:bg-white/10'
+                          : darkMode
+                            ? 'text-gray-500 hover:bg-white/10'
+                            : 'text-gray-500 hover:bg-gray-200'
                         }`}
                     >
                       {selectedVersion === msgVersion.id ? 'Current' : 'View'}
@@ -348,7 +348,7 @@ const ChatMessage = ({
       </div>
       {!isUser && (
         <div className="flex items-center gap-2 mt-2 ml-11">
-          <Button
+          {/* <Button
             onClick={() => onCopyMessage(message.content)}
             variant="ghost"
             size="sm"
@@ -356,8 +356,8 @@ const ChatMessage = ({
           >
             <Copy className="w-3 h-3 mr-1" />
             Copy
-          </Button>
-          <Button
+          </Button> */}
+          {/* <Button
             onClick={() => onRegenerate(message)}
             variant="ghost"
             size="sm"
@@ -365,7 +365,7 @@ const ChatMessage = ({
           >
             <RefreshCw className="w-3 h-3 mr-1" />
             Regenerate
-          </Button>
+          </Button> */}
         </div>
       )}
     </div>

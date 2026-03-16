@@ -71,7 +71,7 @@ const ChatPanel = ({
   return (
     <div
       className={cn(
-        'flex flex-col h-screen border-l relative',
+        'flex flex-col h-full border-l relative',
         darkMode ? 'bg-[#0F0F14] border-white/10' : 'bg-white border-gray-200'
       )}
       style={{ width: `${width}px` }}

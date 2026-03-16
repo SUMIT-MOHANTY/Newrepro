@@ -231,63 +231,49 @@ const CodePreview = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-[#0A0A0F]" style={{ position: 'relative', overflow: 'hidden' }}>
+    <div className={cn("flex-1 flex flex-col min-h-0 bg-[#0A0A0F] text-white", darkMode && "dark")} style={{ position: 'relative', overflow: 'hidden' }}>
       {/* Tab Bar - Always Visible */}
       <div
-        className="flex items-center gap-2 px-6 py-3 border-b flex-shrink-0"
+        className="flex items-center gap-2 px-6 py-2 border-b flex-shrink-0"
         style={{
-          backgroundColor: darkMode ? '#252526' : '#f9fafb',
-          borderColor: darkMode ? '#3e3e42' : '#e5e7eb',
+          backgroundColor: darkMode ? '#1e1e1e' : '#f9fafb',
+          borderColor: darkMode ? '#333333' : '#e5e7eb',
           minHeight: '48px',
-          flexShrink: 0,
-          display: 'flex',
-          visibility: 'visible',
-          opacity: 1,
           width: '100%'
         }}
       >
-        <Button
-          onClick={() => setActiveTab('preview')}
-          variant={activeTab === 'preview' ? 'default' : 'ghost'}
-          size="sm"
-          className={cn(
-            'rounded-md text-sm h-9 px-4 py-2 flex items-center gap-2',
-            activeTab === 'preview'
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : darkMode
-                ? 'text-[#cccccc] hover:text-white hover:bg-[#2d2d30]'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-          )}
-          disabled={!previewCode}
-          style={{
-            opacity: !previewCode ? 0.5 : 1,
-            cursor: !previewCode ? 'not-allowed' : 'pointer'
-          }}
-        >
-          <Eye className="w-4 h-4 mr-2" />
-          Preview
-        </Button>
-        <Button
-          onClick={() => setActiveTab('code')}
-          variant={activeTab === 'code' ? 'default' : 'ghost'}
-          size="sm"
-          className={cn(
-            'rounded-md text-sm h-9 px-4 py-2 flex items-center gap-2',
-            activeTab === 'code'
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : darkMode
-                ? 'text-[#cccccc] hover:text-white hover:bg-[#2d2d30]'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-          )}
-          disabled={!previewCode}
-          style={{
-            opacity: !previewCode ? 0.5 : 1,
-            cursor: !previewCode ? 'not-allowed' : 'pointer'
-          }}
-        >
-          <Code className="w-4 h-4 mr-2" />
-          Code
-        </Button>
+        <div className="flex bg-[#2d2d30] p-1 rounded-lg">
+          <Button
+            onClick={() => setActiveTab('preview')}
+            variant="ghost"
+            size="sm"
+            className={cn(
+              'rounded-md text-xs h-8 px-3 transition-all',
+              activeTab === 'preview'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-[#858585] hover:text-white hover:bg-white/5'
+            )}
+            disabled={!previewCode}
+          >
+            <Eye className="w-3.5 h-3.5 mr-1.5" />
+            Preview
+          </Button>
+          <Button
+            onClick={() => setActiveTab('code')}
+            variant="ghost"
+            size="sm"
+            className={cn(
+              'rounded-md text-xs h-8 px-3 transition-all',
+              activeTab === 'code'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-[#858585] hover:text-white hover:bg-white/5'
+            )}
+            disabled={!previewCode}
+          >
+            <Code className="w-3.5 h-3.5 mr-1.5" />
+            Code
+          </Button>
+        </div>
 
         <div className="ml-auto flex items-center gap-2" style={{ minWidth: '200px' }}>
           {/* Version Selector - Always visible when code exists */}
@@ -602,16 +588,22 @@ const CodePreview = ({
           // Code View with File Tree
           <div className={`flex-1 flex min-h-0 min-w-0 ${darkMode ? 'bg-[#1e1e1e]' : 'bg-gray-50'}`}>
             {/* Left Sidebar - File Tree */}
-            <div className={`w-64 flex-shrink-0 border-r ${darkMode ? 'bg-[#252526] border-[#3e3e42]' : 'bg-gray-100 border-gray-300'
-              }`}>
+            <div className={`w-64 flex-shrink-0 border-r flex flex-col ${darkMode ? 'bg-[#151518] border-white/5' : 'bg-gray-100 border-gray-300'
+               }`}>
               {/* File Tree Header */}
-              <div className={`px-3 py-2 border-b ${darkMode ? 'border-[#3e3e42]' : 'border-gray-300'
+              <div className={`px-3 py-2 border-b ${darkMode ? 'border-white/5' : 'border-gray-300'
                 }`}>
                 <div className="flex items-center justify-between">
-                  <span className={`text-xs font-semibold uppercase tracking-wide ${darkMode ? 'text-[#858585]' : 'text-gray-500'
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${darkMode ? 'text-[#858585]' : 'text-gray-500'
                     }`}>
-                    Code Files
+                    FILES
                   </span>
+                  {previewCode && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded bg-white/5 text-[10px] font-mono text-[#858585]">
+                      {/* Detect files count from code markers if present, else 1 */}
+                      {(previewCode.match(/\/\/\s*FILE:\s*|#\s*FILE:\s*|<!--\s*FILE:\s*/gi) || [1]).length}
+                    </span>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon"
@@ -632,18 +624,20 @@ const CodePreview = ({
               </div>
 
               {/* File Tree */}
-              <FileTree
-                code={previewCode}
-                darkMode={darkMode}
-                onFileSelect={handleFileSelect}
-                selectedFile={selectedFile}
-              />
+              <div className="flex-1 overflow-y-auto custom-scrollbar">
+                <FileTree
+                  code={previewCode}
+                  darkMode={darkMode}
+                  onFileSelect={handleFileSelect}
+                  selectedFile={selectedFile}
+                />
+              </div>
             </div>
 
             {/* Right Side - Code Editor */}
             <div className="flex-1 flex flex-col min-w-0">
               {/* File Header */}
-              <div className={`px-4 py-2 border-b flex items-center justify-between ${darkMode ? 'bg-[#1e1e1e] border-[#3e3e42]' : 'bg-white border-gray-300'
+              <div className={`px-4 py-2 border-b flex items-center justify-between ${darkMode ? 'bg-[#151518] border-white/5' : 'bg-white border-gray-300'
                 }`}>
                 <div className="flex items-center gap-2">
                   <Code className={`w-4 h-4 ${darkMode ? 'text-[#858585]' : 'text-gray-500'}`} />
@@ -673,11 +667,11 @@ const CodePreview = ({
               </div>
 
               {/* Code Content */}
-              <div className={`flex-1 overflow-auto custom-scrollbar ${darkMode ? 'bg-[#1e1e1e]' : 'bg-white'
+              <div className={`flex-1 overflow-auto custom-scrollbar ${darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
                 }`}>
-                <div className="flex h-full">
+                <div className="flex min-h-full">
                   {/* Line Numbers */}
-                  <div className={`py-4 px-4 select-none border-r ${darkMode ? 'bg-[#1e1e1e] text-[#858585] border-[#3e3e42]' : 'bg-gray-50 text-gray-400 border-gray-200'
+                  <div className={`py-4 px-4 select-none border-r ${darkMode ? 'bg-[#0A0A0F] text-[#444] border-white/5' : 'bg-gray-50 text-gray-400 border-gray-200'
                     }`} style={{ minWidth: '3.5rem' }}>
                     <pre className="text-xs font-mono leading-relaxed text-right">
                       {(currentFileContent || previewCode).split('\n').map((_, idx) => (
@@ -687,8 +681,8 @@ const CodePreview = ({
                   </div>
 
                   {/* Code Content */}
-                  <div className="flex-1 py-4 px-4 overflow-x-auto overflow-y-hidden custom-scrollbar bg-transparent min-w-0">
-                    <pre className={`text-sm font-mono leading-relaxed whitespace-pre w-fit min-w-full ${darkMode ? 'text-[#d4d4d4]' : 'text-gray-800'
+                  <div className="flex-1 overflow-x-auto custom-scrollbar bg-transparent min-w-0">
+                    <pre className={`py-4 px-4 text-sm font-mono leading-relaxed whitespace-pre w-fit min-w-full ${darkMode ? 'text-[#d4d4d4]' : 'text-gray-800'
                       }`}>
                       <code>{currentFileContent || previewCode}</code>
                     </pre>

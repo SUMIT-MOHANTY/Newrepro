@@ -1160,7 +1160,7 @@ Please suggest improvements or modifications for this element.`;
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Right Panel - Preview/Code */}
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {/* View Tabs */}
           <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#0F0F14] sticky top-0 z-10">
             <div className="flex items-center gap-1">
@@ -1584,8 +1584,8 @@ Please suggest improvements or modifications for this element.`;
                   </div>
 
                   {/* Code Content */}
-                  <div className="flex-1 overflow-auto min-h-0">
-                    <div className="flex h-full">
+                  <div className="flex-1 overflow-auto min-h-0 custom-scrollbar">
+                    <div className="flex min-h-full">
                       {/* Line Numbers */}
                       <div className="py-4 px-3 select-none bg-[#0A0A0F] text-gray-600 border-r border-white/10">
                         <pre className="text-xs font-mono leading-relaxed text-right">
@@ -1596,7 +1596,7 @@ Please suggest improvements or modifications for this element.`;
                       </div>
                       
                       {/* Code Content */}
-                      <div className="flex-1 py-4 px-4 overflow-x-auto overflow-y-hidden bg-[#0A0A0F] min-w-0">
+                      <div className="flex-1 py-4 px-4 overflow-x-auto custom-scrollbar bg-[#0A0A0F] min-w-0">
                         <pre className="text-sm font-mono leading-relaxed text-gray-300">
                           <code>{selectedFile?.content || previewCode}</code>
                         </pre>
