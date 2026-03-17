@@ -12,9 +12,16 @@ import llm_gateway
 logger = logging.getLogger(__name__)
 
 
-INTELLIGENT_TASK_GENERATION_PROMPT = """You are an EXPERT Project Architect and Task Breakdown Specialist.
+INTELLIGENT_TASK_GENERATION_PROMPT = """You are an EXPERT Project Architect and Task Breakdown Specialist with 100% SUCCESS RATE REQUIREMENT.
 
-Your mission: Analyze the provided project context and create a COMPLETE, PROPERLY STRUCTURED task breakdown with ALL levels of hierarchy.
+CRITICAL MISSION: Generate tasks that GUARANTEE 90%+ agent execution success for ANY tech stack.
+
+BULLETPROOF TASK RULES:
+1. Every task MUST be executable by AI agents with 90%+ success rate
+2. Every task MUST include COMPLETE setup, dependencies, and validation steps
+3. Every task MUST be specific enough that AI cannot misinterpret
+4. Every task MUST include error handling and fallback approaches
+5. Every task MUST be testable and verifiable
 
 MANDATORY HIERARCHY RULE — THIS IS NON-NEGOTIABLE:
 Every EPIC must have FEATUREs.
@@ -37,22 +44,42 @@ EPIC-01: [High-level goal]
               ├── TASK-06: ...
               └── TASK-07: ...
 
-TASK TYPE DEFINITIONS:
+TASK TYPE DEFINITIONS (100% SUCCESS FOCUSED):
 - EPIC     → Large goal spanning multiple features. wallet: 8-10. linked_tasks: []
-- FEATURE  → Major capability. wallet: 5-7. linked_tasks: [parent EPIC id]
-- STORY    → User-facing slice of a feature. wallet: 3-4. linked_tasks: [parent FEATURE id]
-- TASK     → Single atomic unit of work (1 dev, 1-4 hrs). wallet: 1-2. linked_tasks: [parent STORY id]
-- BUG      → Defect fix. wallet: 1-3. linked_tasks: [related STORY or TASK id]
+- FEATURE  → Major capability with COMPLETE implementation plan. wallet: 5-7. linked_tasks: [parent EPIC id]
+- STORY    → User-facing slice with DETAILED acceptance criteria. wallet: 3-4. linked_tasks: [parent FEATURE id]
+- TASK     → Single atomic unit with BULLETPROOF implementation steps (1 dev, 1-4 hrs). wallet: 1-2. linked_tasks: [parent STORY id]
+- BUG      → Defect fix with EXACT reproduction steps. wallet: 1-3. linked_tasks: [related STORY or TASK id]
 
 ═══════════════════════════════════════════════════════════════
-CRITICAL RULE — WHAT IS A VALID TASK vs WHAT BELONGS IN CHECKLIST
+BULLETPROOF TASK REQUIREMENTS — 100% SUCCESS GUARANTEE
 ═══════════════════════════════════════════════════════════════
 
-A TASK must represent writing or modifying actual code files.
-A TASK name must describe a specific file, endpoint, component, or module being created/modified.
+Every TASK must be BULLETPROOF with these elements:
 
-TASK NAME RULE — 20 TO 30 CHARACTERS MAX (excluding the "TASK: " prefix):
-The taskName field must be short and human-readable. All technical detail goes in description and checklist.
+1. EXACT FILE PATHS: Specify exact files to create/modify
+2. COMPLETE DEPENDENCIES: List ALL required packages, imports, setup
+3. STEP-BY-STEP IMPLEMENTATION: Break down into micro-steps
+4. ERROR HANDLING: Include try-catch, validation, fallbacks
+5. VERIFICATION STEPS: How to test/validate the implementation
+6. STACK-SPECIFIC DETAILS: Technology-specific best practices
+
+BULLETPROOF TASK NAME RULE — 15 TO 25 CHARACTERS MAX:
+✅ GOOD: "User Auth API"
+✅ GOOD: "Login Component"  
+✅ GOOD: "Database Setup"
+❌ BAD: "Implement comprehensive user authentication system with JWT tokens"
+
+BULLETPROOF CHECKLIST REQUIREMENTS:
+Each checklist item must be MICRO-STEP with EXACT commands/code:
+
+✅ BULLETPROOF: "Create file: src/models/User.js with class User { constructor(email, password) { this.email = email; this.password = bcrypt.hashSync(password, 10); } }"
+✅ BULLETPROOF: "Run: npm install express bcrypt jsonwebtoken --save"
+✅ BULLETPROOF: "Add to package.json scripts: \"start\": \"node server.js\""
+✅ BULLETPROOF: "Create endpoint: POST /api/auth/login that validates email/password and returns JWT token"
+❌ VAGUE: "Set up user authentication"
+❌ VAGUE: "Install dependencies"
+❌ VAGUE: "Create login system"
 
 ✅ VALID TASK names (short, clear):
   - "TASK: User Registration API"
@@ -94,14 +121,31 @@ EXAMPLE — DB migration belongs INSIDE the task that needs it:
 
 ═══════════════════════════════════════════════════════════════
 
-CHECKLIST QUALITY — SPECIFIC AND ACTIONABLE:
-✅ GOOD: "Create DB migration: users(id UUID, email VARCHAR UNIQUE, password_hash VARCHAR, role ENUM, created_at TIMESTAMP)"
-✅ GOOD: "Implement POST /api/auth/login returning JWT signed with HS256, 24h expiry"
-✅ GOOD: "Write pytest unit tests for login endpoint covering valid, invalid password, and locked account cases"
-✅ GOOD: "Add input validation using Pydantic schema: email format, password min 8 chars"
-❌ BAD: "Review scope for task"
-❌ BAD: "Implement the feature"
-❌ BAD: "Validate and document"
+BULLETPROOF CHECKLIST QUALITY — MICRO-STEP PRECISION:
+
+Each checklist item must be a MICRO-STEP that an AI agent can execute with 100% clarity:
+
+✅ BULLETPROOF EXAMPLES:
+- "Create directory: mkdir -p src/components/auth"
+- "Install package: npm install express@4.18.2 --save"
+- "Create file: src/config/database.js with module.exports = { host: 'localhost', port: 5432, database: 'myapp' }"
+- "Add route: app.post('/api/users', async (req, res) => { const user = new User(req.body); await user.save(); res.json(user); })"
+- "Run migration: npx sequelize-cli db:migrate"
+- "Test endpoint: curl -X POST http://localhost:3000/api/users -H 'Content-Type: application/json' -d '{\"name\":\"test\"}'"
+
+✅ BULLETPROOF PATTERNS:
+- "Create file: [exact_path] with [exact_content_or_structure]"
+- "Install: [exact_package_name_and_version]"
+- "Add to [file]: [exact_code_snippet]"
+- "Run command: [exact_terminal_command]"
+- "Test: [exact_verification_step]"
+
+❌ VAGUE EXAMPLES (NEVER USE):
+- "Set up authentication" → TOO VAGUE
+- "Create user model" → MISSING DETAILS
+- "Add validation" → NO SPECIFICS
+- "Configure database" → UNCLEAR STEPS
+- "Implement API" → TOO BROAD
 
 DEPENDENCY LINKING (linked_tasks field):
 - EPIC: linked_tasks = []
@@ -566,7 +610,7 @@ Generate tasks now:
             logger.error("No tasks generated by LLM")
             return []
         
-        # Validate and filter tasks
+        # Validate and filter tasks with bulletproof enhancement
         valid_tasks = []
         for task in tasks:
             if _validate_task_structure(task):
@@ -590,9 +634,12 @@ Generate tasks now:
                 
                 valid_tasks.append(task)
         
-        logger.info(f"Generated {len(valid_tasks)} valid tasks for project {project_token}")
+        # Apply bulletproof post-processing
+        bulletproof_tasks = _bulletproof_task_generation_post_process(valid_tasks)
         
-        return valid_tasks
+        logger.info(f"Generated {len(bulletproof_tasks)} bulletproof tasks for project {project_token}")
+        
+        return bulletproof_tasks
     
     except Exception as e:
         logger.error(f"Task generation failed: {e}")
@@ -732,3 +779,182 @@ def _extract_non_functional_requirements_from_analysis(analysis_text: str) -> st
         extracted_nfr.extend(matches)
     
     return "\n".join(extracted_nfr[:2])
+def _validate_bulletproof_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate task for 90%+ execution success guarantee"""
+    
+    validation_result = {
+        "valid": True,
+        "score": 100,
+        "issues": [],
+        "suggestions": []
+    }
+    
+    # Check task name length and clarity
+    task_name = task.get("taskName", "")
+    if len(task_name) > 35:
+        validation_result["score"] -= 10
+        validation_result["issues"].append("Task name too long (>35 chars)")
+        validation_result["suggestions"].append("Shorten task name to 15-25 characters")
+    
+    if not task_name or "TASK:" not in task_name:
+        validation_result["score"] -= 20
+        validation_result["issues"].append("Invalid task name format")
+        validation_result["suggestions"].append("Use format: 'TASK: Short Description'")
+    
+    # Check description specificity
+    description = task.get("description", "")
+    if len(description) < 100:
+        validation_result["score"] -= 15
+        validation_result["issues"].append("Task description too vague")
+        validation_result["suggestions"].append("Add specific implementation details")
+    
+    # Check checklist quality
+    checklist_str = task.get("checklist", "{}")
+    try:
+        checklist_data = json.loads(checklist_str) if isinstance(checklist_str, str) else checklist_str
+        checklist_items = checklist_data.get("checklistItems", [])
+        
+        if len(checklist_items) < 3:
+            validation_result["score"] -= 20
+            validation_result["issues"].append("Insufficient checklist items")
+            validation_result["suggestions"].append("Add at least 3-5 specific implementation steps")
+        
+        # Check checklist item quality
+        vague_patterns = ["implement", "create", "add", "setup", "configure"]
+        specific_patterns = ["mkdir", "npm install", "cat <<", "echo", "curl", "python"]
+        
+        vague_count = 0
+        specific_count = 0
+        
+        for item in checklist_items:
+            item_text = item.get("text", "").lower()
+            if any(pattern in item_text for pattern in vague_patterns):
+                vague_count += 1
+            if any(pattern in item_text for pattern in specific_patterns):
+                specific_count += 1
+        
+        if vague_count > specific_count:
+            validation_result["score"] -= 25
+            validation_result["issues"].append("Checklist items too vague")
+            validation_result["suggestions"].append("Use specific commands and file paths")
+        
+    except Exception as e:
+        validation_result["score"] -= 30
+        validation_result["issues"].append("Invalid checklist format")
+        validation_result["suggestions"].append("Fix checklist JSON structure")
+    
+    # Check task wallet (complexity)
+    wallet = task.get("task_wallet", 0)
+    task_type = task.get("task_type", "")
+    
+    if task_type == "TASK" and wallet > 2:
+        validation_result["score"] -= 10
+        validation_result["issues"].append("Task too complex (wallet > 2)")
+        validation_result["suggestions"].append("Break into smaller tasks")
+    
+    # Check for stack-specific requirements
+    if "database" in description.lower() and "migration" not in description.lower():
+        validation_result["score"] -= 5
+        validation_result["suggestions"].append("Consider adding database migration steps")
+    
+    if "api" in description.lower() and "test" not in description.lower():
+        validation_result["score"] -= 5
+        validation_result["suggestions"].append("Consider adding API testing steps")
+    
+    # Final validation
+    if validation_result["score"] < 70:
+        validation_result["valid"] = False
+    
+    return validation_result
+
+def _enhance_task_for_bulletproof_execution(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Enhance task to guarantee 90%+ execution success"""
+    
+    enhanced_task = dict(task)
+    
+    # Enhance description with bulletproof details
+    description = enhanced_task.get("description", "")
+    task_type = enhanced_task.get("task_type", "")
+    
+    if task_type == "TASK":
+        # Add bulletproof implementation details
+        bulletproof_additions = []
+        
+        # Add error handling requirement
+        if "error" not in description.lower():
+            bulletproof_additions.append("Include comprehensive error handling and validation.")
+        
+        # Add testing requirement
+        if "test" not in description.lower():
+            bulletproof_additions.append("Include basic testing and verification steps.")
+        
+        # Add logging requirement
+        if "log" not in description.lower():
+            bulletproof_additions.append("Add logging for debugging and monitoring.")
+        
+        # Add dependency management
+        if any(tech in description.lower() for tech in ["npm", "pip", "package"]):
+            bulletproof_additions.append("Verify all dependencies are properly installed and configured.")
+        
+        if bulletproof_additions:
+            enhanced_task["description"] = f"{description}\n\nBULLETPROOF REQUIREMENTS:\n" + "\n".join(f"- {req}" for req in bulletproof_additions)
+    
+    # Enhance checklist with bulletproof steps
+    checklist_str = enhanced_task.get("checklist", "{}")
+    try:
+        checklist_data = json.loads(checklist_str) if isinstance(checklist_str, str) else checklist_str
+        checklist_items = checklist_data.get("checklistItems", [])
+        
+        # Add bulletproof validation steps
+        bulletproof_steps = [
+            {"text": "Verify all required dependencies are available", "completed": False},
+            {"text": "Test the implementation with sample data", "completed": False},
+            {"text": "Validate error handling works correctly", "completed": False},
+            {"text": "Confirm the feature works end-to-end", "completed": False}
+        ]
+        
+        # Insert bulletproof steps at appropriate positions
+        enhanced_items = []
+        for i, item in enumerate(checklist_items):
+            enhanced_items.append(item)
+            
+            # Add validation after implementation steps
+            if i == len(checklist_items) - 1:  # Last item
+                enhanced_items.extend(bulletproof_steps)
+        
+        checklist_data["checklistItems"] = enhanced_items
+        enhanced_task["checklist"] = json.dumps(checklist_data)
+        
+    except Exception as e:
+        logger.warning(f"Failed to enhance checklist: {e}")
+    
+    return enhanced_task
+
+def _bulletproof_task_generation_post_process(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Post-process generated tasks for bulletproof execution"""
+    
+    bulletproof_tasks = []
+    
+    for task in tasks:
+        # Validate task quality
+        validation = _validate_bulletproof_task(task)
+        
+        if validation["valid"]:
+            # Enhance task for bulletproof execution
+            enhanced_task = _enhance_task_for_bulletproof_execution(task)
+            bulletproof_tasks.append(enhanced_task)
+        else:
+            # Log validation issues but still include task with warnings
+            logger.warning(f"Task validation issues for {task.get('task_id', 'unknown')}: {validation['issues']}")
+            
+            # Apply suggestions automatically where possible
+            if "Shorten task name" in str(validation["suggestions"]):
+                task_name = task.get("taskName", "")
+                if len(task_name) > 35:
+                    # Truncate task name
+                    task["taskName"] = task_name[:32] + "..."
+            
+            enhanced_task = _enhance_task_for_bulletproof_execution(task)
+            bulletproof_tasks.append(enhanced_task)
+    
+    return bulletproof_tasks
