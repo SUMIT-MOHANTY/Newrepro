@@ -577,126 +577,90 @@ export default function TaskCreation({
         setIsLoading(true);
         setError('');
         try {
-            // First, try to fetch tasks from backend API if we have a task token
-            let backendTasks = null;
-            if (taskToken) {
-                try {
-                    const headers = { 'Authorization': `Bearer ${token}` };
-                    if (taskToken) headers['x-task-token'] = taskToken;
+            // Fetch from our local tasks API
+            const headers = { 'Authorization': `Bearer ${token}` };
+            const url = new URL(API_ENDPOINTS.AGENT_TASKS_LOCAL);
+            url.searchParams.set('project_token', selectedProjectKey);
+            url.searchParams.set('page', page);
 
-                    // Always include the page parameter to ensure consistency with backend expectations
-                    // and to follow the "fixed" pattern requested.
-                    const url = new URL(API_ENDPOINTS.AGENT_TASKS_TOTAL);
-                    url.searchParams.set('page', page);
-                    const urlToFetch = url.toString();
+            const tasksRes = await fetch(url.toString(), { headers });
 
-                    const tasksRes = await fetch(urlToFetch, { headers });
-                    if (tasksRes.ok) {
-                        const tasksData = await tasksRes.json();
-                        // Handle both array and paginated response formats
-                        const tasksList = Array.isArray(tasksData)
-                            ? tasksData
-                            : (Array.isArray(tasksData?.results) ? tasksData.results : []);
+            if (tasksRes.ok) {
+                const tasksData = await tasksRes.json();
+                const tasksList = Array.isArray(tasksData?.tasks) ? tasksData.tasks : [];
 
-                        setPagination({
-                            count: tasksData.count || tasksList.length || 0,
+                if (tasksList.length > 0) {
+                    // Build sprints and milestones maps from task data
+                    const sprintsMap = new Map();
+                    const milestonesMap = new Map();
+
+                    tasksList.forEach((task) => {
+                        const sprintVal = task.sprint || 'new';
+                        const milestoneVal = task.milestone || 'main';
+
+                        if (!sprintsMap.has(String(sprintVal))) {
+                            sprintsMap.set(String(sprintVal), {
+                                id: sprintVal,
+                                name: sprintVal === 'new' ? 'Sprint 1' : String(sprintVal),
+                            });
+                        }
+                        if (!milestonesMap.has(String(milestoneVal))) {
+                            milestonesMap.set(String(milestoneVal), {
+                                id: milestoneVal,
+                                name: milestoneVal === 'main' ? 'Main Milestone' : String(milestoneVal),
+                            });
+                        }
+                    });
+
+                    const plan = {
+                        tasks: tasksList,
+                        sprints: Array.from(sprintsMap.values()),
+                        milestones: Array.from(milestonesMap.values()),
+                        project_deadline: projectInfo?.project?.deadline || projectInfo?.deadline || projectDeadline || '',
+                        pagination: {
+                            count: tasksData.count || tasksList.length,
                             next: tasksData.next || null,
                             previous: tasksData.previous || null,
                             currentPage: page,
-                        });
-
-                        if (tasksList.length > 0) {
-                            // Group tasks by sprint and milestone for display
-                            const sprintsMap = new Map();
-                            const milestonesMap = new Map();
-
-                            tasksList.forEach((task) => {
-                                const sprintId = extractEntityId(task, 'sprint');
-                                const milestoneId = extractEntityId(task, 'milestone');
-                                const sprintName = extractEntityName(task, 'sprint');
-                                const milestoneName = extractEntityName(task, 'milestone');
-
-                                if (sprintId != null) {
-                                    const sprint = task.sprint;
-                                    if (sprint && typeof sprint === 'object') {
-                                        sprintsMap.set(String(sprintId), {
-                                            id: sprintId,
-                                            name: sprint.name || sprint.sprint_name || sprintName || `Sprint #${sprintId}`,
-                                        });
-                                    } else if (!sprintsMap.has(String(sprintId))) {
-                                        sprintsMap.set(String(sprintId), {
-                                            id: sprintId,
-                                            name: sprintName || `Sprint #${sprintId}`,
-                                        });
-                                    }
-                                }
-
-                                if (milestoneId != null) {
-                                    const milestone = task.milestone;
-                                    if (milestone && typeof milestone === 'object') {
-                                        milestonesMap.set(String(milestoneId), {
-                                            id: milestoneId,
-                                            name: milestone.name || milestone.milestone_name || milestoneName || `Milestone #${milestoneId}`,
-                                        });
-                                    } else if (!milestonesMap.has(String(milestoneId))) {
-                                        milestonesMap.set(String(milestoneId), {
-                                            id: milestoneId,
-                                            name: milestoneName || `Milestone #${milestoneId}`,
-                                        });
-                                    }
-                                }
-                            });
-
-                            // Build the plan structure from backend data
-                            backendTasks = {
-                                tasks: tasksList,
-                                sprints: Array.from(sprintsMap.values()),
-                                milestones: Array.from(milestonesMap.values()),
-                                project_deadline: projectInfo?.project?.deadline || projectInfo?.deadline || projectDeadline || '',
-                                pagination: {
-                                    count: tasksData.count || tasksList.length || 0,
-                                    next: tasksData.next || null,
-                                    previous: tasksData.previous || null,
-                                    currentPage: page,
-                                }
-                            };
-
-                            // Save to localStorage for offline access
-                            writeGeneratedTaskPlan(selectedProjectKey, backendTasks);
                         }
-                    }
-                } catch (fetchError) {
-                    // If backend fetch fails, fallback to localStorage
-                    console.warn('Failed to fetch tasks from backend, using localStorage:', fetchError);
+                    };
+
+                    setPagination(plan.pagination);
+                    writeGeneratedTaskPlan(selectedProjectKey, plan);
+                    hydrateGeneratedPlan(plan);
+
+                    return {
+                        sprints: plan.sprints,
+                        milestones: plan.milestones,
+                        tasks: tasksList,
+                        projectDeadline: plan.project_deadline,
+                    };
                 }
+            } else {
+                console.warn('Local tasks API failed, falling back to localStorage');
             }
 
-            // Use backend data if available, otherwise fallback to localStorage
-            const planToUse = backendTasks || readGeneratedTaskPlan(selectedProjectKey);
-
-            if (planToUse) {
-                hydrateGeneratedPlan(planToUse);
+            // Fallback to localStorage if API returns empty or fails
+            const cached = readGeneratedTaskPlan(selectedProjectKey);
+            if (cached) {
+                hydrateGeneratedPlan(cached);
                 return {
-                    sprints: Array.isArray(planToUse?.sprints) ? planToUse.sprints : [],
-                    milestones: Array.isArray(planToUse?.milestones) ? planToUse.milestones : [],
-                    tasks: Array.isArray(planToUse?.tasks) ? planToUse.tasks : [],
-                    projectDeadline: planToUse?.project_deadline || '',
+                    sprints: Array.isArray(cached?.sprints) ? cached.sprints : [],
+                    milestones: Array.isArray(cached?.milestones) ? cached.milestones : [],
+                    tasks: Array.isArray(cached?.tasks) ? cached.tasks : [],
+                    projectDeadline: cached?.project_deadline || '',
                 };
             }
 
-            return {
-                sprints: [],
-                milestones: [],
-                tasks: [],
-                projectDeadline: '',
-            };
+            return { sprints: [], milestones: [], tasks: [], projectDeadline: '' };
+
         } catch (e) {
-            setError(e?.message || 'Failed to load generated task plan');
+            setError(e?.message || 'Failed to load tasks');
             return null;
         } finally {
             setIsLoading(false);
         }
-    }, [selectedProjectKey, hydrateGeneratedPlan, taskToken, token, projectInfo, projectDeadline]);
+    }, [selectedProjectKey, hydrateGeneratedPlan, token, projectInfo, projectDeadline]);
 
     // Load data when project key changes or when task token becomes available
     useEffect(() => {
@@ -809,66 +773,7 @@ export default function TaskCreation({
                 throw new Error('Task token is required. Please ensure the project has been created in the task management system with valid credentials.');
             }
 
-            // Save project-config for this project (multipart) before generating tasks.
-            try {
-                const latestDoc = selectedProject?.latestDocument || null;
-                const fullAnalysedObj = latestDoc?.analysis_result
-                    ? (parseJsonSafely(latestDoc.analysis_result) || {})
-                    : {};
-                const analysedObj = fullAnalysedObj.analysis
-                    ? { analysis: fullAnalysedObj.analysis }
-                    : fullAnalysedObj;
-                const governanceObj = fullAnalysedObj.governanceContext || {};
-
-                const prerequisitesObj = buildPrerequisitesObjectFromStorage(selectedProjectKey);
-                const repoLinkUrl = readRepoLinkUrlForProject(selectedProjectKey);
-
-                const inputText =
-                    String(latestDoc?.full_content || '').trim()
-                    || String(latestDoc?.content_preview || '').trim();
-
-                const formData = new FormData();
-                formData.append('mode', processMode || 'ai_first');
-                formData.append('project_token', selectedProjectKey);
-                formData.append('prerequisites', JSON.stringify(prerequisitesObj || {}));
-                formData.append('analysed_file', JSON.stringify(analysedObj || {}));
-                formData.append('governance', JSON.stringify(governanceObj));
-                if (repoLinkUrl) formData.append('repo_link_url', repoLinkUrl);
-
-                // Add text content as a separate key
-                if (inputText) {
-                    formData.append('text', inputText);
-                    
-                    const blob = new Blob([inputText], { type: 'text/plain' });
-                    const filenameBase = String(latestDoc?.filename || 'requirements').replace(/[^\w.-]+/g, '_');
-                    formData.append('input_file', blob, `${filenameBase || 'requirements'}.txt`);
-                }
-
-                const cfgRes = await fetch(API_ENDPOINTS.AGENT_PROJECT_CONFIG, {
-                    method: 'PUT',
-                    headers: {
-                        ...buildHeaders(),
-                        'X-Task-Token': taskToken,
-                    },
-                    body: formData,
-                });
-
-                if (!cfgRes.ok) {
-                    const cfgJson = await cfgRes.json().catch(() => ({}));
-                    console.warn('Project config save failed:', cfgJson);
-                    throw new Error(getErrorMessage(cfgJson, 'Failed to save project config'));
-                }
-                const cfgJson = await cfgRes.json().catch(() => ({}));
-                setSuccess(cfgJson?.message || 'Task creation started and will shortly appear here in the list.');
-            } catch (cfgErr) {
-                console.warn('Project config save error:', cfgErr);
-                throw cfgErr;
-            }
-
-            // NOTE: Keep the existing task generation logic in code, but do NOT call it for now.
-            // Return early after saving project config.
-            return;
-
+            // Now proceed with task generation
             const headers = {
                 ...buildHeaders(),
                 'Content-Type': 'application/json',
@@ -903,25 +808,24 @@ export default function TaskCreation({
                 generatePayload.prerequisites = prerequisites;
             }
 
-            const generateRes = await fetch(API_ENDPOINTS.AGENT_AUTO_GENERATE, {
+            // Use new local task generation endpoint
+            const generateRes = await fetch(API_ENDPOINTS.AGENT_TASKS_GENERATE_LOCAL, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(generatePayload),
             });
             const generateJson = await generateRes.json().catch(() => ({}));
             if (!generateRes.ok) {
-                const errorMsg = getErrorMessage(generateJson, 'Failed to auto-generate tasks');
-                // If it's an "already exists" error, treat it as a warning, not a failure
+                const errorMsg = getErrorMessage(generateJson, 'Failed to generate tasks');
                 if (errorMsg.toLowerCase().includes('already exists') || errorMsg.toLowerCase().includes('will use the existing')) {
-                    // Continue processing - this is not a critical error
-                    console.warn('Sprint/milestone already exists, continuing with existing items:', errorMsg);
+                    console.warn('Sprint/milestone already exists, continuing:', errorMsg);
                 } else {
                     throw new Error(errorMsg);
                 }
             }
 
-            writeGeneratedTaskPlan(selectedProjectKey, generateJson);
-            hydrateGeneratedPlan(generateJson);
+            // Reload from DB instead of using localStorage
+            await loadData(1);
 
             const createdCount = Array.isArray(generateJson?.tasks)
                 ? generateJson.tasks.length
@@ -1254,10 +1158,10 @@ export default function TaskCreation({
                         <p className="mt-2 text-sm text-app-text-label">
                             Generating a local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>. Please wait.
                         </p>
-                        <div className="mt-4 rounded-xl border border-app-primary-light bg-app-primary-light px-4 py-3 flex items-center justify-between">
+                        {/* <div className="mt-4 rounded-xl border border-app-primary-light bg-app-primary-light px-4 py-3 flex items-center justify-between">
                             <span className="text-sm font-semibold text-app-primary-dark">Preview tasks generated</span>
                             <span className="text-2xl font-extrabold text-app-primary-hover tabular-nums">{liveCreatedTaskCount}</span>
-                        </div>
+                        </div> */}
                         <div className="mt-5 space-y-3">
                             {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
                                 const isDone = idx < creationStageIndex;

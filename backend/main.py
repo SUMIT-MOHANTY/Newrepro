@@ -6818,6 +6818,207 @@ def _apply_schedule_ids_to_preview_payload(
         if milestone_name:
             task["milestone"] = milestone_name
 
+@app.post("/api/agent/tasks/generate-local/")
+async def generate_tasks_locally(
+    request: AutoGenerateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None)
+):
+    """
+    Generate tasks locally using AI, store in database, then optionally sync to NXDUNE.
+    """
+    try:
+        from task_generation_service import generate_tasks_locally as gen_tasks
+        
+        # Get AI config
+        ai_config = await ai_service.get_ai_config()
+        
+        # Generate tasks using improved prompt
+        tasks = await gen_tasks(
+            project_token=request.project_token,
+            db=db,
+            user_id=current_user.id,
+            custom_rules=request.custom_rules,
+            process_mode=request.process_mode or "ai_first",
+            project_type=request.project_type or "greenfield",
+            prerequisites=request.prerequisites or [],
+            api_url=ai_config.get("api_url"),
+            api_key=settings.ai_api_key,
+            model=ai_config.get("model")
+        )
+        
+        if not tasks:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate tasks. Please check your project context and try again."
+            )
+        
+        # Store tasks in local database
+        # First delete any existing tasks for this project to avoid duplicate task_id errors
+        db.query(models.Task).filter(
+            models.Task.project_token == request.project_token,
+            models.Task.owner_id == current_user.id
+        ).delete()
+        db.commit()
+
+        stored_tasks = []
+        for task_data in tasks:
+            # Use project_token + task_id as unique DB key, but store clean task_id separately
+            clean_task_id = task_data["task_id"]
+            db_unique_id = f"{request.project_token}_{clean_task_id}"
+            task = models.Task(
+                task_id=db_unique_id,
+                project_token=request.project_token,
+                owner_id=current_user.id,
+                task_name=task_data["taskName"],
+                task_type=task_data["task_type"],
+                description=task_data.get("description", ""),
+                priority=task_data.get("priority", "medium"),
+                task_wallet=task_data.get("task_wallet", 1),
+                startdate=task_data.get("startdate"),
+                planned_start=task_data.get("planned_start"),
+                deadline=task_data.get("deadline"),
+                assigned_to=task_data.get("assignedTo", []),
+                reported_by=task_data.get("reported_by", "system"),
+                sprint=task_data.get("sprint", "new"),
+                milestone=task_data.get("milestone", "main"),
+                linked_tasks=task_data.get("linked_tasks", []),
+                checklist=task_data.get("checklist", ""),
+                synced_to_nxdune=False
+            )
+            db.add(task)
+            stored_tasks.append(task)
+        
+        db.commit()
+        
+        logger.info(f"Generated and stored {len(stored_tasks)} tasks locally for project {request.project_token}")
+        
+        # Always sync to NXDUNE via batch file upload if task token is provided
+        synced = False
+        if x_task_token:
+            try:
+                import io
+                import json as json_mod
+                import httpx
+
+                nxdune_base = settings.task_api_base_url.rstrip("/")
+                batch_url = f"{nxdune_base}/api/agent/tasks/batch/"
+
+                # Make task_ids unique per project to avoid NXDUNE duplicate conflicts.
+                # Use a short 6-char hash of the project token as prefix: e.g. "a3f9b2_EPIC-01"
+                import hashlib
+                short_hash = hashlib.md5(request.project_token.encode()).hexdigest()[:6]
+
+                prefixed_tasks = []
+                for t in tasks:
+                    pt = dict(t)
+                    pt["task_id"] = f"{short_hash}_{pt['task_id']}"
+                    if pt.get("linked_tasks"):
+                        pt["linked_tasks"] = [
+                            f"{short_hash}_{lid}" for lid in pt["linked_tasks"]
+                        ]
+                    prefixed_tasks.append(pt)
+
+                # Serialize raw array directly — no wrapper key
+                tasks_json_bytes = json_mod.dumps(prefixed_tasks, ensure_ascii=False, indent=2).encode("utf-8")
+                json_file = io.BytesIO(tasks_json_bytes)
+
+                # Debug: log exact payload being sent to NXDUNE
+                logger.info(f"NXDUNE batch sync payload ({len(prefixed_tasks)} tasks):\n{tasks_json_bytes.decode('utf-8')[:2000]}")
+
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        batch_url,
+                        headers={"Authorization": f"Bearer {x_task_token}"},
+                        files={"file": ("tasks.json", json_file, "application/json")},
+                    )
+
+                if response.status_code in (200, 201):
+                    for task in stored_tasks:
+                        task.synced_to_nxdune = True
+                    db.commit()
+                    synced = True
+                    logger.info(f"Synced {len(tasks)} tasks to NXDUNE batch API")
+                else:
+                    logger.warning(f"NXDUNE batch sync returned {response.status_code}: {response.text[:300]}")
+            except Exception as sync_error:
+                logger.warning(f"Failed to sync tasks to NXDUNE: {sync_error}")
+                # Tasks are stored locally — continue regardless
+        
+        return {
+            "status": "success",
+            "message": f"Generated {len(tasks)} tasks successfully",
+            "tasks": tasks,
+            "tasks_created": len(tasks),
+            "synced_to_nxdune": synced
+        }
+    
+    except Exception as e:
+        logger.error(f"Task generation failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Task generation failed: {str(e)}"
+        )
+
+
+@app.get("/api/agent/tasks/local/")
+async def get_local_tasks(
+    project_token: str,
+    page: int = 1,
+    page_size: int = 50,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get locally stored tasks for a project with pagination"""
+    base_query = db.query(models.Task).filter(
+        models.Task.project_token == project_token,
+        models.Task.owner_id == current_user.id
+    )
+
+    total = base_query.count()
+    offset = (page - 1) * page_size
+    tasks = base_query.order_by(models.Task.created_at).offset(offset).limit(page_size).all()
+
+    def serialize(t):
+        # Strip project_token prefix from task_id for display (e.g. "proj_EPIC-01" → "EPIC-01")
+        display_id = t.task_id
+        prefix = f"{project_token}_"
+        if display_id.startswith(prefix):
+            display_id = display_id[len(prefix):]
+        return {
+            "task_id": display_id,
+            "taskName": t.task_name,
+            "task_type": t.task_type,
+            "assignedTo": t.assigned_to or [],
+            "description": t.description,
+            "startdate": t.startdate,
+            "planned_start": t.planned_start,
+            "deadline": t.deadline,
+            "priority": t.priority,
+            "task_wallet": t.task_wallet,
+            "sprint": t.sprint,
+            "milestone": t.milestone,
+            "reported_by": t.reported_by,
+            "linked_tasks": t.linked_tasks or [],
+            "checklist": t.checklist,
+            "synced_to_nxdune": t.synced_to_nxdune,
+            "nxdune_task_id": t.nxdune_task_id,
+        }
+
+    has_next = (offset + page_size) < total
+    has_prev = page > 1
+
+    return {
+        "tasks": [serialize(t) for t in tasks],
+        "count": total,
+        "next": f"?project_token={project_token}&page={page + 1}" if has_next else None,
+        "previous": f"?project_token={project_token}&page={page - 1}" if has_prev else None,
+        "current_page": page,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
     request: AutoGenerateRequest,

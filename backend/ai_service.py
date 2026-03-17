@@ -131,46 +131,46 @@ Finally, output a SINGLE JSON block containing the key metrics, targeted questio
 {{
   "title": "A concise, one-sentence summary title for the project",
   "metrics": {{
-    "deployment": "Cloud / On-prem / Hybrid (extracted from requirements)",
-    "resources": "Estimated team size (e.g., '3-5 Developers')",
+    "deployment": "Cloud / On-prem / Hybrid (extracted strictly from the BRD requirements)",
+    "resources": "Estimated team size derived from project scope",
     "complexity": "Low / Medium / High",
-    "timeline": "Estimated duration (e.g., '3-4 Months')",
-    "project_type": "greenfield / brownfield / modernization (Identify based on whether it's a new build, extension of current app, or tech stack upgrade)"
+    "timeline": "Estimated duration derived from project scope and complexity",
+    "project_type": "greenfield / brownfield / modernization (identify based on whether it is a new build, extension of an existing app, or a tech stack upgrade)"
   }},
 
   "questions": [
-    "How many concurrent users are expected?",
-    "What is the total expected user base?",
-    "Question 3"
+    "Clarification question 1 derived strictly from the BRD",
+    "Clarification question 2 derived strictly from the BRD",
+    "Clarification question 3 derived strictly from the BRD"
   ],
   "prerequisites": [
     {{
-      "name": "Short descriptive name (e.g., 'AWS S3 Bucket Access')",
-      "description": "Detailed description of what is needed and why",
+      "name": "Short descriptive name of the prerequisite",
+      "description": "Detailed description of what is needed and why, derived strictly from the BRD",
       "category": "one of: credentials, apis, infrastructure, databases, cloud, dependencies",
       "priority": "high / medium / low"
     }}
   ],
 
-  "user_flow": "A user journey diagram definition describing the end-to-end flow through the application for the primary user types (public users, internal operators, admins, etc.). Derive this ONLY from the business / functional requirements and roles described in the BRD. The flow MUST: (1) start from the primary actor(s), (2) include authentication if the system requires login, (3) include each major feature or workflow (such as performing a calculation, submitting a form, placing an order), (4) include viewing results/confirmation, and (5) include end-of-session actions such as logout/exit where applicable. Steps should align with the architecture modules (for example: Edge/WAF → Frontend → API Gateway → Auth Service → Domain Services → Databases/Ledger). If the BRD does not provide enough detail, fall back to a standard web flow and explicitly note this assumption in the HTML report.",
+  "user_flow": "A user journey diagram definition describing the end-to-end flow through the application for the primary user types described in the BRD. Derive this ONLY from the business and functional requirements and roles explicitly stated in the BRD. The flow MUST: (1) start from the primary actor(s) mentioned in the BRD, (2) include authentication only if the BRD requires login, (3) include each major feature or workflow explicitly described in the BRD, (4) include viewing results or confirmation steps described in the BRD, and (5) include end-of-session actions only if described. Do NOT introduce any technology names, infrastructure components, or architectural layers that are not mentioned in the BRD.",
 
-  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree (for example: 'myproject/', '├── app/', '│   ├── api/', ...).",
+  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree, based strictly on the tech stack and modules described in the BRD.",
 
   "architecture": {{
     "nodes": [
       {{
-        "id": "string-unique-node-id",
-        "label": "Short name (e.g., 'API Gateway', 'XYZ Service', 'Ledger DB')",
+        "id": "unique-node-id",
+        "label": "Short name of the component derived from the BRD",
         "layer": "frontend | backend | service | data | integration | infra",
         "type": "service | database | queue | cache | external | ui",
-        "cluster": "Logical module / bounded context for visual grouping (e.g., 'Edge', 'Frontend', 'Banking', 'Insurance', 'Ledger & Reporting')"
+        "cluster": "Logical module or bounded context derived from the BRD"
       }}
     ],
     "edges": [
       {{
         "from": "source-node-id",
         "to": "target-node-id",
-        "description": "short text describing the interaction (e.g., 'HTTPS JSON API', 'writes ledger events')"
+        "description": "Short description of the interaction derived from the BRD"
       }}
     ]
   }}
@@ -405,27 +405,27 @@ RULES:
 8. **Smart Budgeting**: You MUST complete the entire project development within the total project wallet. Allocate points smartly so that high-priority/complex tasks get sufficient budget while still leaving enough for the remaining development.
 13. **MASSIVE PARALLELISM & MACHINE SPEED**: For `ai_first` mode, you are simulating a swarm of AI agents. You MUST ignore human constraints (8-hour workdays, sleep, weekends). Do NOT schedule tasks purely sequentially. Multiple complex tasks can run simultaneously 24/7. A 50-100 task project should be completed in **2-5 calendar DAYS**. Your deadlines must look like 'Today + 1 day', 'Today + 2 days', etc. DO NOT extend project timelines into months unless explicitly forced by external human dependencies.
 9. **Placeholder Handling for Missing Prerequisites**: If the PREREQUISITES section lists items marked as [NOT YET PROVIDED], you MUST include in the relevant task descriptions:
-    - Use environment variables with placeholder defaults (e.g., `API_KEY=your-api-key-here`) so the app can still run.
-    - Use mock/stub services where applicable (e.g., mock SMTP, in-memory cache instead of Redis, local file storage instead of S3).
+    - Use environment variables with placeholder defaults so the app can still run.
+    - Use mock/stub services where applicable based on the project's tech stack.
     - Add a clear note in the task description like: "NOTE: Using placeholder credentials — replace with real values once provided."
     - This ensures development is NOT blocked by missing credentials or access.
 10. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
     - "foundation": Project setup, structure, API contracts, database schema, configuration files.
-      For FULL-STACK projects (e.g., React + Flask), the **foundation phase MUST create**:
-        * Core application directories (e.g., backend logic, frontend scaffolding) appropriate for the stack.
-        * Core dependencies definition (`requirements.txt`, `package.json`, virtualenvs/bundler configs)
-        * Root-level files: `.env.example`, `.gitignore`, `README.md`, (optionally) `docker-compose.yml`
+      For FULL-STACK projects, the **foundation phase MUST create**:
+        * Core application directories appropriate for the detected tech stack.
+        * Core dependencies definition files appropriate for the detected tech stack
+        * Root-level files: `.env.example`, `.gitignore`, `README.md`, and containerization config if applicable to the stack
     - "backend-core": Core backend features (auth system, base models, base API setup, middleware)
-    - "backend-features": Feature-specific backend endpoints (books API, members API, transactions API)
+    - "backend-features": Feature-specific backend endpoints derived from the BRD
     - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the foundation structure
-    - "frontend-features": Feature-specific frontend components (Books UI, Members UI, Transactions UI)
+    - "frontend-features": Feature-specific frontend components derived from the BRD
     - "integration": Testing, bug fixes, deployment preparation, end-to-end integration
 11. **DEPENDENCIES**: List task IDs from prior tasks that must complete BEFORE a given task can start:
     - Foundation tasks have NO dependencies (empty array [])
     - Backend features depend on backend-core tasks
     - Frontend features depend on frontend-core tasks AND corresponding backend-features tasks
     - Integration tasks depend on all feature tasks
-12. **DOMAIN**: Assign each task to a feature domain for better organization (e.g. "auth", "books", "members", "common", "infrastructure").
+12. **DOMAIN**: Assign each task to a feature domain for better organization based on the features identified in the BRD.
 
 Output ONLY a JSON array of task objects with this structure:
 [
@@ -440,7 +440,7 @@ Output ONLY a JSON array of task objects with this structure:
     "priority": "string",   // "high", "medium", or "low"
     "phase": "string",      // REQUIRED: "foundation", "backend-core", "backend-features", "frontend-core", "frontend-features", or "integration"
     "dependencies": [int],  // Array of prior task IDs that must complete first. Foundation tasks have [].
-    "domain": "string"      // Feature domain: "auth", "books", "members", "transactions", "reports", "common", "infrastructure"
+    "domain": "string"      // Feature domain derived from the BRD features
   }
 ]
 
@@ -514,12 +514,8 @@ rule_3:
 
 rule_4:
     tasks must represent real engineering work
-
-    bad example:
-        "improve performance"
-
-    good example:
-        "implement redis caching for user profile api"
+    tasks must be specific and actionable
+    tasks must reference actual components from the project requirements
 
 rule_5:
     tasks must be small enough to be executed independently
@@ -621,14 +617,7 @@ each task must contain at least 4 checklist items
 
 checklist items must represent real development actions
 
-good checklist examples:
-
-    - analyze current module
-    - design interface
-    - implement service layer
-    - add database migration
-    - write unit tests
-    - update documentation
+checklist items must be specific to the project requirements and tech stack
 
 --------------------------------------------------
 
@@ -808,6 +797,7 @@ rule_3:
 
 rule_4:
     tasks must represent real engineering work
+    tasks must be specific to the project requirements
 
 rule_5:
     tasks must be small enough to be executed independently
@@ -815,7 +805,7 @@ rule_5:
 rule_6:
     project bootstrap:
         if PROJECT_TYPE == "greenfield" and BATCH_NUMBER == 1,
-        ensure the first task covers core project bootstrap (repo, basic architecture, pipelines).
+        ensure the first task covers core project bootstrap based on the detected tech stack.
 
 --------------------------------------------------
 
