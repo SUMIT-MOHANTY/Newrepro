@@ -97,6 +97,10 @@ app.add_middleware(
 )
 
 from fastapi.responses import RedirectResponse, StreamingResponse
+from coordination_api import router as coordination_router
+
+# Add coordination router
+app.include_router(coordination_router)
 
 # --- Pydantic Models for AI ---
 class AnalyzeRequest(BaseModel):
@@ -4984,8 +4988,44 @@ def _sanitize_agent_for_user(
     safe_agent = dict(agent)
     safe_agent["git_repo_url"] = global_cred.git_repo_url if global_cred and global_cred.git_repo_url else None
     safe_agent["has_git_token"] = bool(global_cred and global_cred.git_token)
+    # Default to False; will be populated by async version
+    safe_agent["is_public_repo"] = False
     if "git_token" in safe_agent:
         safe_agent["git_token"] = None
+    return safe_agent
+
+
+async def _sanitize_agent_for_user_with_public_check(
+    agent: Dict[str, Any],
+    global_cred: Optional[models.AgentCredential],
+) -> Dict[str, Any]:
+    """Enhanced version that checks if the repository is public."""
+    safe_agent = _sanitize_agent_for_user(agent, global_cred)
+    
+    # Only check if we have a repo URL
+    if global_cred and global_cred.git_repo_url:
+        repo_url = global_cred.git_repo_url.strip()
+        try:
+            # Check if it's a GitHub repo
+            if "github.com" in repo_url:
+                # Extract owner/repo from URL
+                match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", repo_url)
+                if match:
+                    owner, repo = match.groups()
+                    safe_agent["is_public_repo"] = await github_service.is_repo_public(owner, repo)
+            # Check if it's Azure DevOps repo
+            elif "dev.azure.com" in repo_url or "visualstudio.com" in repo_url:
+                parsed = azure_devops_service.parse_azure_repo_url(repo_url)
+                if parsed.get("organization") and parsed.get("project") and parsed.get("repo"):
+                    safe_agent["is_public_repo"] = await azure_devops_service.is_repo_public(
+                        parsed["organization"],
+                        parsed["project"],
+                        parsed["repo"],
+                    )
+        except Exception:
+            # If check fails, default to False (assume private for safety)
+            safe_agent["is_public_repo"] = False
+    
     return safe_agent
 
 
@@ -5067,14 +5107,24 @@ async def list_agents(
         visible_runtime_ids[_public_agent_id(row[0], project_token)] = (row_kind, row_sub_type)
 
     global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-    agents = [
-        {
-            **_sanitize_agent_for_user(agent, global_cred),
-            "agent_kind": visible_runtime_ids[agent.get("id")][0],
-            "sub_type": visible_runtime_ids[agent.get("id")][1],
-        }
+    
+    # Check public repo status for all agents in parallel
+    import asyncio
+    agent_tasks = [
+        _sanitize_agent_for_user_with_public_check(agent, global_cred)
         for agent in agent_service.get_all_agents(project_token)
         if agent.get("id") in visible_runtime_ids
+    ]
+    sanitized_agents = await asyncio.gather(*agent_tasks)
+    
+    agents = [
+        {
+            **sanitized_agent,
+            "agent_kind": visible_runtime_ids[sanitized_agent.get("id")][0],
+            "sub_type": visible_runtime_ids[sanitized_agent.get("id")][1],
+        }
+        for sanitized_agent in sanitized_agents
+        if sanitized_agent.get("id") in visible_runtime_ids
     ]
     return {"agents": agents}
 
@@ -5251,7 +5301,8 @@ async def get_agent_status(
         )
         agent = agent_service.get_agent_status(agent_id, project_token)
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
+        sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5324,6 +5375,7 @@ async def run_agent(
             agent_id,
             git_repo_url=run_repo,
             git_token=run_token,
+            continuous=True,  # CRITICAL FIX: Enable continuous mode so agents keep working
             ignore_running_check=True,
             project_token=project_token,
             task_token=x_task_token,
@@ -5565,7 +5617,7 @@ async def add_agent(
         )
 
     response = {
-        "agent": _sanitize_agent_for_user(agent, global_cred),
+        "agent": await _sanitize_agent_for_user_with_public_check(agent, global_cred),
         "external_username": external_username,
     }
     if external_agent is not None:
@@ -5617,7 +5669,8 @@ async def update_agent(
                 project_token=project_token,
             )
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
+        sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5664,7 +5717,8 @@ async def update_agent_post(
                 project_token=project_token,
             )
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-        return {"agent": _sanitize_agent_for_user(agent, global_cred)}
+        sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -6769,6 +6823,207 @@ def _apply_schedule_ids_to_preview_payload(
         if milestone_name:
             task["milestone"] = milestone_name
 
+@app.post("/api/agent/tasks/generate-local/")
+async def generate_tasks_locally(
+    request: AutoGenerateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None)
+):
+    """
+    Generate tasks locally using AI, store in database, then optionally sync to NXDUNE.
+    """
+    try:
+        from task_generation_service import generate_tasks_locally as gen_tasks
+        
+        # Get AI config
+        ai_config = await ai_service.get_ai_config()
+        
+        # Generate tasks using improved prompt
+        tasks = await gen_tasks(
+            project_token=request.project_token,
+            db=db,
+            user_id=current_user.id,
+            custom_rules=request.custom_rules,
+            process_mode=request.process_mode or "ai_first",
+            project_type=request.project_type or "greenfield",
+            prerequisites=request.prerequisites or [],
+            api_url=ai_config.get("api_url"),
+            api_key=settings.ai_api_key,
+            model=ai_config.get("model")
+        )
+        
+        if not tasks:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate tasks. Please check your project context and try again."
+            )
+        
+        # Store tasks in local database
+        # First delete any existing tasks for this project to avoid duplicate task_id errors
+        db.query(models.Task).filter(
+            models.Task.project_token == request.project_token,
+            models.Task.owner_id == current_user.id
+        ).delete()
+        db.commit()
+
+        stored_tasks = []
+        for task_data in tasks:
+            # Use project_token + task_id as unique DB key, but store clean task_id separately
+            clean_task_id = task_data["task_id"]
+            db_unique_id = f"{request.project_token}_{clean_task_id}"
+            task = models.Task(
+                task_id=db_unique_id,
+                project_token=request.project_token,
+                owner_id=current_user.id,
+                task_name=task_data["taskName"],
+                task_type=task_data["task_type"],
+                description=task_data.get("description", ""),
+                priority=task_data.get("priority", "medium"),
+                task_wallet=task_data.get("task_wallet", 1),
+                startdate=task_data.get("startdate"),
+                planned_start=task_data.get("planned_start"),
+                deadline=task_data.get("deadline"),
+                assigned_to=task_data.get("assignedTo", []),
+                reported_by=task_data.get("reported_by", "system"),
+                sprint=task_data.get("sprint", "new"),
+                milestone=task_data.get("milestone", "main"),
+                linked_tasks=task_data.get("linked_tasks", []),
+                checklist=task_data.get("checklist", ""),
+                synced_to_nxdune=False
+            )
+            db.add(task)
+            stored_tasks.append(task)
+        
+        db.commit()
+        
+        logger.info(f"Generated and stored {len(stored_tasks)} tasks locally for project {request.project_token}")
+        
+        # Always sync to NXDUNE via batch file upload if task token is provided
+        synced = False
+        if x_task_token:
+            try:
+                import io
+                import json as json_mod
+                import httpx
+
+                nxdune_base = settings.task_api_base_url.rstrip("/")
+                batch_url = f"{nxdune_base}/api/agent/tasks/batch/"
+
+                # Make task_ids unique per project to avoid NXDUNE duplicate conflicts.
+                # Use a short 6-char hash of the project token as prefix: e.g. "a3f9b2_EPIC-01"
+                import hashlib
+                short_hash = hashlib.md5(request.project_token.encode()).hexdigest()[:6]
+
+                prefixed_tasks = []
+                for t in tasks:
+                    pt = dict(t)
+                    pt["task_id"] = f"{short_hash}_{pt['task_id']}"
+                    if pt.get("linked_tasks"):
+                        pt["linked_tasks"] = [
+                            f"{short_hash}_{lid}" for lid in pt["linked_tasks"]
+                        ]
+                    prefixed_tasks.append(pt)
+
+                # Serialize raw array directly — no wrapper key
+                tasks_json_bytes = json_mod.dumps(prefixed_tasks, ensure_ascii=False, indent=2).encode("utf-8")
+                json_file = io.BytesIO(tasks_json_bytes)
+
+                # Debug: log exact payload being sent to NXDUNE
+                logger.info(f"NXDUNE batch sync payload ({len(prefixed_tasks)} tasks):\n{tasks_json_bytes.decode('utf-8')[:2000]}")
+
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        batch_url,
+                        headers={"Authorization": f"Bearer {x_task_token}"},
+                        files={"file": ("tasks.json", json_file, "application/json")},
+                    )
+
+                if response.status_code in (200, 201):
+                    for task in stored_tasks:
+                        task.synced_to_nxdune = True
+                    db.commit()
+                    synced = True
+                    logger.info(f"Synced {len(tasks)} tasks to NXDUNE batch API")
+                else:
+                    logger.warning(f"NXDUNE batch sync returned {response.status_code}: {response.text[:300]}")
+            except Exception as sync_error:
+                logger.warning(f"Failed to sync tasks to NXDUNE: {sync_error}")
+                # Tasks are stored locally — continue regardless
+        
+        return {
+            "status": "success",
+            "message": f"Generated {len(tasks)} tasks successfully",
+            "tasks": tasks,
+            "tasks_created": len(tasks),
+            "synced_to_nxdune": synced
+        }
+    
+    except Exception as e:
+        logger.error(f"Task generation failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Task generation failed: {str(e)}"
+        )
+
+
+@app.get("/api/agent/tasks/local/")
+async def get_local_tasks(
+    project_token: str,
+    page: int = 1,
+    page_size: int = 50,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get locally stored tasks for a project with pagination"""
+    base_query = db.query(models.Task).filter(
+        models.Task.project_token == project_token,
+        models.Task.owner_id == current_user.id
+    )
+
+    total = base_query.count()
+    offset = (page - 1) * page_size
+    tasks = base_query.order_by(models.Task.created_at).offset(offset).limit(page_size).all()
+
+    def serialize(t):
+        # Strip project_token prefix from task_id for display (e.g. "proj_EPIC-01" → "EPIC-01")
+        display_id = t.task_id
+        prefix = f"{project_token}_"
+        if display_id.startswith(prefix):
+            display_id = display_id[len(prefix):]
+        return {
+            "task_id": display_id,
+            "taskName": t.task_name,
+            "task_type": t.task_type,
+            "assignedTo": t.assigned_to or [],
+            "description": t.description,
+            "startdate": t.startdate,
+            "planned_start": t.planned_start,
+            "deadline": t.deadline,
+            "priority": t.priority,
+            "task_wallet": t.task_wallet,
+            "sprint": t.sprint,
+            "milestone": t.milestone,
+            "reported_by": t.reported_by,
+            "linked_tasks": t.linked_tasks or [],
+            "checklist": t.checklist,
+            "synced_to_nxdune": t.synced_to_nxdune,
+            "nxdune_task_id": t.nxdune_task_id,
+        }
+
+    has_next = (offset + page_size) < total
+    has_prev = page > 1
+
+    return {
+        "tasks": [serialize(t) for t in tasks],
+        "count": total,
+        "next": f"?project_token={project_token}&page={page + 1}" if has_next else None,
+        "previous": f"?project_token={project_token}&page={page - 1}" if has_prev else None,
+        "current_page": page,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
     request: AutoGenerateRequest,
@@ -7176,8 +7431,8 @@ async def put_agent_project_config(
     Persist per-project config used by the agent pipeline.
 
     Supports:
-    - multipart/form-data: mode, prerequisites (JSON string), analysed_file (JSON string), input_file (binary), repo_link_url, project_token (optional)
-    - application/json: { mode, prerequisites, analysed_file, repo_link_url, project_token? }
+    - multipart/form-data: mode, prerequisites (JSON string), analysed_file (JSON string), input_file (binary), text (string), repo_link_url, project_token (optional)
+    - application/json: { mode, prerequisites, analysed_file, text, repo_link_url, project_token? }
     """
     import json as json_mod
 
@@ -7190,6 +7445,7 @@ async def put_agent_project_config(
     repo_link_url: Optional[str] = None
     project_token: Optional[str] = None
     upload: Optional[UploadFile] = None
+    text_content: Optional[str] = None
 
     if "application/json" in content_type:
         payload = await request.json()
@@ -7201,11 +7457,13 @@ async def put_agent_project_config(
         governance_obj = payload.get("governance")
         repo_link_url = str(payload.get("repo_link_url") or "").strip() or None
         project_token = str(payload.get("project_token") or "").strip() or None
+        text_content = str(payload.get("text") or "").strip() or None
     else:
         form = await request.form()
         mode = str(form.get("mode") or "").strip()
         repo_link_url = str(form.get("repo_link_url") or "").strip() or None
         project_token = str(form.get("project_token") or "").strip() or None
+        text_content = str(form.get("text") or "").strip() or None
 
         prereq_raw = form.get("prerequisites")
         analysed_raw = form.get("analysed_file")
@@ -7257,6 +7515,7 @@ async def put_agent_project_config(
         "project_token": safe_project,
         "owner_id": current_user.id,
         "saved_at": datetime.utcnow().isoformat(),
+        "text": text_content,
     }
 
     (base_dir / "project_config.json").write_text(

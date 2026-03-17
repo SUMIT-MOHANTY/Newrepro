@@ -1178,15 +1178,15 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── GIT CONFIGURATION WARNING (MOVED TO TOP) ── */}
                 {!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) && globalGitRepoUrl && !globalGitToken && !hasSavedGlobalGitToken && (
-                    <div className="mb-6 p-4 rounded-lg border border-red-500/50 bg-red-500/10 shadow-md">
+                    <div className="mb-6 p-4 rounded-lg border border-yellow-500/50 bg-yellow-500/10 shadow-md">
                         <div className="flex items-start gap-3">
-                            <AlertTriangle className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" />
-                            <div className="text-sm text-red-200 flex-1">
+                            <AlertTriangle className="w-5 h-5 text-yellow-500 mt-0.5 flex-shrink-0" />
+                            <div className="text-sm text-yellow-200 flex-1">
                                 <p className="font-bold mb-1.5 text-base flex items-center gap-2">
-                                    <span className="text-lg">⚠️</span> No PAT Provided
+                                    <span className="text-lg">ℹ️</span> No PAT Provided
                                 </p>
-                                <p className="leading-snug font-semibold">
-                                    You haven't entered a Personal Access Token.
+                                <p className="leading-snug">
+                                    You haven't entered a Personal Access Token. This is optional for public repositories, but required for private ones.
                                 </p>
                             </div>
                         </div>

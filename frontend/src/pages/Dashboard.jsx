@@ -5,7 +5,7 @@ import { clearAuthData } from '../utils/auth';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound } from 'lucide-react';
+import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound, AlertTriangle, RefreshCw } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 
 // import bourntecLogo from '../assets/bourntec_logo.png';
@@ -465,10 +465,34 @@ const Dashboard = ({
     const [showAzureRepoSelector, setShowAzureRepoSelector] = useState(false);
     const [azureProjectUrl, setAzureProjectUrl] = useState('');
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
+    
+    // Track if credentials are locked (saved and can only be changed once)
+    const [credentialsLocked, setCredentialsLocked] = useState(false);
+    const [hasChangedCredentials, setHasChangedCredentials] = useState(false);
 
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
+    
+    const saveRepoContextToStorage = (context) => {
+        try {
+            console.log('Saving repo context to storage:', context);
+            localStorage.setItem('repoContext', JSON.stringify(context));
+            sessionStorage.setItem('repoContext', JSON.stringify(context));
+        } catch (err) {
+            console.warn('Failed to save repo context to storage:', err);
+        }
+    };
+
+    const clearRepoContextFromStorage = () => {
+        try {
+            localStorage.removeItem('repoContext');
+            sessionStorage.removeItem('repoContext');
+        } catch (err) {
+            console.warn('Failed to clear repo context from storage:', err);
+        }
+    };
+    
     const persistRepoContextMetaForProject = useCallback((ctx, projectKey = selectedProjectKey) => {
         const repoMeta = buildRepoContextMeta(ctx);
         if (!repoMeta) return;
@@ -517,6 +541,202 @@ const Dashboard = ({
         }
         return null;
     }, [selectedProjectKey, selectedProject, governanceContext]);
+
+    const saveGitCredentialsToBackend = async (repoUrl, token, projectKey = selectedProjectKey) => {
+        try {
+            const authToken = localStorage.getItem('token');
+            if (!authToken || !projectKey) return;
+
+            // Find an agent to update (use the first non-system agent)
+            const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
+            agentsUrl.searchParams.set('project_token', projectKey);
+            const agentsRes = await fetch(agentsUrl.toString(), {
+                headers: { Authorization: `Bearer ${authToken}` },
+            });
+            
+            if (!agentsRes.ok) return;
+            
+            const agentsData = await agentsRes.json().catch(() => ({}));
+            const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
+            const targetAgent = agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
+            
+            if (!targetAgent?.id) return;
+
+            // Update the agent's Git credentials
+            const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
+            updateUrl.searchParams.set('project_token', projectKey);
+            const gitPayload = { git_repo_url: repoUrl, git_token: token };
+
+            await fetch(updateUrl.toString(), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                },
+                body: JSON.stringify(gitPayload),
+            });
+        } catch (err) {
+            console.warn('Failed to save Git credentials to backend:', err);
+        }
+    };
+
+    const handleChangeCredentials = () => {
+        if (credentialsLocked && hasChangedCredentials) {
+            alert('Credentials can only be changed once after initial setup. Please contact support if you need to change them again.');
+            return;
+        }
+        // Clear current credentials to allow new entry
+        setGithubLinkUrl('');
+        setGithubLinkToken('');
+        setAzureLinkUrl('');
+        setAzureLinkToken('');
+        setAzureLinkBranch('');
+        setCredentialsLocked(false);
+    };
+
+    const fetchRepoContextForAnalysis = async (repoUrl, token, provider, projectKey = selectedProjectKey) => {
+        try {
+            const authToken = localStorage.getItem('token');
+            if (!authToken || !repoUrl || !token) return;
+
+            const endpoint = provider === 'azure-devops'
+                ? API_ENDPOINTS.AZURE_DEVOPS_REPO_CONTEXT
+                : API_ENDPOINTS.GITHUB_REPO_CONTEXT;
+
+            const payload = provider === 'azure-devops'
+                ? { repo_url: repoUrl, token }
+                : (() => {
+                    // For GitHub, determine auth mode based on URL and token format
+                    const isPersonalToken = token.startsWith('ghp_') || token.length > 40;
+                    return isPersonalToken
+                        ? { owner: repoUrl.split('/').slice(-2)[0], repo: repoUrl.split('/').pop().replace('.git', ''), token }
+                        : { owner: repoUrl.split('/').slice(-2)[0], repo: repoUrl.split('/').pop().replace('.git', '') };
+                  })();
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                },
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to fetch repo context: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            
+            // Build repo context from response
+            const nextRepoContext = {
+                repo: provider === 'azure-devops' 
+                    ? data.repo || repoUrl 
+                    : `${data.owner}/${data.repo}`,
+                branch: data.branch || 'main',
+                context: data.context,
+                fromLink: true,
+                provider,
+                url: repoUrl,
+            };
+
+            setRepoContext(nextRepoContext);
+            persistRepoContextMetaForProject(nextRepoContext);
+            saveRepoContextToStorage(nextRepoContext);
+        } catch (err) {
+            console.warn('Fetch repo context for analysis failed:', err);
+            throw err;
+        }
+    };
+
+    const handleRepositoryOnlyAnalysisInDashboard = async (taskKey) => {
+        if (!hasGovernanceAssessment) {
+            // Navigate to governance first for repo-only analysis
+            setProjectState(taskKey, {
+                processing: false,
+                progress: 85,
+                progressMessage: 'Repository context ready. Continue with Governance.',
+                result: null,
+            });
+            
+            // Save a pending analysis entry for repository-only case
+            await savePendingScreeningToHistory({
+                filename: `Repository Analysis - ${repoContext.repo || 'Unknown Repository'}`,
+                markdown: repoContext.context,
+                taskKey,
+                repoContextState: repoContext,
+                isRepositoryOnly: true,
+            });
+            
+            navigate('/new-project/governance');
+            return;
+        }
+
+        // If governance is already complete, navigate directly to AgentAnalysis
+        // The AgentAnalysis component will handle the repository-only analysis
+        navigate('/agent-analysis');
+    };
+
+    const loadSavedGitCredentials = useCallback(async (projectKey = selectedProjectKey) => {
+        try {
+            const authToken = localStorage.getItem('token');
+            if (!authToken || !projectKey) return;
+
+            const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
+            agentsUrl.searchParams.set('project_token', projectKey);
+            const agentsRes = await fetch(agentsUrl.toString(), {
+                headers: { Authorization: `Bearer ${authToken}` },
+            });
+            
+            if (!agentsRes.ok) return;
+            
+            const agentsData = await agentsRes.json().catch(() => ({}));
+            const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
+            
+            // Find first agent with Git credentials
+            const agentWithCreds = agentList.find((a) => a?.git_repo_url);
+            
+            if (agentWithCreds?.git_repo_url) {
+                const repoUrl = agentWithCreds.git_repo_url;
+                const hasToken = agentWithCreds.has_git_token;
+                
+                // Determine provider from URL
+                const isAzure = repoUrl.includes('dev.azure.com') || repoUrl.includes('visualstudio.com');
+                
+                if (isAzure) {
+                    setAzureLinkUrl(repoUrl);
+                    setRepoLinkProvider('azure-devops');
+                    setIsOAuthRepoSelected(false);
+                    // Note: We can't retrieve the actual token for security reasons
+                    // but we know it exists if hasToken is true
+                } else {
+                    setGithubLinkUrl(repoUrl);
+                    setRepoLinkProvider('github');
+                    // For GitHub, also check if using OAuth or PAT
+                    if (hasToken && !agentWithCreds.git_token) {
+                        // Token exists on backend but not returned (security)
+                        setGithubAuthMode('pat');
+                    }
+                }
+                
+                // Lock credentials if they were previously saved
+                setCredentialsLocked(true);
+            }
+        } catch (err) {
+            console.warn('Failed to load saved Git credentials:', err);
+        }
+    }, [selectedProjectKey]);
+
+    // Load saved Git credentials when project changes
+    useEffect(() => {
+        if (selectedProjectKey) {
+            loadSavedGitCredentials(selectedProjectKey);
+        } else {
+            // Reset when no project selected
+            setCredentialsLocked(false);
+            setHasChangedCredentials(false);
+        }
+    }, [selectedProjectKey, loadSavedGitCredentials]);
 
     useEffect(() => {
         const providerFromContext = String(repoContext?.provider || '').trim().toLowerCase();
@@ -1229,6 +1449,36 @@ const Dashboard = ({
                 : parseRepoMetaFromUrl(githubLinkUrl);
             if (repoFromInput) {
                 persistRepoContextMetaForProject(repoFromInput, taskKey);
+            }
+            
+            // Also save Git credentials to backend for use by agents
+            const gitTokenToSave = repoLinkProvider === 'azure-devops' ? azureLinkToken : githubLinkToken;
+            const gitUrlToSave = repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl;
+            if (gitUrlToSave && gitTokenToSave) {
+                await saveGitCredentialsToBackend(gitUrlToSave, gitTokenToSave, taskKey);
+                // Only mark as changed if user explicitly clicked the Change button (not on initial save)
+                if (credentialsLocked) {
+                    // This is a change operation (user clicked "Change" button)
+                    setHasChangedCredentials(true);
+                }
+                // Always lock after saving
+                setCredentialsLocked(true);
+                
+                // If repo context is not loaded yet but we have credentials, fetch it now for AI analysis
+                if (!repoContext) {
+                    try {
+                        await fetchRepoContextForAnalysis(gitUrlToSave, gitTokenToSave, repoLinkProvider, taskKey);
+                    } catch (err) {
+                        console.warn('Failed to fetch repo context for analysis:', err);
+                        // Continue without repo context - AI will analyze just the BRD
+                    }
+                }
+            }
+
+            // Handle repository-only analysis (no BRD document)
+            if (repoContext?.context && !extractedMarkdown) {
+                await handleRepositoryOnlyAnalysisInDashboard(taskKey);
+                return;
             }
         }
 
@@ -2228,6 +2478,7 @@ const Dashboard = ({
             };
             setRepoContext(nextRepoContext);
             persistRepoContextMetaForProject(nextRepoContext);
+            saveRepoContextToStorage(nextRepoContext);
             if (githubAuthMode === 'basic') {
                 setGithubLinkPassword('');
             }
@@ -2262,6 +2513,7 @@ const Dashboard = ({
 
         if (repoContext) {
             setRepoContext(null);
+            clearRepoContextFromStorage();
         }
     };
 
@@ -2409,6 +2661,7 @@ const Dashboard = ({
             };
             setRepoContext(nextRepoContext);
             persistRepoContextMetaForProject(nextRepoContext);
+            saveRepoContextToStorage(nextRepoContext);
             setAzureLinkError('');
         } catch (e) {
             setAzureLinkError(e.message || 'Failed to parse or load Azure DevOps URL');
@@ -2814,7 +3067,8 @@ const Dashboard = ({
                                                         (githubLinkPassword && githubLinkPassword.trim().length > 0);
                                                     // Check if repoContext is from link (but not Azure DevOps)
                                                     const hasLinkRepoContext = repoContext && repoContext.fromLink && repoContext.provider !== 'azure-devops';
-                                                    return hasGithubLinkFields || hasLinkRepoContext;
+                                                    const shouldShowLinkOption = hasGithubLinkFields || hasLinkRepoContext || !repoContext; // Show when no repo context or using manual link
+                                                    return shouldShowLinkOption ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none';
                                                 })() ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Link Option</span>
                                                 </div>
@@ -2858,6 +3112,7 @@ const Dashboard = ({
                                                             }}
                                                             onClearRepo={() => {
                                                                 setRepoContext(null);
+                                                                clearRepoContextFromStorage();
                                                                 setIsOAuthRepoSelected(false);
                                                             }}
                                                         />
@@ -2886,6 +3141,7 @@ const Dashboard = ({
                                                             }}
                                                             onClearRepo={() => {
                                                                 setRepoContext(null);
+                                                                clearRepoContextFromStorage();
                                                                 setIsOAuthRepoSelected(false);
                                                             }}
                                                         />
@@ -2895,7 +3151,7 @@ const Dashboard = ({
 
                                             {/* OPTION 2: Repository URL (GitHub / Azure DevOps) */}
                                             <div className="relative border border-app-border rounded-xl bg-app-bg-card shadow-sm p-5 flex flex-col justify-start overflow-hidden">
-                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || (repoContext && !repoContext.fromLink)) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+                                                <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || repoContext) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                                                     <span className="text-xs text-app-text-muted font-bold px-3 py-1.5 bg-app-bg-muted rounded-lg shadow-sm border border-app-border uppercase tracking-widest">Using Connected Account</span>
                                                 </div>
                                                 <div className="mb-4">
@@ -2907,6 +3163,81 @@ const Dashboard = ({
                                                         Provide a repository link from GitHub or Azure DevOps. For private repositories, use PAT, or for GitHub you can also use username and password.
                                                     </p>
                                                 </div>
+                                                
+                                                {/* Show saved credentials indicator - Only show for the saved provider */}
+                                                {credentialsLocked && repoLinkProvider === 'azure-devops' && azureLinkUrl && (
+                                                    <div className="mb-4 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-800 rounded-lg shadow-sm">
+                                                        <div className="flex items-start justify-between gap-2">
+                                                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                                                                <CheckCircle2 className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                                                                <div className="flex-1 min-w-0">
+                                                                    <p className="text-xs font-bold text-blue-900 dark:text-blue-100 uppercase tracking-wide mb-1">
+                                                                        <span className="flex items-center gap-1.5">
+                                                                            <AzureDevOpsIcon className="w-3.5 h-3.5" />
+                                                                            Azure DevOps Credentials Saved
+                                                                        </span>
+                                                                    </p>
+                                                                    {hasChangedCredentials ? (
+                                                                        <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
+                                                                            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                                                            <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+                                                                                Changed once - Contact support for further changes
+                                                                            </span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={handleChangeCredentials}
+                                                                            className="mt-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 underline underline-offset-2 decoration-2 hover:decoration-blue-500 transition-all flex items-center gap-1"
+                                                                        >
+                                                                            <RefreshCw className="w-3 h-3" />
+                                                                            Change credentials (one-time only)
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                
+                                                {credentialsLocked && repoLinkProvider === 'github' && githubLinkUrl && (
+                                                    <div className="mb-4 p-3 bg-gradient-to-r from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border border-gray-200 dark:border-gray-800 rounded-lg shadow-sm">
+                                                        <div className="flex items-start justify-between gap-2">
+                                                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                                                                <CheckCircle2 className="w-5 h-5 text-gray-700 dark:text-gray-400 mt-0.5 flex-shrink-0" />
+                                                                <div className="flex-1 min-w-0">
+                                                                    <p className="text-xs font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide mb-1">
+                                                                        <span className="flex items-center gap-1.5">
+                                                                            <GitHubIcon className="w-3.5 h-3.5" />
+                                                                            GitHub Credentials Saved
+                                                                        </span>
+                                                                    </p>
+                                                                    <p className="text-[11px] text-gray-700 dark:text-gray-300 font-mono truncate" title={githubLinkUrl}>
+                                                                        {githubLinkUrl}
+                                                                    </p>
+                                                                    {hasChangedCredentials ? (
+                                                                        <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
+                                                                            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                                                            <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+                                                                                Changed once - Contact support for further changes
+                                                                            </span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={handleChangeCredentials}
+                                                                            className="mt-2 text-[11px] font-semibold text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 underline underline-offset-2 decoration-2 hover:decoration-gray-500 transition-all flex items-center gap-1"
+                                                                        >
+                                                                            <RefreshCw className="w-3 h-3" />
+                                                                            Change credentials (one-time only)
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                
                                                 <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
                                                     <button
                                                         type="button"
@@ -2929,6 +3260,7 @@ const Dashboard = ({
                                                         </span>
                                                     </button>
                                                 </div>
+                                                
                                                 {repoLinkProvider === 'github' && (
                                                     <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
                                                         <button
@@ -2961,7 +3293,7 @@ const Dashboard = ({
                                                             value={azureLinkBranch}
                                                             onChange={e => {
                                                                 setAzureLinkBranch(e.target.value);
-                                                                if (repoContext) setRepoContext(null);
+                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                             }}
                                                             placeholder="Azure DevOps username *"
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -2973,7 +3305,7 @@ const Dashboard = ({
                                                             value={azureLinkToken}
                                                             onChange={e => {
                                                                 setAzureLinkToken(e.target.value);
-                                                                if (repoContext) setRepoContext(null);
+                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                             }}
                                                             placeholder="Azure DevOps PAT *"
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -2984,7 +3316,7 @@ const Dashboard = ({
                                                             value={githubLinkToken}
                                                             onChange={e => {
                                                                 setGithubLinkToken(e.target.value);
-                                                                if (repoContext) setRepoContext(null);
+                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                             }}
                                                             placeholder="Optional GitHub PAT for private repos..."
                                                             className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -2996,7 +3328,7 @@ const Dashboard = ({
                                                                 value={githubLinkUsername}
                                                                 onChange={e => {
                                                                     setGithubLinkUsername(e.target.value);
-                                                                    if (repoContext) setRepoContext(null);
+                                                                    if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                                 }}
                                                                 placeholder="GitHub username"
                                                                 className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -3006,7 +3338,7 @@ const Dashboard = ({
                                                                 value={githubLinkPassword}
                                                                 onChange={e => {
                                                                     setGithubLinkPassword(e.target.value);
-                                                                    if (repoContext) setRepoContext(null);
+                                                                    if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
                                                                 }}
                                                                 placeholder="GitHub password"
                                                                 className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
@@ -3030,6 +3362,7 @@ const Dashboard = ({
                                                             <button
                                                                 onClick={() => {
                                                                     setRepoContext(null);
+                                                                    clearRepoContextFromStorage();
                                                                     setGithubLinkUrl('');
                                                                     setGithubLinkToken('');
                                                                     setGithubAuthMode('pat');
@@ -3123,8 +3456,8 @@ const Dashboard = ({
                                     <div className="flex justify-end gap-3 pt-6">
                                         <button
                                             type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || processing || urlFetching
+                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || (activeTab === 'github-link' && !repoContext?.context) || processing || urlFetching}
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || (activeTab === 'github-link' && !repoContext?.context) || processing || urlFetching
                                                 ? 'bg-app-border cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
@@ -3134,7 +3467,9 @@ const Dashboard = ({
                                                 ? (hasGovernanceAssessment ? 'Analyzing...' : 'Saving Screening...')
                                                 : selectedProject?.documents.length > 0
                                                     ? (hasGovernanceAssessment ? 'Start Revision Analysis' : 'Continue to Governance')
-                                                    : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
+                                                    : activeTab === 'github-link'
+                                                        ? (hasGovernanceAssessment ? 'Analyze Repository' : 'Continue to Governance')
+                                                        : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
                                         </button>
                                     </div>
                                 </form>
