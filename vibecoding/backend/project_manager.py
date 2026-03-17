@@ -2,6 +2,7 @@ import os
 import uuid
 import zipfile
 import shutil
+import re
 import docker
 import asyncio
 import time
@@ -102,6 +103,7 @@ class ProjectManager:
         self.artifacts_dir = Path(artifacts_dir)
         self.artifacts_dir.mkdir(exist_ok=True)
         self._docker_client = None
+        self._current_user_prompt = ''
         self.running_containers: Dict[str, docker.models.containers.Container] = {}
         self.log_threads: Dict[str, threading.Thread] = {}
     
@@ -407,15 +409,105 @@ class ProjectManager:
         
         return files
 
-    def update_workspace_from_code(self, project_id: str, code: str, prompt: str, is_incremental: bool = None) -> Tuple[str, Path]:
-        """Update the git workspace directly with new code and commit it.
-        
-        Args:
-            project_id: The project identifier
-            code: Generated code with file markers
-            prompt: User's prompt for the commit message
-            is_incremental: If None, auto-detect. If True, only update specified files. If False, replace entire workspace.
+    def _ensure_workspace_metadata(self, project_id: str, workspace_dir: Path, commit_hash: str):
+        """Write metadata.json only if it doesn't exist or needs updating."""
+        metadata_file = workspace_dir / "metadata.json"
+        if metadata_file.exists():
+            try:
+                with open(metadata_file) as f:
+                    meta = json.load(f)
+                meta["commit_hash"] = commit_hash
+                with open(metadata_file, 'w') as f:
+                    json.dump(meta, f, indent=2)
+                return
+            except Exception:
+                pass
+        # Create fresh metadata
+        has_py = any(workspace_dir.rglob('*.py'))
+        has_pkg = any(workspace_dir.rglob('package.json'))
+        metadata = {
+            "runtime": "multi-stack" if (has_py and has_pkg) else ("python" if has_py else "node" if has_pkg else "universal"),
+            "docker_image": "vibecoding-agent-runtime:latest",
+            "port": 80,
+            "additional_ports": [],
+            "created_at": datetime.now().isoformat(),
+            "commit_hash": commit_hash
+        }
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+    def apply_patch_response(self, project_id: str, code: str) -> Tuple[bool, list]:
         """
+        Parse and apply PATCH hunks from AI response.
+        Returns (any_applied: bool, patched_files: list)
+        """
+        import difflib
+        workspace_dir = self.artifacts_dir / project_id / "workspace"
+        patch_block_re = re.compile(
+            r'//\s*PATCH:\s*([^\n]+)\n<<<SEARCH\n(.*?)>>>\n<<<REPLACE\n(.*?)>>>',
+            re.DOTALL
+        )
+        matches = list(patch_block_re.finditer(code))
+        if not matches:
+            return False, []
+
+        patched_files = []
+        for m in matches:
+            rel_path = m.group(1).strip()
+            search_text = m.group(2)
+            replace_text = m.group(3)
+            filepath = workspace_dir / rel_path
+
+            if not filepath.exists():
+                logger.warning(f"⚠️ Patch target not found: {rel_path}")
+                continue
+
+            original = filepath.read_text(encoding='utf-8')
+
+            # Tier 1: exact match
+            if search_text in original:
+                patched = original.replace(search_text, replace_text, 1)
+            else:
+                # Tier 2: whitespace-normalised
+                def norm(s): return re.sub(r'\s+', ' ', s).strip()
+                orig_lines = original.splitlines()
+                srch_lines = search_text.splitlines()
+                repl_lines = replace_text.splitlines()
+                patched_lines = None
+
+                for idx in range(len(orig_lines) - len(srch_lines) + 1):
+                    window = orig_lines[idx: idx + len(srch_lines)]
+                    if [norm(l) for l in window] == [norm(l) for l in srch_lines]:
+                        patched_lines = orig_lines[:idx] + repl_lines + orig_lines[idx + len(srch_lines):]
+                        break
+
+                if patched_lines is None:
+                    # Tier 3: fuzzy
+                    best_score, best_idx = 0.0, -1
+                    for idx in range(len(orig_lines) - len(srch_lines) + 1):
+                        window = "\n".join(orig_lines[idx: idx + len(srch_lines)])
+                        score = difflib.SequenceMatcher(None, search_text, window).ratio()
+                        if score > best_score:
+                            best_score, best_idx = score, idx
+                    if best_score >= 0.75:
+                        patched_lines = orig_lines[:best_idx] + repl_lines + orig_lines[best_idx + len(srch_lines):]
+                    else:
+                        logger.warning(f"⚠️ Patch hunk not matched in {rel_path} (best={best_score:.2f})")
+                        continue
+
+                patched = "\n".join(patched_lines)
+                if original.endswith("\n"):
+                    patched += "\n"
+
+            filepath.write_text(patched, encoding='utf-8')
+            logger.info(f"🩹 Patched: {rel_path}")
+            if rel_path not in patched_files:
+                patched_files.append(rel_path)
+
+        return len(patched_files) > 0, patched_files
+
+    def update_workspace_from_code(self, project_id: str, code: str, prompt: str, is_incremental: bool = None) -> Tuple[str, Path]:
+        """Update the git workspace directly with new code and commit it."""
         project_dir = self.artifacts_dir / project_id
         workspace_dir = project_dir / "workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -426,37 +518,61 @@ class ProjectManager:
             git_manager._run_git_command(project_id, ["config", "user.email", "vibe@engineer.com"])
             git_manager._run_git_command(project_id, ["config", "user.name", "Vibe Engineer"])
 
+        # ── Patch mode: AI returned PATCH hunks — apply surgically ──────
+        has_patches = bool(re.search(r'//\s*PATCH:\s*', code))
+        if has_patches:
+            applied, patched_files = self.apply_patch_response(project_id, code)
+            if applied:
+                logger.info(f"🩹 Applied patches to: {', '.join(patched_files)}")
+                # Also handle any FILE: blocks mixed in (new files)
+                file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
+                file_matches = list(re.finditer(file_marker_regex, code))
+                for i, match in enumerate(file_matches):
+                    filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                    start_pos = match.end()
+                    end_pos = file_matches[i + 1].start() if i < len(file_matches) - 1 else len(code)
+                    file_content = code[start_pos:end_pos].strip()
+                    file_path = workspace_dir / filename
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(file_content)
+                    logger.info(f"  📄 Created/updated: {filename}")
+
+                git_manager.add_files(project_id)
+                status = git_manager.get_status(project_id)
+                has_changes = status.get("modified_files") or status.get("added_files") or status.get("deleted_files") or status.get("untracked_files")
+                if has_changes:
+                    git_manager.commit(project_id, f"[Patch] {prompt}")
+                hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
+                commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
+                # Preserve existing metadata
+                self._ensure_workspace_metadata(project_id, workspace_dir, commit_hash)
+                return commit_hash, workspace_dir / patched_files[0]
+            else:
+                logger.warning("⚠️ Patch parsing found no applicable hunks — falling through to file mode")
+
         # Auto-detect incremental mode if not specified
         if is_incremental is None:
-            # Count existing files in workspace (skip node_modules and other large dirs)
             skip_dirs = {'node_modules', '.git', '__pycache__', '.venv', 'venv', 'dist', 'build'}
-            existing_files = []
             existing_file_count = 0
-            
             try:
                 for f in workspace_dir.rglob('*'):
-                    # Skip directories in skip list
                     if any(part in skip_dirs for part in f.parts):
                         continue
                     try:
                         if f.exists() and f.is_file():
                             existing_file_count += 1
                     except (OSError, PermissionError):
-                        # Skip files that can't be accessed (symlinks, etc.)
                         continue
             except Exception as e:
                 logger.warning(f"Error counting existing files: {e}")
                 existing_file_count = 0
             
-            # Parse how many files are in the generated code
-            import re
             file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
             generated_file_count = len(re.findall(file_marker_regex, code))
             
-            # If existing code exists and AI generated fewer files than exist, it's likely incremental
-            # If AI generated many files (5+), it's likely a full regeneration
             if existing_file_count > 0 and generated_file_count > 0:
-                if generated_file_count < existing_file_count * 0.5:  # Less than 50% of existing files
+                if generated_file_count < existing_file_count * 0.5:
                     is_incremental = True
                     logger.info(f"✏️ Auto-detected incremental mode: {generated_file_count} files generated vs {existing_file_count} existing")
                 else:
@@ -546,23 +662,39 @@ class ProjectManager:
         # 3. Create metadata.json for container creation
         # This is needed for create_container_for_code to work
         metadata = {
-            "runtime": "static-html",  # Default runtime
+            "runtime": "universal",
             "docker_image": "vibecoding-agent-runtime:latest",
             "port": 80,
             "additional_ports": [],
             "created_at": datetime.now().isoformat(),
             "commit_hash": commit_hash
         }
-        
-        # Detect runtime from files
-        if any(f.endswith('.py') for f in os.listdir(workspace_dir) if os.path.isfile(workspace_dir / f)):
+
+        # Detect runtime by walking the full workspace tree (handles multi-stack subdirs)
+        has_py = False
+        has_package_json = False
+        has_requirements = False
+        for root, dirs, fnames in os.walk(workspace_dir):
+            dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '__pycache__', 'venv', 'dist', 'build')]
+            for fname in fnames:
+                if fname.endswith('.py'):
+                    has_py = True
+                if fname == 'package.json':
+                    has_package_json = True
+                if fname == 'requirements.txt':
+                    has_requirements = True
+
+        if has_py and has_package_json:
+            # Multi-stack: backend + frontend — agent handles via nginx
+            metadata["runtime"] = "multi-stack"
+            metadata["port"] = 80
+        elif has_py:
             metadata["runtime"] = "python"
-            metadata["port"] = 8000
-        elif any(f.endswith(('.js', '.jsx')) for f in os.listdir(workspace_dir) if os.path.isfile(workspace_dir / f)):
-            if (workspace_dir / "package.json").exists():
-                metadata["runtime"] = "node"
-                metadata["port"] = 3000
-        
+            metadata["port"] = 80
+        elif has_package_json:
+            metadata["runtime"] = "node"
+            metadata["port"] = 80
+
         metadata_file = workspace_dir / "metadata.json"
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
@@ -767,6 +899,7 @@ except Exception as e:
                         'AI_API_KEY': ai_config.api_key,
                         'AI_API_URL': ai_config.base_url,
                         'AI_MODEL': ai_config.model,
+                        'USER_PROMPT': self._current_user_prompt or '',
                     }
                 )
                 

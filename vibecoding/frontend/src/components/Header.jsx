@@ -157,7 +157,6 @@ const Header = ({
             </div>
 
             <div className="h-6 w-px bg-white/10" />
-            <span className="text-sm text-gray-400 whitespace-nowrap">Chat v{chatVersion}</span>
             
             {branches.length > 0 && (
               <div className="relative version-history-container ml-2">

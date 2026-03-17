@@ -21,7 +21,9 @@ const ChatPanel = ({
   onRegenerate,
   onClearHistory,
   suggestions,
-  disabled = false
+  disabled = false,
+  discussMode = false,
+  onToggleDiscuss,
 }) => {
   const messagesEndRef = useRef(null);
   const [suggestionIndex, setSuggestionIndex] = React.useState(0);
@@ -233,6 +235,8 @@ const ChatPanel = ({
           darkMode={darkMode}
           onKeyPress={onKeyPress}
           disabled={disabled}
+          discussMode={discussMode}
+          onToggleDiscuss={onToggleDiscuss}
         />
       </div>
     </div>

@@ -41,6 +41,7 @@ class GenerateRequest(BaseModel):
     prompt: str
     history: List[Message] = []
     project_id: Optional[str] = None
+    discuss_mode: bool = False
 
 class GenerateResponse(BaseModel):
     message: str
@@ -178,6 +179,25 @@ async def generate_code(request: GenerateRequest):
     project_id = request.project_id or project_manager.generate_project_id()
     
     try:
+        # ── Discuss mode: pure conversation, no code generation ──────────
+        if request.discuss_mode:
+            from prompts import CHAT_SYSTEM_PROMPT
+            messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+            for msg in request.history:
+                messages.append({"role": msg.role, "content": msg.content})
+            messages.append({"role": "user", "content": request.prompt})
+
+            response = ai_config.make_request(messages)
+            ai_response = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
+            return GenerateResponse(
+                message=ai_response,
+                code=None,
+                project_id=project_id,
+                version_id=None,
+                preview_url=None,
+                tool_calls_log=None
+            )
+
         # Check if there's existing code in the workspace
         workspace_files = project_manager.get_workspace_files(project_id, max_files=15, max_chars_per_file=1500)
         has_existing_code = len(workspace_files) > 0
@@ -260,41 +280,6 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                 # Fallback if no markdown but HTML is present
                 code = ai_response.strip()
         
-        # Validate that code has multiple files with file markers
-        if code:
-            file_marker_count = len(_re.findall(r'//\s*FILE:\s*|#\s*FILE:\s*|<!--\s*FILE:\s*', code))
-            
-            # If less than 3 file markers, regenerate with stronger prompt
-            if file_marker_count < 3:
-                print(f"⚠️ Warning: Only {file_marker_count} files detected. Requesting complete structure...")
-                
-                # Add a follow-up message demanding complete structure
-                messages.append({
-                    "role": "assistant",
-                    "content": ai_response
-                })
-                messages.append({
-                    "role": "user",
-                    "content": f"""Please provide a COMPLETE project structure with ALL necessary files.
-
-REQUIRED:
-- Use file markers: // FILE: path/to/file.ext
-- Include MINIMUM 5 files:
-  1. Main entry point/application file
-  2. Project configuration and dependency files
-  3. All necessary template and component files
-  4. Styling/CSS files
-  5. Script/JavaScript files
-
-Generate the COMPLETE structure with ACTUAL CODE in every file."""
-                })
-                
-                # Make another API call (without tools for the follow-up)
-                response = ai_config.make_request(messages)
-                if "choices" in response and len(response["choices"]) > 0:
-                    ai_response = response["choices"][0]["message"]["content"]
-                    
-        
         # Clean up integrity and crossorigin attributes from CDN links
         if code:
             import re
@@ -351,13 +336,12 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
                 print("⚠️ Docker not available - preview functionality disabled")
                 preview_url = None
             else:
-                # Switch container to workspace mode
+                # Pass user prompt so the container's ai-agent knows the intent
+                project_manager._current_user_prompt = request.prompt
                 try:
-                    await project_manager.switch_to_workspace(project_id)
-                    # Get preview URL for the workspace
                     preview_url = await project_manager.create_container_for_code(project_id, "workspace")
                 except Exception as e:
-                    print(f"Failed to switch container: {str(e)}")
+                    print(f"Failed to create container: {str(e)}")
                     preview_url = None
 
         return GenerateResponse(
@@ -563,9 +547,7 @@ async def create_preview(project_id: str, version_id: str):
                     git_manager.checkout_branch(project_id, version_id)
         
         # Switch container to workspace (which now reflects the checked out branch)
-        await project_manager.switch_to_workspace(project_id)
-        
-        # Get preview URL
+        # create_container_for_code handles both new creation and version switching
         preview_url = await project_manager.create_container_for_code(project_id, "workspace")
         
         if not preview_url:

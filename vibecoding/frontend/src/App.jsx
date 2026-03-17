@@ -17,6 +17,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Auth loading state
   if (authLoading) {
@@ -31,8 +32,6 @@ function App() {
       </div>
     );
   }
-
-  const location = useLocation();
 
   return (
     <Routes>
@@ -72,6 +71,8 @@ function Workspace({ user, logout, isAuthenticated }) {
   const iframeRef = useRef(null);
   const iframeContainerRef = useRef(null);
   const prevProjectIdRef = useRef(null);
+  const containerLoadExpectedRef = useRef(false);
+  const containerPollIntervalRef = useRef(null);
   
   // Determine active project ID from URL
   const params = new URLSearchParams(window.location.search);
@@ -118,6 +119,8 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [deployStatus, setDeployStatus] = useState(null);
   const [errorHeader, setErrorHeader] = useState(null);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [isContainerLoading, setIsContainerLoading] = useState(false);
+  const [discussMode, setDiscussMode] = useState(false);
 
   useEffect(() => {
     prevProjectIdRef.current = currentProjectId;
@@ -136,6 +139,38 @@ function Workspace({ user, logout, isAuthenticated }) {
     } catch (error) {
       console.error('Failed to fetch projects:', error);
     }
+  };
+
+  // Imperatively start the container retry loop — called directly when a container URL arrives.
+  // Does NOT rely on useEffect so React batching can't interfere.
+  const startContainerRetry = (url) => {
+    // Clear any existing retry
+    if (containerPollIntervalRef.current) {
+      clearTimeout(containerPollIntervalRef.current);
+      containerPollIntervalRef.current = null;
+    }
+
+    // Mark that we're expecting a container load (synchronous guard for handleIframeLoad)
+    containerLoadExpectedRef.current = true;
+
+    let attempts = 0;
+    const maxAttempts = 60;
+
+    const retry = () => {
+      attempts++;
+      console.log(`🔄 Container retry ${attempts}/${maxAttempts} — bumping iframeKey`);
+      setIframeKey(prev => prev + 1);
+      if (attempts < maxAttempts) {
+        containerPollIntervalRef.current = setTimeout(retry, 2000);
+      } else {
+        console.log('⏱️ Max retries reached');
+        setIsContainerLoading(false);
+      }
+    };
+
+    // Wait 3s for container to boot, then start retrying
+    console.log('🚀 Container URL received, starting retry in 3s:', url);
+    containerPollIntervalRef.current = setTimeout(retry, 3000);
   };
 
   // Load branches from backend for the current project
@@ -195,7 +230,10 @@ function Workspace({ user, logout, isAuthenticated }) {
             const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${projectId}/versions/${currentBranchName}/preview`);
             if (previewResp.data.preview_url) {
               console.log('🌐 Restored container preview:', previewResp.data.preview_url);
+              containerLoadExpectedRef.current = true;
+              setIsContainerLoading(true);
               setPreviewUrl(previewResp.data.preview_url);
+              startContainerRetry(previewResp.data.preview_url);
             }
           } catch (previewErr) {
             console.error('Failed to get preview URL:', previewErr);
@@ -469,32 +507,12 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   }, [messages, currentProjectId, chatVersion]);
 
-  // Force iframe reload when preview URL changes
+  // Reload iframe when previewUrl changes — single effect, no about:blank trick
+  // When a container previewUrl arrives, wait 3s for container to fully boot,
+  // then start auto-refreshing the iframe every 2s until it loads successfully.
   useEffect(() => {
-    if (previewUrl) {
-      console.log('🔄 Preview URL changed, forcing iframe reload:', previewUrl);
-      
-      // Force iframe to reload by briefly setting to blank
-      const iframe = iframeRef.current;
-      if (iframe) {
-        const newUrl = previewUrl;
-        iframe.src = 'about:blank';
-        
-        // Small delay then load new URL
-        setTimeout(() => {
-          iframe.src = newUrl;
-        }, 100);
-      }
-    }
-  }, [previewUrl]);
-
-  // This effect is no longer needed as we use branches instead of versions
-  // Keeping it empty for now to avoid breaking changes
-
-  // Reload iframe when previewUrl changes
-  useEffect(() => {
-    if (previewUrl) {
-      console.log('🔄 Preview URL changed, reloading iframe:', previewUrl);
+    // Only handle non-container URL changes (container retries are started imperatively)
+    if (previewUrl && !isContainerLoading) {
       setIframeKey(prev => prev + 1);
     }
   }, [previewUrl]);
@@ -617,7 +635,8 @@ function Workspace({ user, logout, isAuthenticated }) {
       const response = await axios.post(`${API_BASE_URL}/api/generate`, {
         prompt: currentInput,
         history: messages,
-        project_id: currentProjectId
+        project_id: currentProjectId,
+        discuss_mode: discussMode,
       });
 
       const aiMessage = {
@@ -633,6 +652,42 @@ function Workspace({ user, logout, isAuthenticated }) {
       
       if (response.data.code) {
         const fullCodeContent = response.data.code;
+        const isPatchResponse = /\/\/\s*PATCH:\s*/.test(fullCodeContent);
+
+        if (isPatchResponse) {
+          // Patch was applied server-side — reload full workspace files from backend
+          try {
+            const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
+            const filesMap = filesResp.data.files || {};
+            let rebuiltCode = '';
+            Object.entries(filesMap).forEach(([filePath, content]) => {
+              rebuiltCode += `// FILE: ${filePath}\n${content}\n\n`;
+            });
+            setFullCode(rebuiltCode);
+            setPreviewCode(rebuiltCode);
+            const files = parseCodeToFiles(rebuiltCode);
+            setFileTree(files);
+            const allFolderPaths = new Set();
+            const collectFolders = (items) => {
+              items.forEach(item => {
+                if (item.type === 'folder') { allFolderPaths.add(item.path); if (item.children) collectFolders(item.children); }
+              });
+            };
+            collectFolders(files);
+            setExpandedFolders(allFolderPaths);
+            const findFirstFile = (items) => {
+              for (const item of items) {
+                if (item.type === 'file') return item;
+                if (item.type === 'folder' && item.children) { const f = findFirstFile(item.children); if (f) return f; }
+              }
+              return null;
+            };
+            const firstFile = findFirstFile(files);
+            if (firstFile) setSelectedFile(firstFile);
+          } catch (err) {
+            console.error('Failed to reload workspace after patch:', err);
+          }
+        } else {
         setFullCode(fullCodeContent); // Store full code
         setPreviewCode(fullCodeContent);
         setIframeKey(prev => prev + 1); // Force iframe refresh
@@ -641,9 +696,6 @@ function Workspace({ user, logout, isAuthenticated }) {
         const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
-        
-        // We no longer save a new folder version for every chat message (git commits instead)
-        // saveCodeVersion(code, response.data.preview_url || '', files, currentInput, response.data.version_id);
         
         // Expand all folders by default
         const allFolderPaths = new Set();
@@ -678,7 +730,6 @@ function Workspace({ user, logout, isAuthenticated }) {
         
         // For preview display (not edit mode), extract the first HTML file or use full code
         const findPreviewHtmlFile = (items) => {
-          // First, look for preview.html (standalone preview)
           for (const item of items) {
             if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
               return item.content;
@@ -688,8 +739,6 @@ function Workspace({ user, logout, isAuthenticated }) {
               if (found) return found;
             }
           }
-          
-          // If no preview.html, look for any HTML file
           for (const item of items) {
             if (item.type === 'file' && item.name.endsWith('.html')) {
               return item.content;
@@ -704,19 +753,22 @@ function Workspace({ user, logout, isAuthenticated }) {
         
         const htmlContent = findPreviewHtmlFile(files);
         if (htmlContent) {
-          // Found HTML file, use it for preview display
           setPreviewCode(htmlContent);
         } else if (files.length === 1 && files[0].type === 'file') {
-          // Single file, use its content
           setPreviewCode(files[0].content);
         }
-        // Otherwise keep the full code for preview
+        } // end non-patch branch
       }
       
       if (response.data.preview_url) {
         console.log('🌐 Container preview:', response.data.preview_url);
+        console.log('📊 Setting isContainerLoading = true');
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
         setPreviewUrl(response.data.preview_url);
         setActiveView('preview');
+        // Start retry loop imperatively — bypasses React batching issues
+        startContainerRetry(response.data.preview_url);
       } else if (response.data.code) {
         // No container URL, use inline preview
         setPreviewUrl('');
@@ -1027,6 +1079,15 @@ Please suggest improvements or modifications for this element.`;
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showVersionHistory, showUserMenu]);
 
+  // Cleanup poll timer on unmount
+  useEffect(() => {
+    return () => {
+      if (containerPollIntervalRef.current) {
+        clearTimeout(containerPollIntervalRef.current);
+      }
+    };
+  }, []);
+
   // ─── END VISUAL EDITOR ───────────────────────────────────────────────────────
 
   const handleElementEdit = async () => {
@@ -1135,8 +1196,12 @@ Please suggest improvements or modifications for this element.`;
       // Update preview URL if provided
       if (response.data.preview_url) {
         console.log('🌐 Container preview:', response.data.preview_url);
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
         setPreviewUrl(response.data.preview_url);
         setActiveView('preview');
+        // Start retry loop imperatively — bypasses React batching issues
+        startContainerRetry(response.data.preview_url);
       }
       
       // Reload branches to show new commit
@@ -1320,6 +1385,64 @@ Please suggest improvements or modifications for this element.`;
     return fullCode || previewCode || '';
   };
 
+  // pollUntilReady is handled directly via startContainerRetry above
+
+  // Called from iframe onLoad — if container is loading and iframe got real content, stop retrying
+  const handleIframeLoad = () => {
+    // Only act if we're actively waiting for a container
+    if (containerLoadExpectedRef.current) {
+      const iframe = iframeRef.current;
+
+      // Ignore about:blank loads (fired when iframeKey changes before real URL loads)
+      try {
+        const src = iframe?.contentWindow?.location?.href || '';
+        if (src === 'about:blank' || src === '') {
+          return; // not real content yet
+        }
+      } catch {
+        // Cross-origin means real content is being served — fall through to success check
+      }
+
+      // Check if the iframe got real content or a browser error page
+      let isErrorPage = false;
+      try {
+        const doc = iframe?.contentDocument || iframe?.contentWindow?.document;
+        const bodyText = doc?.body?.innerText || '';
+        if (
+          bodyText.includes("didn't send any data") ||
+          bodyText.includes('ERR_EMPTY_RESPONSE') ||
+          bodyText.includes('ERR_CONNECTION_REFUSED') ||
+          bodyText.includes('This site can') ||
+          bodyText.includes('refused to connect')
+        ) {
+          isErrorPage = true;
+        }
+      } catch {
+        // Cross-origin block = real content served by container, not an error page
+        isErrorPage = false;
+      }
+
+      if (!isErrorPage) {
+        // Real content loaded — stop retrying, clear loader
+        console.log('✅ Container content loaded — stopping retry loop');
+        if (containerPollIntervalRef.current) {
+          clearTimeout(containerPollIntervalRef.current);
+          containerPollIntervalRef.current = null;
+        }
+        containerLoadExpectedRef.current = false;
+        setIsContainerLoading(false);
+      }
+      // If it IS an error page, the retry loop keeps firing
+    }
+
+    const iframe = iframeRef.current;
+    if (iframe && iframe.contentWindow) {
+      try {
+        iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
+      } catch { /* cross-origin, ignore */ }
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
       <Header 
@@ -1481,7 +1604,7 @@ Please suggest improvements or modifications for this element.`;
                 >
                   <RefreshCw className="w-4 h-4" />
                 </Button>
-                <Button
+                {/* <Button
                   variant="ghost"
                   size="sm"
                   onClick={handleCopy}
@@ -1489,8 +1612,8 @@ Please suggest improvements or modifications for this element.`;
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button 
+                </Button> */}
+                {/* <Button 
                   variant="ghost"
                   size="sm"
                   onClick={handleDownload}
@@ -1498,13 +1621,13 @@ Please suggest improvements or modifications for this element.`;
                 >
                   <Download className="w-4 h-4" />
                   Download
-                </Button>
+                </Button> */}
               </div>
             )}
             
             {previewCode && activeView === 'code' && (
               <div className="flex items-center gap-2">
-                <Button
+                {/* <Button
                   variant="ghost"
                   size="sm"
                   onClick={handleCopy}
@@ -1512,8 +1635,8 @@ Please suggest improvements or modifications for this element.`;
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button 
+                </Button> */}
+                {/* <Button 
                   variant="ghost"
                   size="sm"
                   onClick={handleDownload}
@@ -1521,7 +1644,7 @@ Please suggest improvements or modifications for this element.`;
                 >
                   <Download className="w-4 h-4" />
                   Download
-                </Button>
+                </Button> */}
               </div>
             )}
           </div>
@@ -1540,41 +1663,6 @@ Please suggest improvements or modifications for this element.`;
               </div>
             ) : activeView === 'preview' ? (
               <div className="h-full flex flex-col">
-                {/* Browser-like URL Bar */}
-                <div className="flex-shrink-0 border-b border-white/10 bg-[#0F0F14]">
-                  <div className="flex items-center gap-2 px-4 py-2">
-                    <Button 
-                      variant="ghost"
-                      size="icon"
-                      onClick={handleRefresh}
-                      className="h-8 w-8 hover:bg-white/10"
-                      title="Refresh"
-                    >
-                      <RefreshCw className="w-4 h-4 text-gray-400" />
-                    </Button>
-                    <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1e1e] border border-white/10">
-                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                      </svg>
-                      <input
-                        type="text"
-                        value={previewUrl || 'your-app.vibecoding.app'}
-                        readOnly
-                        className="flex-1 bg-transparent text-sm outline-none text-gray-300"
-                      />
-                      {previewUrl && (
-                        <Button
-                          variant="default"
-                          size="sm"
-                          onClick={() => window.open(previewUrl, '_blank')}
-                          className="h-6 px-2 text-xs bg-blue-600 text-white hover:bg-blue-700"
-                        >
-                          Open
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </div>
                 
                 {/* Edit Mode Banner */}
                 {editMode && (
@@ -1623,13 +1711,64 @@ Please suggest improvements or modifications for this element.`;
                       title="Preview"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                       onLoad={() => {
-                        // Notify injected script of current edit mode state after (re)load
-                        const iframe = iframeRef.current;
-                        if (iframe && iframe.contentWindow) {
-                          iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
-                        }
+                        handleIframeLoad();
                       }}
                     />
+
+                    {/* Container deploy loader overlay */}
+                    {isContainerLoading && previewUrl && (
+                      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#0A0A0F]/95 backdrop-blur-sm">
+                        {/* Animated rings */}
+                        <div className="relative flex items-center justify-center mb-8">
+                          <div className="absolute w-24 h-24 rounded-full border-2 border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
+                          <div className="absolute w-20 h-20 rounded-full border border-purple-400/30 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.3s' }} />
+                          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center shadow-lg shadow-purple-500/30 animate-pulse">
+                            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M12 5l7 7-7 7" />
+                            </svg>
+                          </div>
+                        </div>
+
+                        {/* Spinning arc */}
+                        <div className="relative w-12 h-12 mb-6">
+                          <svg className="w-12 h-12 animate-spin" viewBox="0 0 48 48" fill="none">
+                            <circle cx="24" cy="24" r="20" stroke="rgba(168,85,247,0.15)" strokeWidth="3" />
+                            <path d="M24 4 A20 20 0 0 1 44 24" stroke="url(#grad)" strokeWidth="3" strokeLinecap="round" />
+                            <defs>
+                              <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#a855f7" />
+                                <stop offset="100%" stopColor="#ec4899" />
+                              </linearGradient>
+                            </defs>
+                          </svg>
+                        </div>
+
+                        {/* Text */}
+                        <p className="text-white font-semibold text-base mb-1 tracking-wide">Starting container</p>
+                        <p className="text-gray-400 text-sm">Waiting for your app to be ready...</p>
+
+                        {/* Animated dots progress */}
+                        <div className="flex items-center gap-1.5 mt-5">
+                          {[0, 1, 2, 3, 4].map(i => (
+                            <div
+                              key={i}
+                              className="w-1.5 h-1.5 rounded-full bg-purple-500"
+                              style={{
+                                animation: 'containerDotBounce 1.2s ease-in-out infinite',
+                                animationDelay: `${i * 0.15}s`
+                              }}
+                            />
+                          ))}
+                        </div>
+
+                        <style>{`
+                          @keyframes containerDotBounce {
+                            0%, 80%, 100% { transform: scaleY(1); opacity: 0.4; }
+                            40% { transform: scaleY(1.8); opacity: 1; }
+                          }
+                        `}</style>
+                      </div>
+                    )}
 
                     {/* Overlay container – pointer-events none preserves iframe scrolling */}
                     <div
@@ -1859,6 +1998,8 @@ Please suggest improvements or modifications for this element.`;
             'Build a todo app with Flask backend',
             'Create a calculator app'
           ]}
+          discussMode={discussMode}
+          onToggleDiscuss={() => setDiscussMode(prev => !prev)}
         />
       </div>
 
