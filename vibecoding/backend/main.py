@@ -107,7 +107,7 @@ async def verify_token(user: dict = Depends(get_current_user)):
     return {"valid": True, "user": user}
 
 
-@app.get("/")
+@app.get("/api")
 async def root():
     return {"message": f"{APP_NAME} API is running"}
 
