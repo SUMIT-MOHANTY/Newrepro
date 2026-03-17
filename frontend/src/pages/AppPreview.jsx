@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { customAlert } from '../utils/modalHelpers';
 import { Loader2, ArrowLeft, ExternalLink, RefreshCw, Maximize2, Minimize2, Globe, StopCircle, Smartphone, Monitor, Tablet } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -65,10 +66,10 @@ export default function AppPreview() {
                 setPreviewStatus(data);
             } else {
                 const err = await res.json().catch(() => ({}));
-                alert(err.detail || 'Deploy failed');
+                customAlert(err.detail || 'Deploy failed', 'Deploy Failed');
             }
         } catch (e) {
-            alert('Deploy failed: ' + e.message);
+            customAlert('Deploy failed: ' + e.message, 'Deploy Failed');
         } finally {
             setIsDeploying(false);
         }

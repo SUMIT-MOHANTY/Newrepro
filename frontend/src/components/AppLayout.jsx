@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
+import { customError } from '../utils/modalHelpers';
 import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
@@ -877,7 +878,7 @@ export default function AppLayout({ children }) {
             window.location.assign(data.launch_url);
         } catch (err) {
             fetchPluginClients();
-            window.alert(err.message || 'Unable to launch plugin.');
+            customError(err.message || 'Unable to launch plugin.');
         } finally {
             setLaunchingPluginId('');
         }

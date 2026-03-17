@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
+import { sanitizeErrorMessage } from '../utils/errorHandling';
+import { customAlert, customPrompt } from '../utils/modalHelpers';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -582,7 +584,7 @@ const Dashboard = ({
 
     const handleChangeCredentials = () => {
         if (credentialsLocked && hasChangedCredentials) {
-            alert('Credentials can only be changed once after initial setup. Please contact support if you need to change them again.');
+            customAlert('Credentials can only be changed once after initial setup. Please contact support if you need to change them again.');
             return;
         }
         // Clear current credentials to allow new entry
@@ -1403,7 +1405,8 @@ const Dashboard = ({
         try {
             await fetchRequirementsFromUrl(urlInput, selectedProjectKey);
         } catch (err) {
-            setError(err.message || 'Failed to fetch URL requirements');
+            console.error('URL fetch error:', err);
+            setError(sanitizeErrorMessage(err));
         }
     };
 
@@ -2402,7 +2405,7 @@ const Dashboard = ({
             pdf.save(`DSuite_Analysis_${safeFilename}.pdf`);
         } catch (err) {
             console.error('PDF generation failed', err);
-            setError(`PDF Error: ${err.message || 'Unknown error'}`);
+            setError(sanitizeErrorMessage(err));
         }
     };
 
@@ -2709,8 +2712,11 @@ const Dashboard = ({
 
     const handleCreateRevision = async () => {
         if (!selectedProject) return;
-        const reason = window.prompt(
-            `Provide a reason for creating a new revision for "${selectedProject.name}".`
+        const reason = await customPrompt(
+            `Provide a reason for creating a new revision for "${selectedProject.name}".`,
+            'Create New Revision',
+            '',
+            'Enter revision reason...'
         );
         if (!reason || !reason.trim()) {
             return;

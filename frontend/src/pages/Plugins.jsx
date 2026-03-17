@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { customAlert } from '../utils/modalHelpers';
 import {
   CheckCircle,
   XCircle,
@@ -626,13 +627,13 @@ export default function Plugins() {
       
       // Show user-friendly error message
       if (errorMessage.includes('Nxdune connect failed') || errorMessage.includes('Page not found at /api/organizations/create/')) {
-        alert(`Failed to connect to Nxdune:\n\nThe organization creation endpoint is not available (404 error).\n\nPossible solutions:\n1. Check if Nxdune service is running\n2. Verify the organization creation URL in backend config\n3. Ensure SSO settings are configured in Organization Settings\n4. Contact support if the issue persists\n\nError: ${errorMessage.substring(0, 200)}`);
+        customAlert(`Failed to connect to Nxdune:\n\nThe organization creation endpoint is not available (404 error).\n\nPossible solutions:\n1. Check if Nxdune service is running\n2. Verify the organization creation URL in backend config\n3. Ensure SSO settings are configured in Organization Settings\n4. Contact support if the issue persists\n\nError: ${errorMessage.substring(0, 200)}`, 'Connection Failed');
       } else if (errorMessage.includes('SSO settings')) {
-        alert(`Configuration Required:\n\n${errorMessage}\n\nPlease configure your Organization SSO settings first:\n1. Go to SSO Configuration\n2. Set Tenant ID, Client ID, and Client Secret\n3. Try connecting again`);
+        customAlert(`Configuration Required:\n\n${errorMessage}\n\nPlease configure your Organization SSO settings first:\n1. Go to SSO Configuration\n2. Set Tenant ID, Client ID, and Client Secret\n3. Try connecting again`, 'Configuration Required');
       } else if (errorMessage.includes('400')) {
-        alert(`Connection failed (400):\n\n${errorMessage}\n\nThis might be due to:\n- Missing SSO configuration\n- Invalid plugin settings\n- Backend service unavailable\n\nPlease check your settings and try again.`);
+        customAlert(`Connection failed (400):\n\n${errorMessage}\n\nThis might be due to:\n- Missing SSO configuration\n- Invalid plugin settings\n- Backend service unavailable\n\nPlease check your settings and try again.`, 'Connection Failed');
       } else {
-        alert(`Failed to connect:\n\n${errorMessage}\n\nPlease check the console for more details.`);
+        customAlert(`Failed to connect:\n\n${errorMessage}\n\nPlease check the console for more details.`, 'Connection Failed');
       }
     } finally {
       setConnecting(null);

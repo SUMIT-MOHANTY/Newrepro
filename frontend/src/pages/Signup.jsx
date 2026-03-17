@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Mail, User, Building2, Loader2, ArrowRight, Lock } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+import { sanitizeErrorMessage } from '../utils/errorHandling';
 import logo from '../assets/logo.png';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
@@ -43,7 +44,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
             if (isModal && onClose) onClose();
             navigate('/login');
         } catch (err) {
-            setError(err.message);
+            console.error('Signup error:', err);
+            setError(sanitizeErrorMessage(err));
         } finally {
             setIsLoading(false);
         }

@@ -9,6 +9,7 @@ import {
 
 import { getCachedTaskToken, setCachedTaskToken as cacheTaskToken } from '../utils/tokenCache';
 import { upsertDraftProject } from '../utils/draftProjects';
+import { sanitizeErrorMessage } from '../utils/errorHandling';
 
 /* ─────────────────────────────────────────────────────────
    CATEGORY CONFIG — icon + colour for each prerequisite type
@@ -806,9 +807,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
                 const extracted = extractPrerequisitesFromAnalysis(analysisObj || projectDoc.analysis_result);
                 setPrerequisites(extracted.map((p, idx) => normalizePrerequisiteItem(p, idx)));
-            } catch (err) {
-                setError('Failed to load analysis data: ' + err.message);
-            } finally {
+                } catch (err) {
+                    console.error('Failed to load analysis data:', err);
+                    setError(sanitizeErrorMessage(err));
+                } finally {
                 setLoading(false);
             }
         };
@@ -902,7 +904,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 return;
             }
             if (!selectedProjectKey) {
-                throw new Error('No project selected.');
+                throw new Error('Please select a project from the sidebar before proceeding.');
             }
 
             if (!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
@@ -911,6 +913,14 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 if (!repo) {
                     throw new Error('Git repository URL is required.');
                 }
+                
+                // Basic URL validation
+                try {
+                    new URL(repo);
+                } catch {
+                    throw new Error('Please enter a valid Git repository URL (e.g., https://github.com/org/repo.git).');
+                }
+                
                 // PAT is optional - no longer required
 
                 // Save global Git config from prerequisites so all agents reuse it.
@@ -920,14 +930,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 if (!agentsRes.ok) {
-                    throw new Error('Failed to load agents for saving global Git config.');
+                    const agentsError = await agentsRes.json().catch(() => ({}));
+                    const errorMsg = agentsError?.detail || 'Failed to load project agents.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
                 }
                 const agentsData = await agentsRes.json().catch(() => ({}));
                 const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
                 const targetAgent =
                     agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
                 if (!targetAgent?.id) {
-                    throw new Error('No agent available to save global Git config.');
+                    throw new Error('No agents are available for this project. Please contact support.');
                 }
 
                 const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
@@ -943,9 +955,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     },
                     body: JSON.stringify(gitPayload),
                 });
+                
                 if (!updateRes.ok) {
                     const errData = await updateRes.json().catch(() => ({}));
-                    throw new Error(errData?.detail || 'Failed to save  Git config.');
+                    const errorMsg = errData?.detail || 'Failed to save Git configuration.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
                 }
                 setHasSavedGlobalGitToken(true);
                 setGlobalGitToken('');
@@ -979,17 +993,27 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             );
 
             // Mark prerequisites as completed on the backend
-            await fetch(API_ENDPOINTS.GOVERNANCE_PREREQUISITES_COMPLETE(selectedProjectKey), {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
-                },
-            });
+            try {
+                await fetch(API_ENDPOINTS.GOVERNANCE_PREREQUISITES_COMPLETE(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                });
+            } catch (err) {
+                console.warn('Failed to mark prerequisites as completed on backend:', err);
+                // Don't throw here - this is not critical for user flow
+            }
 
             // Refresh roadmap to reflect that prerequisites are done
-            if (fetchRoadmapData && selectedProjectKey) {
-                await fetchRoadmapData(selectedProjectKey);
+            try {
+                if (fetchRoadmapData && selectedProjectKey) {
+                    await fetchRoadmapData(selectedProjectKey);
+                }
+            } catch (err) {
+                console.warn('Failed to refresh roadmap data:', err);
+                // Don't throw here - this is not critical for user flow
             }
 
             // Save selected execution mode
@@ -1033,7 +1057,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 });
                 const bootstrapJson = await bootstrapRes.json().catch(() => ({}));
                 if (!bootstrapRes.ok) {
-                    throw new Error(bootstrapJson?.detail || 'Failed to create project during prerequisites.');
+                    const errorMsg = bootstrapJson?.detail || 'Failed to create project during prerequisites.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
                 }
 
                 // If bootstrap returned external task credentials, persist them into the draft project
@@ -1066,7 +1091,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 }, 1500);
             }
         } catch (err) {
-            setError('Failed to save prerequisites: ' + err.message);
+            console.error('Prerequisites submission error:', err);
+            setError(sanitizeErrorMessage(err));
         } finally {
             if (!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
                 setSubmitting(false);
@@ -1253,11 +1279,21 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── ERROR ── */}
                 {error && (
-                    <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-app-status-error mb-5 flex items-start gap-3 shadow-sm">
-                        <div className="w-8 h-8 rounded-lg bg-app-status-errorBg flex items-center justify-center flex-shrink-0">
-                            <AlertCircle className="w-4 h-4 text-app-status-error" />
+                    <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-app-status-error mb-5 shadow-sm">
+                        <div className="flex items-start gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-app-status-errorBg flex items-center justify-center flex-shrink-0">
+                                <AlertCircle className="w-4 h-4 text-app-status-error" />
+                            </div>
+                            <div className="flex-1">
+                                <div className="text-sm font-medium mb-2">{error}</div>
+                                <button
+                                    onClick={() => setError('')}
+                                    className="text-xs text-app-status-error hover:text-red-700 font-medium underline"
+                                >
+                                    Dismiss
+                                </button>
+                            </div>
                         </div>
-                        <div className="text-sm font-medium pt-1">{error}</div>
                     </div>
                 )}
 

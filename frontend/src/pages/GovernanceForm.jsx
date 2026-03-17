@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_ENDPOINTS } from '../config';
+import { customConfirm } from '../utils/modalHelpers';
 import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2 } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
 import colors from '../styles/colors';
@@ -1169,8 +1170,9 @@ const GovernanceResult = ({ result, onBack }) => {
                     )}
                     {!isSkipFollowUpCase && (
                         <button
-                            onClick={() => {
-                                if (window.confirm('Are you sure you want to reset your screening assessment? All answers will be cleared.')) {
+                            onClick={async () => {
+                                const confirmed = await customConfirm('Are you sure you want to reset your screening assessment? All answers will be cleared.');
+                                if (confirmed) {
                                     localStorage.removeItem('governanceResult');
                                     localStorage.removeItem('governanceContext');
                                     localStorage.removeItem('governancePassed');

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck } from 'lucide-react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
+import { sanitizeErrorMessage } from '../utils/errorHandling';
 import logo from '../assets/logo.png';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
@@ -98,7 +99,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
             window.location.assign(data.auth_url);
         } catch (err) {
-            setError(err.message || 'Unable to start SSO login.');
+            console.error('SSO login error:', err);
+            setError(sanitizeErrorMessage(err));
             setIsSsoLoading(false);
         }
     };

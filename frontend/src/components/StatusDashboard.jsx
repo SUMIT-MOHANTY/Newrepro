@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { customAlert } from '../utils/modalHelpers';
 import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch, Globe, ExternalLink, StopCircle, Rocket } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
@@ -1027,11 +1028,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 setPreviewStatus(data);
             } else {
                 const err = await res.json().catch(() => ({}));
-                alert(err.detail || 'Deploy failed');
+                customAlert(err.detail || 'Deploy failed', 'Deploy Failed');
             }
         } catch (e) {
             console.error('Deploy preview failed', e);
-            alert('Deploy failed: ' + e.message);
+            customAlert('Deploy failed: ' + e.message, 'Deploy Failed');
         } finally {
             setIsDeploying(false);
         }
@@ -1054,11 +1055,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 setPreviewStatus(data);
             } else {
                 const err = await res.json().catch(() => ({}));
-                alert(err.detail || 'Fix failed');
+                customAlert(err.detail || 'Fix failed', 'Fix Failed');
             }
         } catch (e) {
             console.error('Fix preview failed', e);
-            alert('Fix failed: ' + e.message);
+            customAlert('Fix failed: ' + e.message, 'Fix Failed');
         } finally {
             setIsFixing(false);
         }
