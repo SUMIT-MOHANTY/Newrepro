@@ -5,6 +5,8 @@ import re
 import uuid
 import html as html_lib
 import hashlib
+import time
+import json
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 import ipaddress
@@ -38,6 +40,101 @@ import rag_service
 import context_manager
 import email_service
 import knowledge_graph_service as kg_service
+
+# Cache for agent status to reduce database load
+_agent_status_cache: Dict[str, Dict[str, Any]] = {}
+_agent_cache_timestamps: Dict[str, float] = {}
+AGENT_CACHE_TTL = 5.0  # 5 seconds cache TTL
+
+def _get_cache_key(organization_name: str, project_token: Optional[str], user_id: int) -> str:
+    """Generate cache key for agent status"""
+    return f"{organization_name}:{project_token or 'none'}:{user_id}"
+
+def _is_cache_valid(cache_key: str) -> bool:
+    """Check if cache entry is still valid"""
+    if cache_key not in _agent_cache_timestamps:
+        return False
+    return time.time() - _agent_cache_timestamps[cache_key] < AGENT_CACHE_TTL
+
+def _get_cached_agents(cache_key: str) -> Optional[Dict[str, Any]]:
+    """Get cached agent data if valid"""
+    if _is_cache_valid(cache_key):
+        return _agent_status_cache.get(cache_key)
+    return None
+
+def _cache_agents(cache_key: str, data: Dict[str, Any]) -> None:
+    """Cache agent data with timestamp"""
+    _agent_status_cache[cache_key] = data
+    _agent_cache_timestamps[cache_key] = time.time()
+
+# Task cache for external API calls
+_task_cache: Dict[str, Dict[str, Any]] = {}
+_task_cache_timestamps: Dict[str, float] = {}
+TASK_CACHE_TTL = 3.0  # 3 seconds cache TTL for tasks
+
+def _get_task_cache_key(task_token: Optional[str], page: Optional[int]) -> str:
+    """Generate cache key for task data"""
+    return f"tasks:{task_token or 'none'}:{page or 'none'}"
+
+def _is_task_cache_valid(cache_key: str) -> bool:
+    """Check if task cache entry is still valid"""
+    if cache_key not in _task_cache_timestamps:
+        return False
+    return time.time() - _task_cache_timestamps[cache_key] < TASK_CACHE_TTL
+
+def _get_cached_tasks(cache_key: str) -> Optional[Dict[str, Any]]:
+    """Get cached task data if valid"""
+    if _is_task_cache_valid(cache_key):
+        return _task_cache.get(cache_key)
+    return None
+
+def _cache_tasks(cache_key: str, data: Dict[str, Any]) -> None:
+    """Cache task data with timestamp"""
+    _task_cache[cache_key] = data
+    _task_cache_timestamps[cache_key] = time.time()
+
+# Rate limiting for individual agent status calls
+_agent_status_rate_limit: Dict[str, float] = {}
+AGENT_STATUS_RATE_LIMIT = 10.0  # 10 seconds minimum between calls per agent
+
+def _check_agent_status_rate_limit(agent_id: str, user_id: int, project_token: Optional[str]) -> bool:
+    """Check if agent status call is within rate limit"""
+    rate_key = f"agent_status_rate:{agent_id}:{user_id}:{project_token or 'none'}"
+    now = time.time()
+    
+    if rate_key in _agent_status_rate_limit:
+        if now - _agent_status_rate_limit[rate_key] < AGENT_STATUS_RATE_LIMIT:
+            return False
+    
+    _agent_status_rate_limit[rate_key] = now
+    return True
+
+def _invalidate_agent_cache(organization_name: str, project_token: Optional[str] = None) -> None:
+    """Invalidate agent cache for organization/project when status changes"""
+    # Remove all cache entries for this organization/project
+    keys_to_remove = []
+    for cache_key in _agent_status_cache.keys():
+        if cache_key.startswith(f"{organization_name}:{project_token or 'none'}:"):
+            keys_to_remove.append(cache_key)
+    
+    for key in keys_to_remove:
+        _agent_status_cache.pop(key, None)
+        _agent_cache_timestamps.pop(key, None)
+
+def _invalidate_task_cache(task_token: Optional[str] = None) -> None:
+    """Invalidate task cache when tasks change"""
+    keys_to_remove = []
+    for cache_key in _task_cache.keys():
+        if cache_key.startswith(f"tasks:{task_token or 'none'}:"):
+            keys_to_remove.append(cache_key)
+    
+    for key in keys_to_remove:
+        _task_cache.pop(key, None)
+        _task_cache_timestamps.pop(key, None)
+
+# Set up cache invalidation callback for agent service after functions are defined
+agent_service.set_cache_invalidation_callback(_invalidate_agent_cache)
+
 from local_task_preview_service import build_local_task_plan_preview, _normalize_project_dates, _format_date
 from database import engine, get_db, SessionLocal
 from config import settings
@@ -5058,10 +5155,24 @@ async def list_agents(
     kind: Optional[str] = None,
     x_task_token: Optional[str] = Header(None),
 ):
-    """Get status of all AI agents."""
+    """Get status of all AI agents with caching to reduce load."""
     organization_name = _require_organization(current_user)
     project_token = _normalize_project_token(project_token)
     requested_kind = _normalized_text(kind).lower() or None
+    
+    # Check cache first
+    cache_key = _get_cache_key(organization_name, project_token, current_user.id)
+    cached_result = _get_cached_agents(cache_key)
+    if cached_result is not None:
+        # Filter by kind if requested
+        if requested_kind:
+            filtered_agents = [
+                agent for agent in cached_result["agents"] 
+                if agent.get("agent_kind") == requested_kind
+            ]
+            return {"agents": filtered_agents}
+        return cached_result
+    
     _ensure_default_agents_for_org(db, organization_name, project_token)
     _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
 
@@ -5126,7 +5237,34 @@ async def list_agents(
         for sanitized_agent in sanitized_agents
         if sanitized_agent.get("id") in visible_runtime_ids
     ]
-    return {"agents": agents}
+    
+    result = {"agents": agents}
+    
+    # Cache the result
+    _cache_agents(cache_key, result)
+    
+    # Filter by kind if requested
+    if requested_kind:
+        filtered_agents = [
+            agent for agent in agents 
+            if agent.get("agent_kind") == requested_kind
+        ]
+        response_data = {"agents": filtered_agents}
+    else:
+        response_data = result
+    
+    # Add cache headers to help frontend optimize polling
+    from fastapi import Response
+    response = Response(
+        content=json.dumps(response_data),
+        media_type="application/json",
+        headers={
+            "Cache-Control": "max-age=5, must-revalidate",
+            "X-Cache-TTL": str(AGENT_CACHE_TTL),
+            "X-Polling-Interval": "10000"  # Suggest 10s polling interval
+        }
+    )
+    return response_data
 
 
 @app.get("/agents/tasks")
@@ -5283,9 +5421,29 @@ async def get_agent_status(
     project_token: Optional[str] = None,
     x_task_token: Optional[str] = Header(None),
 ):
-    """Get the current status and details of a specific agent."""
+    """Get the current status and details of a specific agent with caching and rate limiting."""
     try:
         project_token = _normalize_project_token(project_token)
+        organization_name = _require_organization(current_user)
+        
+        # Rate limiting: prevent excessive calls to individual agent status
+        if not _check_agent_status_rate_limit(agent_id, current_user.id, project_token):
+            # Return cached data if available, otherwise return 429
+            individual_cache_key = f"agent_status:{organization_name}:{project_token or 'none'}:{current_user.id}:{agent_id}"
+            cached_result = _get_cached_agents(individual_cache_key)
+            if cached_result is not None:
+                return cached_result
+            raise HTTPException(
+                status_code=429, 
+                detail=f"Rate limit exceeded. Individual agent status can only be called once every {AGENT_STATUS_RATE_LIMIT} seconds. Use /agents endpoint for bulk status."
+            )
+        
+        # Check cache first for individual agent status
+        individual_cache_key = f"agent_status:{organization_name}:{project_token or 'none'}:{current_user.id}:{agent_id}"
+        cached_result = _get_cached_agents(individual_cache_key)
+        if cached_result is not None:
+            return cached_result
+        
         _ensure_default_agents(db, project_token)
         query = db.query(models.Agent)
         if project_token:
@@ -5302,7 +5460,13 @@ async def get_agent_status(
         agent = agent_service.get_agent_status(agent_id, project_token)
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
-        return {"agent": sanitized_agent}
+        
+        result = {"agent": sanitized_agent}
+        
+        # Cache the individual agent result
+        _cache_agents(individual_cache_key, result)
+        
+        return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5326,6 +5490,11 @@ async def run_agent(
     so the frontend can poll /agents for real-time status updates.
     """
     project_token = _normalize_project_token(project_token)
+    organization_name = _require_organization(current_user)
+    
+    # Invalidate cache since agent status will change
+    _invalidate_agent_cache(organization_name, project_token)
+    
     _ensure_default_agents(db, project_token)
     query = db.query(models.Agent)
     if project_token:
@@ -5428,6 +5597,11 @@ async def run_all_agents(
     Returns immediately — frontend polls /agents for real-time updates.
     """
     project_token = _normalize_project_token(project_token)
+    organization_name = _require_organization(current_user)
+    
+    # Invalidate cache since agent status will change
+    _invalidate_agent_cache(organization_name, project_token)
+    
     _ensure_default_agents(db, project_token)
     query = db.query(models.Agent)
     if project_token:
@@ -6121,10 +6295,20 @@ async def get_external_agent_tasks(
     x_task_token: Optional[str] = Header(None)
 ):
     """
-    Fetch the list of tasks from the external task management API.
+    Fetch the list of tasks from the external task management API with caching.
     """
+    # Check cache first
+    cache_key = _get_task_cache_key(x_task_token, page)
+    cached_result = _get_cached_tasks(cache_key)
+    if cached_result is not None:
+        return cached_result
+    
     try:
         tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
+        
+        # Cache the result
+        _cache_tasks(cache_key, tasks)
+        
         return tasks
     except TaskServiceTimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))

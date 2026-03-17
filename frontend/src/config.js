@@ -74,7 +74,10 @@ export const API_ENDPOINTS = {
     // AI Agents (Backend Docker Execution)
     AGENTS: `${API_BASE_URL}/agents`,
     AGENTS_TASKS: `${API_BASE_URL}/agents/tasks`,
-    AGENT_STATUS: (agentId) => `${API_BASE_URL}/agents/${agentId}/status`,
+    AGENT_STATUS: (agentId) => {
+        console.warn(`⚠️  Individual agent status endpoint called for ${agentId}. Consider using /agents endpoint for better performance.`);
+        return `${API_BASE_URL}/agents/${agentId}/status`;
+    },
     AGENT_RUN: (agentId) => `${API_BASE_URL}/agents/${agentId}/run`,
     AGENT_RESET: (agentId) => `${API_BASE_URL}/agents/${agentId}/reset`,
     AGENT_RUN_ALL: `${API_BASE_URL}/agents/run-all`,

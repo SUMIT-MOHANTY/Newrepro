@@ -299,40 +299,19 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 headers: { Authorization: `Bearer ${token}` },
             });
             if (!res.ok) throw new Error('Failed to fetch agents');
+            
+            // Check for server-suggested polling interval
+            const pollingInterval = res.headers.get('X-Polling-Interval');
+            if (pollingInterval) {
+                localStorage.setItem('agent-polling-interval', pollingInterval);
+            }
+            
             const data = await res.json();
             const fetchedAgents = data.agents || [];
 
-
-
-            // Fetch live status for each agent using AGENT_STATUS endpoint
-            const agentsWithLiveStatus = await Promise.all(fetchedAgents.map(async (agent) => {
-                if (agent.id === 'agent_03' || agent.id === 'agent_04') {
-                    // System agents don't typically run as standalone tasks here, but we can still fetch status if needed
-                    // For now, let's keep it safe.
-                }
-                try {
-                    const statusUrl = new URL(API_ENDPOINTS.AGENT_STATUS(agent.id));
-                    if (selectedProjectKey) statusUrl.searchParams.set('project_token', selectedProjectKey);
-
-                    // We need to fetch from local storage since taskToken is in scope but might not be available or valid
-                    const headers = { Authorization: `Bearer ${token}` };
-                    const currentTaskToken = sessionStorage.getItem(`taskSessionToken_${selectedProjectKey}`) || localStorage.getItem(`taskSessionToken_${selectedProjectKey}`);
-                    if (currentTaskToken) headers['x-task-token'] = currentTaskToken;
-
-                    const statusRes = await fetch(statusUrl.toString(), { headers });
-                    if (statusRes.ok) {
-                        const statusData = await statusRes.json();
-                        if (statusData && statusData.agent) {
-                            return { ...agent, ...statusData.agent };
-                        }
-                    }
-                } catch (e) {
-                    console.error(`Failed to fetch status for agent ${agent.id}`, e);
-                }
-                return agent;
-            }));
-
-            return agentsWithLiveStatus;
+            // The main /agents endpoint already provides complete status information
+            // No need to call individual agent status endpoints - this was causing excessive API calls
+            return fetchedAgents;
         },
         enabled: !!token,
     });
@@ -594,15 +573,30 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         load();
     }, [fetchTasks, selectedProjectKey, hasValidTaskToken]);
 
-    // Poll while agents are running
+    // Poll while agents are running - adaptive polling based on server suggestions
     useEffect(() => {
         const hasRunning = agents.some(a => a.status === 'running');
         if (!hasRunning) return;
+        
+        // Use adaptive polling: check for server-suggested interval or use defaults
+        // Server can send X-Polling-Interval header to suggest optimal polling frequency
+        const getPollingInterval = () => {
+            // Check if we have a cached polling interval from server headers
+            const cachedInterval = localStorage.getItem('agent-polling-interval');
+            if (cachedInterval) {
+                return parseInt(cachedInterval, 10);
+            }
+            // Default: 10s when running, 30s when idle
+            return hasRunning ? 10000 : 30000;
+        };
+        
+        const pollInterval = getPollingInterval();
+        
         const interval = setInterval(() => {
             fetchAgents(true);
             fetchTasks(false, 1, true); // silent reload
             refreshRoadmap();
-        }, 3000);
+        }, pollInterval);
         return () => clearInterval(interval);
     }, [agents, fetchAgents, fetchTasks, refreshRoadmap]);
 
