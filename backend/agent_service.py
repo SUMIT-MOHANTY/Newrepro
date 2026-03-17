@@ -798,6 +798,40 @@ CRITICAL SCRIPT SIZE RULES:
 - Focus on the 10-15 most essential files. Do NOT try to create 30+ files in one script.
 - Keep all work rooted in /workspace and prefer editing existing files instead of recreating whole trees.
 
+CRITICAL SHELL COMPATIBILITY RULES (MANDATORY - FAILURE TO FOLLOW CAUSES CRASHES):
+- NEVER EVER use 'set -o pipefail' or 'set -euo pipefail' - these cause fatal errors in Docker environments
+- NEVER use 'set -u' (nounset) or any 'set -o' options - they cause compatibility issues  
+- NEVER use 'set --' or 'set -' without arguments - these are invalid
+- ONLY use 'set -e' for error handling (exit on error only) - NOTHING ELSE
+- Your script MUST start with: #!/usr/bin/env bash (and nothing else on the shebang line)
+- DO NOT add Windows line endings (\\r\\n) - use only Unix line endings (\\n)
+- DO NOT include any \\r characters anywhere in your script
+- DO NOT copy/paste content that might have Windows line endings
+- Test your script syntax mentally before outputting
+
+MANDATORY SCRIPT HEADER (use exactly this):
+```bash
+#!/usr/bin/env bash
+set -e
+cd /workspace
+```
+
+FORBIDDEN PATTERNS (these will cause immediate script failure):
+❌ set -o pipefail
+❌ set -euo pipefail  
+❌ set -u
+❌ set -o anything
+❌ set --
+❌ set - (without arguments)
+❌ Any \\r characters
+❌ Windows line endings
+
+ALLOWED PATTERNS:
+✅ set -e (only this)
+✅ #!/usr/bin/env bash
+✅ Unix line endings only
+- Test commands with simple patterns: grep -q 'pattern' file && echo 'found' || echo 'not found'
+
 CRITICAL STRUCTURAL RULES (NO EXCEPTIONS):
 - You MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure).
 - DO NOT invent your own file structure, nesting, or source roots. 
@@ -816,9 +850,9 @@ I will implement a Flask backend with a PostgreSQL database as requested.
 I finished the initial implementation, but note that the database still needs schema setup.
 </comment>
 
-Example of the CORRECT compact pattern:
+Example of the CORRECT compatible pattern:
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 cd /workspace
 mkdir -p app/
 cat <<'EOF' > app/main.py
@@ -826,8 +860,8 @@ from flask import Flask
 
 app = Flask(__name__)
 EOF
-printf '[CREATED] app/main.py\n'
-grep -q 'Flask' app/main.py && printf '[CHECK] PASS app/main.py\n'
+printf '[CREATED] app/main.py\\n'
+grep -q 'Flask' app/main.py && printf '[CHECK] PASS app/main.py\\n'
 
 Do NOT use Python helpers like open(), pathlib, or os.makedirs() for file creation.
 """
@@ -1707,6 +1741,7 @@ Keep it concise and professional. Use markdown formatting."""
 def _detect_issues_from_output(stdout: str, stderr: str, exit_code: int = 0) -> Dict[str, Any]:
     """
     Parse the output for FAIL, ERROR, CRITICAL, gaps, or runtime errors.
+    Enhanced to detect shell compatibility issues.
     """
     issues = []
     all_text = (stdout or "") + "\n" + (stderr or "")
@@ -1716,7 +1751,19 @@ def _detect_issues_from_output(stdout: str, stderr: str, exit_code: int = 0) -> 
         stripped = line.strip()
         if not stripped:
             continue
-        if "FAIL" in stripped and stripped.startswith("["):
+            
+        # Detect shell compatibility issues
+        if "pipefail: invalid option" in stripped:
+            issues.append("SHELL ERROR: pipefail option not supported - use 'set -e' only")
+        elif "$'\\r': command not found" in stripped:
+            issues.append("SHELL ERROR: Windows line endings detected - script has \\r characters")
+        elif "set: invalid option" in stripped:
+            issues.append("SHELL ERROR: Invalid shell option - use only 'set -e'")
+        elif ": command not found" in stripped and ("set -" in stripped or "#!/" in stripped):
+            issues.append(f"SHELL ERROR: {stripped}")
+            
+        # Original issue detection
+        elif "FAIL" in stripped and stripped.startswith("["):
             issues.append(stripped)
         elif "CRITICAL" in stripped and stripped.startswith("["):
             issues.append(stripped)
@@ -1727,11 +1774,24 @@ def _detect_issues_from_output(stdout: str, stderr: str, exit_code: int = 0) -> 
         elif stderr and stripped in stderr and ("Error" in stripped or "Exception" in stripped or "Traceback" in stripped):
             issues.append(f"RUNTIME ERROR: {stripped}")
 
-    # If exit code is non-zero and we found no specific issues, add a generic one
-    if exit_code != 0 and not issues and stderr:
-        last_lines = [l.strip() for l in stderr.strip().split("\n") if l.strip()][-3:]
-        for l in last_lines:
-            issues.append(f"RUNTIME ERROR: {l}")
+    # Enhanced exit code handling
+    if exit_code != 0 and not issues:
+        if stderr:
+            # Look for common shell errors
+            stderr_lower = stderr.lower()
+            if "pipefail" in stderr_lower:
+                issues.append("SHELL ERROR: Script uses unsupported pipefail option")
+            elif "command not found" in stderr_lower:
+                issues.append("SHELL ERROR: Command not found or syntax error")
+            elif "permission denied" in stderr_lower:
+                issues.append("SHELL ERROR: Permission denied - check file permissions")
+            else:
+                # Generic error from last few lines
+                last_lines = [l.strip() for l in stderr.strip().split("\n") if l.strip()][-3:]
+                for l in last_lines:
+                    issues.append(f"RUNTIME ERROR: {l}")
+        else:
+            issues.append(f"SCRIPT ERROR: Exit code {exit_code} with no error output")
 
     return {
         "has_issues": len(issues) > 0,
@@ -1944,6 +2004,14 @@ ORIGINAL TASK:
 You MUST generate a NEW, SHORTER shell script (UNDER 300 lines) that creates the project.
 The /workspace/ directory is currently EMPTY - you need to create everything from scratch.
 
+CRITICAL SHELL COMPATIBILITY RULES TO AVOID CRASHING:
+1. NEVER use 'set -o pipefail' or 'set -euo pipefail' - these cause Docker errors
+2. ONLY use 'set -e' for error handling (nothing else)
+3. Start with: #!/usr/bin/env bash
+4. Use Unix line endings only (no \\r characters)
+5. Test all commands before using them
+6. Use simple, compatible shell syntax
+
 CRITICAL RULES TO AVOID CRASHING AGAIN:
 1. Start with a valid shell script for bash.
 2. Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
@@ -1967,13 +2035,21 @@ PREVIOUS OUTPUT (for context):
 ORIGINAL TASK:
 {task_description}
 {supplementary_context}
+
+CRITICAL: If you see shell compatibility errors (pipefail, \\r characters, invalid options):
+- NEVER use 'set -o pipefail' or 'set -euo pipefail'
+- ONLY use 'set -e' for error handling
+- Remove any Windows line endings (\\r characters)
+- Use simple, compatible shell commands only
+
 Generate a NEW shell script (UNDER 300 lines) that:
 1. FIXES each issue by modifying or creating files under /workspace/
 2. Actually writes/overwrites the files that need fixing
 3. Creates any missing files, directories, or configurations
-4. Print [FIX N] for each fix applied
-5. Print [CHECK] PASS for each successful validation
-6. Print === FIX SUMMARY === at the end
+4. Uses ONLY compatible shell syntax (no pipefail, no \\r characters)
+5. Print [FIX N] for each fix applied
+6. Print [CHECK] PASS for each successful validation
+7. Print === FIX SUMMARY === at the end
 
 IMPORTANT RULES:
 - Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
@@ -2769,16 +2845,32 @@ async def _call_ai_for_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     url = llm_gateway.resolve_url()
     model_name = llm_gateway.resolve_model()
+    
+    # Extract package scripts for explicit checking
+    package_scripts = summary.get("package_scripts", {})
+    has_test_script = "test" in package_scripts
+    has_build_script = "build" in package_scripts
+    
     prompt = (
         "You are a build engineer. Given this repo summary, return JSON only with keys "
         "\"install\" (list of shell commands) and \"tests\" (list of shell commands). "
+        
+        "CRITICAL RULES:\n"
+        f"- package.json scripts available: {list(package_scripts.keys())}\n"
+        f"- Has 'test' script: {has_test_script}\n"
+        f"- Has 'build' script: {has_build_script}\n"
+        "- ONLY use npm/yarn/pnpm test if the 'test' script exists in package.json\n"
+        "- If no 'test' script exists, use 'build' script instead or skip testing\n"
+        "- NEVER run 'npm test' if there's no test script - it will fail\n\n"
+        
         "Use only safe commands such as: pip install -r requirements.txt, pip install -e ., "
-        "python -m pytest -q, pytest -q, npm install, npm test, npm run test, npm run build, "
-        "pnpm install, pnpm test, yarn install, yarn test. If no tests, return empty lists.\n\n"
+        "python -m pytest -q, pytest -q, npm install, npm test (ONLY if test script exists), "
+        "npm run build, pnpm install, pnpm test (ONLY if test script exists), "
+        "yarn install, yarn test (ONLY if test script exists). If no tests, return empty lists.\n\n"
         f"REPO SUMMARY:\n{json.dumps(summary, indent=2)}"
     )
     messages = [
-        {"role": "system", "content": "Return only valid JSON."},
+        {"role": "system", "content": "Return only valid JSON. Never run test commands that don't exist in package.json scripts."},
         {"role": "user", "content": prompt},
     ]
     try:
@@ -2803,20 +2895,24 @@ def _heuristic_test_plan(summary: Dict[str, Any]) -> Dict[str, Any]:
     test_cmds: List[str] = []
 
     if summary.get("has_package_json"):
+        package_scripts = summary.get("package_scripts", {})
+        
         if summary.get("has_pnpm_lock"):
             install_cmds.append("pnpm install")
-            if "test" in summary.get("package_scripts", {}):
+            if "test" in package_scripts:
                 test_cmds.append("pnpm test")
         elif summary.get("has_yarn_lock"):
             install_cmds.append("yarn install")
-            if "test" in summary.get("package_scripts", {}):
+            if "test" in package_scripts:
                 test_cmds.append("yarn test")
         else:
             install_cmds.append("npm install")
-            if "test" in summary.get("package_scripts", {}):
+            # CRITICAL FIX: Only run npm test if test script exists
+            if "test" in package_scripts:
                 test_cmds.append("npm test")
-            elif "build" in summary.get("package_scripts", {}):
+            elif "build" in package_scripts:
                 test_cmds.append("npm run build")
+            # If no test or build script, skip testing for this project
 
     if summary.get("has_requirements"):
         install_cmds.append("pip install -r requirements.txt")
@@ -3916,42 +4012,63 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
         return
     branch = branch.strip()
 
-    container_name = f"git_manager_{uuid.uuid4().hex[:8]}"
+    # CRITICAL FIX: Use a single shared git manager container for all merges
+    # This ensures all merges go to the same agent/integration branch
+    container_name = f"git_manager_shared_{project_token or 'default'}"
+    
+    # Check if shared container already exists
+    existing_container = subprocess.run(
+        ["docker", "ps", "-q", "-f", f"name={container_name}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    
+    container_exists = bool(existing_container.stdout.strip())
+    
     try:
-        _log_git_agent(f"Creating git manager container: {container_name}", project_token=project_token)
-        container_result = await asyncio.to_thread(_create_persistent_container, container_name)
-        if not container_result["success"]:
-            _log_git_agent(f"Git manager container error: {container_result['error']}", "error", project_token=project_token)
-            return
+        if not container_exists:
+            _log_git_agent(f"Creating shared git manager container: {container_name}", project_token=project_token)
+        if not container_exists:
+            _log_git_agent(f"Creating shared git manager container: {container_name}", project_token=project_token)
+            container_result = await asyncio.to_thread(_create_persistent_container, container_name)
+            if not container_result["success"]:
+                _log_git_agent(f"Git manager container error: {container_result['error']}", "error", project_token=project_token)
+                return
 
-        toolchain_result = _verify_container_toolchain(container_name)
-        if not toolchain_result.get("success"):
-            _log_git_agent(
-                f"Git manager runtime verification failed: {toolchain_result.get('error')}",
-                "error",
-                project_token=project_token,
+            toolchain_result = _verify_container_toolchain(container_name)
+            if not toolchain_result.get("success"):
+                _log_git_agent(
+                    f"Git manager runtime verification failed: {toolchain_result.get('error')}",
+                    "error",
+                    project_token=project_token,
+                )
+                return
+
+            # Configure git user
+            subprocess.run(
+                ["docker", "exec", container_name, "git", "config", "--global", "user.email", "git-agent@dsuite.ai"],
+                capture_output=True, text=True, timeout=10,
             )
-            return
+            subprocess.run(
+                ["docker", "exec", container_name, "git", "config", "--global", "user.name", "BRD Git Manager"],
+                capture_output=True, text=True, timeout=10,
+            )
 
-        # Configure git user
-        subprocess.run(
-            ["docker", "exec", container_name, "git", "config", "--global", "user.email", "git-agent@dsuite.ai"],
-            capture_output=True, text=True, timeout=10,
-        )
-        subprocess.run(
-            ["docker", "exec", container_name, "git", "config", "--global", "user.name", "BRD Git Manager"],
-            capture_output=True, text=True, timeout=10,
-        )
-
-        # Clone repo
-        auth_url = _build_git_auth_url(repo_url, token)
-        clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", clone_url, "/workspace"],
-            capture_output=True, text=True, timeout=300,
-        )
-        if clone.returncode != 0:
-            _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error", project_token=project_token)
-            return
+            # Clone repo only once
+            auth_url = _build_git_auth_url(repo_url, token)
+            clone = subprocess.run(
+                ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if clone.returncode != 0:
+                _log_git_agent(f"Git manager clone failed: {clone.stderr}", "error", project_token=project_token)
+                return
+        else:
+            _log_git_agent(f"Using existing shared git manager container: {container_name}", project_token=project_token)
+            # Fetch latest changes
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "fetch", "origin"],
+                capture_output=True, text=True, timeout=60,
+            )
 
         default_branch = _get_default_branch(container_name)
 
@@ -4284,7 +4401,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             if push.returncode == 0:
                 push_note = "" if attempt == 1 else f" (after retry {attempt})"
                 _log_git_agent(
-                    f"Merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed{push_note}.",
+                    f"✅ Successfully merged {branch} into {GIT_INTEGRATION_BRANCH} and pushed{push_note}.",
                     project_token=project_token
                 )
                 state = _ensure_project_state(project_token)
@@ -4312,7 +4429,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 )
                 if git_agent:
                     git_agent["progress"] = 100
-                    git_agent["progress_message"] = f"Merged {branch}"
+                    git_agent["progress_message"] = f"Merged {branch} to {GIT_INTEGRATION_BRANCH}"
                 return
 
             err = push.stderr or push.stdout
@@ -4340,8 +4457,9 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 project_token=project_token
             )
             return
-    finally:
-        await asyncio.to_thread(_destroy_container, container_name)
+    except Exception as exc:
+        _log_git_agent(f"Git merge error for {branch}: {exc}", "error", project_token=project_token)
+    # NOTE: Don't destroy the shared container - keep it for subsequent merges
 
 
 def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str) -> Dict[str, Any]:
@@ -4837,13 +4955,102 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
             "stderr": "Empty build script",
             "error": "empty_script",
         }
-    if not script_body.startswith("#!"):
-        script_body = "#!/usr/bin/env bash\nset -euo pipefail\n\n" + script_body
+    
+    # ULTRA-AGGRESSIVE SCRIPT CLEANING - Remove ALL problematic content
+    logger.info(f"Original script length: {len(script_body)} chars")
+    
+    # Step 1: Remove Windows line endings FIRST and normalize
+    script_body = script_body.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Step 2: Remove any non-printable characters except newlines and tabs
+    import re
+    script_body = re.sub(r'[^\x20-\x7E\n\t]', '', script_body)
+    
+    # Step 3: Split into lines and aggressively clean each line
+    lines = script_body.split('\n')
+    cleaned_lines = []
+    
+    for i, line in enumerate(lines):
+        original_line = line.rstrip()  # Remove trailing whitespace
+        line_stripped = line.strip()
+        
+        # Skip empty lines at the start
+        if not line_stripped and len(cleaned_lines) == 0:
+            continue
+            
+        # Skip ALL problematic patterns - be more aggressive
+        skip_patterns = [
+            '#!',  # Skip ALL shebang lines (we'll add our own)
+            'pipefail',
+            'set -euo',
+            'set -o',
+            'set --',
+            'set -u',
+            'TECHNICAL SPECIFICATION',  # Skip spec comments that might have \r
+            'Canonical -- follow',
+        ]
+        
+        should_skip = False
+        for pattern in skip_patterns:
+            if pattern in line_stripped:
+                should_skip = True
+                break
+                
+        if should_skip:
+            logger.info(f"Skipping problematic line {i+1}: {line_stripped[:50]}...")
+            continue
+            
+        # Handle set commands specially
+        if line_stripped.startswith('set -'):
+            # Only allow 'set -e' - skip everything else
+            if line_stripped == 'set -e':
+                cleaned_lines.append('set -e')
+            else:
+                logger.info(f"Replacing problematic set command: {line_stripped}")
+                # Don't add anything - we'll add set -e at the top
+            continue
+            
+        # Clean the line of any remaining \r characters and add it
+        clean_line = original_line.replace('\r', '')
+        if clean_line or len(cleaned_lines) > 0:  # Don't add empty lines at start
+            cleaned_lines.append(clean_line)
+    
+    # Step 4: Rebuild script with ONLY safe header
+    script_content = '\n'.join(cleaned_lines).strip()
+    script_body = f"#!/usr/bin/env bash\nset -e\n\n{script_content}"
+    
+    # Step 5: Final aggressive cleanup
+    script_body = script_body.replace('\r', '')  # Remove any remaining \r
+    script_body = re.sub(r'\n\s*\n\s*\n', '\n\n', script_body)  # Remove excessive blank lines
+    
+    # Step 6: Validate the cleaned script
+    lines_after = script_body.split('\n')
+    logger.info(f"Script cleaned: {len(lines)} -> {len(lines_after)} lines")
+    
+    # Debug: Log the first 10 lines to see what we're executing
+    first_lines = '\n'.join(script_body.split('\n')[:10])
+    logger.info(f"Final script (first 10 lines):\n{first_lines}")
+    
+    # Additional validation - check for remaining problematic content
+    problematic_found = []
+    for i, line in enumerate(lines_after[:20]):  # Check first 20 lines
+        if any(p in line for p in ['pipefail', '\r', 'set -o', 'set -u', 'set --']):
+            problematic_found.append(f"Line {i+1}: {line}")
+    
+    if problematic_found:
+        logger.error(f"CRITICAL: Problematic content still found after cleaning: {problematic_found}")
+        # Return error instead of executing bad script
+        return {
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": f"Script cleaning failed - problematic content remains: {problematic_found}",
+            "error": "script_cleaning_failed",
+        }
 
-    # Write to local temp file
+    # Write to local temp file with explicit encoding and Unix line endings
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".sh", delete=False, prefix=f"agent_{script_label}_",
-        encoding="utf-8",
+        encoding="utf-8", newline='\n'  # Force Unix line endings
     ) as f:
         f.write(script_body)
         script_path = f.name
@@ -4863,14 +5070,22 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
                 "error": f"docker cp failed: {cp_result.stderr}",
             }
 
+        # Make executable and verify it was copied correctly
         subprocess.run(
             ["docker", "exec", container_name, "chmod", "+x", container_script],
             capture_output=True, text=True, timeout=10,
         )
+        
+        # Verify the script in container doesn't have \r characters
+        verify_result = subprocess.run(
+            ["docker", "exec", container_name, "head", "-5", container_script],
+            capture_output=True, text=True, timeout=10,
+        )
+        logger.info(f"Script in container (first 5 lines):\n{verify_result.stdout}")
 
-        # Execute inside container
+        # Execute inside container with explicit bash
         result = subprocess.run(
-            ["docker", "exec", container_name, "bash", container_script],
+            ["docker", "exec", "-w", "/workspace", container_name, "/bin/bash", container_script],
             capture_output=True, text=True, timeout=180,
         )
 
@@ -11839,6 +12054,16 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "type": log_type,
                         "message": f"🤖 Self-Review {pass_str}:\n{review_feedback[:300]}"
                     })
+                    
+                    # Check integration status for self-review decisions
+                    integration_blocked = False
+                    try:
+                        import context_manager as ctx_mgr
+                        live_mem = ctx_mgr.get_live_memory(project_token or "")
+                        integration_blocked = live_mem.is_integration_blocked()
+                    except Exception:
+                        integration_blocked = False
+                    
                     if not passed_review and not integration_blocked:
                         logger.warning(f"[{agent_id}] Self-review failed: {review_feedback[:100]}")
                         # Even if failed, it pushes to Git so Master Agent can intervene in next cycle, 
@@ -12538,16 +12763,42 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             })
 
         total_elapsed = round(time.time() - total_start, 1)
-        agent["status"] = "completed"
+        
+        # Determine agent status based on task results
+        failed_tasks = [r for r in all_results if r.get("exit_code", 0) != 0]
+        has_failures = len(failed_tasks) > 0
+        
+        if has_failures:
+            agent["status"] = "completed_with_errors"
+            agent["progress_message"] = f"Completed {tasks_completed} task(s) in {total_elapsed}s ({len(failed_tasks)} failed)"
+        else:
+            agent["status"] = "completed"
+            agent["progress_message"] = f"All done! {tasks_completed} task(s) in {total_elapsed}s"
+            
         agent["resume_pending_task"] = False
         agent["progress"] = 100
-        agent["progress_message"] = f"All done! {tasks_completed} task(s) in {total_elapsed}s"
         agent["current_task"] = None
 
+        # Update coordination status to reflect actual outcome
+        try:
+            from agent_coordination_service import update_agent_coordination_status
+            coordination_status = "error" if has_failures else "completed"
+            task_info = {
+                "tasks_completed": tasks_completed,
+                "failed_tasks": len(failed_tasks),
+                "total_duration": total_elapsed
+            }
+            await update_agent_coordination_status(
+                project_token, agent_id, coordination_status, task_info
+            )
+        except Exception:
+            pass  # Don't fail if coordination update fails
+
         return {
-            "success": True,
+            "success": not has_failures,  # Return False if any tasks failed
             "agent_id": agent_id,
             "tasks_completed": tasks_completed,
+            "failed_tasks": len(failed_tasks),
             "total_duration": total_elapsed,
             "results": all_results,
         }

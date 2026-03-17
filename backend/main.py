@@ -97,6 +97,10 @@ app.add_middleware(
 )
 
 from fastapi.responses import RedirectResponse, StreamingResponse
+from coordination_api import router as coordination_router
+
+# Add coordination router
+app.include_router(coordination_router)
 
 # --- Pydantic Models for AI ---
 class AnalyzeRequest(BaseModel):
@@ -5371,6 +5375,7 @@ async def run_agent(
             agent_id,
             git_repo_url=run_repo,
             git_token=run_token,
+            continuous=True,  # CRITICAL FIX: Enable continuous mode so agents keep working
             ignore_running_check=True,
             project_token=project_token,
             task_token=x_task_token,

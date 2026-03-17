@@ -95,10 +95,28 @@ def _route_after_planning(state: AgentWorkflowState) -> str:
 
 async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
     import agent_service
+    from coordinated_agent_wrapper import run_coordinated_agent
+    from agent_coordination_service import initialize_project_coordination
 
     assignments = state.get("assignments") or []
     if not assignments:
         return {"results": [], "launched_agents": [], "errors": []}
+
+    # Initialize coordination for this project
+    project_token = state.get("project_token")
+    agents_config = state.get("agents_config", {})
+    master_note = state.get("master_note", {})
+    
+    # Initialize coordination state
+    try:
+        await initialize_project_coordination(
+            project_token,
+            agents_config,
+            master_note
+        )
+        logger.info(f"Coordination initialized for project {project_token} with {len(agents_config)} agents")
+    except Exception as coord_err:
+        logger.warning(f"Coordination initialization failed: {coord_err}")
 
     launched_agents: List[str] = []
     for entry in assignments:
@@ -106,21 +124,23 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
         if agent_id and agent_id not in launched_agents:
             launched_agents.append(agent_id)
 
-    async def _run_one(agent_id: str, assigned_task: dict = None) -> Dict[str, Any]:
+    async def _run_coordinated_agent(agent_id: str, assigned_task: dict = None) -> Dict[str, Any]:
         try:
-            result = await agent_service.run_agent(
-                agent_id,
+            # Use coordinated agent wrapper instead of direct agent call
+            result = await run_coordinated_agent(
+                agent_id=agent_id,
+                project_token=project_token,
+                original_run_agent_func=agent_service.run_agent,
                 assigned_task=assigned_task,
                 continuous=True,
                 ignore_running_check=True,
-                project_token=state.get("project_token"),
                 task_token=state.get("task_token"),
             )
             if isinstance(result, dict):
                 result.setdefault("agent_id", agent_id)
             return result
         except Exception as exc:
-            logger.exception("LangGraph workflow failed for %s", agent_id)
+            logger.exception("Coordinated LangGraph workflow failed for %s", agent_id)
             return {
                 "success": False,
                 "agent_id": agent_id,
@@ -128,9 +148,11 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
                 "tasks_completed": 0,
             }
 
+    # Run agents with coordination
     results = await asyncio.gather(
-        *(_run_one(entry.get("agent_id"), entry.get("assigned_task")) for entry in assignments)
+        *(_run_coordinated_agent(entry.get("agent_id"), entry.get("assigned_task")) for entry in assignments)
     )
+    
     errors = [
         f"{item.get('agent_id')}: {item.get('error')}"
         for item in results
