@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     brn_model: str = "BournAI"
     brn_agent_id: str = "uhli23jn3oiuhgo847yyjvdhtrdy3tgfe8gfgoe87rugekuuyjommjferhjgo5go49uoi3uyrp938ry"
     brn_platform_id: str = "DSuite"
-    brn_max_tokens: int = 4000
+    # brn_max_tokens: int = 4000
     brn_temperature: float = 0.7
 
     # GitHub OAuth
