@@ -7724,7 +7724,7 @@ async def put_agent_project_config(
 
     return {
         "status": "ok",
-        "message": "Task creation started and will shortly appear here in the list",
+        "message": "Task creation started and will shortly appear here in the list You can continue if you want task creation will continue in background",
         "project_token": safe_project,
         "mode": mode,
         "repo_link_url": repo_link_url,

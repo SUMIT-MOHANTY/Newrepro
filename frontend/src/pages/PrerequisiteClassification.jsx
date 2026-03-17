@@ -1212,7 +1212,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <span className="text-lg">ℹ️</span> No PAT Provided
                                 </p>
                                 <p className="leading-snug">
-                                    You haven't entered a Personal Access Token. This is optional for public repositories, but required for private ones.
+                                    You haven't entered a Personal Access Token. This is required for pushing the code.
                                 </p>
                             </div>
                         </div>
