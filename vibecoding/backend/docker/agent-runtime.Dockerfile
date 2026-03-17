@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 
-# Install bare minimum + Node.js 18 for full-stack apps (React/Vue/Svelte frontends)
+# Install bare minimum + Node.js 18 for full-stack apps (React/Vue/Svelte frontends) + Nginx for reverse proxy
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     gnupg \
+    nginx \
+    lsof \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*

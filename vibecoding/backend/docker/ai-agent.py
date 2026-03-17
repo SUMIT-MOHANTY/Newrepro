@@ -317,11 +317,12 @@ SYSTEM: {self.os_info}
 INSTALLED TOOLS: {self.tools}
 MANIFESTS: {self.manifest}
 TARGET PORT: {self.config.port}
+ADDITIONAL PORTS: {", ".join(self.config.additional_ports) or "None"}
 WORKSPACE FILES: {", ".join(files)}
 
 Return ONLY a raw JSON object (no markdown fences, no extra text):
 {{
-    "project_type": "exact runtime/framework",
+    "project_type": "detected runtime/framework(s)",
     "processes": [
         {{
             "name": "descriptive name",
@@ -331,22 +332,45 @@ Return ONLY a raw JSON object (no markdown fences, no extra text):
         }}
     ],
     "success_patterns": ["log substrings that confirm the primary server started successfully"],
-    "analysis": "one-sentence explanation"
+    "analysis": "one-sentence explanation",
+    "nginx_config": "nginx configuration content if needed (null if not needed)"
 }}
 
 PROCESS TYPES:
-- setup      → one-time commands that must complete before anything runs (install deps, build assets, etc.).
-- background → long-running processes (e.g. backend API, database).
+- setup      → one-time commands that must complete before anything runs (install deps, build assets, compile code, etc.).
+- background → long-running processes that other processes depend on (databases, backend APIs, message queues, etc.).
                Must include a ready_signal so the agent waits for it before starting next steps.
-- primary    → exactly ONE entry — the main server (e.g. Frontend) the agent monitors and heals.
+- primary    → exactly ONE entry — the main server that will be monitored and exposed on port {self.config.port}.
                This MUST be the last entry in the array.
 
+ARCHITECTURE DETECTION:
+- Analyze the project structure to determine if it's single-tier or multi-tier.
+- If multiple services need to run (e.g., separate backend and frontend, or multiple microservices):
+  * Use Nginx as a reverse proxy/load balancer for the primary process
+  * Run dependent services as background processes on different ports
+  * Configure Nginx to route requests appropriately
+- If it's a single service, run it directly as the primary process.
+
+NGINX USAGE (when needed):
+- Use Nginx when you need to:
+  * Serve static files AND proxy API requests
+  * Combine multiple services under one port
+  * Provide routing, load balancing, or SSL termination
+- Nginx config should:
+  * Listen on port {self.config.port}
+  * Route requests based on path patterns (e.g., /api/*, /ws/*, etc.)
+  * Serve static files from the appropriate directory
+  * Proxy dynamic requests to background services
+  * Include appropriate headers and error handling
+- Only include nginx_config if Nginx is actually needed. Set to null otherwise.
+
 CONSTRAINTS:
-- Running inside Docker (Ubuntu 22.04, Python3 + Node.js available).
+- Running inside Docker (Ubuntu 22.04, Python3 + Node.js + Nginx available).
 - The primary server MUST bind to port {self.config.port} on ALL interfaces (0.0.0.0).
-- ADDITIONAL PORTS AVAILABLE: {", ".join(self.config.additional_ports) or "None"}.
-- If the project requires separate Frontend and Backend, they can run on DIFFERENT ports.
-- Services should discover each other via environment variables or relative paths.
+- Background services can use any available ports (recommend 8000, 8001, 8002, etc.).
+- Services should communicate via localhost or environment variables.
+- All paths should be relative to /project/workspace.
+- Consider the USER INTENT when making architectural decisions.
 """
         result = self._call_ai(prompt, temperature=0.1)
         if result:
@@ -955,9 +979,25 @@ RULES:
         project_type     = plan.get("project_type", "unknown")
         processes        = plan.get("processes", [])
         success_patterns = plan.get("success_patterns", [])
+        nginx_config     = plan.get("nginx_config")
 
         self.log("🎯", f"Stack  : {project_type}")
         self.log("📋", f"Plan   : {plan.get('analysis', '')}")
+
+        # If Nginx config provided, write it
+        if nginx_config:
+            nginx_conf_path = Path("/etc/nginx/sites-available/default")
+            try:
+                nginx_conf_path.write_text(nginx_config, encoding="utf-8")
+                self.log("📝", "Nginx configuration written")
+                # Test nginx config
+                test_result = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+                if test_result.returncode == 0:
+                    self.log("✅", "Nginx config valid")
+                else:
+                    self.log("⚠️", f"Nginx config test failed: {test_result.stderr}")
+            except Exception as e:
+                self.log("⚠️", f"Failed to write Nginx config: {e}")
 
         if not processes:
             self.log("❌", "AI returned no processes")
