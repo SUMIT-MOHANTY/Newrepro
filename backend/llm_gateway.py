@@ -91,7 +91,7 @@ def _build_brn_payload(
         "stream": stream,
         "agent_id": settings.brn_agent_id,
         "platform_id": settings.brn_platform_id,
-        "max_tokens": settings.brn_max_tokens,
+        # "max_tokens": settings.brn_max_tokens,
         "temperature": extra.get("temperature", settings.brn_temperature),
     }
     return payload
@@ -127,7 +127,7 @@ def _build_brn_payload_from_messages(
         "stream": stream,
         "agent_id": settings.brn_agent_id,
         "platform_id": settings.brn_platform_id,
-        "max_tokens": settings.brn_max_tokens,
+        # "max_tokens": settings.brn_max_tokens,
         "temperature": extra.get("temperature", settings.brn_temperature),
     }
     return payload
