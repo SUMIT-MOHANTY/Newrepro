@@ -12,7 +12,7 @@ import bourntecLogo from '../assets/bourntec_logo.png';
 import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
 
 function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
@@ -286,7 +286,7 @@ function Workspace({ user, logout, isAuthenticated }) {
           projectIdToLoad = urlProjectId;
           
           // Clear URL params without reloading
-          window.history.replaceState({}, '', `/a/${urlProjectId}`);
+          window.history.replaceState({}, '', `/vibecoding/a/${urlProjectId}`);
         } catch (error) {
           console.error('Failed to initialize project from URL:', error);
         }

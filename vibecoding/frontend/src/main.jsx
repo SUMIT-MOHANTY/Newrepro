@@ -9,7 +9,7 @@ import './landing.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter basename={import.meta.env.PROD ? '/vibecoding' : '/'}>
+    <BrowserRouter basename="/vibecoding">
       <AuthProvider>
         <App />
       </AuthProvider>

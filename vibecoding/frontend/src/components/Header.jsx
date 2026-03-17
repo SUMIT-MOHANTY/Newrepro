@@ -56,7 +56,7 @@ const Header = ({
         onCreateProject(newProjectId);
       }
       
-      window.location.href = `/a/${newProjectId}`;
+      window.location.href = `/vibecoding/a/${newProjectId}`;
     } catch (error) {
       console.error('Failed to create project:', error);
     }
@@ -125,7 +125,7 @@ const Header = ({
                           key={project.project_id}
                           onClick={() => {
                             localStorage.setItem('vibecoding_workspace_id', project.project_id);
-                            window.location.href = `/a/${project.project_id}`;
+                            window.location.href = `/vibecoding/a/${project.project_id}`;
                           }}
                           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all mb-1 ${
                             currentProjectId === project.project_id
