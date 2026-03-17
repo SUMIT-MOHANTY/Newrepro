@@ -29,3 +29,6 @@ vibecoding/backend/project_artifacts
 vibecoding/backend/venv/
 vibecoding/frontend/node_modules/
 vibecoding/frontend/.vite/
+vibecoding/backend/vibecoding_users.db
+vibecoding/frontend/package-lock.json
+vibecoding/backend/.env
