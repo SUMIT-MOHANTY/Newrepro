@@ -65,7 +65,7 @@ The user wants to modify their existing application. Choose the right output mod
 
 ---
 
-� PATCH FORMAT (use for targeted edits):
+🔧 PATCH FORMAT (use for targeted edits):
 
 // PATCH: path/to/file.ext
 <<<SEARCH
@@ -75,7 +75,14 @@ exact lines to find (include 1-2 lines of context for uniqueness)
 replacement lines
 >>>
 
-You can have multiple PATCH blocks for the same file or different files.
+⚠️ CRITICAL PATCH FORMATTING RULES:
+1. The line "// PATCH: path/to/file.ext" must contain ONLY the file path - nothing else
+2. Do NOT add extra markers like <<>>> or << >>> on the PATCH line
+3. "<<<SEARCH" must be on its own line
+4. ">>>" must be on its own line after the search block
+5. "<<<REPLACE" must be on its own line  
+6. ">>>" must be on its own line after the replace block
+7. You can have multiple PATCH blocks for the same file or different files
 
 📄 FILE MARKER FORMAT (use for new or fully rewritten files):
 
@@ -100,6 +107,8 @@ You can have multiple PATCH blocks for the same file or different files.
 🎯 EXAMPLES:
 
 User: "Change the button color to blue"
+
+✅ CORRECT:
 // PATCH: public/style.css
 <<<SEARCH
 .btn {{
@@ -110,7 +119,20 @@ User: "Change the button color to blue"
   background-color: blue;
 >>>
 
+❌ WRONG (extra markers on PATCH line):
+// PATCH: public/style.css <<>>> << >>>
+<<<SEARCH
+.btn {{
+  background-color: red;
+>>>
+<<<REPLACE
+.btn {{
+  background-color: blue;
+>>>
+
 User: "Add a footer to the page"
+
+✅ CORRECT:
 // PATCH: public/index.html
 <<<SEARCH
 </body>

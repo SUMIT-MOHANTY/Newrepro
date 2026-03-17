@@ -443,17 +443,39 @@ class ProjectManager:
         """
         import difflib
         workspace_dir = self.artifacts_dir / project_id / "workspace"
+        
+        # First, check for malformed PATCH markers and log warnings
+        malformed_patches = re.findall(r'//\s*PATCH:\s*([^\n]*(?:<<|>>)[^\n]*)', code)
+        if malformed_patches:
+            for malformed in malformed_patches:
+                logger.error(f"❌ MALFORMED PATCH MARKER DETECTED: '// PATCH: {malformed}'")
+                logger.error(f"   The PATCH line should contain ONLY the file path, no extra markers like <<>>> or << >>>")
+            logger.error(f"   Correct format: // PATCH: path/to/file.ext")
+        
         patch_block_re = re.compile(
             r'//\s*PATCH:\s*([^\n]+)\n<<<SEARCH\n(.*?)>>>\n<<<REPLACE\n(.*?)>>>',
             re.DOTALL
         )
         matches = list(patch_block_re.finditer(code))
         if not matches:
+            # Check if there are PATCH markers but they don't match the pattern
+            if '// PATCH:' in code or '//PATCH:' in code:
+                logger.error("❌ Found PATCH markers but they don't match the expected format!")
+                logger.error("   Expected format:")
+                logger.error("   // PATCH: path/to/file.ext")
+                logger.error("   <<<SEARCH")
+                logger.error("   [content to find]")
+                logger.error("   >>>")
+                logger.error("   <<<REPLACE")
+                logger.error("   [replacement content]")
+                logger.error("   >>>")
             return False, []
 
         patched_files = []
         for m in matches:
             rel_path = m.group(1).strip()
+            # Clean up any stray markers from the path
+            rel_path = re.sub(r'[<>]+', '', rel_path).strip()
             search_text = m.group(2)
             replace_text = m.group(3)
             filepath = workspace_dir / rel_path
