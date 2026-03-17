@@ -368,17 +368,25 @@ def _build_project_context(
 
             context["brd_analysis"] = _strip_prerequisites_from_analysis(raw_analysis)
 
-            # Tech stack and requirements may be nested inside analysis text or top-level
+            # Extract comprehensive requirements from BRD analysis
             context["tech_stack"] = (
                 analysis.get("tech_stack")
                 or analysis.get("techStack")
+                or _extract_tech_stack_from_analysis(raw_analysis)
                 or ""
             )
             context["requirements"] = (
                 analysis.get("requirements")
                 or analysis.get("product_requirements")
+                or _extract_detailed_requirements_from_analysis(raw_analysis)
                 or ""
             )
+            
+            # Extract business rules and constraints
+            context["business_rules"] = _extract_business_rules_from_analysis(raw_analysis)
+            context["user_personas"] = _extract_user_personas_from_analysis(raw_analysis)
+            context["functional_requirements"] = _extract_functional_requirements_from_analysis(raw_analysis)
+            context["non_functional_requirements"] = _extract_non_functional_requirements_from_analysis(raw_analysis)
 
             if "project_type" in analysis:
                 context["project_type"] = analysis["project_type"]
@@ -458,17 +466,33 @@ Process Mode: {process_mode}
 Current Date: {today.strftime('%Y-%m-%d')}
 Target Deadline: {project_deadline.strftime('%Y-%m-%d')}
 
-BRD ANALYSIS:
-============
-{context['brd_analysis'][:3000] if context['brd_analysis'] else 'No BRD analysis available'}
+BRD ANALYSIS (COMPLETE REQUIREMENTS):
+===================================
+{context['brd_analysis'][:4000] if context['brd_analysis'] else 'No BRD analysis available'}
 
-TECH STACK:
-==========
-{context['tech_stack'] if context['tech_stack'] else 'Not specified - use best practices'}
+EXTRACTED TECH STACK:
+====================
+{context['tech_stack'] if context['tech_stack'] else 'Not specified - use best practices based on requirements'}
 
-REQUIREMENTS:
-============
-{context['requirements'][:2000] if context['requirements'] else 'Extract from BRD analysis'}
+DETAILED REQUIREMENTS:
+=====================
+{context['requirements'][:2500] if context['requirements'] else 'Extract from BRD analysis above'}
+
+BUSINESS RULES & CONSTRAINTS:
+============================
+{context.get('business_rules', 'Extract from BRD analysis above')[:1500]}
+
+USER PERSONAS & ROLES:
+=====================
+{context.get('user_personas', 'Extract from BRD analysis above')[:1000]}
+
+FUNCTIONAL REQUIREMENTS:
+=======================
+{context.get('functional_requirements', 'Extract from BRD analysis above')[:2000]}
+
+NON-FUNCTIONAL REQUIREMENTS:
+===========================
+{context.get('non_functional_requirements', 'Extract from BRD analysis above')[:1500]}
 
 GOVERNANCE CONTEXT:
 ==================
@@ -493,16 +517,27 @@ IMPORTANT: The PREREQUISITES section above contains ONLY what the user has expli
 Do NOT infer or assume additional prerequisites from the BRD analysis text.
 Tasks must be designed around what is confirmed above.
 
+CRITICAL TASK GENERATION RULES:
+==============================
+1. EVERY requirement from the BRD MUST be covered by at least one task
+2. Tasks must be SPECIFIC to the exact features described in the BRD
+3. Use the EXACT terminology and feature names from the BRD analysis
+4. Create tasks that implement the PRECISE business logic described
+5. Include ALL user roles, permissions, and workflows mentioned in the BRD
+6. Implement ALL data models, APIs, and UI components specified
+7. Cover ALL business rules and validation requirements
+8. Address ALL non-functional requirements (performance, security, etc.)
+
 TASK GENERATION INSTRUCTIONS:
 ============================
-Based on the above context, generate the MINIMUM set of ESSENTIAL tasks needed to successfully deliver this project.
+Based on the above context, generate the COMPLETE set of tasks needed to deliver EXACTLY what is specified in the BRD.
 
 Focus on:
-1. What MUST be built to meet the requirements
+1. EXACT implementation of every BRD requirement
 2. Proper task hierarchy and dependencies
 3. Realistic timelines within the {project_deadline.strftime('%Y-%m-%d')} deadline
-4. Specific, actionable checklist items
-5. No unnecessary or redundant tasks
+4. Specific, actionable checklist items that implement the precise business logic
+5. Complete coverage - no BRD requirement should be left unimplemented
 
 Generate tasks now:
 """
@@ -562,3 +597,138 @@ Generate tasks now:
     except Exception as e:
         logger.error(f"Task generation failed: {e}")
         raise Exception(f"Failed to generate tasks: {str(e)}")
+
+def _extract_tech_stack_from_analysis(analysis_text: str) -> str:
+    """Extract technology stack from BRD analysis text"""
+    if not analysis_text:
+        return ""
+    
+    text_lower = analysis_text.lower()
+    
+    # Look for explicit tech stack mentions
+    tech_indicators = {
+        "frontend": ["react", "vue", "angular", "next.js", "svelte", "html", "css", "javascript", "typescript"],
+        "backend": ["fastapi", "django", "flask", "express", "spring", "rails", "laravel", ".net", "node.js"],
+        "database": ["postgresql", "mysql", "mongodb", "sqlite", "redis", "dynamodb"],
+        "cloud": ["aws", "azure", "gcp", "docker", "kubernetes"],
+        "mobile": ["react native", "flutter", "swift", "kotlin", "ionic"]
+    }
+    
+    detected_stack = []
+    for category, technologies in tech_indicators.items():
+        found_techs = [tech for tech in technologies if tech in text_lower]
+        if found_techs:
+            detected_stack.append(f"{category.title()}: {', '.join(found_techs)}")
+    
+    return "; ".join(detected_stack) if detected_stack else ""
+
+def _extract_detailed_requirements_from_analysis(analysis_text: str) -> str:
+    """Extract detailed requirements from BRD analysis"""
+    if not analysis_text:
+        return ""
+    
+    # Look for requirement sections
+    requirement_patterns = [
+        r"requirements?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"features?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"functionality[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"capabilities[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)"
+    ]
+    
+    import re
+    extracted_requirements = []
+    
+    for pattern in requirement_patterns:
+        matches = re.findall(pattern, analysis_text, re.IGNORECASE | re.DOTALL)
+        extracted_requirements.extend(matches)
+    
+    return "\n".join(extracted_requirements[:3])  # Limit to avoid token overflow
+
+def _extract_business_rules_from_analysis(analysis_text: str) -> str:
+    """Extract business rules and constraints from BRD analysis"""
+    if not analysis_text:
+        return ""
+    
+    import re
+    
+    # Look for business rule patterns
+    rule_patterns = [
+        r"business rules?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"constraints?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"policies[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"validation[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)"
+    ]
+    
+    extracted_rules = []
+    for pattern in rule_patterns:
+        matches = re.findall(pattern, analysis_text, re.IGNORECASE | re.DOTALL)
+        extracted_rules.extend(matches)
+    
+    return "\n".join(extracted_rules[:2])
+
+def _extract_user_personas_from_analysis(analysis_text: str) -> str:
+    """Extract user personas and roles from BRD analysis"""
+    if not analysis_text:
+        return ""
+    
+    import re
+    
+    # Look for user/persona patterns
+    persona_patterns = [
+        r"users?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"personas?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"roles?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"actors?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)"
+    ]
+    
+    extracted_personas = []
+    for pattern in persona_patterns:
+        matches = re.findall(pattern, analysis_text, re.IGNORECASE | re.DOTALL)
+        extracted_personas.extend(matches)
+    
+    return "\n".join(extracted_personas[:2])
+
+def _extract_functional_requirements_from_analysis(analysis_text: str) -> str:
+    """Extract functional requirements from BRD analysis"""
+    if not analysis_text:
+        return ""
+    
+    import re
+    
+    # Look for functional requirement patterns
+    functional_patterns = [
+        r"functional requirements?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"system shall[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"the system must[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"functionality[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)"
+    ]
+    
+    extracted_functional = []
+    for pattern in functional_patterns:
+        matches = re.findall(pattern, analysis_text, re.IGNORECASE | re.DOTALL)
+        extracted_functional.extend(matches)
+    
+    return "\n".join(extracted_functional[:3])
+
+def _extract_non_functional_requirements_from_analysis(analysis_text: str) -> str:
+    """Extract non-functional requirements from BRD analysis"""
+    if not analysis_text:
+        return ""
+    
+    import re
+    
+    # Look for non-functional requirement patterns
+    nfr_patterns = [
+        r"non-?functional requirements?[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"performance[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"security[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"scalability[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)",
+        r"availability[:\s]+(.*?)(?=\n\n|\n[A-Z]|$)"
+    ]
+    
+    extracted_nfr = []
+    for pattern in nfr_patterns:
+        matches = re.findall(pattern, analysis_text, re.IGNORECASE | re.DOTALL)
+        extracted_nfr.extend(matches)
+    
+    return "\n".join(extracted_nfr[:2])
