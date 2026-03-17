@@ -443,32 +443,25 @@ class ProjectManager:
         """
         import difflib
         workspace_dir = self.artifacts_dir / project_id / "workspace"
-        
-        # First, check for malformed PATCH markers and log warnings
-        malformed_patches = re.findall(r'//\s*PATCH:\s*([^\n]*(?:<<|>>)[^\n]*)', code)
-        if malformed_patches:
-            for malformed in malformed_patches:
-                logger.error(f"❌ MALFORMED PATCH MARKER DETECTED: '// PATCH: {malformed}'")
-                logger.error(f"   The PATCH line should contain ONLY the file path, no extra markers like <<>>> or << >>>")
-            logger.error(f"   Correct format: // PATCH: path/to/file.ext")
-        
+
+        # ── Normalize malformed AI output before parsing ──────────────────
+        # Fix: "// PATCH: index.html <<<SEARCH" → "// PATCH: index.html\n<<<SEARCH"
+        code = re.sub(r'(//\s*PATCH:\s*[^\n<]+?)\s*(<<<+\s*SEARCH)', r'\1\n\2', code)
+        # Fix: git-style "<<<<<<< SEARCH" → "<<<SEARCH"
+        code = re.sub(r'<{4,7}\s*SEARCH', '<<<SEARCH', code)
+        # Fix: git-style ">>>>>>> REPLACE" → "<<<REPLACE"
+        code = re.sub(r'>{4,7}\s*REPLACE', '<<<REPLACE', code)
+        # Fix: "=======" separator between search/replace → ">>>\n<<<REPLACE"
+        code = re.sub(r'={4,7}', '>>>\n<<<REPLACE', code)
+
         patch_block_re = re.compile(
-            r'//\s*PATCH:\s*([^\n]+)\n<<<SEARCH\n(.*?)>>>\n<<<REPLACE\n(.*?)>>>',
+            r'//\s*PATCH:\s*([^\n<]+)\n<<<SEARCH\n(.*?)>>>\n<<<REPLACE\n(.*?)>>>',
             re.DOTALL
         )
         matches = list(patch_block_re.finditer(code))
         if not matches:
-            # Check if there are PATCH markers but they don't match the pattern
             if '// PATCH:' in code or '//PATCH:' in code:
-                logger.error("❌ Found PATCH markers but they don't match the expected format!")
-                logger.error("   Expected format:")
-                logger.error("   // PATCH: path/to/file.ext")
-                logger.error("   <<<SEARCH")
-                logger.error("   [content to find]")
-                logger.error("   >>>")
-                logger.error("   <<<REPLACE")
-                logger.error("   [replacement content]")
-                logger.error("   >>>")
+                logger.warning("⚠️ Found PATCH markers but no hunks could be parsed after normalization")
             return False, []
 
         patched_files = []
@@ -959,7 +952,19 @@ except Exception as e:
                 logger.error(f"Failed to get host port")
                 return None
             
-            url = f"http://localhost:{host_port}"
+            # Save container port mapping to registry for proxy
+            self._save_container_registry(project_id, host_port)
+            
+            # Use PUBLIC_HOST env var for AWS deployments, fallback to localhost
+            public_host = os.getenv('PUBLIC_HOST', 'http://localhost').rstrip('/')
+            
+            # If using proxy mode, return proxy URL instead of direct port
+            use_proxy = os.getenv('USE_PREVIEW_PROXY', 'true').lower() == 'true'
+            if use_proxy:
+                url = f"{public_host}/app/{project_id}/"
+            else:
+                url = f"{public_host}:{host_port}"
+            
             logger.info(f"✅ Container running at: {url}")
             
             # Wait for server to be ready (check Docker health status)
@@ -1242,6 +1247,83 @@ except Exception as e:
                     
         except Exception as e:
             logger.error(f"Failed to cleanup containers: {str(e)}")
+    
+    def get_frozen_files(self, project_id: str) -> List[str]:
+        """Get list of frozen (read-only) files for a project"""
+        project_dir = self.artifacts_dir / project_id
+        frozen_file = project_dir / "frozen_files.json"
+        
+        if not frozen_file.exists():
+            return []
+        
+        try:
+            with open(frozen_file, 'r') as f:
+                data = json.load(f)
+                return data.get("frozen_files", [])
+        except Exception as e:
+            logger.error(f"Error reading frozen files: {e}")
+            return []
+    
+    def set_file_frozen(self, project_id: str, file_path: str, frozen: bool) -> bool:
+        """Set or unset frozen status for a file"""
+        project_dir = self.artifacts_dir / project_id
+        frozen_file = project_dir / "frozen_files.json"
+        
+        # Load existing frozen files
+        frozen_files = self.get_frozen_files(project_id)
+        
+        # Update the list
+        if frozen:
+            if file_path not in frozen_files:
+                frozen_files.append(file_path)
+                logger.info(f"🔒 Froze file: {file_path}")
+        else:
+            if file_path in frozen_files:
+                frozen_files.remove(file_path)
+                logger.info(f"🔓 Unfroze file: {file_path}")
+        
+        # Save updated list
+        try:
+            with open(frozen_file, 'w') as f:
+                json.dump({"frozen_files": frozen_files}, f, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"Error saving frozen files: {e}")
+            return False
+    
+    def is_file_frozen(self, project_id: str, file_path: str) -> bool:
+        """Check if a file is frozen"""
+        frozen_files = self.get_frozen_files(project_id)
+        return file_path in frozen_files
+    
+    def _save_container_registry(self, project_id: str, host_port: str):
+        """Save container port mapping to registry for proxy access"""
+        registry_file = self.artifacts_dir / '.container_registry.json'
+        
+        # Load existing registry
+        registry = {}
+        if registry_file.exists():
+            try:
+                with open(registry_file, 'r') as f:
+                    registry = json.load(f)
+            except Exception:
+                pass
+        
+        # Update registry
+        container_name = f"vibecoding_{project_id}"
+        registry[container_name] = {
+            'project_id': project_id,
+            'port': host_port,
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        # Save registry
+        try:
+            with open(registry_file, 'w') as f:
+                json.dump(registry, f, indent=2)
+            logger.info(f"📝 Saved container registry: {project_id} -> port {host_port}")
+        except Exception as e:
+            logger.error(f"Failed to save container registry: {e}")
 
 # Global project manager instance
 project_manager = ProjectManager()

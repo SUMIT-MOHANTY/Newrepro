@@ -25,8 +25,8 @@ class AgentRouter:
             return 'chat', 1.0
 
         prompt = f"""Classify the following user message into ONE of two categories:
-1. 'CODE': If the user is asking to build, create, generate, modify, or implement a project, app, software, or script.
-2. 'CHAT': If the user is asking a general question, seeking an explanation, or just having a conversation.
+1. 'CODE': If the user is asking to build, create, generate, modify, implement, fix, debug, repair, update, or troubleshoot a project, app, software, script, or application. This includes requests to fix broken applications, debug errors, or resolve issues.
+2. 'CHAT': If the user is asking a general question, seeking an explanation, or just having a conversation without needing code changes.
 
 USER MESSAGE: "{message}"
 

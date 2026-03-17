@@ -202,6 +202,10 @@ async def generate_code(request: GenerateRequest):
         workspace_files = project_manager.get_workspace_files(project_id, max_files=15, max_chars_per_file=1500)
         has_existing_code = len(workspace_files) > 0
         
+        # Get frozen files list
+        frozen_files = project_manager.get_frozen_files(project_id)
+        frozen_files_str = "\n".join([f"- {path} (READ-ONLY)" for path in frozen_files]) if frozen_files else "None"
+        
         # Build conversation history with appropriate system prompt
         if has_existing_code:
             # Provide context about existing code and let AI decide whether to do incremental or full edit
@@ -213,10 +217,10 @@ async def generate_code(request: GenerateRequest):
                 current_files_str += f"\n\n// FILE: {path}\n{content}"
             
             from prompts import INCREMENTAL_EDIT_PROMPT
-            system_prompt = INCREMENTAL_EDIT_PROMPT.replace("{{file_list}}", file_list).replace("{{current_files}}", current_files_str)
+            system_prompt = INCREMENTAL_EDIT_PROMPT.replace("{{file_list}}", file_list).replace("{{current_files}}", current_files_str).replace("{{frozen_files}}", frozen_files_str)
             logger.info(f"📝 Existing codebase detected - AI will decide edit scope")
         else:
-            system_prompt = SYSTEM_PROMPT
+            system_prompt = SYSTEM_PROMPT.replace("{{frozen_files}}", frozen_files_str)
             logger.info(f"🆕 New project - full generation mode")
         
         messages = [{"role": "system", "content": system_prompt}]
@@ -380,7 +384,13 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
 
 @app.get("/vibecoding/api/health")
 async def health_check():
-    return {"status": "healthy"}
+    docker_available = project_manager.docker_client is not None
+    public_host = os.getenv('PUBLIC_HOST', 'http://localhost')
+    return {
+        "status": "healthy",
+        "docker_available": docker_available,
+        "public_host": public_host
+    }
 
 # Project Management Endpoints
 
@@ -737,31 +747,33 @@ async def get_project_branches(project_id: str):
 async def get_branch_commits(project_id: str, branch_name: str):
     """Get all commits for a specific branch (checkpoints in chat)"""
     try:
-        # Save current branch
+        # Check project exists
         current_status = git_manager.get_status(project_id)
+        if current_status.get("status") != "success":
+            return {"commits": []}
+
         current_branch = current_status.get("branch", "")
-        
-        # Checkout the requested branch
+
+        # Checkout the requested branch only if it differs and exists
+        switched = False
         if branch_name != current_branch:
             checkout_result = git_manager.checkout_branch(project_id, branch_name)
             if checkout_result["status"] != "success":
-                raise HTTPException(status_code=404, detail=f"Branch {branch_name} not found")
-        
+                # Branch doesn't exist yet — return empty gracefully
+                return {"commits": []}
+            switched = True
+
         # Get commits
         commits_result = git_manager.get_commit_history(project_id)
-        
+
         # Switch back to original branch
-        if branch_name != current_branch and current_branch:
+        if switched and current_branch:
             git_manager.checkout_branch(project_id, current_branch)
-        
-        if commits_result["status"] != "success":
-            return {"commits": []}
-        
-        return {"commits": commits_result.get("commits", [])}
-    except HTTPException:
-        raise
+
+        return {"commits": commits_result.get("commits", []) if commits_result.get("status") == "success" else []}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning(f"get_branch_commits error (returning empty): {e}")
+        return {"commits": []}
 
 @app.post("/vibecoding/api/git/remote")
 async def git_remote(request: GitRequest):
@@ -868,6 +880,41 @@ async def cleanup_containers():
         
         project_manager.cleanup_old_containers()
         return {"message": "Cleanup completed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vibecoding/api/projects/{project_id}/frozen-files")
+async def get_frozen_files(project_id: str, user: dict = Depends(get_current_user)):
+    """Get list of frozen files for a project"""
+    try:
+        frozen_files = project_manager.get_frozen_files(project_id)
+        return {"frozen_files": frozen_files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/projects/{project_id}/frozen-files")
+async def set_file_frozen(project_id: str, request: dict, user: dict = Depends(get_current_user)):
+    """Set or unset frozen status for a file"""
+    try:
+        file_path = request.get("file_path")
+        frozen = request.get("frozen", True)
+        
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        
+        success = project_manager.set_file_frozen(project_id, file_path, frozen)
+        
+        if success:
+            return {
+                "success": True,
+                "file_path": file_path,
+                "frozen": frozen,
+                "message": f"File {'frozen' if frozen else 'unfrozen'} successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update frozen status")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

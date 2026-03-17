@@ -362,6 +362,7 @@ NGINX USAGE (when needed):
   * Serve static files from the appropriate directory
   * Proxy dynamic requests to background services
   * Include appropriate headers and error handling
+- CRITICAL: nginx_config should ONLY contain server blocks. NEVER include events, http, or worker_processes directives - these belong in the main nginx.conf, not site configs.
 - Only include nginx_config if Nginx is actually needed. Set to null otherwise.
 
 CONSTRAINTS:
@@ -515,6 +516,7 @@ RULES:
 - NEVER put the server start command inside commands[]. It will time out and kill the fix.
   If the run command needs to change (wrong path, wrong module, wrong port), put the
   corrected command in fix_details.run_command instead.
+- NGINX SITE CONFIGS: When fixing nginx configs in /etc/nginx/sites-enabled/ or /etc/nginx/sites-available/, NEVER include events, http, or worker_processes directives. These belong ONLY in /etc/nginx/nginx.conf. Site configs should ONLY contain server blocks.
 """
         return self._call_ai(prompt, temperature=0.2)
 
@@ -533,9 +535,14 @@ RULES:
             self.log("❌", f"Cannot read {filepath}: {e}")
             return False
 
-        backup = filepath.with_suffix(filepath.suffix + ".bak")
+        # For nginx configs in sites-enabled, store backups in /tmp to avoid duplicate server errors
+        if "/etc/nginx/sites-enabled" in str(filepath):
+            backup = Path("/tmp") / f"{filepath.name}.bak"
+        else:
+            backup = filepath.with_suffix(filepath.suffix + ".bak")
+        
         shutil.copy2(filepath, backup)
-        self.log("💾", f"Backup: {backup.name}")
+        self.log("💾", f"Backup: {backup}")
 
         content = original
         applied = 0
@@ -987,7 +994,19 @@ RULES:
         # If Nginx config provided, write it
         if nginx_config:
             nginx_conf_path = Path("/etc/nginx/sites-available/default")
+            nginx_enabled_path = Path("/etc/nginx/sites-enabled/default")
+            
             try:
+                # Clean up any backup files in sites-enabled to prevent duplicate server errors
+                sites_enabled_dir = Path("/etc/nginx/sites-enabled")
+                if sites_enabled_dir.exists():
+                    for backup_file in sites_enabled_dir.glob("*.bak*"):
+                        try:
+                            backup_file.unlink()
+                            self.log("🧹", f"Cleaned up old backup: {backup_file.name}")
+                        except Exception as e:
+                            self.log("⚠️", f"Failed to remove {backup_file.name}: {e}")
+                
                 nginx_conf_path.write_text(nginx_config, encoding="utf-8")
                 self.log("📝", "Nginx configuration written")
                 # Test nginx config

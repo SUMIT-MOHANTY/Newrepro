@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut, X } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut, X, Lock, Unlock } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, Link, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import LandingPage from './components/LandingPage';
@@ -121,10 +121,62 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const [isContainerLoading, setIsContainerLoading] = useState(false);
   const [discussMode, setDiscussMode] = useState(false);
+  const [frozenFiles, setFrozenFiles] = useState([]);
+  const [freezeLoading, setFreezeLoading] = useState(false);
 
   useEffect(() => {
     prevProjectIdRef.current = currentProjectId;
   }, [currentProjectId]);
+
+  // Fetch frozen files when project changes
+  useEffect(() => {
+    if (currentProjectId) {
+      fetchFrozenFiles();
+    }
+  }, [currentProjectId]);
+
+  const fetchFrozenFiles = async () => {
+    if (!currentProjectId) return;
+    
+    try {
+      const token = localStorage.getItem('vibecoding_token');
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setFrozenFiles(response.data.frozen_files || []);
+    } catch (error) {
+      console.error('Failed to fetch frozen files:', error);
+    }
+  };
+
+  const toggleFileFrozen = async (filePath, e) => {
+    e.stopPropagation();
+    if (!currentProjectId) return;
+    
+    setFreezeLoading(true);
+    try {
+      const token = localStorage.getItem('vibecoding_token');
+      const isFrozen = frozenFiles.includes(filePath);
+      
+      await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
+        file_path: filePath,
+        frozen: !isFrozen
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Update local state
+      if (isFrozen) {
+        setFrozenFiles(frozenFiles.filter(f => f !== filePath));
+      } else {
+        setFrozenFiles([...frozenFiles, filePath]);
+      }
+    } catch (error) {
+      console.error('Failed to toggle file frozen status:', error);
+    } finally {
+      setFreezeLoading(false);
+    }
+  };
 
   const fetchProjects = async () => {
     try {
@@ -569,6 +621,68 @@ function Workspace({ user, logout, isAuthenticated }) {
         newSet.add(folderPath);
       }
       return newSet;
+    });
+  };
+
+  const renderFileTreeWithFreeze = (items, level = 0) => {
+    return items.map((item, idx) => {
+      if (item.type === 'folder') {
+        const isExpanded = expandedFolders.has(item.path);
+        return (
+          <div key={item.path}>
+            <div
+              onClick={() => toggleFolder(item.path)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors text-gray-400 hover:bg-white/5 hover:text-white"
+              style={{ paddingLeft: `${12 + level * 16}px` }}
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-4 h-4 flex-shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 flex-shrink-0" />
+              )}
+              <Folder className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </div>
+            {isExpanded && item.children && (
+              <div>{renderFileTreeWithFreeze(item.children, level + 1)}</div>
+            )}
+          </div>
+        );
+      } else {
+        const isFrozen = frozenFiles.includes(item.path);
+        const FreezeIcon = isFrozen ? Lock : Unlock;
+        
+        return (
+          <div
+            key={item.path}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors group ${
+              selectedFile?.path === item.path
+                ? 'bg-white/10 text-white'
+                : 'text-gray-400 hover:bg-white/5 hover:text-white'
+            }`}
+            style={{ paddingLeft: `${12 + level * 16}px` }}
+          >
+            <div className="flex items-center gap-2 flex-1 min-w-0" onClick={() => setSelectedFile(item)}>
+              <File className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </div>
+            {currentProjectId && (
+              <button
+                onClick={(e) => toggleFileFrozen(item.path, e)}
+                disabled={freezeLoading}
+                className={`opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded flex-shrink-0 ${
+                  isFrozen 
+                    ? 'text-yellow-500 hover:text-yellow-600' 
+                    : 'text-gray-400 hover:text-gray-300'
+                }`}
+                title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
+              >
+                <FreezeIcon className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        );
+      }
     });
   };
 
@@ -1909,7 +2023,7 @@ Please suggest improvements or modifications for this element.`;
             ) : (
               <div className="flex-1 flex min-h-0 overflow-hidden">
                 {/* File Tree Sidebar */}
-                <div className="w-64 border-r border-white/10 bg-[#0F0F14] overflow-y-auto">
+                <div className="w-64 border-r border-white/10 bg-[#0F0F14] flex flex-col">
                   <div className="p-3 border-b border-white/10">
                     <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
                       <Folder className="w-4 h-4" />
@@ -1917,8 +2031,8 @@ Please suggest improvements or modifications for this element.`;
                       <span className="ml-auto text-gray-500">{fileTree.length}</span>
                     </div>
                   </div>
-                  <div className="p-2">
-                    {renderFileTree(fileTree)}
+                  <div className="flex-1 overflow-y-auto p-2">
+                    {renderFileTreeWithFreeze(fileTree)}
                   </div>
                 </div>
 
