@@ -596,7 +596,6 @@ class ProjectManager:
             logger.info(f"✏️ Incremental update for {project_id}")
 
         # 1. Parse code into files and write to workspace
-        import re
         file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
         matches = list(re.finditer(file_marker_regex, code))
         
@@ -852,13 +851,19 @@ except Exception as e:
                 # Container exists - send version switch command
                 if existing_container.status != 'running':
                     existing_container.start()
-                    logger.info(f"▶️ Started container")
-                    # Wait a moment for supervisor to be ready
-                    await asyncio.sleep(2)
+                    logger.info(f"▶️ Started stopped container")
+                    # Wait longer for supervisor to be ready after a cold start
+                    await asyncio.sleep(5)
                 
-                # Send switch command to supervisor
+                # Send switch command to supervisor — retry a few times if just started
                 logger.info(f"📡 Sending switch command to version {version_id}")
-                success = self._send_switch_command(existing_container, version_id)
+                success = False
+                for attempt in range(3):
+                    success = self._send_switch_command(existing_container, version_id)
+                    if success:
+                        break
+                    logger.warning(f"⚠️ Switch attempt {attempt+1} failed, retrying...")
+                    await asyncio.sleep(2)
                 
                 if success:
                     logger.info(f"✅ Switched to version {version_id}")

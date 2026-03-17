@@ -462,18 +462,18 @@ function Workspace({ user, logout, isAuthenticated }) {
         const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
         if (previewResp.data.preview_url) {
           console.log('🌐 Checkpoint preview:', previewResp.data.preview_url);
+          console.log('📊 Setting isContainerLoading = true for checkpoint');
           
-          // Wait for container to restart with new code (2 seconds)
-          console.log('⏳ Waiting for container to restart...');
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          
-          // Force iframe reload by incrementing key and adding cache-busting timestamp
-          const timestamp = Date.now();
-          setPreviewUrl(`${previewResp.data.preview_url}?_=${timestamp}`);
-          setIframeKey(prev => prev + 1);
+          // Set loading state and start retry mechanism
+          containerLoadExpectedRef.current = true;
+          setIsContainerLoading(true);
+          setPreviewUrl(previewResp.data.preview_url);
           setActiveView('preview');
           
-          console.log('🔄 Iframe reloaded with checkpoint code');
+          // Start retry loop to wait for container to be ready
+          startContainerRetry(previewResp.data.preview_url);
+          
+          console.log('🔄 Container loading started for checkpoint');
         }
       } catch (previewErr) {
         console.error('Failed to get preview URL:', previewErr);
@@ -773,6 +773,11 @@ function Workspace({ user, logout, isAuthenticated }) {
         // No container URL, use inline preview
         setPreviewUrl('');
         setActiveView('preview');
+      }
+
+      // Reload branch commits to show new checkpoint in version history
+      if (response.data.version_id) {
+        await loadBranchCommits(currentProjectId, currentBranch);
       }
     } catch (error) {
       console.error('Error:', error);

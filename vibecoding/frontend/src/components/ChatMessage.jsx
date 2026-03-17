@@ -158,8 +158,12 @@ const ChatMessage = ({
   const cleanMessageContent = (content) => {
     if (!content || isUser) return content;
 
-    // 1. Remove anything starting from the first // FILE: marker
-    let cleaned = content.split(/\/\/\s*FILE:|\/\*\s*FILE:|#\s*FILE:|<!--\s*FILE:/i)[0];
+    // 1. Remove anything starting from the first // FILE: or // PATCH: marker
+    let cleaned = content.split(/\/\/\s*FILE:|\/\*\s*FILE:|#\s*FILE:|<!--\s*FILE:|\/\/\s*PATCH:/i)[0];
+
+    // 2. Strip any stray patch syntax (<<<SEARCH, >>>, <<<REPLACE)
+    cleaned = cleaned.replace(/<<<SEARCH[\s\S]*?>>>/g, '');
+    cleaned = cleaned.replace(/<<<REPLACE[\s\S]*?>>>/g, '');
 
     // 2. Remove code blocks that look like full file contents
     // Usually these are inside the // FILE: sections we already split, 
@@ -178,8 +182,8 @@ const ChatMessage = ({
   const displayContent = cleanMessageContent(message.content);
 
   // If we cleaned EVERYTHING out and there's no narrative, show a default success message
-  const finalContent = (!isUser && !displayContent && message.code)
-    ? "I've built the application according to your requirements. You can see the preview on the preview section."
+  const finalContent = (!isUser && !displayContent?.trim() && (message.code || message.versionId))
+    ? "Done! The changes have been applied."
     : displayContent;
 
   return (

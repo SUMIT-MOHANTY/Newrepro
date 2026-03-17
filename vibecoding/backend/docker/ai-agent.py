@@ -1098,6 +1098,23 @@ RULES:
                             pass
 
                         error_log = "".join(output_lines)
+
+                        # ── Fast-path: port already in use — just kill it and retry ──
+                        if 'EADDRINUSE' in error_log or 'address already in use' in error_log.lower():
+                            self.log("🔌", f"Port {self.config.port} in use — killing and retrying...")
+                            try:
+                                subprocess.run(
+                                    ['sh', '-c', f'lsof -ti:{self.config.port} | xargs -r kill -9'],
+                                    capture_output=True, timeout=3
+                                )
+                                subprocess.run(
+                                    ['sh', '-c', f'fuser -k {self.config.port}/tcp'],
+                                    capture_output=True, timeout=3
+                                )
+                            except Exception:
+                                pass
+                            import time as _time; _time.sleep(1)
+                            continue
                         fix = self.call_ai_for_fix(error_log, project_type, files_content)
                         success, new_run_cmd = self.apply_fix(fix) if fix else (False, None)
 
@@ -1127,6 +1144,23 @@ RULES:
                                 pass
 
                             error_log = "".join(output_lines + runtime_lines)
+
+                            # ── Fast-path: port already in use ──
+                            if 'EADDRINUSE' in error_log or 'address already in use' in error_log.lower():
+                                self.log("🔌", f"Port {self.config.port} in use — killing and retrying...")
+                                try:
+                                    subprocess.run(
+                                        ['sh', '-c', f'lsof -ti:{self.config.port} | xargs -r kill -9'],
+                                        capture_output=True, timeout=3
+                                    )
+                                    subprocess.run(
+                                        ['sh', '-c', f'fuser -k {self.config.port}/tcp'],
+                                        capture_output=True, timeout=3
+                                    )
+                                except Exception:
+                                    pass
+                                import time as _time; _time.sleep(1)
+                                continue
                             fix = self.call_ai_for_fix(error_log, project_type, files_content)
                             success, new_run_cmd = self.apply_fix(fix) if fix else (False, None)
 

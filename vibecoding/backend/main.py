@@ -84,35 +84,35 @@ class GitRequest(BaseModel):
 SYSTEM_PROMPT = MAIN_SYSTEM_PROMPT
 
 # ─── Auth Endpoints ─────────────────────────────────────────────────────────────
-@app.post("/api/auth/signup")
+@app.post("/vibecoding/api/auth/signup")
 async def signup(request: SignupRequest):
     """Register a new user."""
     return signup_user(request)
 
 
-@app.post("/api/auth/login")
+@app.post("/vibecoding/api/auth/login")
 async def login(request: LoginRequest):
     """Login with email and password."""
     return login_user(request)
 
 
-@app.get("/api/auth/me")
+@app.get("/vibecoding/api/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
     """Get current authenticated user."""
     return user
 
 
-@app.get("/api/auth/verify")
+@app.get("/vibecoding/api/auth/verify")
 async def verify_token(user: dict = Depends(get_current_user)):
     """Verify if the current token is valid."""
     return {"valid": True, "user": user}
 
 
-@app.get("/api")
+@app.get("/vibecoding/api")
 async def root():
     return {"message": f"{APP_NAME} API is running"}
 
-@app.post("/api/chat/dual-agent")
+@app.post("/vibecoding/api/chat/dual-agent")
 async def dual_agent_chat(request: GenerateRequest):
     """
     New endpoint using dual-agent architecture:
@@ -173,7 +173,7 @@ async def dual_agent_chat(request: GenerateRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/generate", response_model=GenerateResponse)
+@app.post("/vibecoding/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest):
     # Get or create project ID at the start
     project_id = request.project_id or project_manager.generate_project_id()
@@ -258,8 +258,13 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         import re as _re
         code = None
         
+        has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
         has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
-        if has_markers:
+
+        if has_patch_markers:
+            # AI returned patch hunks — pass raw response so update_workspace_from_code can apply them
+            code = ai_response
+        elif has_markers:
             # AI provided file markers. Keep the entire response but strip markdown code wrappers
             # so the frontend can split by file markers cleanly without including ` ```html ` in the file content.
             cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response)
@@ -295,7 +300,8 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         message = ai_response
         
         # Check if AI returned instructions instead of actual code
-        if code and (
+        # (skip this check for patch responses — they never start with code prefixes)
+        if code and not has_patch_markers and (
             not code.strip().startswith(('from', 'import', 'def', 'class', 'app =', '<!DOCTYPE', '<html', '{', '[')) and
             len(code.strip().split('\n')) < 5
         ):
@@ -303,9 +309,13 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
             code = None
             message = ai_response  # Show full response including instructions
 
-        # Clean message (remove code blocks)
+        # Clean message (remove code blocks and patch blocks — show only narrative)
         if code:
-            message = ai_response.split("```")[0].strip()
+            if has_patch_markers:
+                # Strip everything from the first PATCH block onwards
+                message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
+            else:
+                message = ai_response.split("```")[0].strip()
 
         # Save code version if code was generated
         version_id = None
@@ -368,13 +378,13 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
             tool_calls_log=None
         )
 
-@app.get("/api/health")
+@app.get("/vibecoding/api/health")
 async def health_check():
     return {"status": "healthy"}
 
 # Project Management Endpoints
 
-@app.post("/api/projects", response_model=ProjectResponse)
+@app.post("/vibecoding/api/projects", response_model=ProjectResponse)
 async def create_project(request: ProjectCreateRequest, user: dict = Depends(get_current_user)):
     try:
         project_id = request.project_id or project_manager.generate_project_id()
@@ -400,7 +410,7 @@ async def create_project(request: ProjectCreateRequest, user: dict = Depends(get
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects", response_model=ProjectListResponse)
+@app.get("/vibecoding/api/projects", response_model=ProjectListResponse)
 async def list_projects(user: dict = Depends(get_current_user)):
     try:
         user_id = user["id"]
@@ -409,7 +419,7 @@ async def list_projects(user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}", response_model=ProjectResponse)
+@app.get("/vibecoding/api/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, user: dict = Depends(get_current_user)):
     try:
         project_info = project_manager.get_project_info(project_id)
@@ -426,7 +436,7 @@ async def get_project(project_id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/versions")
+@app.get("/vibecoding/api/projects/{project_id}/versions")
 async def list_versions(project_id: str):
     """List all Git branches for a project (version history shows branches)"""
     try:
@@ -471,7 +481,7 @@ async def list_versions(project_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/versions/{version_id}/code")
+@app.get("/vibecoding/api/projects/{project_id}/versions/{version_id}/code")
 async def get_version_code(project_id: str, version_id: str):
     try:
         code = project_manager.get_version_code(project_id, version_id)
@@ -483,7 +493,7 @@ async def get_version_code(project_id: str, version_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/versions/{version_id}/files")
+@app.get("/vibecoding/api/projects/{project_id}/versions/{version_id}/files")
 async def get_version_files(project_id: str, version_id: str):
     """Get all files for a specific version (branch or commit)"""
     try:
@@ -521,7 +531,7 @@ async def get_version_files(project_id: str, version_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/projects/{project_id}/versions/{version_id}/preview")
+@app.post("/vibecoding/api/projects/{project_id}/versions/{version_id}/preview")
 async def create_preview(project_id: str, version_id: str):
     try:
         # Check if Docker is available
@@ -530,6 +540,17 @@ async def create_preview(project_id: str, version_id: str):
                 status_code=503,
                 detail="Docker not available. Please ensure Docker Desktop is installed and running."
             )
+
+        # Check metadata exists before attempting container creation
+        project_dir = project_manager.artifacts_dir / project_id
+        if version_id == "workspace":
+            metadata_file = project_dir / "workspace" / "metadata.json"
+        else:
+            metadata_file = project_dir / "versions" / version_id / "metadata.json"
+
+        if not metadata_file.exists():
+            # No code generated yet — return empty gracefully
+            return {"preview_url": None}
         
         # Check if version_id is a branch name
         branches_result = git_manager.list_branches(project_id)
@@ -547,18 +568,17 @@ async def create_preview(project_id: str, version_id: str):
                     git_manager.checkout_branch(project_id, version_id)
         
         # Switch container to workspace (which now reflects the checked out branch)
-        # create_container_for_code handles both new creation and version switching
         preview_url = await project_manager.create_container_for_code(project_id, "workspace")
         
         if not preview_url:
-            raise HTTPException(status_code=500, detail="Failed to create preview")
+            return {"preview_url": None}
         return {"preview_url": preview_url}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/projects/{project_id}/versions/{version_id}/preview")
+@app.delete("/vibecoding/api/projects/{project_id}/versions/{version_id}/preview")
 async def stop_preview(project_id: str, version_id: str):
     try:
         project_manager.stop_container(project_id, version_id)
@@ -566,7 +586,7 @@ async def stop_preview(project_id: str, version_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/download")
+@app.get("/vibecoding/api/projects/{project_id}/download")
 async def download_project(project_id: str):
     try:
         zip_path = project_manager.create_project_zip(project_id)
@@ -585,7 +605,7 @@ async def download_project(project_id: str):
 
 # Chat Persistence Endpoints
 
-@app.get("/api/projects/{project_id}/chat/{version_id}")
+@app.get("/vibecoding/api/projects/{project_id}/chat/{version_id}")
 async def get_chat_history(project_id: str, version_id: str):
     try:
         history = await project_manager.get_chat_version(project_id, version_id)
@@ -595,7 +615,7 @@ async def get_chat_history(project_id: str, version_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/projects/{project_id}/chat/{version_id}")
+@app.post("/vibecoding/api/projects/{project_id}/chat/{version_id}")
 async def save_chat_history(project_id: str, version_id: str, request: dict):
     try:
         history = request.get("history", [])
@@ -606,7 +626,7 @@ async def save_chat_history(project_id: str, version_id: str, request: dict):
 
 # Git Integration Endpoints
 
-@app.post("/api/git/status")
+@app.post("/vibecoding/api/git/status")
 async def git_status(request: GitRequest):
     try:
         status = git_manager.get_status(request.project_id)
@@ -614,7 +634,7 @@ async def git_status(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/init")
+@app.post("/vibecoding/api/git/init")
 async def git_init(request: GitRequest):
     try:
         result = git_manager.init_repo(request.project_id)
@@ -622,7 +642,7 @@ async def git_init(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/add")
+@app.post("/vibecoding/api/git/add")
 async def git_add(request: GitRequest):
     try:
         result = git_manager.add_files(request.project_id, request.files)
@@ -630,7 +650,7 @@ async def git_add(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/commit")
+@app.post("/vibecoding/api/git/commit")
 async def git_commit(request: GitRequest):
     try:
         if not request.message:
@@ -640,7 +660,7 @@ async def git_commit(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/branch")
+@app.post("/vibecoding/api/git/branch")
 async def git_branch(request: GitRequest):
     try:
         if not request.branch_name:
@@ -652,7 +672,7 @@ async def git_branch(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/checkout")
+@app.post("/vibecoding/api/git/checkout")
 async def git_checkout(request: GitRequest):
     try:
         if not request.branch_name:
@@ -664,7 +684,7 @@ async def git_checkout(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/branches")
+@app.post("/vibecoding/api/git/branches")
 async def git_branches(request: GitRequest):
     try:
         result = git_manager.list_branches(
@@ -676,7 +696,7 @@ async def git_branches(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/branches")
+@app.get("/vibecoding/api/projects/{project_id}/branches")
 async def get_project_branches(project_id: str):
     """Get all Git branches for a project (for version history UI)"""
     try:
@@ -713,7 +733,7 @@ async def get_project_branches(project_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/branches/{branch_name}/commits")
+@app.get("/vibecoding/api/projects/{project_id}/branches/{branch_name}/commits")
 async def get_branch_commits(project_id: str, branch_name: str):
     """Get all commits for a specific branch (checkpoints in chat)"""
     try:
@@ -743,7 +763,7 @@ async def get_branch_commits(project_id: str, branch_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/remote")
+@app.post("/vibecoding/api/git/remote")
 async def git_remote(request: GitRequest):
     try:
         if not request.remote_url:
@@ -753,7 +773,7 @@ async def git_remote(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/push")
+@app.post("/vibecoding/api/git/push")
 async def git_push(request: GitRequest):
     try:
         result = git_manager.push(
@@ -767,7 +787,7 @@ async def git_push(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/chat/new")
+@app.post("/vibecoding/api/chat/new")
 async def start_new_chat(request: GitRequest):
     try:
         project_id = request.project_id
@@ -795,7 +815,7 @@ async def start_new_chat(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/git/checkpoint")
+@app.post("/vibecoding/api/git/checkpoint")
 async def git_checkpoint(request: GitRequest):
     """Switch to a specific version's checkpoint (commit)"""
     try:
@@ -839,7 +859,7 @@ async def git_checkpoint(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/cleanup")
+@app.post("/vibecoding/api/cleanup")
 async def cleanup_containers():
     try:
         # Check if Docker is available
