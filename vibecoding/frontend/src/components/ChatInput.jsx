@@ -62,7 +62,7 @@ const ChatInput = ({
         darkMode ? 'text-gray-500' : 'text-gray-400'
       )}>
         <div className="flex items-center gap-2">
-          <Button 
+          {/* <Button 
             variant="ghost"
             size="sm"
             disabled={disabled}
@@ -73,7 +73,7 @@ const ChatInput = ({
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Attach</span>
-          </Button>
+          </Button> */}
 
           {/* Discuss mode toggle */}
           <button

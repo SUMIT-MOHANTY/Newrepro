@@ -106,7 +106,7 @@ const ChatPanel = ({
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {messages.length > 0 && (
+          {/* {messages.length > 0 && (
             <Button
               onClick={onClearHistory}
               variant="ghost"
@@ -121,8 +121,8 @@ const ChatPanel = ({
             >
               <RefreshCw className="w-4 h-4" />
             </Button>
-          )}
-          <Button
+          )} */}
+          {/* <Button
             variant="ghost"
             size="icon"
             className={cn(
@@ -133,7 +133,7 @@ const ChatPanel = ({
             )}
           >
             <MoreHorizontal className="w-4 h-4" />
-          </Button>
+          </Button> */}
         </div>
       </div>
 
