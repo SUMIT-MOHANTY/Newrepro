@@ -309,8 +309,9 @@ const AzureDevOpsIntegration = ({
                                 type="button"
                                 onClick={handleSaveCredentials}
                                 disabled={savingCredentials || !selectedProjectKey}
-                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-app-bg-card bg-app-primary rounded hover:bg-app-primary-dark transition-colors disabled:opacity-50"
+                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-app-primary bg-app-primary-light rounded hover:bg-app-primary-light/80 transition-colors disabled:opacity-50"
                             >
+                                <AzureDevOpsIcon className="w-4 h-4" />
                                 {savingCredentials ? 'Saving...' : 'Save & Connect'}
                             </button>
                         </div>
