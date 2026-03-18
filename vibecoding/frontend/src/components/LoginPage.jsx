@@ -173,6 +173,12 @@ export default function LoginPage({ onSwitchToSignup }) {
                   </>
                 )}
               </button>
+
+              <div className="auth-forgot-password">
+                <a href="/forgot-password" className="auth-forgot-link">
+                  Forgot password?
+                </a>
+              </div>
             </form>
 
             <div className="auth-divider">

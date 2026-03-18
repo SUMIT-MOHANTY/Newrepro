@@ -461,6 +461,19 @@ class ProjectManager:
         import difflib
         workspace_dir = self.artifacts_dir / project_id / "workspace"
 
+        # ── Check for frozen file violations BEFORE applying patches ──────
+        frozen_files = self.get_frozen_files(project_id)
+        if frozen_files:
+            # Extract target files from PATCH blocks
+            patch_targets = re.findall(r'//\s*PATCH:\s*([^\n<]+)', code)
+            patch_targets = [f.strip() for f in patch_targets]
+            
+            # Check if any patch targets are frozen
+            frozen_violations = [f for f in patch_targets if f in frozen_files]
+            if frozen_violations:
+                logger.error(f"❌ Cannot apply patches: frozen files detected: {frozen_violations}")
+                return False, []
+
         # ── Normalize malformed AI output before parsing ──────────────────
         # Fix: "// PATCH: index.html <<<SEARCH" → "// PATCH: index.html\n<<<SEARCH"
         code = re.sub(r'(//\s*PATCH:\s*[^\n<]+?)\s*(<<<+\s*SEARCH)', r'\1\n\2', code)
@@ -576,6 +589,19 @@ class ProjectManager:
         has_patches = bool(re.search(r'//\s*PATCH:\s*', code))
         if has_patches:
             applied, patched_files = self.apply_patch_response(project_id, code)
+            
+            # Check if patches were rejected due to frozen files
+            if not applied and patched_files == []:
+                # Check if it was due to frozen files
+                frozen_files = self.get_frozen_files(project_id)
+                if frozen_files:
+                    patch_targets = re.findall(r'//\s*PATCH:\s*([^\n]+)', code)
+                    patch_targets = [f.strip() for f in patch_targets]
+                    frozen_violations = [f for f in patch_targets if f in frozen_files]
+                    if frozen_violations:
+                        # Raise exception to be caught by main.py
+                        raise ValueError(f"FROZEN_FILES_VIOLATION:{','.join(frozen_violations)}")
+            
             if applied:
                 logger.info(f"🩹 Applied patches to: {', '.join(patched_files)}")
                 # Also handle any FILE: blocks mixed in (new files)
@@ -656,6 +682,21 @@ class ProjectManager:
         # 1. Parse code into files and write to workspace
         file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
         matches = list(re.finditer(file_marker_regex, code))
+        
+        # Check for frozen file violations in FILE: markers
+        if matches:
+            frozen_files = self.get_frozen_files(project_id)
+            if frozen_files:
+                generated_files = []
+                for match in matches:
+                    filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                    generated_files.append(filename)
+                
+                frozen_violations = [f for f in generated_files if f in frozen_files]
+                if frozen_violations:
+                    # Remove duplicates
+                    frozen_violations = list(set(frozen_violations))
+                    raise ValueError(f"FROZEN_FILES_VIOLATION:{','.join(frozen_violations)}")
         
         main_file_path = None
         

@@ -6,6 +6,7 @@ import { useAuth } from './contexts/AuthContext';
 import LandingPage from './components/LandingPage';
 import LoginPage from './components/LoginPage';
 import SignupPage from './components/SignupPage';
+import ForgotPasswordPage from './components/ForgotPasswordPage';
 import Header from './components/Header';
 import GitPanel from './components/GitPanel';
 import bourntecLogo from '../assets/bourntec_logo.png';
@@ -48,6 +49,9 @@ function App() {
       } />
       <Route path="/signup" element={
         isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><SignupPage onSwitchToLogin={() => navigate('/login')} /></AuthLayout>
+      } />
+      <Route path="/forgot-password" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><ForgotPasswordPage onBackToLogin={() => navigate('/login')} /></AuthLayout>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

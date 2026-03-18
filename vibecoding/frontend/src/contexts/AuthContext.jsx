@@ -66,10 +66,15 @@ export function AuthProvider({ children }) {
       full_name: fullName || username,
     });
 
-    const { token: newToken, user: userData } = response.data;
-    localStorage.setItem('vibecoding_token', newToken);
-    setToken(newToken);
-    setUser(userData);
+    // Only auto-login if user provided their own password
+    // If passwordless (password not provided), user must check email and login manually
+    if (password) {
+      const { token: newToken, user: userData } = response.data;
+      localStorage.setItem('vibecoding_token', newToken);
+      setToken(newToken);
+      setUser(userData);
+    }
+    
     return response.data;
   }, []);
 
