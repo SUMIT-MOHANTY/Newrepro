@@ -392,6 +392,8 @@ class ProjectManager:
         
         # Directories to skip (common large/binary directories)
         skip_dirs = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache'}
+        # Files to skip (internal system files)
+        skip_files = {'metadata.json'}
         
         for file_path in sorted(workspace_dir.rglob('*')):
             if file_count >= max_files:
@@ -399,6 +401,10 @@ class ProjectManager:
             
             # Skip if any parent directory is in skip_dirs
             if any(part in skip_dirs for part in file_path.parts):
+                continue
+            
+            # Skip internal system files
+            if file_path.name in skip_files:
                 continue
             
             try:
@@ -555,6 +561,16 @@ class ProjectManager:
             git_manager.init_repo(project_id)
             git_manager._run_git_command(project_id, ["config", "user.email", "vibe@engineer.com"])
             git_manager._run_git_command(project_id, ["config", "user.name", "Vibe Engineer"])
+
+        # Ensure metadata.json is always gitignored (never committed)
+        gitignore_path = workspace_dir / ".gitignore"
+        gitignore_entry = "metadata.json\n"
+        existing_gitignore = gitignore_path.read_text() if gitignore_path.exists() else ""
+        if "metadata.json" not in existing_gitignore:
+            with open(gitignore_path, 'a') as f:
+                f.write(gitignore_entry)
+        # Untrack metadata.json if it was previously committed
+        git_manager._run_git_command(project_id, ["rm", "--cached", "metadata.json", "--ignore-unmatch", "-q"])
 
         # ── Patch mode: AI returned PATCH hunks — apply surgically ──────
         has_patches = bool(re.search(r'//\s*PATCH:\s*', code))
