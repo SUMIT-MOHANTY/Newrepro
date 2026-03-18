@@ -223,7 +223,10 @@ async def generate_code(request: GenerateRequest):
             system_prompt = SYSTEM_PROMPT.replace("{{frozen_files}}", frozen_files_str)
             logger.info(f"🆕 New project - full generation mode")
         
-        messages = [{"role": "system", "content": system_prompt}]
+        from datetime import datetime
+        now = datetime.now()
+        date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
+        messages = [{"role": "system", "content": date_context + system_prompt}]
         for msg in request.history:
             messages.append({
                 "role": msg.role,

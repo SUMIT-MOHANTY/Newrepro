@@ -21,7 +21,7 @@ class AIConfig:
         if not self.model:
             raise ValueError("AI_MODEL environment variable is required")
         
-        self.max_tokens = int(os.getenv("AI_MAX_TOKENS") or "4096")
+        # self.max_tokens = int(os.getenv("AI_MAX_TOKENS") or "4096")
         self.temperature = float(os.getenv("AI_TEMPERATURE", "1.0"))
         self.top_p = float(os.getenv("AI_TOP_P", "1.0"))
         self.frequency_penalty = float(os.getenv("AI_FREQUENCY_PENALTY", "0.0"))
@@ -38,14 +38,14 @@ class AIConfig:
     def get_payload(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         """Get request payload for the AI API"""
         # Ensure max_tokens is valid (NVIDIA integration often dislikes 0)
-        max_t = kwargs.get("max_tokens", self.max_tokens)
-        if max_t <= 0:
-            max_t = 4096
+        # max_t = kwargs.get("max_tokens", self.max_tokens)
+        # if max_t <= 0:
+        #     max_t = 4096
 
         payload = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
-            "max_tokens": max_t,
+            # "max_tokens": max_t,
             "temperature": kwargs.get("temperature", self.temperature),
             "top_p": kwargs.get("top_p", self.top_p),
             "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),

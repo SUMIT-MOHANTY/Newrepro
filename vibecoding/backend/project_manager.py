@@ -19,6 +19,17 @@ from ai_config import ai_config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def sanitize_html(content: str) -> str:
+    """Remove stray '>' characters that appear after closing tags (AI generation artifact)."""
+    # Remove stray > after closing tags like </nav>>, </ul>>, </section>>, </footer>>
+    content = re.sub(r'(</\w+>)>+', r'\1', content)
+    # Remove stray > after opening tag closers like id="features">>
+    content = re.sub(r'(">)>+', r'\1', content)
+    # Remove stray > at end of </html>
+    content = re.sub(r'(</html>)>*\s*$', r'\1', content.rstrip())
+    return content
+
 EDITOR_INJECTION_SCRIPT = """
 <script id="__vibe_editor__">
 (function() {
@@ -453,15 +464,27 @@ class ProjectManager:
         code = re.sub(r'>{4,7}\s*REPLACE', '<<<REPLACE', code)
         # Fix: "=======" separator between search/replace → ">>>\n<<<REPLACE"
         code = re.sub(r'={4,7}', '>>>\n<<<REPLACE', code)
+        # Fix: ">>><<<REPLACE" or ">>> <<<REPLACE" (missing newline between close and open)
+        code = re.sub(r'>>>\s*<<<REPLACE', '>>>\n<<<REPLACE', code)
+        # Fix: "<<<REPLACE" immediately followed by content on same line → add newline
+        code = re.sub(r'(<<<REPLACE)([^\n])', r'\1\n\2', code)
+        # Fix: "<<<SEARCH" immediately followed by content on same line → add newline
+        code = re.sub(r'(<<<SEARCH)([^\n])', r'\1\n\2', code)
+        # Fix: content immediately followed by ">>>" without newline → add newline
+        code = re.sub(r'([^\n])(>>>)', r'\1\n\2', code)
+        # Fix: "// PATCH: file.ext" immediately followed by next PATCH block (missing close >>>)
+        # Detect missing closing >>> before a new PATCH block
+        code = re.sub(r'(<<<REPLACE\n(?:(?!>>>|<<<PATCH).)*?)\n(//\s*PATCH:)', r'\1\n>>>\n\2', code, flags=re.DOTALL)
 
         patch_block_re = re.compile(
-            r'//\s*PATCH:\s*([^\n<]+)\n<<<SEARCH\n(.*?)>>>\n<<<REPLACE\n(.*?)>>>',
+            r'//\s*PATCH:\s*([^\n<]+)\n\s*<<<SEARCH\n(.*?)\n\s*>>>\n\s*<<<REPLACE\n(.*?)\n\s*>>>',
             re.DOTALL
         )
         matches = list(patch_block_re.finditer(code))
         if not matches:
             if '// PATCH:' in code or '//PATCH:' in code:
                 logger.warning("⚠️ Found PATCH markers but no hunks could be parsed after normalization")
+                logger.debug(f"Normalized patch text (first 500 chars):\n{code[:500]}")
             return False, []
 
         patched_files = []
@@ -564,7 +587,11 @@ class ProjectManager:
                 self._ensure_workspace_metadata(project_id, workspace_dir, commit_hash)
                 return commit_hash, workspace_dir / patched_files[0]
             else:
-                logger.warning("⚠️ Patch parsing found no applicable hunks — falling through to file mode")
+                logger.warning("⚠️ Patch parsing found no applicable hunks — returning without writing raw patch text as file")
+                # Do NOT fall through — writing raw patch markers as a file would corrupt the workspace
+                hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
+                commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
+                return commit_hash, workspace_dir
 
         # Auto-detect incremental mode if not specified
         if is_incremental is None:

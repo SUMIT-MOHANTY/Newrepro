@@ -279,7 +279,7 @@ function Workspace({ user, logout, isAuthenticated }) {
           
           // Get or create preview URL for the current branch
           try {
-            const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${projectId}/versions/${currentBranchName}/preview`);
+            const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${projectId}/versions/workspace/preview`);
             if (previewResp.data.preview_url) {
               console.log('🌐 Restored container preview:', previewResp.data.preview_url);
               containerLoadExpectedRef.current = true;
@@ -396,9 +396,12 @@ function Workspace({ user, logout, isAuthenticated }) {
       setFileTree(fileTree);
       
       // Update preview
-      const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${branchName}/preview`);
+      const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
       if (previewResp.data.preview_url) {
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
         setPreviewUrl(previewResp.data.preview_url);
+        startContainerRetry(previewResp.data.preview_url);
       }
       
       // Load chat history for this branch
@@ -670,10 +673,10 @@ function Workspace({ user, logout, isAuthenticated }) {
               <button
                 onClick={(e) => toggleFileFrozen(item.path, e)}
                 disabled={freezeLoading}
-                className={`opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded flex-shrink-0 ${
+                className={`p-1 rounded flex-shrink-0 ${
                   isFrozen 
                     ? 'text-yellow-500 hover:text-yellow-600' 
-                    : 'text-gray-400 hover:text-gray-300'
+                    : 'opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-300'
                 }`}
                 title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
               >
