@@ -26,7 +26,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "vibecoding_users.db")
 class SignupRequest(BaseModel):
     username: str
     email: str
-    password: str
+    password: Optional[str] = None  # Optional - will be auto-generated if not provided
     full_name: Optional[str] = None
 
 
@@ -196,9 +196,29 @@ def verify_jwt_token(token: str) -> Optional[dict]:
         return None
 
 
+def generate_random_password(length: int = 12) -> str:
+    """Generate a secure random password."""
+    import string
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    # Ensure at least one of each type
+    password = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%^&*")
+    ]
+    # Fill the rest randomly
+    password += [secrets.choice(alphabet) for _ in range(length - 4)]
+    # Shuffle to avoid predictable pattern
+    secrets.SystemRandom().shuffle(password)
+    return ''.join(password)
+
+
 # ─── Auth Functions ─────────────────────────────────────────────────────────────
 def signup_user(request: SignupRequest) -> AuthResponse:
     """Register a new user."""
+    from email_service import email_service
+    
     conn = get_db()
     try:
         # Check if email already exists
@@ -216,15 +236,26 @@ def signup_user(request: SignupRequest) -> AuthResponse:
             raise HTTPException(status_code=400, detail="Username already taken")
         
         # Validate
-        if len(request.password) < 6:
-            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
         if len(request.username) < 3:
             raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
         if "@" not in request.email:
             raise HTTPException(status_code=400, detail="Invalid email address")
         
+        # Generate password if not provided
+        password_to_use = request.password
+        generated_password = None
+        
+        if not password_to_use:
+            # Passwordless signup - generate random password
+            generated_password = generate_random_password()
+            password_to_use = generated_password
+        else:
+            # User provided password - validate it
+            if len(password_to_use) < 6:
+                raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        
         # Hash password
-        password_hash, salt = hash_password(request.password)
+        password_hash, salt = hash_password(password_to_use)
         avatar_color = generate_avatar_color(request.email)
         now = datetime.utcnow().isoformat()
         
@@ -239,12 +270,30 @@ def signup_user(request: SignupRequest) -> AuthResponse:
         
         user_id = cursor.lastrowid
         
+        # Send welcome email with password if it was generated
+        if generated_password:
+            try:
+                email_sent = email_service.send_welcome_email(
+                    request.email.lower(),
+                    request.username.lower(),
+                    generated_password
+                )
+                if not email_sent:
+                    # Log warning but don't fail signup
+                    print(f"Warning: Failed to send welcome email to {request.email}")
+            except Exception as e:
+                print(f"Error sending welcome email: {e}")
+        
         # Create token
         token = create_jwt_token({
             "user_id": user_id,
             "email": request.email.lower(),
             "username": request.username.lower()
         })
+        
+        message = "Account created successfully!"
+        if generated_password:
+            message += " Check your email for your password."
         
         return AuthResponse(
             token=token,
@@ -256,7 +305,7 @@ def signup_user(request: SignupRequest) -> AuthResponse:
                 "avatar_color": avatar_color,
                 "created_at": now
             },
-            message="Account created successfully!"
+            message=message
         )
     finally:
         conn.close()
@@ -323,5 +372,56 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             raise HTTPException(status_code=401, detail="User not found")
         
         return dict(user)
+    finally:
+        conn.close()
+
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+def forgot_password(request: ForgotPasswordRequest) -> dict:
+    """Reset password and send new password via email."""
+    from email_service import email_service
+    
+    conn = get_db()
+    try:
+        # Find user by email
+        user = conn.execute(
+            "SELECT * FROM users WHERE email = ?", (request.email.lower(),)
+        ).fetchone()
+        
+        if not user:
+            # Don't reveal if email exists or not for security
+            return {"message": "If an account with that email exists, a password reset email has been sent."}
+        
+        # Generate new password
+        new_password = generate_random_password()
+        
+        # Hash the new password
+        password_hash, salt = hash_password(new_password)
+        
+        # Update user's password
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            "UPDATE users SET password_hash = ?, salt = ?, updated_at = ? WHERE id = ?",
+            (password_hash, salt, now, user["id"])
+        )
+        conn.commit()
+        
+        # Send password reset email
+        try:
+            email_sent = email_service.send_password_reset_email(
+                user["email"],
+                user["username"],
+                new_password
+            )
+            if not email_sent:
+                print(f"Warning: Failed to send password reset email to {user['email']}")
+        except Exception as e:
+            print(f"Error sending password reset email: {e}")
+        
+        return {"message": "If an account with that email exists, a password reset email has been sent."}
     finally:
         conn.close()

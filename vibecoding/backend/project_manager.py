@@ -19,6 +19,17 @@ from ai_config import ai_config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def sanitize_html(content: str) -> str:
+    """Remove stray '>' characters that appear after closing tags (AI generation artifact)."""
+    # Remove stray > after closing tags like </nav>>, </ul>>, </section>>, </footer>>
+    content = re.sub(r'(</\w+>)>+', r'\1', content)
+    # Remove stray > after opening tag closers like id="features">>
+    content = re.sub(r'(">)>+', r'\1', content)
+    # Remove stray > at end of </html>
+    content = re.sub(r'(</html>)>*\s*$', r'\1', content.rstrip())
+    return content
+
 EDITOR_INJECTION_SCRIPT = """
 <script id="__vibe_editor__">
 (function() {
@@ -381,6 +392,8 @@ class ProjectManager:
         
         # Directories to skip (common large/binary directories)
         skip_dirs = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache'}
+        # Files to skip (internal system files)
+        skip_files = {'metadata.json'}
         
         for file_path in sorted(workspace_dir.rglob('*')):
             if file_count >= max_files:
@@ -388,6 +401,10 @@ class ProjectManager:
             
             # Skip if any parent directory is in skip_dirs
             if any(part in skip_dirs for part in file_path.parts):
+                continue
+            
+            # Skip internal system files
+            if file_path.name in skip_files:
                 continue
             
             try:
@@ -444,6 +461,19 @@ class ProjectManager:
         import difflib
         workspace_dir = self.artifacts_dir / project_id / "workspace"
 
+        # ── Check for frozen file violations BEFORE applying patches ──────
+        frozen_files = self.get_frozen_files(project_id)
+        if frozen_files:
+            # Extract target files from PATCH blocks
+            patch_targets = re.findall(r'//\s*PATCH:\s*([^\n<]+)', code)
+            patch_targets = [f.strip() for f in patch_targets]
+            
+            # Check if any patch targets are frozen
+            frozen_violations = [f for f in patch_targets if f in frozen_files]
+            if frozen_violations:
+                logger.error(f"❌ Cannot apply patches: frozen files detected: {frozen_violations}")
+                return False, []
+
         # ── Normalize malformed AI output before parsing ──────────────────
         # Fix: "// PATCH: index.html <<<SEARCH" → "// PATCH: index.html\n<<<SEARCH"
         code = re.sub(r'(//\s*PATCH:\s*[^\n<]+?)\s*(<<<+\s*SEARCH)', r'\1\n\2', code)
@@ -453,15 +483,27 @@ class ProjectManager:
         code = re.sub(r'>{4,7}\s*REPLACE', '<<<REPLACE', code)
         # Fix: "=======" separator between search/replace → ">>>\n<<<REPLACE"
         code = re.sub(r'={4,7}', '>>>\n<<<REPLACE', code)
+        # Fix: ">>><<<REPLACE" or ">>> <<<REPLACE" (missing newline between close and open)
+        code = re.sub(r'>>>\s*<<<REPLACE', '>>>\n<<<REPLACE', code)
+        # Fix: "<<<REPLACE" immediately followed by content on same line → add newline
+        code = re.sub(r'(<<<REPLACE)([^\n])', r'\1\n\2', code)
+        # Fix: "<<<SEARCH" immediately followed by content on same line → add newline
+        code = re.sub(r'(<<<SEARCH)([^\n])', r'\1\n\2', code)
+        # Fix: content immediately followed by ">>>" without newline → add newline
+        code = re.sub(r'([^\n])(>>>)', r'\1\n\2', code)
+        # Fix: "// PATCH: file.ext" immediately followed by next PATCH block (missing close >>>)
+        # Detect missing closing >>> before a new PATCH block
+        code = re.sub(r'(<<<REPLACE\n(?:(?!>>>|<<<PATCH).)*?)\n(//\s*PATCH:)', r'\1\n>>>\n\2', code, flags=re.DOTALL)
 
         patch_block_re = re.compile(
-            r'//\s*PATCH:\s*([^\n<]+)\n<<<SEARCH\n(.*?)>>>\n<<<REPLACE\n(.*?)>>>',
+            r'//\s*PATCH:\s*([^\n<]+)\n\s*<<<SEARCH\n(.*?)\n\s*>>>\n\s*<<<REPLACE\n(.*?)\n\s*>>>',
             re.DOTALL
         )
         matches = list(patch_block_re.finditer(code))
         if not matches:
             if '// PATCH:' in code or '//PATCH:' in code:
                 logger.warning("⚠️ Found PATCH markers but no hunks could be parsed after normalization")
+                logger.debug(f"Normalized patch text (first 500 chars):\n{code[:500]}")
             return False, []
 
         patched_files = []
@@ -533,10 +575,33 @@ class ProjectManager:
             git_manager._run_git_command(project_id, ["config", "user.email", "vibe@engineer.com"])
             git_manager._run_git_command(project_id, ["config", "user.name", "Vibe Engineer"])
 
+        # Ensure metadata.json is always gitignored (never committed)
+        gitignore_path = workspace_dir / ".gitignore"
+        gitignore_entry = "metadata.json\n"
+        existing_gitignore = gitignore_path.read_text() if gitignore_path.exists() else ""
+        if "metadata.json" not in existing_gitignore:
+            with open(gitignore_path, 'a') as f:
+                f.write(gitignore_entry)
+        # Untrack metadata.json if it was previously committed
+        git_manager._run_git_command(project_id, ["rm", "--cached", "metadata.json", "--ignore-unmatch", "-q"])
+
         # ── Patch mode: AI returned PATCH hunks — apply surgically ──────
         has_patches = bool(re.search(r'//\s*PATCH:\s*', code))
         if has_patches:
             applied, patched_files = self.apply_patch_response(project_id, code)
+            
+            # Check if patches were rejected due to frozen files
+            if not applied and patched_files == []:
+                # Check if it was due to frozen files
+                frozen_files = self.get_frozen_files(project_id)
+                if frozen_files:
+                    patch_targets = re.findall(r'//\s*PATCH:\s*([^\n]+)', code)
+                    patch_targets = [f.strip() for f in patch_targets]
+                    frozen_violations = [f for f in patch_targets if f in frozen_files]
+                    if frozen_violations:
+                        # Raise exception to be caught by main.py
+                        raise ValueError(f"FROZEN_FILES_VIOLATION:{','.join(frozen_violations)}")
+            
             if applied:
                 logger.info(f"🩹 Applied patches to: {', '.join(patched_files)}")
                 # Also handle any FILE: blocks mixed in (new files)
@@ -564,7 +629,11 @@ class ProjectManager:
                 self._ensure_workspace_metadata(project_id, workspace_dir, commit_hash)
                 return commit_hash, workspace_dir / patched_files[0]
             else:
-                logger.warning("⚠️ Patch parsing found no applicable hunks — falling through to file mode")
+                logger.warning("⚠️ Patch parsing found no applicable hunks — returning without writing raw patch text as file")
+                # Do NOT fall through — writing raw patch markers as a file would corrupt the workspace
+                hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
+                commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
+                return commit_hash, workspace_dir
 
         # Auto-detect incremental mode if not specified
         if is_incremental is None:
@@ -613,6 +682,21 @@ class ProjectManager:
         # 1. Parse code into files and write to workspace
         file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
         matches = list(re.finditer(file_marker_regex, code))
+        
+        # Check for frozen file violations in FILE: markers
+        if matches:
+            frozen_files = self.get_frozen_files(project_id)
+            if frozen_files:
+                generated_files = []
+                for match in matches:
+                    filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                    generated_files.append(filename)
+                
+                frozen_violations = [f for f in generated_files if f in frozen_files]
+                if frozen_violations:
+                    # Remove duplicates
+                    frozen_violations = list(set(frozen_violations))
+                    raise ValueError(f"FROZEN_FILES_VIOLATION:{','.join(frozen_violations)}")
         
         main_file_path = None
         

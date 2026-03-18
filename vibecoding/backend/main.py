@@ -15,7 +15,7 @@ from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
 from git_manager import git_manager
-from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user
+from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user, ForgotPasswordRequest, forgot_password
 from dual_agent_handler import get_dual_agent_handler
 from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
 
@@ -110,6 +110,12 @@ async def get_me(user: dict = Depends(get_current_user)):
 async def verify_token(user: dict = Depends(get_current_user)):
     """Verify if the current token is valid."""
     return {"valid": True, "user": user}
+
+
+@app.post("/vibecoding/api/auth/forgot-password")
+async def forgot_password_endpoint(request: ForgotPasswordRequest):
+    """Request password reset."""
+    return forgot_password(request)
 
 
 @app.get("/vibecoding/api")
@@ -227,7 +233,10 @@ async def generate_code(request: GenerateRequest):
             system_prompt = SYSTEM_PROMPT.replace("{{frozen_files}}", frozen_files_str)
             logger.info(f"🆕 New project - full generation mode")
         
-        messages = [{"role": "system", "content": system_prompt}]
+        from datetime import datetime
+        now = datetime.now()
+        date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
+        messages = [{"role": "system", "content": date_context + system_prompt}]
         for msg in request.history:
             messages.append({
                 "role": msg.role,
@@ -331,7 +340,28 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         
         if code:
             # Use git-based workspace update (auto-detects incremental vs full)
-            version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
+            try:
+                version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
+            except ValueError as e:
+                # Check if it's a frozen file violation
+                if str(e).startswith("FROZEN_FILES_VIOLATION:"):
+                    frozen_files_str = str(e).split(":", 1)[1]
+                    frozen_list = frozen_files_str.split(",")
+                    # Remove duplicates
+                    frozen_list = list(set(frozen_list))
+                    violation_list = "\n".join([f"  - {f}" for f in frozen_list])
+                    error_message = f"Cannot complete this request. The following files are frozen (read-only) and cannot be modified:\n\n{violation_list}\n\nPlease unfreeze these files if you want to make changes, or rephrase your request to avoid modifying them."
+                    
+                    return GenerateResponse(
+                        message=error_message,
+                        code=None,
+                        project_id=project_id,
+                        version_id=None,
+                        preview_url=None,
+                        tool_calls_log=tool_calls_log
+                    )
+                else:
+                    raise
             
             # Save chat history for the current branch (not commit hash)
             try:

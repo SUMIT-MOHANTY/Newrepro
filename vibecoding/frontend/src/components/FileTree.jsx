@@ -185,10 +185,10 @@ const FileTree = ({ code, darkMode, onFileSelect, selectedFile, projectId }) => 
             <button
               onClick={(e) => toggleFileFrozen(node.path, e)}
               disabled={loading}
-              className={`opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded ${
-                isFrozen 
-                  ? 'text-yellow-500 hover:text-yellow-600' 
-                  : darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-600'
+              className={`p-1 rounded ${
+                isFrozen
+                  ? 'text-yellow-500 hover:text-yellow-600'
+                  : `opacity-0 group-hover:opacity-100 transition-opacity ${darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-600'}`
               }`}
               title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
             >
@@ -261,10 +261,10 @@ const FileTree = ({ code, darkMode, onFileSelect, selectedFile, projectId }) => 
             <button
               onClick={(e) => toggleFileFrozen(fileStructure.path, e)}
               disabled={loading}
-              className={`opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded ${
-                isFrozen 
-                  ? 'text-yellow-500 hover:text-yellow-600' 
-                  : darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-600'
+              className={`p-1 rounded ${
+                isFrozen
+                  ? 'text-yellow-500 hover:text-yellow-600'
+                  : `opacity-0 group-hover:opacity-100 transition-opacity ${darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-600'}`
               }`}
               title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
             >

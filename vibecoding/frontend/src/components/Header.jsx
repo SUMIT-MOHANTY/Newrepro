@@ -38,24 +38,24 @@ const Header = ({
 
   const handleCreateProject = async () => {
     if (!projectName.trim()) return;
-    
+
     try {
       const response = await axios.post(`${API_BASE_URL}/api/projects`, { name: projectName.trim() }, {
         headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
       });
-      
+
       const newProjectId = response.data.project_id;
       setCurrentProjectId(newProjectId);
       localStorage.setItem('vibecoding_workspace_id', newProjectId);
       setShowProjectDropdown(false);
       setShowProjectModal(false);
       setProjectName('');
-      
+
       // Call parent callback to clear chat
       if (onCreateProject) {
         onCreateProject(newProjectId);
       }
-      
+
       window.location.href = `/vibecoding/a/${newProjectId}`;
     } catch (error) {
       console.error('Failed to create project:', error);
@@ -82,11 +82,11 @@ const Header = ({
             <span className="font-bold text-base text-white">VibeCoding</span>
           </div>
         </Link>
-        
+
         {user && (
           <>
             <div className="h-6 w-px bg-white/10" />
-            
+
             {/* Project Selection Dropdown */}
             <div className="relative project-dropdown-container">
               <Button
@@ -104,7 +104,7 @@ const Header = ({
                 <div className="absolute top-full left-0 mt-2 w-64 bg-[#1a1a1f] border border-white/10 rounded-xl shadow-2xl z-[100] backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-200">
                   <div className="p-3 border-b border-white/10 flex items-center justify-between">
                     <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Your Projects</span>
-                    <button 
+                    <button
                       onClick={() => setShowProjectModal(true)}
                       className="p-1.5 rounded-lg bg-purple-600/20 text-purple-400 hover:bg-purple-600/30 transition-colors"
                       title="Create New Project"
@@ -112,7 +112,7 @@ const Header = ({
                       <Plus className="w-4 h-4" />
                     </button>
                   </div>
-                  
+
                   <div className="p-2 max-h-[400px] overflow-y-auto">
                     {projects.length === 0 ? (
                       <div className="py-8 px-4 text-center">
@@ -127,11 +127,10 @@ const Header = ({
                             localStorage.setItem('vibecoding_workspace_id', project.project_id);
                             window.location.href = `/vibecoding/a/${project.project_id}`;
                           }}
-                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all mb-1 ${
-                            currentProjectId === project.project_id
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all mb-1 ${currentProjectId === project.project_id
                               ? 'bg-purple-600/20 border border-purple-500/30 text-purple-300'
                               : 'hover:bg-white/5 border border-transparent text-gray-400 hover:text-white'
-                          }`}
+                            }`}
                         >
                           <div className={`w-2 h-2 rounded-full ${currentProjectId === project.project_id ? 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]' : 'bg-gray-700'}`} />
                           <div className="flex-1 min-w-0">
@@ -142,7 +141,7 @@ const Header = ({
                       ))
                     )}
                   </div>
-                  
+
                   <div className="p-2 border-t border-white/10">
                     {/* <button
                       onClick={() => setShowProjectModal(true)}
@@ -157,7 +156,7 @@ const Header = ({
             </div>
 
             <div className="h-6 w-px bg-white/10" />
-            
+
             {branches.length > 0 && (
               <div className="relative version-history-container ml-2">
                 <Button
@@ -168,13 +167,13 @@ const Header = ({
                 >
                   <History className="w-3.5 h-3.5" />
                   <span className="text-xs">
-                    {branches.findIndex(b => b.version_id === currentBranch) >= 0 
+                    {branches.findIndex(b => b.version_id === currentBranch) >= 0
                       ? `Version ${branches.findIndex(b => b.version_id === currentBranch) + 1}`
                       : currentBranch}
                   </span>
                   <ChevronDown className={`w-3 h-3 transition-transform ${showVersionHistory ? 'rotate-180' : ''}`} />
                 </Button>
-                
+
                 {showVersionHistory && (
                   <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-2xl z-50 max-h-[70vh] overflow-y-auto backdrop-blur-md">
                     <div className="p-3 border-b border-white/10 sticky top-0 bg-[#1a1a1f]/90 backdrop-blur-sm z-10">
@@ -190,18 +189,16 @@ const Header = ({
                             onBranchSwitch(branch.version_id);
                             setShowVersionHistory(false);
                           }}
-                          className={`w-full text-left px-3 py-2.5 h-auto rounded-lg mb-1 transition-all ${
-                            currentBranch === branch.version_id
+                          className={`w-full text-left px-3 py-2.5 h-auto rounded-lg mb-1 transition-all ${currentBranch === branch.version_id
                               ? 'bg-purple-600/20 border border-purple-500/30'
                               : 'hover:bg-white/5 border border-transparent'
-                          }`}
+                            }`}
                         >
                           <div className="w-full">
                             <div className="flex items-center justify-between mb-1">
                               <div className="flex items-center gap-2">
-                                <span className={`text-xs font-bold ${
-                                  currentBranch === branch.version_id ? 'text-purple-300' : 'text-white'
-                                }`}>
+                                <span className={`text-xs font-bold ${currentBranch === branch.version_id ? 'text-purple-300' : 'text-white'
+                                  }`}>
                                   Version {index + 1}
                                 </span>
                                 {branch.is_current && (
@@ -254,7 +251,7 @@ const Header = ({
             <History className="w-4 h-4" />
             Git
           </Button>
-          <Button
+          {/* <Button
             disabled={isDeploying || !previewCode}
             onClick={onDeploy}
             className={`transition-all duration-300 ${
@@ -273,7 +270,7 @@ const Header = ({
             {isDeploying ? 'Deploying...' :
              deployStatus === 'success' ? 'Deployed!' :
              deployStatus === 'error' ? 'Failed' : 'Deploy'}
-          </Button>
+          </Button> */}
 
           {/* User Avatar + Menu */}
           <div className="user-menu-container" style={{ position: 'relative' }}>
@@ -317,7 +314,7 @@ const Header = ({
           </div>
         </div>
       )}
-      
+
       {/* Project Creation Modal */}
       {showProjectModal && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -326,7 +323,7 @@ const Header = ({
               <h2 className="text-xl font-bold text-white">Create New Project</h2>
               <p className="text-sm text-gray-400 mt-1">Enter a name for your new project</p>
             </div>
-            
+
             <div className="p-6">
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Project Name
@@ -348,7 +345,7 @@ const Header = ({
                 className="w-full px-4 py-3 bg-[#0F0F14] border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
               />
             </div>
-            
+
             <div className="p-6 pt-0 flex items-center gap-3">
               <Button
                 variant="ghost"

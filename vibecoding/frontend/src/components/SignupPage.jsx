@@ -12,6 +12,7 @@ export default function SignupPage({ onSwitchToLogin }) {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
 
   // Password strength
@@ -32,8 +33,9 @@ export default function SignupPage({ onSwitchToLogin }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setSuccess(false);
 
-    if (!username.trim() || !email.trim() || !password.trim()) {
+    if (!username.trim() || !email.trim()) {
       setError('Please fill in all required fields');
       return;
     }
@@ -41,19 +43,20 @@ export default function SignupPage({ onSwitchToLogin }) {
       setError('Username must be at least 3 characters');
       return;
     }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
-      return;
-    }
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
-      return;
-    }
 
     setLoading(true);
 
     try {
-      await signup(username, email, password, fullName);
+      // Always passwordless - password will be generated and emailed
+      const response = await signup(username, email, undefined, fullName);
+      
+      // Show success message
+      setSuccess(true);
+      
+      // Redirect to login after 3 seconds
+      setTimeout(() => {
+        onSwitchToLogin();
+      }, 3000);
     } catch (err) {
       const msg = err.response?.data?.detail || 'Signup failed. Please try again.';
       setError(msg);
@@ -158,6 +161,16 @@ export default function SignupPage({ onSwitchToLogin }) {
               </div>
             )}
 
+            {success && (
+              <div className="auth-success" role="alert">
+                <Check className="auth-success-icon" size={20} />
+                <div>
+                  <strong>Account created successfully!</strong>
+                  <p>Check your email for your password. Redirecting to login...</p>
+                </div>
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="auth-form">
               <div className="auth-form-row">
                 <div className={`auth-input-group ${focusedField === 'username' ? 'focused' : ''} ${username ? 'has-value' : ''}`}>
@@ -208,70 +221,10 @@ export default function SignupPage({ onSwitchToLogin }) {
                 <label htmlFor="signup-email">Email address</label>
               </div>
 
-              <div className={`auth-input-group ${focusedField === 'password' ? 'focused' : ''} ${password ? 'has-value' : ''}`}>
-                <Lock className="auth-input-icon" size={18} />
-                <input
-                  id="signup-password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onFocus={() => setFocusedField('password')}
-                  onBlur={() => setFocusedField(null)}
-                  placeholder="Create a password"
-                  autoComplete="new-password"
-                  required
-                />
-                <label htmlFor="signup-password">Password</label>
-                <button
-                  type="button"
-                  className="auth-password-toggle"
-                  onClick={() => setShowPassword(!showPassword)}
-                  tabIndex={-1}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
-
-              {/* Password Strength Bar */}
-              {password && (
-                <div className="auth-password-strength">
-                  <div className="auth-strength-bars">
-                    {[1, 2, 3, 4, 5].map((level) => (
-                      <div
-                        key={level}
-                        className="auth-strength-bar"
-                        style={{
-                          backgroundColor: passwordStrength >= level ? strengthColors[passwordStrength] : 'rgba(255,255,255,0.1)',
-                        }}
-                      />
-                    ))}
-                  </div>
-                  <span className="auth-strength-label" style={{ color: strengthColors[passwordStrength] }}>
-                    {strengthLabels[passwordStrength]}
-                  </span>
-                </div>
-              )}
-
-              <div className={`auth-input-group ${focusedField === 'confirm' ? 'focused' : ''} ${confirmPassword ? 'has-value' : ''}`}>
-                <Lock className="auth-input-icon" size={18} />
-                <input
-                  id="signup-confirm"
-                  type={showPassword ? 'text' : 'password'}
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  onFocus={() => setFocusedField('confirm')}
-                  onBlur={() => setFocusedField(null)}
-                  placeholder="Confirm your password"
-                  autoComplete="new-password"
-                  required
-                />
-                <label htmlFor="signup-confirm">Confirm Password</label>
-                {confirmPassword && password === confirmPassword && (
-                  <div className="auth-match-check">
-                    <Check size={16} />
-                  </div>
-                )}
+              {/* Passwordless Info */}
+              <div className="auth-passwordless-info">
+                <Mail size={16} />
+                <span>Your password will be sent to your email</span>
               </div>
 
               <button
