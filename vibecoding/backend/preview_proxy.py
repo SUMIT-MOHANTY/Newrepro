@@ -14,21 +14,27 @@ def get_container_port(project_id: str) -> str:
     try:
         # Check running containers registry
         registry_file = ARTIFACTS_DIR / '.container_registry.json'
+        print(f"Looking for registry at: {registry_file}")
+        print(f"Registry exists: {registry_file.exists()}")
+        
         if registry_file.exists():
             with open(registry_file, 'r') as f:
                 registry = json.load(f)
+                print(f"Registry contents: {registry}")
                 container_name = f"vibecoding_{project_id}"
+                print(f"Looking for container: {container_name}")
                 if container_name in registry:
                     return registry[container_name]['port']
     except Exception as e:
         print(f"Error reading container registry: {e}")
+    print(f"No port found for project_id: {project_id}")
     return None
 
 def proxy_request(target_base: str):
     """Generic proxy handler"""
     # Construct target URL
     path = request.path
-    token_prefix = "/app/" + request.view_args.get("token")
+    token_prefix = "/vibecoding/app/" + request.view_args.get("token")
     forward_path = path.replace(token_prefix, "", 1)
     target_url = target_base + forward_path
     
@@ -75,13 +81,13 @@ def proxy_request(target_base: str):
     except requests.exceptions.RequestException as e:
         return Response(f"Proxy Error: {str(e)}", status=502)
 
-@app.route("/app/<token>/", defaults={"path": ""}, methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-@app.route("/app/<token>/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.route("/vibecoding/app/<token>/", defaults={"path": ""}, methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.route("/vibecoding/app/<token>/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 def route_proxy(token, path):
     """Route requests to the appropriate container based on project token"""
     # Get container port for this project
     port = get_container_port(token)
-    
+    print(port)
     if not port:
         return Response(
             f"Project '{token}' not found or container not running",

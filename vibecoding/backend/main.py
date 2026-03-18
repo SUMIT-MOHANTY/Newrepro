@@ -1,6 +1,10 @@
-from fastapi import FastAPI, HTTPException, Depends
+import json
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Depends, Request
+import requests
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import os
@@ -917,6 +921,92 @@ async def set_file_frozen(project_id: str, request: dict, user: dict = Depends(g
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
+
+def get_container_port(project_id: str) -> str:
+    """Get the container port for a project by reading its container info"""
+    try:
+        # Check running containers registry
+        registry_file = ARTIFACTS_DIR / '.container_registry.json'
+        print(f"Looking for registry at: {registry_file}")
+        print(f"Registry exists: {registry_file.exists()}")
+        
+        if registry_file.exists():
+            with open(registry_file, 'r') as f:
+                registry = json.load(f)
+                print(f"Registry contents: {registry}")
+                container_name = f"vibecoding_{project_id}"
+                print(f"Looking for container: {container_name}")
+                if container_name in registry:
+                    return registry[container_name]['port']
+    except Exception as e:
+        print(f"Error reading container registry: {e}")
+    print(f"No port found for project_id: {project_id}")
+    return None
+
+def proxy_request(target_base: str, request: Request, forward_path: str):
+    """Generic proxy handler"""
+    target_url = target_base + forward_path
+    
+    # Forward query params
+    if request.url.query:
+        target_url += "?" + request.url.query
+    
+    # Forward headers (excluding host)
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in ["host", "x-forwarded-for", "x-forwarded-proto"]
+    }
+    
+    try:
+        # For FastAPI, we need to handle the async body differently
+        resp = requests.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            allow_redirects=False,
+            timeout=(5, 30)
+        )
+        
+        excluded_headers = [
+            "content-encoding",
+            "content-length",
+            "transfer-encoding",
+            "connection"
+        ]
+        
+        response_headers = {
+            name: value
+            for name, value in resp.headers.items()
+            if name.lower() not in excluded_headers
+        }
+        
+        return StreamingResponse(
+            iter([resp.content]),
+            status_code=resp.status_code,
+            headers=response_headers
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
+
+@app.api_route("/vibecoding/app/{token}/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/vibecoding/app/{token}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def route_proxy(token: str, request: Request, path: str = ""):
+    """Route requests to the appropriate container based on project token"""
+    # Get container port for this project
+    port = get_container_port(token)
+    print(f"Port for token {token}: {port}")
+    if not port:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project '{token}' not found or container not running"
+        )
+    
+    target = f"http://127.0.0.1:{port}"
+    forward_path = "/" + path if path else "/"
+    return proxy_request(target, request, forward_path)
 
 if __name__ == "__main__":
     import uvicorn
