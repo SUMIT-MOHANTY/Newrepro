@@ -6521,9 +6521,8 @@ def _infer_repo_path_from_filename(
     workspace_contract: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
-    Previously, this function forcibly routed flat filenames (e.g. 'main.py' -> 'backend/main.py').
-    We are now fully trusting the AI to define its own directory structure. 
-    If the AI generates a flat filename, we leave it flat.
+    Leave bare filenames flat as we fully trust the dynamic AI generation
+    or dynamic baseline generation to format paths correctly.
     """
     filename = str(name or "").strip().strip("`\"'")
     if not filename or not _looks_like_repo_file_name(filename):
@@ -6535,13 +6534,12 @@ def _infer_repo_path_from_filename(
 def _default_master_tree_paths(
     stack_profile: Optional[Dict[str, Any]] = None,
     workspace_contract: Optional[Dict[str, Any]] = None,
+    tasks: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
     stack = stack_profile if isinstance(stack_profile, dict) else {}
     contract = workspace_contract if isinstance(workspace_contract, dict) else {}
-    frontend_key = str(stack.get("frontend_key") or "").strip()
-    backend_key = str(stack.get("backend_key") or "").strip()
 
-    paths = {"README.md"}
+    paths: set = {"README.md", "docker-compose.yml"}
 
     if contract.get("status") == "ready":
         for module in (contract.get("modules") or []):
@@ -6553,57 +6551,41 @@ def _default_master_tree_paths(
                     paths.add(normalized_manifest)
         return sorted(paths)
 
-    if frontend_key == "nextjs":
-        paths.update({
-            "package.json",
-            "tsconfig.json",
-            "next.config.ts",
-            "src/app/layout.tsx",
-            "src/app/page.tsx",
-        })
-    elif frontend_key == "jinja-html":
-        paths.update({
-            "templates/base.html",
-            "templates/index.html",
-            "static/styles.css",
-            "static/ux.js",
-        })
-    elif frontend_key == "react-vite":
-        paths.update({
-            "package.json",
-            "tsconfig.json",
-            "vite.config.ts",
-            "index.html",
-            "src/main.tsx",
-            "src/App.tsx",
-        })
-    elif frontend_key == "static-html":
-        paths.update({
-            "index.html",
-            "styles.css",
-        })
+    # Completely dynamic fallback paths extracting from minimal working tree generator
+    safe_tasks = tasks if isinstance(tasks, list) else []
+    try:
+        import json
+        minimal_json = _generate_minimal_working_tree(stack_profile, safe_tasks)
+        tree_data = json.loads(minimal_json)
+        extracted = []
+        
+        def walk(node, prefix):
+            name = str(node.get("name", "")).strip()
+            if not name:
+                return
+            path = f"{prefix}/{name}" if prefix else name
+            children = node.get("children")
+            if isinstance(children, list) and children:
+                for c in children:
+                    walk(c, path)
+            else:
+                extracted.append(path)
+                
+        for child in tree_data.get("children", []):
+            walk(child, "")
+            
+        if extracted:
+            paths.update(extracted)
+            return sorted(paths)
+    except Exception:
+        pass
 
-    if backend_key == "express":
-        paths.update({
-            "package.json",
-            "tsconfig.json",
-            "src/index.ts",
-            "src/app.ts",
-        })
-    elif backend_key == "flask":
-        paths.update({
-            "requirements.txt",
-            "gunicorn_conf.py",
-            "app/__init__.py",
-            "tests/test_app.py",
-        })
-    else:
-        paths.update({
-            "requirements.txt",
-            "main.py",
-            "config.py",
-        })
-
+    # Generic fallback if dynamic parsing fails
+    paths.update({
+        "requirements.txt",
+        "main.py",
+        "config.py",
+    })
     return sorted(paths)
 
 
@@ -6639,7 +6621,7 @@ def _collect_master_tree_required_paths(
             candidates.extend(_extract_task_paths_from_text(item))
 
     candidates.extend(str(path or "") for path in (repo_file_paths or []))
-    candidates.extend(_default_master_tree_paths(stack_profile, contract))
+    candidates.extend(_default_master_tree_paths(stack_profile, contract, task_plan))
     candidates.extend(str(path or "") for path in (contract.get("root_files") or []))
     for module in (contract.get("modules") or []):
         if not isinstance(module, dict):
@@ -9261,6 +9243,59 @@ def _count_files_in_tree_data(tree_data: Dict[str, Any]) -> int:
     return count
 
 
+def _render_tree_as_ascii(
+    node: Any,
+    prefix: str = "",
+    is_last: bool = True,
+    _depth: int = 0,
+    _max_depth: int = 8,
+) -> str:
+    """
+    Recursively render a JSON tree node (with 'name' / 'children') as an
+    ASCII directory-tree string, e.g.:
+
+        project/
+        ├── frontend/
+        │   ├── src/
+        │   └── package.json
+        └── backend/
+            └── app.py
+    """
+    if not isinstance(node, dict):
+        return ""
+    name = str(node.get("name") or "").strip()
+    if not name:
+        return ""
+
+    connector = "└── " if is_last else "├── "
+    children = node.get("children")
+    has_children = isinstance(children, list) and len(children) > 0
+    node_label = name + ("/" if has_children else "")
+
+    if _depth == 0:
+        line = node_label
+    else:
+        line = prefix + connector + node_label
+
+    lines = [line]
+
+    if has_children and _depth < _max_depth:
+        child_prefix = prefix + ("    " if is_last else "│   ")
+        for i, child in enumerate(children):
+            child_is_last = (i == len(children) - 1)
+            subtree = _render_tree_as_ascii(
+                child,
+                prefix=child_prefix,
+                is_last=child_is_last,
+                _depth=_depth + 1,
+                _max_depth=_max_depth,
+            )
+            if subtree:
+                lines.append(subtree)
+
+    return "\n".join(lines)
+
+
 def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
     raw = str(text or "").strip()
     if not raw:
@@ -10264,19 +10299,40 @@ async def ensure_master_workspace_note(
             _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
         )
         workspace_tree_source = "tech_spec" if workspace_tree else "none"
-        if _count_tree_file_lines(workspace_tree) < 6:
-            generated_tree = await _generate_detailed_project_tree_plan(
-                tasks=tasks,
-                brd_summary=brd_summary,
-                kg_context=kg_context,
-                tech_spec=tech_spec,
-                stack_profile=stack_profile,
-                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
-                repo_tree_context=current_repo_tree,
-            )
-            if _count_tree_file_lines(generated_tree) >= _count_tree_file_lines(workspace_tree):
-                workspace_tree = generated_tree
-                workspace_tree_source = "ai_tree_plan"
+
+        # Dynamically verify if `tech_spec` output is valid JSON or flat markdown.
+        # If it's a flat markdown list (which ruins our hierarchy), override it dynamically.
+        import json
+        tree_is_valid_json = False
+        try:
+            parsed = json.loads(workspace_tree)
+            if isinstance(parsed, dict) and "children" in parsed:
+                tree_is_valid_json = True
+        except Exception:
+            pass
+
+        if not tree_is_valid_json or _count_tree_file_lines(workspace_tree) < 6:
+            # First fetch the fully dynamic structured tree logic as base
+            dynamic_tree = _generate_minimal_working_tree(stack_profile, tasks)
+            
+            # If valid structure generated, use it as baseline
+            if _count_tree_file_lines(dynamic_tree) > 5:
+                workspace_tree = dynamic_tree
+                workspace_tree_source = "dynamic_structure"
+            else:
+                # Fallback to AI detailed JSON generator
+                generated_tree = await _generate_detailed_project_tree_plan(
+                    tasks=tasks,
+                    brd_summary=brd_summary,
+                    kg_context=kg_context,
+                    tech_spec=tech_spec,
+                    stack_profile=stack_profile,
+                    workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                    repo_tree_context=current_repo_tree,
+                )
+                if _count_tree_file_lines(generated_tree) >= _count_tree_file_lines(workspace_tree):
+                    workspace_tree = generated_tree
+                    workspace_tree_source = "ai_tree_plan"
 
         if not workspace_tree and isinstance(workspace_contract, dict):
             roots = list(workspace_contract.get("allowed_source_roots") or [])
@@ -10566,6 +10622,44 @@ async def ensure_master_workspace_note(
                 f"Published master project tree note: {title}",
                 project_token=project_token,
             )
+            # ── Render the canonical tree into the execution log ────────────
+            try:
+                tree_str = str(workspace_tree or "").strip()
+                tree_node: Optional[Dict[str, Any]] = None
+                if tree_str.startswith("{"):
+                    try:
+                        tree_node = json.loads(tree_str)
+                    except Exception:
+                        tree_node = None
+                if isinstance(tree_node, dict):
+                    ascii_tree = _render_tree_as_ascii(tree_node)
+                else:
+                    ascii_tree = tree_str  # fallback: use raw text
+                stack_summary = ""
+                if isinstance(stack_profile, dict):
+                    fe = stack_profile.get("frontend") or "N/A"
+                    be = stack_profile.get("backend") or "N/A"
+                    conf = stack_profile.get("confidence") or ""
+                    stack_summary = (
+                        f"Stack → Frontend: {fe} | Backend: {be}"
+                        + (f" | Confidence: {conf}" if conf else "")
+                    )
+                file_count = _count_tree_file_lines(workspace_tree)
+                header = (
+                    f"📂 Canonical Project Tree published"
+                    f" ({file_count} nodes, source: {workspace_tree_source})"
+                )
+                if stack_summary:
+                    header += f"\n{stack_summary}"
+                log_body = f"{header}\n\n{ascii_tree}"
+                _log_master_agent(
+                    log_body,
+                    level="info",
+                    project_token=project_token,
+                )
+            except Exception as _tree_log_exc:
+                logger.debug("[master] Failed to render tree into log: %s", _tree_log_exc)
+            # ────────────────────────────────────────────────────────────────
         else:
             _log_master_agent(
                 f"Failed to publish master note: {result.get('error', 'unknown error')}",
