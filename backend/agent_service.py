@@ -173,8 +173,8 @@ MASTER_TREE_GENERATOR_SYSTEM_PROMPT = (
     "Never output alternate roots, conditional variants, migration notes, fallback layouts, "
     "multiple diagrams, or prose like 'pick one'. "
     "Never combine conflicting frameworks in one tree. "
-    "If the packet indicates Flask + Jinja, do not invent Express, React, Vite, Next.js, or a separate frontend app root "
-    "unless the tasks explicitly require them. "
+    "If the detected stack uses a server-rendered templating engine, do not invent a separate frontend SPA framework "
+    "unless the tasks explicitly require one. "
     "The tree must be production-ready, structurally complete for the tasks, and consistent with the "
     "current repository tree, workspace contract, and stack decision. "
     "Output MUST be strict JSON only (double quotes only, no Python dict literals, no single quotes). "
@@ -184,7 +184,19 @@ MASTER_TREE_GENERATOR_SYSTEM_PROMPT = (
     "Place module/tool configuration files in module roots, not inside source-code folders. "
     "Do not emit multiple extension variants of the same config stem in the same directory. "
     "Use repository-relative structure semantics: canonical source roots must map to real repository directories "
-    "and must not be prefixed by a synthetic wrapper segment."
+    "and must not be prefixed by a synthetic wrapper segment.\n\n"
+    "MANDATORY ARCHITECTURE PRINCIPLE (applies to ALL tech stacks without exception):\n"
+    "Regardless of which backend or frontend framework is detected, the project MUST use "
+    "DOMAIN-BASED (Feature-Ownership) architecture, not layer-based architecture.\n"
+    "DOMAIN-BASED means: each business domain (e.g. auth, booking, payment, user, admin) gets its OWN folder "
+    "containing ALL the files it needs (routes/controllers, services, models, templates, tests, etc.). "
+    "No domain should need to touch another domain's folder to do its job.\n"
+    "LAYER-BASED means flat folders like routes/, models/, services/, controllers/, pages/, components/ at the top level. "
+    "This pattern is FORBIDDEN regardless of what the detected framework traditionally uses.\n"
+    "Shared/cross-cutting logic (config, database, auth middleware, utilities) belongs in a dedicated shared/ or core/ folder.\n"
+    "The structure must always include an orchestrator/ folder at the project root for agent coordination metadata.\n"
+    "Use the PLANNING_PACKET_JSON to identify the exact domains/features the project needs, "
+    "then build a folder per domain, and let the framework's idiomatic file naming follow naturally inside each domain folder.\n"
 )
 
 MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
@@ -202,7 +214,19 @@ MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
     "Reject trees whose canonical source roots require a synthetic wrapper prefix that is not a real repository "
     "top-level directory in the current repo snapshot. "
     "Approve only one complete replacement tree with one fixed root. "
-    "If rejected, corrected_tree must be a strictly valid JSON project tree (with 'name' and 'children' keys), not a diff, ASCII diagram, or a set of options."
+    "If rejected, corrected_tree must be a strictly valid JSON project tree (with 'name' and 'children' keys), not a diff, ASCII diagram, or a set of options.\n\n"
+    "MANDATORY VALIDATION RULE — DOMAIN-BASED ARCHITECTURE ENFORCEMENT:\n"
+    "This system enforces Domain-Based (Feature-Ownership) architecture for ALL tech stacks. "
+    "Your job is to enforce this rule universally, regardless of what the detected framework traditionally uses.\n"
+    "REJECT AND CORRECT any tree that uses flat layer folders at the top level of the app directory. "
+    "Flat layer folders include: routes/, models/, services/, controllers/, schemas/, views/, pages/, components/, hooks/. "
+    "These are forbidden as top-level groupings regardless of stack — do NOT approve them even if the detected framework traditionally uses them.\n"
+    "APPROVE trees that group files by business domain: each domain (auth, booking, payment, admin, etc.) "
+    "gets its own folder containing all its own files (controllers/routes, services, models, templates, etc.). "
+    "Shared/cross-cutting code belongs in a shared/ or core/ folder only.\n"
+    "When correcting a rejected tree, convert layer folders into domain folders using the domains found in the PLANNING_PACKET_JSON. "
+    "Apply the framework's idiomatic file naming INSIDE each domain folder (e.g. use .java for Spring, .cs for .NET, .py for Python, .js/.ts for Node).\n"
+    "Always ensure an orchestrator/ folder exists at the project root containing agent coordination files.\n"
 )
 
 
@@ -8557,6 +8581,16 @@ def _generate_minimal_working_tree(stack_profile: Optional[Dict[str, Any]], task
     test_structure = _generate_test_structure(detected_stack, required_features)
     tree["children"].extend(test_structure)
     
+    # Dynamic orchestrator structure logic for Agent-Friendliness
+    tree["children"].append({
+        "name": "orchestrator",
+        "children": [
+            {"name": "agent_rules.json"},
+            {"name": "workflow.json"},
+            {"name": "task_state.json"}
+        ]
+    })
+    
     return json.dumps(tree, ensure_ascii=False, indent=2)
 
 
@@ -8718,245 +8752,255 @@ def _extract_required_features_from_tasks(tasks: List[Dict[str, Any]]) -> List[s
 
 
 def _generate_backend_structure(backend_type: str, features: List[str]) -> List[Dict[str, Any]]:
-    """Generate dynamic backend structure based on detected type and features"""
-    
+    """Generate dynamic backend structure using Domain-Driven Agent-Friendly Architecture.
+    Fully dynamic: works for FastAPI, Flask, Django, Express, Spring, .NET, Laravel, Go, etc.
+    Each detected domain gets its own isolated folder — no shared layer folders.
+    """
+
     structure = []
-    
-    if backend_type == "fastapi":
-        structure.extend([
-            {"name": "main.py"},
-            {"name": "requirements.txt"},
-            {"name": "app", "children": [
-                {"name": "__init__.py"},
-                {"name": "api", "children": [
-                    {"name": "__init__.py"},
-                    {"name": "routes.py"}
-                ]},
-                {"name": "core", "children": [
-                    {"name": "__init__.py"},
-                    {"name": "config.py"}
-                ]}
-            ]}
-        ])
-        
-        # Add database structure if needed
-        if "database" in features:
-            structure[2]["children"].extend([
-                {"name": "models", "children": [
-                    {"name": "__init__.py"},
-                    {"name": "base.py"}
-                ]},
-                {"name": "database.py"}
-            ])
-        
-        # Add auth structure if needed
-        if "authentication" in features:
-            structure[2]["children"].extend([
-                {"name": "auth", "children": [
-                    {"name": "__init__.py"},
-                    {"name": "jwt.py"},
-                    {"name": "dependencies.py"}
-                ]}
-            ])
-    
-    elif backend_type == "django":
-        structure.extend([
-            {"name": "manage.py"},
-            {"name": "requirements.txt"},
-            {"name": "project", "children": [
-                {"name": "__init__.py"},
-                {"name": "settings.py"},
-                {"name": "urls.py"},
-                {"name": "wsgi.py"}
+
+    # Extract feature-based domains (strip generic cross-cutting flags)
+    _CROSS_CUTTING = {"database", "api", "testing", "deployment", "ui_components",
+                      "file_handling", "realtime"}
+    domains = [f for f in features if f not in _CROSS_CUTTING]
+    if not domains:
+        domains = ["auth", "core_domain"]
+
+    # Normalize "authentication" to "auth" everywhere
+    domains = ["auth" if d == "authentication" else d for d in domains]
+    has_ui = "ui_components" in features
+
+    # --- Domain-node builders per technology stack ---------------------------
+
+    def _domain_fastapi(domain):
+        children = [
+            {"name": "router.py"}, {"name": "service.py"},
+            {"name": "models.py"}, {"name": "schemas.py"},
+        ]
+        if domain == "auth":
+            children.append({"name": "dependencies.py"})
+        return {"name": domain, "children": children}
+
+    def _domain_flask(domain):
+        children = [
+            {"name": "routes.py"}, {"name": "service.py"},
+            {"name": "models.py"}, {"name": "validators.py"},
+        ]
+        # Flask/Jinja2: each domain owns its own templates folder
+        if has_ui:
+            children.append({"name": "templates", "children": [{"name": f"{domain}.html"}]})
+        return {"name": domain, "children": children}
+
+    def _domain_django(domain):
+        children = [
+            {"name": "views.py"}, {"name": "urls.py"},
+            {"name": "models.py"}, {"name": "serializers.py"}, {"name": "admin.py"},
+        ]
+        if has_ui:
+            children.append({"name": "templates", "children": [{"name": f"{domain}.html"}]})
+        return {"name": domain, "children": children}
+
+    def _domain_express(domain):
+        return {"name": domain, "children": [
+            {"name": "router.js"}, {"name": "controller.js"},
+            {"name": "service.js"}, {"name": "model.js"},
+        ]}
+
+    def _domain_spring(domain):
+        cap = domain.capitalize()
+        return {"name": domain, "children": [
+            {"name": f"{cap}Controller.java"},
+            {"name": f"{cap}Service.java"},
+            {"name": f"{cap}Repository.java"},
+            {"name": f"{cap}.java"},
+        ]}
+
+    def _domain_dotnet(domain):
+        cap = domain.capitalize()
+        return {"name": domain, "children": [
+            {"name": f"{cap}Controller.cs"},
+            {"name": f"{cap}Service.cs"},
+            {"name": f"I{cap}Service.cs"},
+            {"name": f"{cap}.cs"},
+        ]}
+
+    def _domain_laravel(domain):
+        cap = domain.capitalize()
+        return {"name": domain, "children": [
+            {"name": f"{cap}Controller.php"},
+            {"name": f"{cap}Service.php"},
+            {"name": f"{cap}.php"},
+        ]}
+
+    def _domain_generic(domain):
+        """Fallback for Go, Rust, or any unknown stack."""
+        return {"name": domain, "children": [
+            {"name": "controller"},
+            {"name": "service"},
+            {"name": "model"},
+            {"name": "repository"},
+        ]}
+
+    # Map backend_type -> domain builder
+    _BUILDERS = {
+        "fastapi": _domain_fastapi,
+        "flask":   _domain_flask,
+        "django":  _domain_django,
+        "express": _domain_express,
+        "spring":  _domain_spring,
+        "dotnet":  _domain_dotnet,
+        "laravel": _domain_laravel,
+    }
+    domain_builder = _BUILDERS.get(backend_type, _domain_generic)
+
+    # Build app-level children from detected domains
+    app_children = [domain_builder(d) for d in domains]
+
+    # --- Shared infrastructure (config, middleware, services) ----------------
+    if backend_type in ("fastapi", "flask", "django"):
+        shared_children = [
+            {"name": "config", "children": [
+                {"name": "database.py"}, {"name": "jwt.py"},
+                {"name": "email.py"}, {"name": "logger.py"},
             ]},
-            {"name": "apps", "children": []}
-        ])
-        
-        # Add apps based on features
-        if "authentication" in features:
-            structure[3]["children"].append({
-                "name": "users", "children": [
-                    {"name": "__init__.py"},
-                    {"name": "models.py"},
-                    {"name": "views.py"},
-                    {"name": "urls.py"}
-                ]
-            })
-    
+            {"name": "middleware", "children": [
+                {"name": "auth.py"}, {"name": "validate.py"},
+            ]},
+            {"name": "services", "children": [{"name": "email.py"}]},
+        ]
+        if has_ui:
+            shared_children.append({"name": "templates", "children": [
+                {"name": "base.html"}, {"name": "index.html"},
+            ]})
+        app_children.append({"name": "shared", "children": shared_children})
+
+        if backend_type in ("fastapi", "flask"):
+            app_children.append({"name": "main.py"})
+        if backend_type == "flask":
+            app_children.append({"name": "static", "children": [
+                {"name": "css", "children": []}, {"name": "js", "children": []},
+            ]})
+            app_children.append({"name": "__init__.py"})
+
+        be_root = [{"name": "app", "children": app_children}, {"name": "requirements.txt"}]
+        if backend_type in ("fastapi", "django"):
+            be_root += [{"name": "migrations", "children": []}, {"name": "alembic.ini"}]
+        if backend_type == "django":
+            be_root.append({"name": "manage.py"})
+
     elif backend_type == "express":
-        structure.extend([
-            {"name": "package.json"},
-            {"name": "server.js"},
+        app_children += [
+            {"name": "core", "children": [{"name": "db.js"}, {"name": "config.js"}]},
+            {"name": "middleware", "children": []},
+            {"name": "app.js"},
+        ]
+        be_root = [
+            {"name": "src", "children": app_children},
+            {"name": "package.json"}, {"name": "server.js"},
+        ]
+
+    elif backend_type == "spring":
+        be_root = [
             {"name": "src", "children": [
-                {"name": "routes", "children": []},
-                {"name": "middleware", "children": []},
-                {"name": "config", "children": []}
-            ]}
-        ])
-        
-        if "database" in features:
-            structure[2]["children"].append({
-                "name": "models", "children": []
-            })
-    
+                {"name": "main", "children": [
+                    {"name": "java", "children": [
+                        {"name": "com", "children": [{"name": "app", "children": app_children}]}
+                    ]},
+                    {"name": "resources", "children": [{"name": "application.properties"}]},
+                ]},
+                {"name": "test", "children": []},
+            ]},
+            {"name": "pom.xml"},
+        ]
+
+    elif backend_type == "dotnet":
+        be_root = [
+            {"name": "src", "children": app_children},
+            {"name": "tests", "children": []},
+            {"name": "appsettings.json"}, {"name": "Program.cs"},
+        ]
+
+    elif backend_type == "laravel":
+        app_children += [
+            {"name": "Http", "children": [{"name": "Middleware", "children": []}]},
+            {"name": "Providers", "children": []},
+        ]
+        be_root = [
+            {"name": "app", "children": app_children},
+            {"name": "routes", "children": [{"name": "web.php"}, {"name": "api.php"}]},
+            {"name": "resources", "children": [{"name": "views", "children": []}]},
+            {"name": "database", "children": [{"name": "migrations", "children": []}]},
+            {"name": "composer.json"},
+        ]
+
+    else:
+        # Universal fallback (Go, Rust, anything unrecognized)
+        be_root = [
+            {"name": "src", "children": app_children},
+            {"name": "config", "children": []},
+            {"name": "README.md"},
+        ]
+
+    structure.append({"name": "backend", "children": be_root})
     return structure
 
-
 def _generate_frontend_structure(frontend_type: str, features: List[str]) -> List[Dict[str, Any]]:
-    """Generate dynamic frontend structure based on detected type and features"""
+    """Generate dynamic frontend structure mapped by agent-friendly domains/features"""
     
     structure = []
     
-    if frontend_type == "react":
-        structure.append({
-            "name": "frontend",
+    domains = [f for f in features if f not in ("database", "api", "testing", "deployment", "ui_components", "file_handling", "realtime")]
+    if not domains:
+        domains = ["auth", "dashboard"]
+
+    # Use a Domain-Driven features/ folder mapping instead of heavy layers (pages vs components)
+    features_children = []
+    for domain in domains:
+        safe_domain = "auth" if domain == "authentication" else domain
+        features_children.append({
+            "name": safe_domain,
             "children": [
-                {"name": "package.json"},
-                {"name": "vite.config.js"},
-                {"name": "src", "children": [
-                    {"name": "App.jsx"},
-                    {"name": "main.jsx"},
-                    {"name": "index.css"},
-                    {"name": "components", "children": []},
-                    {"name": "pages", "children": []},
-                    {"name": "hooks", "children": []},
-                    {"name": "utils", "children": []},
-                    {"name": "services", "children": []},
-                    {"name": "context", "children": []}
+                {"name": "pages", "children": []},
+                {"name": "components", "children": []},
+                {"name": "hooks", "children": []},
+                {"name": "services", "children": []},
+                {"name": "types", "children": []}
+            ]
+        })
+
+    if frontend_type in ("react", "vue", "next"):
+        fe_children = [
+            {"name": "package.json"},
+            {"name": "vite.config.js" if frontend_type != "next" else "next.config.js"},
+            {"name": "tsconfig.json"},
+            {"name": "src", "children": [
+                {"name": "features", "children": features_children},
+                {"name": "shared", "children": [
+                    {"name": "context", "children": []},
+                    {"name": "utils", "children": [{"name": "formatters.ts"}, {"name": "validators.ts"}]},
+                    {"name": "services", "children": [{"name": "api.ts"}]},
+                    {"name": "components", "children": []}
                 ]},
-                {"name": "public", "children": [
-                    {"name": "index.html"},
-                    {"name": "favicon.ico"}
-                ]}
-            ]
-        })
-        
-        # Add auth components if needed
-        if "authentication" in features:
-            structure[0]["children"][2]["children"][3]["children"].extend([
-                {"name": "LoginForm.jsx"},
-                {"name": "RegisterForm.jsx"},
-                {"name": "ProtectedRoute.jsx"}
-            ])
-            structure[0]["children"][2]["children"][4]["children"].extend([
-                {"name": "LoginPage.jsx"},
-                {"name": "RegisterPage.jsx"},
-                {"name": "DashboardPage.jsx"}
-            ])
-            structure[0]["children"][2]["children"][7]["children"].append({"name": "authService.js"})
-            structure[0]["children"][2]["children"][8]["children"].append({"name": "AuthContext.jsx"})
-        
-        # Add admin features if needed
-        if "admin" in features:
-            structure[0]["children"][2]["children"][4]["children"].extend([
-                {"name": "AdminDashboard.jsx"},
-                {"name": "UserManagement.jsx"},
-                {"name": "AdminSettings.jsx"}
-            ])
-        
-        # Add payment features if needed
-        if "payment" in features:
-            structure[0]["children"][2]["children"][3]["children"].extend([
-                {"name": "PaymentForm.jsx"},
-                {"name": "PricingCard.jsx"},
-                {"name": "CheckoutPage.jsx"}
-            ])
-            structure[0]["children"][2]["children"][7]["children"].append({"name": "paymentService.js"})
-        
-        # Add UI components based on features
-        if "ui_components" in features:
-            structure[0]["children"][2]["children"][3]["children"].extend([
-                {"name": "Header.jsx"},
-                {"name": "Footer.jsx"},
-                {"name": "Layout.jsx"},
-                {"name": "Sidebar.jsx"},
-                {"name": "Modal.jsx"}
-            ])
-    
-    elif frontend_type == "vue":
+                {"name": "App.tsx"},
+                {"name": "main.tsx"}
+            ]},
+            {"name": "public", "children": [{"name": "index.html"}]}
+        ]
         structure.append({
             "name": "frontend",
-            "children": [
-                {"name": "package.json"},
-                {"name": "vite.config.js"},
-                {"name": "src", "children": [
-                    {"name": "App.vue"},
-                    {"name": "main.js"},
-                    {"name": "style.css"},
-                    {"name": "components", "children": []},
-                    {"name": "views", "children": []},
-                    {"name": "composables", "children": []},
-                    {"name": "services", "children": []},
-                    {"name": "router", "children": [{"name": "index.js"}]},
-                    {"name": "store", "children": []}
-                ]},
-                {"name": "public", "children": [
-                    {"name": "index.html"}
-                ]}
-            ]
+            "children": fe_children
         })
-        
-        if "authentication" in features:
-            structure[0]["children"][2]["children"][3]["children"].extend([
-                {"name": "LoginForm.vue"},
-                {"name": "RegisterForm.vue"}
-            ])
-            structure[0]["children"][2]["children"][4]["children"].extend([
-                {"name": "LoginView.vue"},
-                {"name": "DashboardView.vue"}
-            ])
-            structure[0]["children"][2]["children"][6]["children"].append({"name": "authService.js"})
-    
-    elif frontend_type == "angular":
-        structure.append({
-            "name": "frontend",
-            "children": [
-                {"name": "package.json"},
-                {"name": "angular.json"},
-                {"name": "tsconfig.json"},
-                {"name": "src", "children": [
-                    {"name": "main.ts"},
-                    {"name": "styles.css"},
-                    {"name": "app", "children": [
-                        {"name": "app.component.ts"},
-                        {"name": "app.component.html"},
-                        {"name": "app.component.css"},
-                        {"name": "app.module.ts"},
-                        {"name": "app-routing.module.ts"},
-                        {"name": "components", "children": []},
-                        {"name": "services", "children": []},
-                        {"name": "guards", "children": []},
-                        {"name": "models", "children": []}
-                    ]}
-                ]}
-            ]
-        })
-        
-        if "authentication" in features:
-            structure[0]["children"][3]["children"][2]["children"][5]["children"].extend([
-                {"name": "login.component.ts"},
-                {"name": "login.component.html"},
-                {"name": "register.component.ts"},
-                {"name": "register.component.html"}
-            ])
-            structure[0]["children"][3]["children"][2]["children"][6]["children"].append({"name": "auth.service.ts"})
-            structure[0]["children"][3]["children"][2]["children"][7]["children"].append({"name": "auth.guard.ts"})
-    
-    elif frontend_type == "vanilla":
+    else:
+        # standard web
         structure.append({
             "name": "frontend",
             "children": [
                 {"name": "index.html"},
-                {"name": "style.css"},
-                {"name": "script.js"},
-                {"name": "assets", "children": [
-                    {"name": "css", "children": []},
-                    {"name": "js", "children": []},
-                    {"name": "images", "children": []}
-                ]}
+                {"name": "styles.css"},
+                {"name": "main.js"}
             ]
         })
-    
+        
     return structure
 
 
