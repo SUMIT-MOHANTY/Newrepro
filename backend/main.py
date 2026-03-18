@@ -42,6 +42,8 @@ import rag_service
 import context_manager
 import email_service
 import knowledge_graph_service as kg_service
+import master_task_manager
+import master_coordination_service
 
 # Cache for agent status to reduce database load
 _agent_status_cache: Dict[str, Dict[str, Any]] = {}
@@ -5269,6 +5271,134 @@ async def list_agents(
     return response_data
 
 
+@app.get("/coordination/status")
+async def get_coordination_status(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🎯 Get Master Task Manager coordination status"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    return master_task_manager.master_task_manager.get_coordination_status(project_token)
+
+
+@app.post("/coordination/agent/{agent_id}/file-lock")
+async def request_file_lock(
+    agent_id: str,
+    file_path: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🔒 Agent requests file lock through Master Task Manager"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    return await master_task_manager.master_task_manager.request_file_lock(agent_id, file_path)
+
+
+@app.post("/coordination/agent/{agent_id}/configure")
+async def configure_agent_capabilities(
+    agent_id: str,
+    request: dict,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🎯 Configure agent capabilities - MANUAL OVERRIDE"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    primary_skills = request.get("primary_skills", [])
+    secondary_skills = request.get("secondary_skills", [])
+    
+    master_task_manager.master_task_manager.set_explicit_agent_config(
+        agent_id, primary_skills, secondary_skills
+    )
+    
+    return {
+        "status": "configured",
+        "agent_id": agent_id,
+        "primary_skills": primary_skills,
+        "secondary_skills": secondary_skills,
+        "message": f"Agent {agent_id} capabilities configured manually"
+    }
+
+
+@app.post("/coordination/agent/{agent_id}/ai-assign")
+async def ai_assign_agent_capabilities(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🤖 Let Master Agent decide agent capabilities using AI"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    # Get project context for AI decision
+    project_context = f"Project: {project_token or 'default'}"
+    
+    decision = await master_task_manager.master_task_manager.master_agent_assign_capabilities(
+        agent_id, project_context
+    )
+    
+    return {
+        "status": "ai_assigned",
+        "agent_id": agent_id,
+        "decision": decision,
+        "message": f"Master Agent assigned capabilities to {agent_id}"
+    }
+
+
+@app.get("/coordination/agent/{agent_id}/capabilities")
+async def get_agent_capabilities(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """📋 Get current agent capabilities and assignment method"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    capabilities = master_task_manager.master_task_manager._get_agent_capabilities(agent_id)
+    
+    return {
+        "agent_id": agent_id,
+        "capabilities": capabilities,
+        "assignment_method": capabilities.get("assigned_by", "unknown")
+    }
+
+
+@app.get("/coordination/agents/bulk-configure")
+async def bulk_configure_agents(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🎯 Get bulk configuration options for all agents"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    # Get all agents and their current capabilities
+    all_agents = {}
+    for agent_id in master_task_manager.master_task_manager.agent_status.keys():
+        capabilities = master_task_manager.master_task_manager._get_agent_capabilities(agent_id)
+        all_agents[agent_id] = {
+            "current_capabilities": capabilities,
+            "suggested_by_pattern": master_task_manager.master_task_manager._get_agent_capabilities_by_pattern(agent_id),
+            "can_ai_assign": True
+        }
+    
+    return {
+        "agents": all_agents,
+        "available_skills": ["frontend", "backend", "setup", "integration"],
+        "assignment_methods": [
+            "explicit_config",    # Manual configuration
+            "master_agent",       # AI decision by Master Agent  
+            "pattern_recognition", # Automatic by name pattern
+            "default_fallback"    # Democratic fallback
+        ]
+    }
+
+
 @app.get("/agents/tasks")
 async def get_pending_tasks(
     current_user: models.User = Depends(auth.get_current_user),
@@ -5594,9 +5724,8 @@ async def run_all_agents(
     project_token: Optional[str] = None,
 ):
     """
-    Start the supervisor loop in the BACKGROUND.
-    Idle agents will pick tasks themselves from the shared ordered queue.
-    Returns immediately — frontend polls /agents for real-time updates.
+    🎯 NEW COORDINATED APPROACH: Master Task Manager controls ALL agents
+    No more self-service chaos - Master assigns tasks and prevents conflicts
     """
     project_token = _normalize_project_token(project_token)
     organization_name = _require_organization(current_user)
@@ -5613,15 +5742,44 @@ async def run_all_agents(
     records = query.all()
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-    idle_agents = [
-        a for a in agent_service.get_all_agents(project_token)
+    # Get available agents (excluding system agents)
+    available_agents = [
+        a["id"] for a in agent_service.get_all_agents(project_token)
         if a["status"] == "idle" and a["id"] not in ("agent_03", "agent_04")
     ]
-    if not idle_agents:
+    if not available_agents:
         raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
 
-    # Backward-compatible request parsing: if caller still sends per-agent config,
-    # use the first provided repo/token as project-global credentials.
+    # Get project tasks from external API
+    try:
+        logger.info(f"Fetching tasks for project: {project_token}")
+        all_tasks = await agent_service._fetch_external_tasks(project_token)
+        logger.info(f"Fetched {len(all_tasks)} total tasks from external API")
+        
+        # Filter to only pending/available tasks
+        project_tasks = []
+        for task in all_tasks:
+            status = task.get('status', '').lower()
+            if status not in ['completed', 'done', 'closed', 'cancelled']:
+                project_tasks.append(task)
+        
+        logger.info(f"Filtered to {len(project_tasks)} pending tasks")
+        
+        if not project_tasks:
+            logger.warning("No pending tasks found - all tasks may be completed")
+            raise HTTPException(status_code=400, detail="No pending tasks available. All tasks may be completed or no tasks exist.")
+            
+        # Log first few tasks for debugging
+        for i, task in enumerate(project_tasks[:3]):
+            logger.info(f"Task {i+1}: {task.get('title', 'No title')} - Status: {task.get('status', 'No status')}")
+            
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        logger.error(f"Failed to fetch tasks: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to fetch tasks from external API: {str(e)}")
+
+    # Set up git credentials (same as before)
     agents_config = dict(request.agents_config) if request and request.agents_config else {}
     provided_repo = None
     provided_token = None
@@ -5643,38 +5801,20 @@ async def run_all_agents(
             project_token=project_token,
         )
 
-    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-    run_all_config: Dict[str, Dict[str, str]] = {}
-    if global_cred and global_cred.git_repo_url and global_cred.git_token:
-        for agent in idle_agents:
-            run_all_config[agent["id"]] = {
-                "git_repo_url": global_cred.git_repo_url,
-                "git_token": global_cred.git_token,
-            }
-    else:
-        for agent in idle_agents:
-            agent["git_repo_url"] = None
-            agent["git_token"] = None
-
-    agent_service.mark_run_all_waiting_state(
-        project_token,
-        [a["id"] for a in idle_agents],
+    # 🎯 START COORDINATED PROJECT WITH MASTER TASK MANAGER
+    coordination_result = await master_coordination_service.master_coordination_service.start_coordinated_project(
+        project_token=project_token,
+        tasks=project_tasks,
+        agents=available_agents
     )
-
-    # Fire-and-forget: all agents run in background
-    # Note: run_all_agents synchronously marks them as "running" as its first step.
-    bg_task = asyncio.create_task(
-        agent_service.run_all_agents(
-            agents_config=run_all_config if run_all_config else None,
-            project_token=project_token,
-            task_token=x_task_token,
-        )
-    )
-    bg_task.add_done_callback(_log_background_task_result)
 
     return {
         "started": True,
-        "agents": [a["id"] for a in idle_agents],
+        "coordination_mode": "master_controlled",
+        "agents": available_agents,
+        "total_tasks": len(project_tasks),
+        "message": "🎯 Master Task Manager is now controlling all agents - no more conflicts!",
+        "coordination_result": coordination_result
     }
 
 

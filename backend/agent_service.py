@@ -12195,7 +12195,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     ignore_running_check: bool = False,
                     project_token: Optional[str] = None,
                     task_token: Optional[str] = None,
-                    force_branch: Optional[str] = None) -> Dict[str, Any]:
+                    force_branch: Optional[str] = None,
+                    coordination_mode: bool = False) -> Dict[str, Any]:
     """
     Single execution attempt for an agent. Called by run_agent with retry wrapper.
     """
