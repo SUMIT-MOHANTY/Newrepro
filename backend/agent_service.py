@@ -12718,15 +12718,16 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 )
                 
                 # Update result with bulletproof outcome
-                result = bulletproof_result["final_result"]
-                all_generated_code = bulletproof_result["all_generated_code"]
-                all_stdout = bulletproof_result["all_stdout"]
+                result = bulletproof_result  # Already contains exit_code, stdout, stderr
+                healing_info = bulletproof_result.get("bulletproof_healing", {})
+                all_generated_code = healing_info.get("all_generated_code", generated_code)
+                all_stdout = healing_info.get("all_stdout", result.get("stdout", ""))
                 
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"🚀 Bulletproof self-healing completed: {bulletproof_result['iterations_used']} iterations, "
-                              f"Success rate: {bulletproof_result['success_confidence']:.0%}"
+                    "message": f"🚀 Bulletproof self-healing completed: {healing_info.get('iterations', 0)} iterations, "
+                              f"Success rate: {healing_info.get('success_rate', 0):.0%}"
                 })
                 
             except Exception as bulletproof_err:
@@ -13292,7 +13293,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "generated_code": workspace_tree,
                 "builder_scripts": all_generated_code,
                 "duration": elapsed,
-                "fix_iterations": fix_iteration,
+                "fix_iterations": bulletproof_result.get("bulletproof_healing", {}).get("iterations", 0) if isinstance(bulletproof_result, dict) else 0,
             }
 
             # Always set progress to 100% and complete task when build succeeds
