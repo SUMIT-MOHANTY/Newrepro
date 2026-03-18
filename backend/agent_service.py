@@ -11820,6 +11820,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             return None
     
     external_tasks = await _fetch_external_tasks(project_token)
+    external_tasks = _sort_tasks_for_execution(external_tasks)
 
     # ── GUARD: Check if this agent already has an active (non-completed) task ──
     # If the agent is already assigned to a task, return that task instead of picking a new one.
@@ -11832,6 +11833,21 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         resolved_owner = _resolve_assigned_runtime_agent_id(t, project_agents)
         if resolved_owner == agent_id:
             tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "")
+            
+            # Ensure we don't pick an assigned task that is still blocked by dependencies
+            if live_mem:
+                task_deps = t.get("dependencies", [])
+                if not task_deps:
+                    linked = t.get("linked_tasks", [])
+                    if linked:
+                        task_deps = [str(lt) for lt in linked]
+                if task_deps:
+                    live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+                    if not live_mem.check_task_dependencies(tid):
+                        blocking = live_mem.get_blocking_tasks(tid)
+                        logger.info(f"[{agent_id}] Assigned task {tid} is still blocked by deps {blocking}. Looking for other assigned tasks.")
+                        continue
+
             # This agent already has this task — return it, don't pick another
             logger.info(
                 f"[{agent_id}] Already assigned to active task {tid} "
@@ -11883,7 +11899,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         except Exception:
             pass
 
-        external_tasks = _sort_tasks_for_execution(external_tasks)
+        # external_tasks are already sorted above
 
         skip_reasons = {
             "completed_or_claimed": 0,
@@ -11969,6 +11985,19 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     task_token=effective_token,
                 )
                 logger.info(f"[{agent_id}] ✅ Serial opt-in succeeded for task {tid}")
+                
+                # Auto-assign all linked tasks to the same agent so they process them serially afterwards
+                for lt_id in (t.get("linked_tasks") or []):
+                    try:
+                        await task_service.assign_task(
+                            task_id=int(lt_id),
+                            assignees=[{"username": agent_username}],
+                            task_token=effective_token,
+                        )
+                        logger.info(f"[{agent_id}] ✅ Auto-assigned linked task {lt_id} to myself to process serially")
+                    except Exception as assign_err:
+                        logger.warning(f"[{agent_id}] ⚠️ Failed to auto-assign linked task {lt_id}: {assign_err}")
+                        
             except Exception as opt_err:
                 # If upstream reports that the task already has assigned users,
                 # treat it as claimed elsewhere so no other local agents will
