@@ -945,7 +945,7 @@ def get_container_port(project_id: str) -> str:
     print(f"No port found for project_id: {project_id}")
     return None
 
-def proxy_request(target_base: str, request: Request, forward_path: str):
+async def proxy_request(target_base: str, request: Request, forward_path: str):
     """Generic proxy handler"""
     target_url = target_base + forward_path
     
@@ -953,19 +953,22 @@ def proxy_request(target_base: str, request: Request, forward_path: str):
     if request.url.query:
         target_url += "?" + request.url.query
     
-    # Forward headers (excluding host)
+    # Forward headers (excluding host and content-length)
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in ["host", "x-forwarded-for", "x-forwarded-proto"]
+        if key.lower() not in ["host", "x-forwarded-for", "x-forwarded-proto", "content-length"]
     }
     
     try:
-        # For FastAPI, we need to handle the async body differently
+        # Read request body
+        body = await request.body()
+        
         resp = requests.request(
             method=request.method,
             url=target_url,
             headers=headers,
+            data=body if body else None,
             allow_redirects=False,
             timeout=(5, 30)
         )
@@ -1006,7 +1009,7 @@ async def route_proxy(token: str, request: Request, path: str = ""):
     
     target = f"http://127.0.0.1:{port}"
     forward_path = "/" + path if path else "/"
-    return proxy_request(target, request, forward_path)
+    return await proxy_request(target, request, forward_path)
 
 if __name__ == "__main__":
     import uvicorn
