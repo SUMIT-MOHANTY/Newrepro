@@ -7999,23 +7999,55 @@ async def guarantee_bulletproof_success(
 ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
  
 def get_container_port(project_id: str) -> str:
-    """Get the container port for a project by reading its container info"""
+    """Return the host port for a preview container belonging to *project_id*.
+
+    The function now checks three sources, in order:
+    1️⃣ **Agent preview state** – ``agent_service.get_preview_status`` stores the
+        ``preview_url`` (e.g. ``http://localhost:9100``) when a preview is
+        running. If that URL is available we extract the port from it.
+    2️⃣ **Legacy registry file** – ``.container_registry.json`` as before.
+    3️⃣ **Docker ``ps`` fallback** – searches running containers whose name
+        contains the *project_id* and parses the ``Ports`` column.
+    Returns ``None`` when no port can be determined.
+    """
+    import re
     try:
-        # Check running containers registry
+        # 1️⃣ Check the in‑memory preview state via agent_service.
+        preview_state = agent_service.get_preview_status(project_id)
+        if preview_state and preview_state.get("status") == "running":
+            preview_url = preview_state.get("preview_url")
+            if preview_url:
+                # Expected format: http://localhost:<port>
+                match = re.search(r"://[^:/]+:(\d+)", preview_url)
+                if match:
+                    return match.group(1)
+
+        # 2️⃣ Legacy registry lookup.
         registry_file = ARTIFACTS_DIR / '.container_registry.json'
-        print(f"Looking for registry at: {registry_file}")
-        print(f"Registry exists: {registry_file.exists()}")
-       
         if registry_file.exists():
             with open(registry_file, 'r') as f:
                 registry = json.load(f)
-                print(f"Registry contents: {registry}")
-                container_name = f"vibecoding_{project_id}"
-                print(f"Looking for container: {container_name}")
-                if container_name in registry:
-                    return registry[container_name]['port']
+                for name, info in registry.items():
+                    if project_id in name and isinstance(info, dict) and 'port' in info:
+                        return str(info['port'])
+
+        # 3️⃣ Docker fallback – search running containers for the project id.
+        result = subprocess.run(
+            ["docker", "ps", "--filter", f"name={project_id}", "--format", "{{{{.Names}}}} {{{{.Ports}}}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and project_id in parts[0]:
+                    port_match = re.search(r"0\.0\.0\.0:(\d+)->", parts[1])
+                    if port_match:
+                        return port_match.group(1)
     except Exception as e:
-        print(f"Error reading container registry: {e}")
+        print(f"Error determining container port for {project_id}: {e}")
+
     print(f"No port found for project_id: {project_id}")
     return None
  

@@ -209,7 +209,8 @@ export default function AppPreview() {
                     >
                         <iframe
                             key={iframeKey}
-                            src={`${API_BASE_URL}/app/${projectId}/`}
+                            // Use the direct preview URL when available to avoid proxying static assets.
+                            src={previewStatus.preview_url || `${API_BASE_URL}/app/${projectId}/`}
                             className="w-full border-0"
                             style={{ height: '100%' }}
                             title="App Preview"
