@@ -445,6 +445,23 @@ export default function AppLayout({ children }) {
 
     // Navigate to the appropriate page based on roadmap step when project is selected
     useEffect(() => {
+        // Skip automatic redirection when a navigation was explicitly triggered
+        // from GovernanceForm after project creation. This prevents the AppLayout
+        // effect from overriding the intended navigation to Requirement Screening.
+        const skipRedirect = sessionStorage.getItem('skipAppLayoutRedirect') === 'true';
+        if (skipRedirect) {
+            sessionStorage.removeItem('skipAppLayoutRedirect');
+            return;
+        }
+
+        // If we are already on the Requirement Screening page, do not redirect
+        // regardless of roadmap step. This avoids a race where the roadmap data
+        // hasn't been refreshed yet and would otherwise push the user back to
+        // the initiation step.
+        if (location.pathname.startsWith('/dashboard')) {
+            return;
+        }
+
         if (!selectedProjectKey || isNewProjectMode) return;
 
         // FIRST: Check if governance was all skipped (score 5) - if so, block ALL navigation
