@@ -3,6 +3,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -35,6 +37,56 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Create a session with connection pooling and retry logic for proxy requests
+def get_proxy_session():
+    """Create a fresh requests session for each call (no pooling for container connections)"""
+    session = requests.Session()
+    
+    # For local container connections, disable connection pooling to avoid stale connections
+    # when containers are being dynamically started/stopped
+    adapter = HTTPAdapter(
+        pool_connections=1,  # Minimal pooling
+        pool_maxsize=1,      # One connection at a time
+        max_retries=Retry(
+            total=3,  # More retries for containers starting up
+            connect=3,  # Retry on connection failures
+            backoff_factor=0.3,  # Faster backoff (0.3s, 0.6s, 1.2s)
+            status_forcelist=[500, 502, 503, 504],  # Don't retry on 429
+            allowed_methods=["GET", "POST", "PUT", "DELETE", "PATCH"]
+        )
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
+
+def get_or_create_proxy_session():
+    """Return a fresh session for each proxy request to avoid pooling issues"""
+    return get_proxy_session()
+
+async def wait_for_container_ready(base_url: str, max_attempts: int = 5, delay: float = 0.2):
+    """
+    Wait for container to be ready by checking if it responds to requests.
+    This handles the case where containers are dynamically starting.
+    """
+    import asyncio
+    import time
+    
+    for attempt in range(max_attempts):
+        try:
+            session = get_proxy_session()
+            resp = session.head(base_url, timeout=(2, 5))  # Quick check
+            if resp.status_code < 500:  # 4xx is fine, means container is responding
+                print(f"✅ Container {base_url} is ready on attempt {attempt + 1}")
+                return True
+        except Exception as e:
+            if attempt < max_attempts - 1:
+                print(f"⏳ Attempt {attempt + 1}/{max_attempts} - Waiting for container to be ready...")
+                await asyncio.sleep(delay)
+                delay *= 1.5  # Exponential backoff
+    
+    return False
 
 class Message(BaseModel):
     role: str
@@ -976,7 +1028,7 @@ def get_container_port(project_id: str) -> str:
     return None
 
 async def proxy_request(target_base: str, request: Request, forward_path: str):
-    """Generic proxy handler"""
+    """Generic proxy handler with connection pooling"""
     target_url = target_base + forward_path
     
     # Forward query params
@@ -984,45 +1036,92 @@ async def proxy_request(target_base: str, request: Request, forward_path: str):
         target_url += "?" + request.url.query
     
     # Forward headers (excluding host and content-length)
-    headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in ["host", "x-forwarded-for", "x-forwarded-proto", "content-length"]
-    }
+    headers = {}
+    for key, value in request.headers.items():
+        key_lower = key.lower()
+        if key_lower not in ["host", "x-forwarded-for", "x-forwarded-proto", "content-length"]:
+            headers[key] = value
+    
+    # Add referer if not present (helps with iframe requests)
+    has_referer = any(k.lower() == "referer" for k in headers.keys())
+    if not has_referer:
+        headers["referer"] = str(request.base_url)
+    
+    print(f"🔄 Proxying {request.method} to {target_url}")
+    print(f"📋 Headers forwarded: {list(headers.keys())}")
+    print(f"🌐 Request origin: {request.client}, User-Agent: {headers.get('user-agent', 'unknown')}")
     
     try:
         # Read request body
         body = await request.body()
         
-        resp = requests.request(
+        # Wait for container to be ready (in case it's just starting)
+        print(f"⏳ Checking if container is ready at {target_base}...")
+        is_ready = await wait_for_container_ready(target_base, max_attempts=3, delay=0.1)
+        if not is_ready:
+            print(f"⚠️ Container not responding after 3 attempts, attempting request anyway...")
+        
+        # Use session with connection pooling
+        session = get_or_create_proxy_session()
+        
+        print(f"⏳ Attempting connection to {target_url} with timeout (10s connect, 60s read)")
+        resp = session.request(
             method=request.method,
             url=target_url,
             headers=headers,
             data=body if body else None,
             allow_redirects=False,
-            timeout=(5, 30)
+            timeout=(3, 30)  # 3s connect, 30s read - faster fail for starting containers
         )
         
+        print(f"✅ Got response: {resp.status_code} {len(resp.content)} bytes")
+        
+        # Headers to exclude from response (remove iframe/frame options)
         excluded_headers = [
             "content-encoding",
             "content-length",
             "transfer-encoding",
-            "connection"
+            "connection",
+            "x-frame-options",  # Allow iframe embedding
+            "content-security-policy",  # Allow iframe embedding
         ]
         
-        response_headers = {
-            name: value
-            for name, value in resp.headers.items()
-            if name.lower() not in excluded_headers
-        }
+        response_headers = {}
+        for name, value in resp.headers.items():
+            if name.lower() not in excluded_headers:
+                response_headers[name] = value
+        
+        # Allow embedding in iframe by setting proper headers
+        response_headers["X-Frame-Options"] = "ALLOWALL"
+        response_headers["Access-Control-Allow-Origin"] = "*"
         
         return StreamingResponse(
             iter([resp.content]),
             status_code=resp.status_code,
             headers=response_headers
         )
+    except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+        error_str = str(e)
+        print(f"❌ Connection error to {target_url}: {error_str}")
+        # Check if it's a protocol error (container not ready)
+        if "ProtocolError" in error_str or "Connection refused" in error_str:
+            print(f"⏳ Container at {target_url} may still be starting up... Retried 3 times")
+            detail = f"Container is starting. Please wait a moment and retry."
+        else:
+            detail = f"Cannot connect to container at {target_url}. Verify container is running."
+        raise HTTPException(status_code=502, detail=detail)
+    except requests.exceptions.Timeout as e:
+        print(f"⏱️ Timeout to {target_url}: {str(e)}")
+        print(f"⏳ Container is slow to respond. It may still be starting.")
+        raise HTTPException(status_code=504, detail=f"Container is slow to respond. Please try again in a moment.")
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
+        print(f"❌ Proxy error to {target_url}: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
+    except Exception as e:
+        print(f"❌ Unexpected error in proxy: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal proxy error: {str(e)}")
 
 @app.api_route("/vibecoding/app/{token}/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 @app.api_route("/vibecoding/app/{token}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -1030,15 +1129,17 @@ async def route_proxy(token: str, request: Request, path: str = ""):
     """Route requests to the appropriate container based on project token"""
     # Get container port for this project
     port = get_container_port(token)
-    print(f"Port for token {token}: {port}")
+    print(f"📌 Proxy request for token {token}: port={port}, path={path or '/'}, client={request.client}")
     if not port:
         raise HTTPException(
             status_code=404,
             detail=f"Project '{token}' not found or container not running"
         )
     
-    target = f"http://127.0.0.1:{port}"
+    # Use localhost instead of 127.0.0.1 for better compatibility
+    target = f"http://localhost:{port}"
     forward_path = "/" + path if path else "/"
+    print(f"🎯 Target container: {target}{forward_path}")
     return await proxy_request(target, request, forward_path)
 
 if __name__ == "__main__":
