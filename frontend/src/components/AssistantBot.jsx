@@ -254,8 +254,7 @@ const AssistantBot = () => {
       // Seed empty message to stream into
       setMessages([{ id: msgId, type: 'bot', text: '', timestamp: new Date(), isWelcome: true }]);
 
-      const prompt = `I just navigated to the "${context.title}" page (path: ${path}). 
-In 3-5 sentences, tell me exactly what this page does, why it matters in the workflow, and what I should focus on here. Be specific and practical — no generic greetings.`;
+      const prompt = `I just navigated to the "${context.title}" page (path: ${path}). Based on the platform context you know, describe what this page is about, what I can do here, and why it matters in the workflow. Be specific and practical — no generic greetings.`;
 
       const result = await streamToMessage(msgId, prompt, { currentStep: context.title, currentPath: path });
 
@@ -314,7 +313,7 @@ In 3-5 sentences, tell me exactly what this page does, why it matters in the wor
     if (!context) { setMessages([]); return; }
     const msgId = Date.now();
     setMessages([{ id: msgId, type: 'bot', text: '', timestamp: new Date(), isWelcome: true }]);
-    const prompt = `I just navigated to the "${context.title}" page. In 3-5 sentences, tell me exactly what this page does, why it matters in the workflow, and what I should focus on here. Be specific and practical.`;
+    const prompt = `I just navigated to the "${context.title}" page (path: ${location.pathname}). Based on the platform context you know, describe what this page is about, what I can do here, and why it matters in the workflow. Be specific and practical.`;
     const result = await streamToMessage(msgId, prompt, { currentStep: context.title, currentPath: location.pathname });
     if (!result) {
       setMessages([{ id: msgId, type: 'bot', text: `**${context.title}** — ${context.description}\n\nAsk me anything!`, timestamp: new Date(), isWelcome: true }]);

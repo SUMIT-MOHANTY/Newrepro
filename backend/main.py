@@ -33,6 +33,7 @@ import models
 import schemas
 import ingestion
 import ai_service
+import llm_gateway
 import governance_scoring
 import github_service
 import azure_devops_service
@@ -465,23 +466,32 @@ async def assistant_chat_stream(
     payload: AssistantRequest,
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Streaming version of the assistant chat endpoint using SSE."""
+    """Streaming version of the assistant chat endpoint using real LLM SSE streaming."""
     from fastapi.responses import StreamingResponse
     import json
 
     async def generate():
         try:
             context = getattr(payload, 'context', None)
-            assistant_reply = await ai_service.chat_with_llm(
-                message=payload.message,
-                context=context
-            )
-            # Simulate streaming by chunking the response into words
-            words = assistant_reply.split(' ')
-            for i, word in enumerate(words):
-                chunk = word if i == 0 else ' ' + word
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
-            yield "data: [DONE]\n\n"
+            messages = ai_service.build_chat_messages(payload.message, context)
+            async for chunk in llm_gateway.call_llm_streaming(messages=messages):
+                if chunk.startswith("data: "):
+                    data_str = chunk[6:].strip()
+                    if data_str == "[DONE]":
+                        yield "data: [DONE]\n\n"
+                        break
+                    try:
+                        parsed = json.loads(data_str)
+                        content = None
+                        if "choices" in parsed and parsed["choices"]:
+                            content = parsed["choices"][0].get("delta", {}).get("content")
+                        elif "error" in parsed:
+                            yield f"data: {json.dumps({'error': parsed['error']})}\n\n"
+                            break
+                        if content:
+                            yield f"data: {json.dumps({'content': content})}\n\n"
+                    except json.JSONDecodeError:
+                        continue
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 

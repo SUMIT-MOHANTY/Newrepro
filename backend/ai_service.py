@@ -1477,6 +1477,48 @@ async def generate_tasks_for_project(
         raise Exception(f"Failed during task generation: {str(e)}\n\nTraceback:\n{error_details}")
 
 
+def build_chat_messages(message: str, context: Optional[dict] = None) -> list:
+    """Build the messages list for the chat LLM call."""
+    system_prompt = """You are a friendly AI assistant built into a project management platform. Your job is to help users understand what each page does and guide them through the platform.
+
+PLATFORM OVERVIEW:
+This platform guides teams through a complete AI-powered project workflow:
+1. Sign up and create your organization
+2. Start a new project and fill in a governance questionnaire
+3. Review and provide prerequisites the AI extracted from your requirements
+4. Let AI generate a full task plan with sprints and milestones
+5. Onboard AI agents to work on your tasks
+6. Monitor progress and manage execution in real time
+
+KEY CAPABILITIES:
+- Uploads and analyzes Business Requirement Documents (BRDs)
+- Scores your project across 6 governance dimensions
+- Automatically identifies what credentials, APIs, and infrastructure you need before dev starts
+- Generates a complete task breakdown with priorities and deadlines
+- Supports multiple working modes (Developer Only, AI Assist, AI-First, etc.)
+- Integrates with GitHub and Azure DevOps
+- Lets you monitor AI agents working on your project in real time
+
+RESPONSE RULES — follow these strictly:
+- Never mention URL paths, route names, or technical identifiers (e.g. do NOT say "/agents", "path: /agents", or "route /dashboard")
+- Speak in plain, friendly language a non-technical user can understand
+- When describing a page, explain what the user can actually DO there, not what the system does internally
+- Keep responses concise and practical — bullet points are fine for lists of actions
+- Do not use jargon like "SSE", "endpoint", "payload", "API route", etc.
+- If the user asks about a page, describe its purpose and key actions in simple terms"""
+
+    if context:
+        current_step = context.get('currentStep', '')
+        current_path = context.get('currentPath', '/')
+        if current_step:
+            system_prompt += f"\n\nCURRENT PAGE: The user is on the \"{current_step}\" page. Describe what this page is for and what they can do here in plain, friendly language. Do not mention the URL or any technical route names."
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message},
+    ]
+
+
 async def chat_with_llm(
     message: str,
     context: Optional[dict] = None,
@@ -1486,90 +1528,11 @@ async def chat_with_llm(
 ) -> str:
     """
     Context-aware chat function for conversational interactions with the LLM.
-    
-    Args:
-        message: The user's message/question
-        context: Optional context about current page, workflow step, etc.
-        api_url: Optional API URL override
-        api_key: Optional API key override  
-        model: Optional model override
-        
-    Returns:
-        The LLM's response as a string
     """
     if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured.")
 
-    # Build context-aware system prompt
-    system_prompt = """You are an intelligent AI assistant for a project management platform that helps organizations create and manage AI-powered development projects.
-
-PLATFORM OVERVIEW:
-This platform guides users through a complete workflow:
-1. Authentication (Signup/Login)
-2. Project Creation & Governance Assessment
-3. Prerequisite Classification & Configuration  
-4. AI-Powered Task Generation
-5. AI Agent Resource Onboarding
-6. Project Execution & Monitoring
-
-KEY FEATURES:
-- AI-powered Business Requirements Document (BRD) analysis
-- Governance questionnaire across 6 dimensions (Business Value, Data Sensitivity, Integration Complexity, Operational Impact, AI Risk, Ownership & Support)
-- Automatic prerequisite extraction and classification
-- AI task generation with sprints and milestones
-- Multiple process modes (Developer Only, AI Assist, Vibe Coding, Coexistence, AI-First)
-- Real-time agent monitoring and execution
-- Integration with GitHub and Azure DevOps
-
-CURRENT CONTEXT:"""
-
-    if context:
-        current_step = context.get('currentStep', 'Unknown')
-        current_path = context.get('currentPath', '/')
-        workflow = context.get('workflow', [])
-        
-        system_prompt += f"""
-- Current Step: {current_step}
-- Current Page: {current_path}
-- Workflow Position: {' → '.join(workflow) if workflow else 'Not specified'}
-
-STEP-SPECIFIC GUIDANCE:
-"""
-        
-        # Add step-specific guidance
-        step_guidance = {
-            'Organization Registration': 'Help users create their organization account. Explain that they become the admin and can invite team members later.',
-            'Sign In': 'Guide users through login process. Mention SSO options if available.',
-            'Project Initiation': 'Help users start a new project by entering a descriptive project name.',
-            'Governance Questionnaire': 'Guide users through 6 governance dimensions. Explain they can skip questions if unsure.',
-            'Prerequisite Classification': 'Help users review AI-extracted prerequisites, provide values, configure Git repos, and select process modes.',
-            'Task Generation': 'Assist with AI task generation, deadline setting, and task plan review.',
-            'AI Agent Onboarding': 'Help users request appropriate numbers of Shared/Dedicated Dev/Test agents.',
-            'Project Status Dashboard': 'Guide users in monitoring agents, viewing progress, and managing execution.',
-            'AI Analysis Results': 'Help users review AI-generated analysis and download reports.'
-        }
-        
-        guidance = step_guidance.get(current_step, f'Provide helpful guidance for {current_step}')
-        system_prompt += f"- {guidance}"
-
-    system_prompt += """
-
-RESPONSE GUIDELINES:
-- Be helpful, friendly, and knowledgeable about the platform
-- Provide specific, actionable guidance based on the current step
-- Explain form fields, buttons, and UI elements when asked
-- Help troubleshoot common issues
-- Guide users through the workflow logically
-- Use clear, concise language
-- Include relevant tips and best practices
-- Reference specific features and capabilities when relevant
-
-Always be contextually aware of where the user is in the workflow and provide relevant, step-specific assistance."""
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": message},
-    ]
+    messages = build_chat_messages(message, context)
 
     try:
         content = await llm_gateway.call_llm_and_extract(
