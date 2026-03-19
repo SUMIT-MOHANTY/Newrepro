@@ -12,7 +12,6 @@ const ChatPanel = ({
   input,
   setInput,
   onSend,
-  onKeyPress,
   darkMode,
   codeVersions,
   selectedVersion,
@@ -24,10 +23,18 @@ const ChatPanel = ({
   disabled = false,
   discussMode = false,
   onToggleDiscuss,
+  onImageUpload, // New prop for handling image uploads
 }) => {
   const messagesEndRef = useRef(null);
   const [suggestionIndex, setSuggestionIndex] = React.useState(0);
   const rotationTimeoutRef = useRef(null);
+
+  const inferredCheckpointCount = React.useMemo(() => {
+    const fromCommits = Array.isArray(codeVersions) ? codeVersions.length : 0;
+    if (fromCommits > 0) return fromCommits;
+    const ids = new Set((messages || []).map(m => m?.versionId).filter(Boolean));
+    return ids.size;
+  }, [codeVersions, messages]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -98,11 +105,11 @@ const ChatPanel = ({
             <span className={cn(
               'text-sm font-semibold block',
               darkMode ? 'text-white' : 'text-gray-900'
-            )}>AI Assistant</span>
+            )}>VibeCoding Assistant</span>
             <span className={cn(
               'text-xs',
               darkMode ? 'text-gray-400' : 'text-gray-500'
-            )}>{messages.length} messages</span>
+            )}>{inferredCheckpointCount} checkpoints</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -233,10 +240,10 @@ const ChatPanel = ({
           onSend={onSend}
           loading={loading}
           darkMode={darkMode}
-          onKeyPress={onKeyPress}
           disabled={disabled}
           discussMode={discussMode}
           onToggleDiscuss={onToggleDiscuss}
+          onImageUpload={onImageUpload}
         />
       </div>
     </div>

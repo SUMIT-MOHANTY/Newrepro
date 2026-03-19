@@ -7,6 +7,7 @@ import LandingPage from './components/LandingPage';
 import LoginPage from './components/LoginPage';
 import SignupPage from './components/SignupPage';
 import ForgotPasswordPage from './components/ForgotPasswordPage';
+import ResetPasswordPage from './components/ResetPasswordPage';
 import Header from './components/Header';
 import GitPanel from './components/GitPanel';
 import bourntecLogo from '../assets/bourntec_logo.png';
@@ -45,13 +46,16 @@ function App() {
         <Navigate to="/login" replace />
       } />
       <Route path="/login" element={
-        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><LoginPage onSwitchToSignup={() => navigate('/signup')} /></AuthLayout>
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><LoginPage onSwitchToSignup={() => navigate('/signup')} onForgotPassword={() => navigate('/forgot-password')} /></AuthLayout>
       } />
       <Route path="/signup" element={
         isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><SignupPage onSwitchToLogin={() => navigate('/login')} /></AuthLayout>
       } />
       <Route path="/forgot-password" element={
         isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><ForgotPasswordPage onBackToLogin={() => navigate('/login')} /></AuthLayout>
+      } />
+      <Route path="/reset-password" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><ResetPasswordPage /></AuthLayout>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -197,36 +201,51 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   };
 
-  // Imperatively start the container retry loop — called directly when a container URL arrives.
-  // Does NOT rely on useEffect so React batching can't interfere.
+  // Poll the container-health endpoint until healthy, then show the iframe.
+  // The iframe src is NOT set until the container is confirmed ready, so the user
+  // never sees "Connection was reset" or broken pages.
   const startContainerRetry = (url) => {
-    // Clear any existing retry
     if (containerPollIntervalRef.current) {
       clearTimeout(containerPollIntervalRef.current);
       containerPollIntervalRef.current = null;
     }
 
-    // Mark that we're expecting a container load (synchronous guard for handleIframeLoad)
     containerLoadExpectedRef.current = true;
 
     let attempts = 0;
     const maxAttempts = 60;
+    const pollInterval = 2000;
 
-    const retry = () => {
+    const poll = async () => {
       attempts++;
-      console.log(`🔄 Container retry ${attempts}/${maxAttempts} — bumping iframeKey`);
-      setIframeKey(prev => prev + 1);
+      try {
+        const resp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/container-health`);
+        if (resp.data.healthy) {
+          console.log(`✅ Container healthy after ${attempts} polls — showing preview`);
+          containerLoadExpectedRef.current = false;
+          setIsContainerLoading(false);
+          setIframeKey(prev => prev + 1);
+          containerPollIntervalRef.current = null;
+          return;
+        }
+        console.log(`🔄 Health poll ${attempts}/${maxAttempts}: ${resp.data.reason || 'not ready'}`);
+      } catch (err) {
+        console.log(`🔄 Health poll ${attempts}/${maxAttempts}: request failed`);
+      }
+
       if (attempts < maxAttempts) {
-        containerPollIntervalRef.current = setTimeout(retry, 2000);
+        containerPollIntervalRef.current = setTimeout(poll, pollInterval);
       } else {
-        console.log('⏱️ Max retries reached');
+        console.log('⏱️ Max health polls reached — showing preview anyway');
+        containerLoadExpectedRef.current = false;
         setIsContainerLoading(false);
+        setIframeKey(prev => prev + 1);
+        containerPollIntervalRef.current = null;
       }
     };
 
-    // Wait 3s for container to boot, then start retrying
-    console.log('🚀 Container URL received, starting retry in 3s:', url);
-    containerPollIntervalRef.current = setTimeout(retry, 3000);
+    console.log('🚀 Container URL received, starting health polling in 3s:', url);
+    containerPollIntervalRef.current = setTimeout(poll, 3000);
   };
 
   // Load branches from backend for the current project
@@ -281,19 +300,29 @@ function Workspace({ user, logout, isAuthenticated }) {
           const firstFile = findFirstFile(fileTree);
           if (firstFile) setSelectedFile(firstFile);
           
-          // Get or create preview URL for the current branch
-          try {
-            const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${projectId}/versions/workspace/preview`);
-            if (previewResp.data.preview_url) {
-              console.log('🌐 Restored container preview:', previewResp.data.preview_url);
-              containerLoadExpectedRef.current = true;
-              setIsContainerLoading(true);
-              setPreviewUrl(previewResp.data.preview_url);
-              startContainerRetry(previewResp.data.preview_url);
+          // Get or create preview URL — retry if Docker is still starting after PC restart
+          const startPreviewWithRetry = async (retries = 3, delay = 3000) => {
+            for (let attempt = 1; attempt <= retries; attempt++) {
+              try {
+                const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${projectId}/versions/workspace/preview`);
+                if (previewResp.data.preview_url) {
+                  console.log(`🌐 Restored container preview (attempt ${attempt}):`, previewResp.data.preview_url);
+                  containerLoadExpectedRef.current = true;
+                  setIsContainerLoading(true);
+                  setPreviewUrl(previewResp.data.preview_url);
+                  startContainerRetry(previewResp.data.preview_url);
+                  return;
+                }
+              } catch (previewErr) {
+                console.warn(`⚠️ Preview attempt ${attempt}/${retries} failed:`, previewErr.message);
+                if (attempt < retries) {
+                  await new Promise(r => setTimeout(r, delay));
+                }
+              }
             }
-          } catch (previewErr) {
-            console.error('Failed to get preview URL:', previewErr);
-          }
+            console.error('Failed to get preview URL after all retries');
+          };
+          startPreviewWithRetry();
           
         } catch (err) {
           console.error('Failed to load branch files:', err);
@@ -737,8 +766,8 @@ function Workspace({ user, logout, isAuthenticated }) {
     });
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || loading) return;
+  const handleSend = async (imageDataUrls = []) => {
+    if ((!input.trim() && imageDataUrls.length === 0) || loading) return;
     
     // Check if a project is selected
     if (!currentProjectId) {
@@ -746,19 +775,28 @@ function Workspace({ user, logout, isAuthenticated }) {
       return;
     }
 
-    const userMessage = { role: 'user', content: input, timestamp: new Date().toISOString() };
+    const userMessage = {
+      role: 'user',
+      content: input,
+      images: imageDataUrls.length > 0 ? imageDataUrls : undefined,
+      timestamp: new Date().toISOString()
+    };
     setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
     setInput('');
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/generate`, {
+      const payload = {
         prompt: currentInput,
         history: messages,
         project_id: currentProjectId,
         discuss_mode: discussMode,
-      });
+      };
+      if (imageDataUrls.length > 0) {
+        payload.images = imageDataUrls;
+      }
+      const response = await axios.post(`${API_BASE_URL}/api/generate`, payload);
 
       const aiMessage = {
         role: 'assistant',
@@ -805,6 +843,23 @@ function Workspace({ user, logout, isAuthenticated }) {
             };
             const firstFile = findFirstFile(files);
             if (firstFile) setSelectedFile(firstFile);
+
+            // After patch, ensure container preview is refreshed
+            if (!response.data.preview_url) {
+              try {
+                const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
+                if (previewResp.data.preview_url) {
+                  console.log('🌐 Restarted container after patch:', previewResp.data.preview_url);
+                  containerLoadExpectedRef.current = true;
+                  setIsContainerLoading(true);
+                  setPreviewUrl(previewResp.data.preview_url);
+                  setActiveView('preview');
+                  startContainerRetry(previewResp.data.preview_url);
+                }
+              } catch (previewErr) {
+                console.error('Failed to get container preview after patch:', previewErr);
+              }
+            }
           } catch (err) {
             console.error('Failed to reload workspace after patch:', err);
           }
@@ -1507,8 +1562,17 @@ Please suggest improvements or modifications for this element.`;
     };
     const htmlFromTree = findHtml(fileTree);
     if (htmlFromTree) return htmlFromTree;
-    // Last resort: fullCode (may be single-file HTML or raw code)
-    return fullCode || previewCode || '';
+    // If fullCode looks like HTML, use it; otherwise show a waiting message
+    if (fullCode && (fullCode.includes('<html') || fullCode.includes('<!DOCTYPE'))) {
+      return fullCode;
+    }
+    return `<!DOCTYPE html><html><head><style>
+      body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
+             background:#0A0A0F; color:#9ca3af; font-family:system-ui,sans-serif; text-align:center; }
+      .icon { font-size:3rem; margin-bottom:1rem; }
+      h2 { color:#e5e7eb; font-size:1.1rem; margin:0 0 0.5rem; }
+      p { font-size:0.85rem; margin:0; }
+    </style></head><body><div><div class="icon">⏳</div><h2>Starting container preview...</h2><p>Your app is being deployed. The preview will appear shortly.</p></div></body></html>`;
   };
 
   // pollUntilReady is handled directly via startContainerRetry above
@@ -2093,12 +2157,6 @@ Please suggest improvements or modifications for this element.`;
           input={input}
           setInput={setInput}
           onSend={handleSend}
-          onKeyPress={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
           darkMode={true}
           codeVersions={branchCommits}
           selectedVersion={null}

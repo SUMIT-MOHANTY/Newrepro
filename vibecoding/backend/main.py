@@ -15,7 +15,7 @@ from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
 from git_manager import git_manager
-from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user, ForgotPasswordRequest, forgot_password
+from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user, ForgotPasswordRequest, ResetPasswordRequest, forgot_password, reset_password
 from dual_agent_handler import get_dual_agent_handler
 from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
 
@@ -46,6 +46,7 @@ class GenerateRequest(BaseModel):
     history: List[Message] = []
     project_id: Optional[str] = None
     discuss_mode: bool = False
+    images: Optional[List[str]] = None
 
 class GenerateResponse(BaseModel):
     message: str
@@ -118,6 +119,12 @@ async def forgot_password_endpoint(request: ForgotPasswordRequest):
     return forgot_password(request)
 
 
+@app.post("/vibecoding/api/auth/reset-password")
+async def reset_password_endpoint(request: ResetPasswordRequest):
+    """Reset password using token from email."""
+    return reset_password(request)
+
+
 @app.get("/vibecoding/api")
 async def root():
     return {"message": f"{APP_NAME} API is running"}
@@ -188,6 +195,19 @@ async def generate_code(request: GenerateRequest):
     # Get or create project ID at the start
     project_id = request.project_id or project_manager.generate_project_id()
     
+    def build_vision_message(text: str, image_data_urls: list = None) -> dict:
+        """Build an OpenAI/NVIDIA vision-format message with text + images."""
+        if not image_data_urls:
+            return {"role": "user", "content": text}
+        content = []
+        for data_url in image_data_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": data_url}
+            })
+        content.append({"type": "text", "text": text})
+        return {"role": "user", "content": content}
+
     try:
         # ── Discuss mode: pure conversation, no code generation ──────────
         if request.discuss_mode:
@@ -195,7 +215,7 @@ async def generate_code(request: GenerateRequest):
             messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
             for msg in request.history:
                 messages.append({"role": msg.role, "content": msg.content})
-            messages.append({"role": "user", "content": request.prompt})
+            messages.append(build_vision_message(request.prompt, request.images))
 
             response = ai_config.make_request(messages)
             ai_response = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
@@ -254,10 +274,7 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         if any(word in request.prompt.lower() for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
             prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. After you have gathered the necessary information about the page, you MUST generate the COMPLETE project code with ALL necessary files using the `// FILE: path/to/file.ext` format. DO NOT just describe the page; build it.)"
             
-        messages.append({
-            "role": "user",
-            "content": prompt_with_instructions
-        })
+        messages.append(build_vision_message(prompt_with_instructions, request.images))
 
         # Call AI API with function calling support (web search + page fetch)
         response = await make_request_with_tools(messages)
@@ -276,10 +293,16 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         code = None
         
         has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
+        has_raw_search_replace = (
+            not has_patch_markers
+            and bool(_re.search(r'<<<\s*SEARCH', ai_response))
+            and bool(_re.search(r'<<<\s*REPLACE', ai_response))
+        )
         has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
 
-        if has_patch_markers:
+        if has_patch_markers or has_raw_search_replace:
             # AI returned patch hunks — pass raw response so update_workspace_from_code can apply them
+            # (apply_patch_response will auto-fix missing // PATCH: headers and malformed delimiters)
             code = ai_response
         elif has_markers:
             # AI provided file markers. Keep the entire response but strip markdown code wrappers
@@ -302,7 +325,7 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                 # Fallback if no markdown but HTML is present
                 code = ai_response.strip()
         
-        # Clean up integrity and crossorigin attributes from CDN links
+        # Clean up integrity/crossorigin attributes and stray patch markers
         if code:
             import re
             # Remove integrity attributes
@@ -312,25 +335,34 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
             code = re.sub(r'\s+crossorigin="[^"]*"', '', code)
             code = re.sub(r"\s+crossorigin='[^']*'", '', code)
             code = re.sub(r'\s+crossorigin(?=\s|>)', '', code)
+
+            # If this is clearly a full HTML/file output (not patch mode), strip accidental PATCH tokens
+            # that sometimes leak into the generated HTML (e.g. bare "<<<REPLACE" lines).
+            if (not has_patch_markers) and (not has_raw_search_replace):
+                looks_like_html = '<!doctype' in code.lower() or '<html' in code.lower()
+                if looks_like_html and ('<<<REPLACE' in code or '<<<SEARCH' in code):
+                    code = re.sub(r'^\s*(<<<SEARCH|<<<REPLACE|>>>)\s*$', '', code, flags=re.MULTILINE)
+                    code = re.sub(r'\n{3,}', '\n\n', code).strip()
         
         # Initialize message variable
         message = ai_response
         
         # Check if AI returned instructions instead of actual code
         # (skip this check for patch responses — they never start with code prefixes)
-        if code and not has_patch_markers and (
+        is_any_patch = has_patch_markers or has_raw_search_replace
+        if code and not is_any_patch and (
             not code.strip().startswith(('from', 'import', 'def', 'class', 'app =', '<!DOCTYPE', '<html', '{', '[')) and
             len(code.strip().split('\n')) < 5
         ):
-            # This looks like instructions, not actual code
             code = None
-            message = ai_response  # Show full response including instructions
+            message = ai_response
 
         # Clean message (remove code blocks and patch blocks — show only narrative)
         if code:
             if has_patch_markers:
-                # Strip everything from the first PATCH block onwards
                 message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
+            elif has_raw_search_replace:
+                message = _re.split(r'<<<\s*SEARCH', ai_response)[0].strip()
             else:
                 message = ai_response.split("```")[0].strip()
 
@@ -425,6 +457,38 @@ async def health_check():
         "docker_available": docker_available,
         "public_host": public_host
     }
+
+@app.get("/vibecoding/api/projects/{project_id}/container-health")
+async def container_health(project_id: str):
+    """Check if a project's container is healthy and serving HTTP requests."""
+    port = get_container_port(project_id)
+    if not port:
+        return {"healthy": False, "reason": "no_container"}
+
+    # Check Docker container status
+    container_name = f"vibecoding_{project_id}"
+    docker_status = "unknown"
+    try:
+        if project_manager.docker_client:
+            container = project_manager.docker_client.containers.get(container_name)
+            docker_status = container.status
+            if docker_status != "running":
+                return {"healthy": False, "reason": "container_not_running", "docker_status": docker_status}
+    except Exception:
+        return {"healthy": False, "reason": "container_not_found"}
+
+    # Probe the actual app port
+    try:
+        resp = requests.get(f"http://127.0.0.1:{port}/", timeout=3)
+        if resp.status_code < 500:
+            return {"healthy": True, "docker_status": docker_status, "http_status": resp.status_code}
+        return {"healthy": False, "reason": "http_error", "http_status": resp.status_code}
+    except requests.exceptions.ConnectionError:
+        return {"healthy": False, "reason": "connection_refused", "docker_status": docker_status}
+    except requests.exceptions.Timeout:
+        return {"healthy": False, "reason": "timeout", "docker_status": docker_status}
+    except Exception as e:
+        return {"healthy": False, "reason": str(e)}
 
 # Project Management Endpoints
 
@@ -700,6 +764,14 @@ async def git_commit(request: GitRequest):
         if not request.message:
             raise HTTPException(status_code=400, detail="Commit message is required")
         result = git_manager.commit(request.project_id, request.message)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/commits")
+async def git_commits(request: GitRequest):
+    try:
+        result = git_manager.get_commit_history(request.project_id)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

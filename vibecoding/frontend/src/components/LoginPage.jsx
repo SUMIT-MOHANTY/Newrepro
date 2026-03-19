@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Zap, Eye, EyeOff, ArrowRight, Sparkles, Mail, Lock } from 'lucide-react';
 
-export default function LoginPage({ onSwitchToSignup }) {
+export default function LoginPage({ onSwitchToSignup, onForgotPassword }) {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -175,9 +175,14 @@ export default function LoginPage({ onSwitchToSignup }) {
               </button>
 
               <div className="auth-forgot-password">
-                <a href="/forgot-password" className="auth-forgot-link">
+                <button 
+                  type="button"
+                  onClick={onForgotPassword}
+                  className="auth-forgot-link"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
                   Forgot password?
-                </a>
+                </button>
               </div>
             </form>
 

@@ -257,6 +257,13 @@ class GitManager:
         return self._run_git_command(project_id, ["checkout", commit_hash])
 
     def add_remote(self, project_id: str, remote_url: str, remote_name: str = "origin") -> Dict[str, Any]:
+        # Clean up the URL - remove trailing slashes and ensure .git extension for GitHub/GitLab URLs
+        remote_url = remote_url.strip().rstrip('/')
+        if remote_url.startswith("https://") and not remote_url.endswith('.git'):
+            # Only add .git for common git hosting services
+            if any(host in remote_url for host in ['github.com', 'gitlab.com', 'bitbucket.org']):
+                remote_url = remote_url + '.git'
+        
         # Check if remote exists
         check_remotes = self._run_git_command(project_id, ["remote"])
         res = {"status": "success"}
@@ -279,6 +286,12 @@ class GitManager:
             remote_res = self._run_git_command(project_id, ["remote", "get-url", remote_name])
             if remote_res["status"] == "success":
                 url = remote_res["stdout"].strip()
+                
+                # Clean up the URL - remove trailing slashes and ensure .git extension
+                url = url.rstrip('/')
+                if not url.endswith('.git'):
+                    url = url + '.git'
+                
                 if url.startswith("https://"):
                     # Inject token: https://token@github.com/...
                     # Or https://username:token@github.com/...
@@ -289,8 +302,8 @@ class GitManager:
                     else:
                         new_url = re.sub(r"https://", f"https://{token}@", url)
                     
-                    # Temporarily change remote to push
-                    self._run_git_command(project_id, ["remote", "set-url", "temp_push", new_url])
+                    # Add temporary remote with credentials, push, then remove it
+                    self._run_git_command(project_id, ["remote", "add", "temp_push", new_url])
                     push_res = self._run_git_command(project_id, ["push", "temp_push", branch_name])
                     self._run_git_command(project_id, ["remote", "remove", "temp_push"])
                     return push_res

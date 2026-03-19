@@ -252,6 +252,107 @@ class EmailService:
         
         return self.send_email(to_email, subject, html_body)
     
+    def send_password_reset_link(self, to_email: str, username: str, reset_url: str) -> bool:
+        """
+        Send password reset email with link to reset password.
+        
+        Args:
+            to_email: User's email address
+            username: User's username
+            reset_url: URL with reset token
+        
+        Returns:
+            True if email sent successfully, False otherwise
+        """
+        subject = "Reset Your Password - VibeCoding"
+        
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #0A0A0F; color: #ffffff;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #0A0A0F;">
+                <tr>
+                    <td align="center" style="padding: 40px 20px;">
+                        <table width="600" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);">
+                            <!-- Header -->
+                            <tr>
+                                <td style="padding: 40px 40px 30px; text-align: center; background: linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%);">
+                                    <h1 style="margin: 0; font-size: 32px; font-weight: 700; color: #ffffff; text-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                                        Reset Your Password 🔐
+                                    </h1>
+                                </td>
+                            </tr>
+                            
+                            <!-- Body -->
+                            <tr>
+                                <td style="padding: 40px;">
+                                    <p style="margin: 0 0 20px; font-size: 16px; line-height: 1.6; color: #e5e7eb;">
+                                        Hi <strong style="color: #ffffff;">{username}</strong>,
+                                    </p>
+                                    
+                                    <p style="margin: 0 0 20px; font-size: 16px; line-height: 1.6; color: #e5e7eb;">
+                                        We received a request to reset your password. Click the button below to create a new password:
+                                    </p>
+                                    
+                                    <!-- CTA Button -->
+                                    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 30px 0;">
+                                        <tr>
+                                            <td align="center">
+                                                <a href="{reset_url}" style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%); color: #ffffff; text-decoration: none; border-radius: 10px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);">
+                                                    Reset Password
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    <!-- Info Box -->
+                                    <table width="100%" cellpadding="0" cellspacing="0" style="margin: 30px 0; background: rgba(245, 158, 11, 0.1); border: 2px solid rgba(245, 158, 11, 0.3); border-radius: 12px;">
+                                        <tr>
+                                            <td style="padding: 20px;">
+                                                <p style="margin: 0 0 8px; font-size: 14px; color: #FCD34D; font-weight: 600;">
+                                                    ⚠️ Important
+                                                </p>
+                                                <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #FDE68A;">
+                                                    This link will expire in 1 hour for security reasons. If you didn't request this reset, you can safely ignore this email.
+                                                </p>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #9ca3af;">
+                                        If the button doesn't work, copy and paste this link into your browser:
+                                    </p>
+                                    <p style="margin: 10px 0 0; font-size: 12px; word-break: break-all; color: #8B5CF6;">
+                                        {reset_url}
+                                    </p>
+                                </td>
+                            </tr>
+                            
+                            <!-- Footer -->
+                            <tr>
+                                <td style="padding: 30px 40px; text-align: center; background: rgba(0,0,0,0.2); border-top: 1px solid rgba(255,255,255,0.05);">
+                                    <p style="margin: 0 0 8px; font-size: 14px; color: #9ca3af;">
+                                        Need help? Contact our support team
+                                    </p>
+                                    <p style="margin: 0; font-size: 12px; color: #6b7280;">
+                                        © 2026 VibeCoding. All rights reserved.
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+        
+        return self.send_email(to_email, subject, html_body)
+    
     def send_password_reset_email(self, to_email: str, username: str, new_password: str) -> bool:
         """Send password reset email with new generated password."""
         subject = "Password Reset - VibeCoding"

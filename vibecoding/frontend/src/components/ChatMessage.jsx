@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Bot, CheckCircle2, Copy, RefreshCw, FileText, FileCode, Search, Globe, ChevronDown, ChevronRight } from 'lucide-react';
+import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, FileText, FileCode, Search, Globe, ChevronDown, ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -201,7 +201,7 @@ const ChatMessage = ({
           {isUser ? (
             <User className="w-4 h-4 text-white" />
           ) : (
-            <Bot className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
+            <Sparkles className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
           )}
         </div>
         <div className="flex-1 min-w-0">
@@ -211,6 +211,19 @@ const ChatMessage = ({
               ? darkMode ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white' : 'bg-blue-500 text-white'
               : darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900'
           )}>
+            {/* Attached Images */}
+            {isUser && message.images && message.images.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {message.images.map((src, idx) => (
+                  <img
+                    key={idx}
+                    src={src}
+                    alt={`Attachment ${idx + 1}`}
+                    className="max-w-[200px] max-h-[160px] rounded-md object-cover border border-white/20"
+                  />
+                ))}
+              </div>
+            )}
             {/* Tool Calls Display */}
             {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
@@ -329,11 +342,12 @@ const ChatMessage = ({
                         : message.role === 'user'
                           ? 'text-white/80 hover:bg-white/10'
                           : darkMode
-                            ? 'text-gray-500 hover:bg-white/10'
+                            ? '!text-gray-200 !bg-white/5 !border !border-white/10 hover:!bg-white/10 hover:!border-white/20'
                             : 'text-gray-500 hover:bg-gray-200'
                         }`}
                     >
-                      {selectedVersion === (msgVersion?.hash || message.versionId) ? 'Current' : 'Checkpoint'}
+                      
+                      {selectedVersion === (msgVersion?.hash || message.versionId) ? 'Viewing' : 'View checkpoint'}
                     </Button>
                   )}
                 </div>

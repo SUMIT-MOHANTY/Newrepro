@@ -77,13 +77,14 @@ replacement lines
 >>>
 
 ⚠️ CRITICAL PATCH FORMATTING RULES:
-1. The line "// PATCH: path/to/file.ext" must contain ONLY the file path - nothing else
+1. EVERY patch MUST start with "// PATCH: path/to/file.ext" on its own line — this is REQUIRED, patches WITHOUT this header WILL FAIL
 2. Use EXACTLY "<<<SEARCH" (3 angle brackets, no spaces, no extra characters)
-3. Use EXACTLY ">>>" to close the search block (3 angle brackets only)
+3. Use EXACTLY ">>>" to close the search block (3 angle brackets only) — ALWAYS close SEARCH with >>> BEFORE opening REPLACE
 4. Use EXACTLY "<<<REPLACE" to open the replace block
 5. Use EXACTLY ">>>" to close the replace block
 6. NEVER use git conflict markers like "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE" — those will NOT be parsed
 7. You can have multiple PATCH blocks for the same file or different files
+8. NEVER output bare <<<SEARCH/<<<REPLACE blocks without a preceding "// PATCH: file" line
 
 📄 FILE MARKER FORMAT (use for new or fully rewritten files):
 
@@ -116,6 +117,26 @@ User: "Change the button color to blue"
 .btn {{
   background-color: red;
 >>>
+<<<REPLACE
+.btn {{
+  background-color: blue;
+>>>
+
+❌ WRONG (missing // PATCH: header — will not be applied):
+<<<SEARCH
+.btn {{
+  background-color: red;
+>>>
+<<<REPLACE
+.btn {{
+  background-color: blue;
+>>>
+
+❌ WRONG (missing >>> between SEARCH and REPLACE):
+// PATCH: public/style.css
+<<<SEARCH
+.btn {{
+  background-color: red;
 <<<REPLACE
 .btn {{
   background-color: blue;

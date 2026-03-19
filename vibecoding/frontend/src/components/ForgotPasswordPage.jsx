@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import axios from 'axios';
 import { Zap, Mail, ArrowLeft, Check } from 'lucide-react';
 

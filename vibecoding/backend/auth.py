@@ -71,11 +71,27 @@ def init_db():
             salt TEXT NOT NULL,
             full_name TEXT,
             avatar_color TEXT DEFAULT '#8B5CF6',
+            reset_token TEXT,
+            reset_token_expiry TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
     """)
     conn.commit()
+    
+    # Add reset_token columns if they don't exist (migration for existing databases)
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN reset_token TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN reset_token_expiry TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
     conn.close()
 
 
@@ -381,8 +397,13 @@ class ForgotPasswordRequest(BaseModel):
     email: str
 
 
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
 def forgot_password(request: ForgotPasswordRequest) -> dict:
-    """Reset password and send new password via email."""
+    """Generate password reset token and send reset link via email."""
     from email_service import email_service
     
     conn = get_db()
@@ -394,34 +415,73 @@ def forgot_password(request: ForgotPasswordRequest) -> dict:
         
         if not user:
             # Don't reveal if email exists or not for security
-            return {"message": "If an account with that email exists, a password reset email has been sent."}
+            return {"message": "If an account with that email exists, a password reset link has been sent."}
         
-        # Generate new password
-        new_password = generate_random_password()
+        # Generate secure reset token (valid for 1 hour)
+        reset_token = secrets.token_urlsafe(32)
+        token_expiry = (datetime.utcnow() + timedelta(hours=1)).isoformat()
         
-        # Hash the new password
-        password_hash, salt = hash_password(new_password)
-        
-        # Update user's password
+        # Store reset token in database
         now = datetime.utcnow().isoformat()
         conn.execute(
-            "UPDATE users SET password_hash = ?, salt = ?, updated_at = ? WHERE id = ?",
-            (password_hash, salt, now, user["id"])
+            "UPDATE users SET reset_token = ?, reset_token_expiry = ?, updated_at = ? WHERE id = ?",
+            (reset_token, token_expiry, now, user["id"])
         )
         conn.commit()
         
-        # Send password reset email
+        # Generate reset URL
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        reset_url = f"{frontend_url}/vibecoding/reset-password?token={reset_token}"
+        
+        # Send password reset email with link
         try:
-            email_sent = email_service.send_password_reset_email(
+            email_sent = email_service.send_password_reset_link(
                 user["email"],
                 user["username"],
-                new_password
+                reset_url
             )
             if not email_sent:
                 print(f"Warning: Failed to send password reset email to {user['email']}")
         except Exception as e:
             print(f"Error sending password reset email: {e}")
         
-        return {"message": "If an account with that email exists, a password reset email has been sent."}
+        return {"message": "If an account with that email exists, a password reset link has been sent."}
+    finally:
+        conn.close()
+
+
+def reset_password(request: ResetPasswordRequest) -> dict:
+    """Reset password using the token from email."""
+    conn = get_db()
+    try:
+        # Find user by reset token
+        user = conn.execute(
+            "SELECT * FROM users WHERE reset_token = ?", (request.token,)
+        ).fetchone()
+        
+        if not user:
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+        
+        # Check if token is expired
+        token_expiry = datetime.fromisoformat(user["reset_token_expiry"])
+        if datetime.utcnow() > token_expiry:
+            raise HTTPException(status_code=400, detail="Reset token has expired. Please request a new one.")
+        
+        # Validate new password
+        if len(request.new_password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+        
+        # Hash the new password
+        password_hash, salt = hash_password(request.new_password)
+        
+        # Update user's password and clear reset token
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            "UPDATE users SET password_hash = ?, salt = ?, reset_token = NULL, reset_token_expiry = NULL, updated_at = ? WHERE id = ?",
+            (password_hash, salt, now, user["id"])
+        )
+        conn.commit()
+        
+        return {"message": "Password has been reset successfully. You can now login with your new password."}
     finally:
         conn.close()

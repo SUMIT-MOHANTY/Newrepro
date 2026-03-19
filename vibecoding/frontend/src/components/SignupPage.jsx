@@ -1,34 +1,16 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Zap, Eye, EyeOff, ArrowRight, Sparkles, Mail, Lock, User, UserCircle, Check } from 'lucide-react';
+import { Zap, ArrowRight, Sparkles, Mail, User, UserCircle, Check } from 'lucide-react';
 
 export default function SignupPage({ onSwitchToLogin }) {
   const { signup } = useAuth();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
-
-  // Password strength
-  const getPasswordStrength = (pwd) => {
-    let score = 0;
-    if (pwd.length >= 6) score++;
-    if (pwd.length >= 10) score++;
-    if (/[A-Z]/.test(pwd)) score++;
-    if (/[0-9]/.test(pwd)) score++;
-    if (/[^A-Za-z0-9]/.test(pwd)) score++;
-    return score;
-  };
-
-  const passwordStrength = getPasswordStrength(password);
-  const strengthLabels = ['', 'Weak', 'Fair', 'Good', 'Strong', 'Excellent'];
-  const strengthColors = ['', '#EF4444', '#F59E0B', '#3B82F6', '#10B981', '#8B5CF6'];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -48,7 +30,7 @@ export default function SignupPage({ onSwitchToLogin }) {
 
     try {
       // Always passwordless - password will be generated and emailed
-      const response = await signup(username, email, undefined, fullName);
+      await signup(username, email, undefined, fullName);
       
       // Show success message
       setSuccess(true);

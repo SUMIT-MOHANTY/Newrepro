@@ -5,29 +5,29 @@ Fully dynamic: works with any tech stack via pure AI-driven analysis.
 All tunables controlled via environment variables — zero hardcoded assumptions.
 
 ENV VARS (all optional):
-  AI_API_KEY / NVIDIA_API_KEY   – LLM provider API key
-  AI_API_URL                    – OpenAI-compatible endpoint
-  AI_MODEL                      – Model name
-  PORT                          – Port the server must bind to (default: 8080)
-  MAX_RETRIES                   – Self-healing retry limit (default: 3)
-  STARTUP_TIMEOUT               – Seconds to monitor startup (default: 20)
-  AI_TIMEOUT                    – Seconds to wait for AI response (default: 60)
-  MAX_FILE_SIZE                 – Max bytes per file sent to AI (default: 5000)
-  MAX_FILES                     – Max files in AI context (default: 10)
-  ERROR_KEYWORDS                – Comma-separated error log signals
-  SUCCESS_KEYWORDS              – Comma-separated startup success signals
-  SCAN_EXTENSIONS               – Comma-separated file extensions (default: auto)
-  PROJECT_VERSIONS_DIR          – Root dir for versioned workspaces (default: /project/versions)
-  WORKSPACE_PATH                – Explicit workspace path override
-  FALLBACK_RUN_CMD              – Command when no AI key is available
-  ERROR_LOG_TAIL                – Chars of error log sent to AI (default: 3000)
-  FILE_SNIPPET_CHARS            – Chars per file in AI context (default: 3000)
-  MAX_CONTEXT_FILES             – Files included in fix prompt (default: 5)
-  POLL_INTERVAL                 – Stdout read loop sleep in seconds (default: 0.05)
-  DRAIN_TIMEOUT                 – Extra seconds to drain output after process exits (default: 3.0)
-  MAX_ATTEMPTS                  – Hard ceiling on total attempts regardless of fix success (default: MAX_RETRIES * 3)
-  BG_READY_TIMEOUT              – Seconds to wait for background process ready signal (default: 30)
-  FUZZY_PATCH_THRESHOLD         – difflib match threshold for fuzzy patching (default: 0.85)
+  AI_API_KEY / NVIDIA_API_KEY   - LLM provider API key
+  AI_API_URL                    - OpenAI-compatible endpoint
+  AI_MODEL                      - Model name
+  PORT                          - Port the server must bind to (default: 8080)
+  MAX_RETRIES                   - Self-healing retry limit (default: 3)
+  STARTUP_TIMEOUT               - Seconds to monitor startup (default: 20)
+  AI_TIMEOUT                    - Seconds to wait for AI response (default: 60)
+  MAX_FILE_SIZE                 - Max bytes per file sent to AI (default: 5000)
+  MAX_FILES                     - Max files in AI context (default: 10)
+  ERROR_KEYWORDS                - Comma-separated error log signals
+  SUCCESS_KEYWORDS              - Comma-separated startup success signals
+  SCAN_EXTENSIONS               - Comma-separated file extensions (default: auto)
+  PROJECT_VERSIONS_DIR          - Root dir for versioned workspaces (default: /project/versions)
+  WORKSPACE_PATH                - Explicit workspace path override
+  FALLBACK_RUN_CMD              - Command when no AI key is available
+  ERROR_LOG_TAIL                - Chars of error log sent to AI (default: 3000)
+  FILE_SNIPPET_CHARS            - Chars per file in AI context (default: 3000)
+  MAX_CONTEXT_FILES             - Files included in fix prompt (default: 5)
+  POLL_INTERVAL                 - Stdout read loop sleep in seconds (default: 0.05)
+  DRAIN_TIMEOUT                 - Extra seconds to drain output after process exits (default: 3.0)
+  MAX_ATTEMPTS                  - Hard ceiling on total attempts regardless of fix success (default: MAX_RETRIES * 3)
+  BG_READY_TIMEOUT              - Seconds to wait for background process ready signal (default: 30)
+  FUZZY_PATCH_THRESHOLD         - difflib match threshold for fuzzy patching (default: 0.85)
 """
 
 import os
@@ -37,6 +37,7 @@ import json
 import time
 import re
 import shutil
+import tempfile
 import platform
 import difflib
 from pathlib import Path
@@ -111,7 +112,7 @@ class Config:
         default_factory=lambda: os.environ.get('FALLBACK_RUN_CMD', '')
     )
     fuzzy_threshold: float = field(
-        default_factory=lambda: float(os.environ.get('FUZZY_PATCH_THRESHOLD', '0.75'))
+        default_factory=lambda: float(os.environ.get('FUZZY_PATCH_THRESHOLD', '0.85'))
     )
     user_prompt: str = field(
         default_factory=lambda: os.environ.get('USER_PROMPT', '')
@@ -521,7 +522,128 @@ RULES:
         return self._call_ai(prompt, temperature=0.2)
 
     # ------------------------------------------------------------------
-    # Surgical patch engine — 4-tier matching strategy
+    # Patch helpers — validation, line endings, atomic writes
+    # ------------------------------------------------------------------
+
+    def _validate_syntax(self, content: str, filepath: Path) -> Tuple[bool, Optional[str]]:
+        """Validate syntax of patched content for known file types."""
+        suffix = filepath.suffix.lower()
+        if suffix == '.py':
+            try:
+                compile(content, str(filepath), 'exec')
+                return True, None
+            except SyntaxError as e:
+                return False, f"line {e.lineno}: {e.msg}"
+        if suffix == '.json':
+            try:
+                json.loads(content)
+                return True, None
+            except json.JSONDecodeError as e:
+                return False, f"line {e.lineno}: {e.msg}"
+        return True, None
+
+    def _detect_line_separator(self, text: str) -> str:
+        """Detect the dominant line separator in text."""
+        crlf = text.count('\r\n')
+        lf = text.count('\n') - crlf
+        if crlf > 0 and crlf >= lf:
+            return '\r\n'
+        return '\n'
+
+    def _atomic_write(self, filepath: Path, content: str):
+        """Write atomically via temp file + os.replace."""
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(filepath.parent), suffix='.tmp'
+        )
+        try:
+            with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+                f.write(content)
+            os.replace(tmp_path, str(filepath))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _match_hunk(self, content: str, search: str, replace: str, line_sep: str) -> Tuple[Optional[str], str]:
+        """
+        4-tier matching for a single hunk.
+        Returns (new_content, tier_name) on success, or (None, reason) on failure.
+        """
+        # Tier 1: Exact match
+        if search in content:
+            return content.replace(search, replace, 1), "exact"
+
+        search_lines = search.splitlines()
+        replace_lines = replace.splitlines()
+        content_lines = content.split(line_sep) if line_sep != '\n' else content.splitlines()
+        trailing = content.endswith(line_sep) or content.endswith('\n')
+
+        def _rejoin(lines):
+            joined = line_sep.join(lines)
+            if trailing:
+                joined = joined.rstrip(line_sep) + line_sep
+            return joined
+
+        # Tier 2: Whitespace-normalised match
+        def normalize(s):
+            return re.sub(r'\s+', ' ', s).strip()
+
+        norm_search = [normalize(l) for l in search_lines]
+        for idx in range(len(content_lines) - len(search_lines) + 1):
+            window = content_lines[idx: idx + len(search_lines)]
+            if [normalize(l) for l in window] == norm_search:
+                content_lines[idx: idx + len(search_lines)] = replace_lines
+                return _rejoin(content_lines), "whitespace-norm"
+
+        # Tier 3: Indentation-flexible match with relative indent preservation
+        search_stripped = [l.strip() for l in search_lines]
+        search_base = min(
+            (len(l) - len(l.lstrip()) for l in search_lines if l.strip()),
+            default=0
+        )
+
+        for idx in range(len(content_lines) - len(search_stripped) + 1):
+            window = content_lines[idx: idx + len(search_stripped)]
+            if [l.strip() for l in window] == search_stripped:
+                window_base = min(
+                    (len(l) - len(l.lstrip()) for l in window if l.strip()),
+                    default=0
+                )
+                delta = window_base - search_base
+                new_lines = []
+                for l in replace_lines:
+                    if not l.strip():
+                        new_lines.append(l)
+                    else:
+                        new_indent = max(0, (len(l) - len(l.lstrip())) + delta)
+                        new_lines.append(" " * new_indent + l.lstrip())
+                content_lines[idx: idx + len(search_stripped)] = new_lines
+                return _rejoin(content_lines), f"indent-flex(delta={delta:+d})"
+
+        # Tier 4: difflib fuzzy match with variable window size (±2 lines)
+        base_window = len(search_lines)
+        best_score, best_idx, best_size = 0.0, -1, base_window
+
+        for size_delta in (0, -1, 1, -2, 2):
+            ws = base_window + size_delta
+            if ws < 1 or ws > len(content_lines):
+                continue
+            for idx in range(len(content_lines) - ws + 1):
+                window_text = "\n".join(content_lines[idx: idx + ws])
+                score = difflib.SequenceMatcher(None, search, window_text).ratio()
+                if score > best_score:
+                    best_score, best_idx, best_size = score, idx, ws
+
+        if best_score >= self.config.fuzzy_threshold:
+            content_lines[best_idx: best_idx + best_size] = replace_lines
+            return _rejoin(content_lines), f"fuzzy(score={best_score:.2f}, win={best_size})"
+
+        return None, f"no-match(best={best_score:.2f})"
+
+    # ------------------------------------------------------------------
+    # Surgical patch engine — production-grade, all-or-nothing
     # ------------------------------------------------------------------
 
     def _apply_code_patch(self, filepath: Path, hunks: list) -> bool:
@@ -535,109 +657,58 @@ RULES:
             self.log("❌", f"Cannot read {filepath}: {e}")
             return False
 
-        # For nginx configs in sites-enabled, store backups in /tmp to avoid duplicate server errors
-        if "/etc/nginx/sites-enabled" in str(filepath):
-            backup = Path("/tmp") / f"{filepath.name}.bak"
-        else:
-            backup = filepath.with_suffix(filepath.suffix + ".bak")
-        
-        shutil.copy2(filepath, backup)
-        self.log("💾", f"Backup: {backup}")
-
+        line_sep = self._detect_line_separator(original)
         content = original
         applied = 0
+        tiers = []
 
         for i, hunk in enumerate(hunks):
-            search  = hunk.get("search", "")
+            search = hunk.get("search", "")
             replace = hunk.get("replace", "")
 
             if not search:
                 self.log("⚠️", f"Hunk {i+1}: empty search — skipping")
                 continue
 
-            # Tier 1: Exact match
-            if search in content:
-                content = content.replace(search, replace, 1)
-                self.log("✅", f"Hunk {i+1}: exact match")
-                applied += 1
-                continue
+            new_content, tier = self._match_hunk(content, search, replace, line_sep)
 
-            # Tier 2: Whitespace-normalised match
-            def normalize(s):
-                return re.sub(r'\s+', ' ', s).strip()
+            if new_content is None:
+                self.log("❌", f"Hunk {i+1}: {tier} — aborting entire patch")
+                return False
 
-            search_lines  = search.splitlines()
-            replace_lines = replace.splitlines()
-            content_lines = content.splitlines()
-
-            norm_match = False
-            for idx in range(len(content_lines) - len(search_lines) + 1):
-                window = content_lines[idx: idx + len(search_lines)]
-                if [normalize(l) for l in window] == [normalize(l) for l in search_lines]:
-                    content_lines[idx: idx + len(search_lines)] = replace_lines
-                    content = "\n".join(content_lines)
-                    if original.endswith("\n"):
-                        content += "\n"
-                    self.log("✅", f"Hunk {i+1}: whitespace-normalised match")
-                    applied += 1
-                    norm_match = True
-                    break
-            if norm_match:
-                continue
-
-            # Tier 3: Indentation-flexible match
-            search_stripped = [l.strip() for l in search_lines]
-            content_lines   = content.splitlines()
-            indent_match    = False
-
-            for idx in range(len(content_lines) - len(search_stripped) + 1):
-                window = content_lines[idx: idx + len(search_stripped)]
-                if [l.strip() for l in window] == search_stripped:
-                    indent = len(window[0]) - len(window[0].lstrip())
-                    pad    = " " * indent
-                    new_lines = [
-                        pad + l.lstrip() if l.strip() else l
-                        for l in replace_lines
-                    ]
-                    content_lines[idx: idx + len(search_stripped)] = new_lines
-                    content = "\n".join(content_lines)
-                    if original.endswith("\n"):
-                        content += "\n"
-                    self.log("✅", f"Hunk {i+1}: indentation-flexible match")
-                    applied += 1
-                    indent_match = True
-                    break
-            if indent_match:
-                continue
-
-            # Tier 4: difflib fuzzy match
-            content_lines = content.splitlines()
-            window_size   = len(search_lines)
-            best_score, best_idx = 0.0, -1
-
-            for idx in range(len(content_lines) - window_size + 1):
-                window = "\n".join(content_lines[idx: idx + window_size])
-                score  = difflib.SequenceMatcher(None, search, window).ratio()
-                if score > best_score:
-                    best_score, best_idx = score, idx
-
-            if best_score >= self.config.fuzzy_threshold:
-                content_lines[best_idx: best_idx + window_size] = replace_lines
-                content = "\n".join(content_lines)
-                if original.endswith("\n"):
-                    content += "\n"
-                self.log("✅", f"Hunk {i+1}: fuzzy match (score={best_score:.2f})")
-                applied += 1
-            else:
-                self.log("⚠️", f"Hunk {i+1}: no match found (best={best_score:.2f}) — skipping")
+            content = new_content
+            applied += 1
+            tiers.append(tier)
+            self.log("✅", f"Hunk {i+1}: {tier}")
 
         if applied == 0:
-            self.log("❌", "No hunks applied — restoring backup")
+            self.log("❌", "No hunks applied")
+            return False
+
+        if content == original:
+            self.log("⚠️", "Patch produced no changes")
+            return False
+
+        is_valid, err = self._validate_syntax(content, filepath)
+        if not is_valid:
+            self.log("❌", f"Post-patch syntax error in {filepath.name}: {err} — aborting")
+            return False
+
+        if "/etc/nginx/sites-enabled" in str(filepath):
+            backup = Path("/tmp") / f"{filepath.name}.bak"
+        else:
+            backup = filepath.with_suffix(filepath.suffix + ".bak")
+        shutil.copy2(filepath, backup)
+        self.log("💾", f"Backup: {backup}")
+
+        try:
+            self._atomic_write(filepath, content)
+        except Exception as e:
+            self.log("❌", f"Atomic write failed for {filepath.name}: {e} — restoring backup")
             shutil.copy2(backup, filepath)
             return False
 
-        filepath.write_text(content, encoding="utf-8")
-        self.log("🩹", f"Patched {filepath.name}: {applied}/{len(hunks)} hunks applied")
+        self.log("🩹", f"Patched {filepath.name}: {applied}/{len(hunks)} hunks [{', '.join(tiers)}]")
         return True
 
     def _resolve_path(self, filename: str) -> Optional[Path]:

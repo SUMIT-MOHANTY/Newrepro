@@ -483,6 +483,11 @@ class ProjectManager:
         code = re.sub(r'>{4,7}\s*REPLACE', '<<<REPLACE', code)
         # Fix: "=======" separator between search/replace → ">>>\n<<<REPLACE"
         code = re.sub(r'={4,7}', '>>>\n<<<REPLACE', code)
+        # Fix: missing >>> between SEARCH content and <<<REPLACE
+        code = re.sub(
+            r'(<<<SEARCH\n(?:(?!>>>|<<<).)*?)\n(<<<REPLACE)',
+            r'\1\n>>>\n\2', code, flags=re.DOTALL
+        )
         # Fix: ">>><<<REPLACE" or ">>> <<<REPLACE" (missing newline between close and open)
         code = re.sub(r'>>>\s*<<<REPLACE', '>>>\n<<<REPLACE', code)
         # Fix: "<<<REPLACE" immediately followed by content on same line → add newline
@@ -492,8 +497,66 @@ class ProjectManager:
         # Fix: content immediately followed by ">>>" without newline → add newline
         code = re.sub(r'([^\n])(>>>)', r'\1\n\2', code)
         # Fix: "// PATCH: file.ext" immediately followed by next PATCH block (missing close >>>)
-        # Detect missing closing >>> before a new PATCH block
         code = re.sub(r'(<<<REPLACE\n(?:(?!>>>|<<<PATCH).)*?)\n(//\s*PATCH:)', r'\1\n>>>\n\2', code, flags=re.DOTALL)
+        # Fix: last <<<REPLACE block missing closing >>>
+        if '<<<REPLACE' in code:
+            last_replace_idx = code.rfind('<<<REPLACE')
+            after_last = code[last_replace_idx:]
+            if '>>>' not in after_last:
+                code = code.rstrip() + '\n>>>'
+
+        # ── Auto-infer // PATCH: filename when headers are missing ──────
+        if '<<<SEARCH' in code and not re.search(r'//\s*PATCH:\s*', code):
+            logger.info("🔍 Detected <<<SEARCH blocks without // PATCH: headers — auto-inferring filenames")
+            search_blocks = re.findall(r'<<<SEARCH\n(.*?)\n>>>', code, re.DOTALL)
+            inferred_file = None
+
+            for search_text in search_blocks:
+                search_trimmed = search_text.strip()
+                if not search_trimmed:
+                    continue
+                first_line = search_trimmed.split('\n')[0].strip()
+                if not first_line:
+                    continue
+
+                best_match = None
+                for fpath in workspace_dir.rglob('*'):
+                    if fpath.is_dir() or '.git' in fpath.parts:
+                        continue
+                    try:
+                        content = fpath.read_text(encoding='utf-8', errors='ignore')
+                    except Exception:
+                        continue
+                    if first_line in content:
+                        rel = str(fpath.relative_to(workspace_dir))
+                        if search_trimmed in content:
+                            best_match = rel
+                            break
+                        if best_match is None:
+                            best_match = rel
+
+                if best_match:
+                    inferred_file = best_match
+                    break
+
+            if inferred_file:
+                logger.info(f"🔍 Inferred target file: {inferred_file}")
+                patched_code = ""
+                remaining = code
+                first_search = True
+                while '<<<SEARCH' in remaining:
+                    pre, _, rest = remaining.partition('<<<SEARCH')
+                    if first_search or '\n// PATCH:' not in pre:
+                        patched_code += pre + f"// PATCH: {inferred_file}\n<<<SEARCH"
+                    else:
+                        patched_code += pre + '<<<SEARCH'
+                    remaining = rest
+                    first_search = False
+                patched_code += remaining
+                code = patched_code
+            else:
+                logger.warning("⚠️ Could not infer target file for <<<SEARCH blocks")
+                return False, []
 
         patch_block_re = re.compile(
             r'//\s*PATCH:\s*([^\n<]+)\n\s*<<<SEARCH\n(.*?)\n\s*>>>\n\s*<<<REPLACE\n(.*?)\n\s*>>>',
@@ -501,62 +564,160 @@ class ProjectManager:
         )
         matches = list(patch_block_re.finditer(code))
         if not matches:
-            if '// PATCH:' in code or '//PATCH:' in code:
-                logger.warning("⚠️ Found PATCH markers but no hunks could be parsed after normalization")
+            if '// PATCH:' in code or '//PATCH:' in code or '<<<SEARCH' in code:
+                logger.warning("⚠️ Found PATCH/SEARCH markers but no hunks could be parsed after normalization")
                 logger.debug(f"Normalized patch text (first 500 chars):\n{code[:500]}")
             return False, []
 
-        patched_files = []
+        import tempfile as _tempfile
+
+        def _detect_line_sep(text):
+            crlf = text.count('\r\n')
+            lf = text.count('\n') - crlf
+            return '\r\n' if (crlf > 0 and crlf >= lf) else '\n'
+
+        def _validate_syntax(content, fpath):
+            suffix = fpath.suffix.lower()
+            if suffix == '.py':
+                try:
+                    compile(content, str(fpath), 'exec')
+                    return True, None
+                except SyntaxError as e:
+                    return False, f"line {e.lineno}: {e.msg}"
+            if suffix == '.json':
+                try:
+                    json.loads(content)
+                    return True, None
+                except json.JSONDecodeError as e:
+                    return False, f"line {e.lineno}: {e.msg}"
+            return True, None
+
+        def _atomic_write(fpath, content):
+            tmp_fd, tmp_path = _tempfile.mkstemp(dir=str(fpath.parent), suffix='.tmp')
+            try:
+                with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                os.replace(tmp_path, str(fpath))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+        def _match_hunk(content, search_text, replace_text, line_sep):
+            """4-tier matching. Returns (new_content, tier_name) or (None, reason)."""
+            # Tier 1: exact
+            if search_text in content:
+                return content.replace(search_text, replace_text, 1), "exact"
+
+            srch_lines = search_text.splitlines()
+            repl_lines = replace_text.splitlines()
+            cont_lines = content.split(line_sep) if line_sep != '\n' else content.splitlines()
+            trailing = content.endswith(line_sep) or content.endswith('\n')
+
+            def rejoin(lines):
+                joined = line_sep.join(lines)
+                if trailing:
+                    joined = joined.rstrip(line_sep) + line_sep
+                return joined
+
+            # Tier 2: whitespace-normalised
+            def norm(s):
+                return re.sub(r'\s+', ' ', s).strip()
+
+            norm_search = [norm(l) for l in srch_lines]
+            for idx in range(len(cont_lines) - len(srch_lines) + 1):
+                if [norm(l) for l in cont_lines[idx:idx + len(srch_lines)]] == norm_search:
+                    cont_lines[idx:idx + len(srch_lines)] = repl_lines
+                    return rejoin(cont_lines), "whitespace-norm"
+
+            # Tier 3: indent-flexible with relative indent preservation
+            stripped_search = [l.strip() for l in srch_lines]
+            search_base = min(
+                (len(l) - len(l.lstrip()) for l in srch_lines if l.strip()),
+                default=0
+            )
+            for idx in range(len(cont_lines) - len(stripped_search) + 1):
+                window = cont_lines[idx:idx + len(stripped_search)]
+                if [l.strip() for l in window] == stripped_search:
+                    win_base = min(
+                        (len(l) - len(l.lstrip()) for l in window if l.strip()),
+                        default=0
+                    )
+                    delta = win_base - search_base
+                    new_lines = []
+                    for l in repl_lines:
+                        if not l.strip():
+                            new_lines.append(l)
+                        else:
+                            new_indent = max(0, (len(l) - len(l.lstrip())) + delta)
+                            new_lines.append(" " * new_indent + l.lstrip())
+                    cont_lines[idx:idx + len(stripped_search)] = new_lines
+                    return rejoin(cont_lines), f"indent-flex(delta={delta:+d})"
+
+            # Tier 4: fuzzy with variable window (±2 lines)
+            base_win = len(srch_lines)
+            best_score, best_idx, best_size = 0.0, -1, base_win
+            for size_delta in (0, -1, 1, -2, 2):
+                ws = base_win + size_delta
+                if ws < 1 or ws > len(cont_lines):
+                    continue
+                for idx in range(len(cont_lines) - ws + 1):
+                    score = difflib.SequenceMatcher(
+                        None, search_text, "\n".join(cont_lines[idx:idx + ws])
+                    ).ratio()
+                    if score > best_score:
+                        best_score, best_idx, best_size = score, idx, ws
+
+            if best_score >= 0.85:
+                cont_lines[best_idx:best_idx + best_size] = repl_lines
+                return rejoin(cont_lines), f"fuzzy(score={best_score:.2f})"
+
+            return None, f"no-match(best={best_score:.2f})"
+
+        # Group hunks by file for all-or-nothing application per file
+        file_hunks = {}
         for m in matches:
             rel_path = m.group(1).strip()
-            # Clean up any stray markers from the path
             rel_path = re.sub(r'[<>]+', '', rel_path).strip()
-            search_text = m.group(2)
-            replace_text = m.group(3)
-            filepath = workspace_dir / rel_path
+            file_hunks.setdefault(rel_path, []).append((m.group(2), m.group(3)))
 
+        patched_files = []
+        for rel_path, hunks in file_hunks.items():
+            filepath = workspace_dir / rel_path
             if not filepath.exists():
                 logger.warning(f"⚠️ Patch target not found: {rel_path}")
                 continue
 
             original = filepath.read_text(encoding='utf-8')
+            line_sep = _detect_line_sep(original)
+            content = original
+            all_ok = True
 
-            # Tier 1: exact match
-            if search_text in original:
-                patched = original.replace(search_text, replace_text, 1)
-            else:
-                # Tier 2: whitespace-normalised
-                def norm(s): return re.sub(r'\s+', ' ', s).strip()
-                orig_lines = original.splitlines()
-                srch_lines = search_text.splitlines()
-                repl_lines = replace_text.splitlines()
-                patched_lines = None
+            for search_text, replace_text in hunks:
+                new_content, tier = _match_hunk(content, search_text, replace_text, line_sep)
+                if new_content is None:
+                    logger.warning(f"⚠️ Hunk failed in {rel_path}: {tier} — rolling back file")
+                    all_ok = False
+                    break
+                logger.info(f"  ✅ Hunk matched in {rel_path}: {tier}")
+                content = new_content
 
-                for idx in range(len(orig_lines) - len(srch_lines) + 1):
-                    window = orig_lines[idx: idx + len(srch_lines)]
-                    if [norm(l) for l in window] == [norm(l) for l in srch_lines]:
-                        patched_lines = orig_lines[:idx] + repl_lines + orig_lines[idx + len(srch_lines):]
-                        break
+            if not all_ok or content == original:
+                continue
 
-                if patched_lines is None:
-                    # Tier 3: fuzzy
-                    best_score, best_idx = 0.0, -1
-                    for idx in range(len(orig_lines) - len(srch_lines) + 1):
-                        window = "\n".join(orig_lines[idx: idx + len(srch_lines)])
-                        score = difflib.SequenceMatcher(None, search_text, window).ratio()
-                        if score > best_score:
-                            best_score, best_idx = score, idx
-                    if best_score >= 0.75:
-                        patched_lines = orig_lines[:best_idx] + repl_lines + orig_lines[best_idx + len(srch_lines):]
-                    else:
-                        logger.warning(f"⚠️ Patch hunk not matched in {rel_path} (best={best_score:.2f})")
-                        continue
+            is_valid, err = _validate_syntax(content, filepath)
+            if not is_valid:
+                logger.warning(f"⚠️ Post-patch syntax error in {rel_path}: {err} — skipping file")
+                continue
 
-                patched = "\n".join(patched_lines)
-                if original.endswith("\n"):
-                    patched += "\n"
+            try:
+                _atomic_write(filepath, content)
+            except Exception as e:
+                logger.error(f"❌ Atomic write failed for {rel_path}: {e}")
+                continue
 
-            filepath.write_text(patched, encoding='utf-8')
             logger.info(f"🩹 Patched: {rel_path}")
             if rel_path not in patched_files:
                 patched_files.append(rel_path)
@@ -587,7 +748,12 @@ class ProjectManager:
 
         # ── Patch mode: AI returned PATCH hunks — apply surgically ──────
         has_patches = bool(re.search(r'//\s*PATCH:\s*', code))
-        if has_patches:
+        has_raw_search = (
+            not has_patches
+            and bool(re.search(r'<<<\s*SEARCH', code))
+            and bool(re.search(r'<<<\s*REPLACE', code))
+        )
+        if has_patches or has_raw_search:
             applied, patched_files = self.apply_patch_response(project_id, code)
             
             # Check if patches were rejected due to frozen files

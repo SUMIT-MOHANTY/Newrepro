@@ -1,5 +1,5 @@
-import React from 'react';
-import { Send, Plus, MessageSquare, Code2 } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Send, Plus, MessageSquare, Code2, X, Image as ImageIcon } from 'lucide-react';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 
@@ -9,22 +9,143 @@ const ChatInput = ({
   onSend, 
   loading, 
   darkMode,
-  onKeyPress,
   disabled = false,
   discussMode = false,
   onToggleDiscuss,
+  onImageUpload,
 }) => {
+  const [selectedImages, setSelectedImages] = useState([]);
+  const fileInputRef = useRef(null);
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files);
+    const imageFiles = files.filter(file => file.type.startsWith('image/'));
+    
+    if (imageFiles.length > 0) {
+      // Create preview URLs
+      const newImages = imageFiles.map(file => ({
+        file,
+        preview: URL.createObjectURL(file),
+        name: file.name
+      }));
+      
+      setSelectedImages(prev => [...prev, ...newImages]);
+    }
+  };
+
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageFiles = [];
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      const newImages = imageFiles.map((file, i) => ({
+        file,
+        preview: URL.createObjectURL(file),
+        name: file.name || `pasted-image-${Date.now()}-${i}.png`
+      }));
+      setSelectedImages(prev => [...prev, ...newImages]);
+    }
+  };
+
+  const removeImage = (index) => {
+    setSelectedImages(prev => {
+      const newImages = [...prev];
+      URL.revokeObjectURL(newImages[index].preview);
+      newImages.splice(index, 1);
+      return newImages;
+    });
+  };
+
+  const fileToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleSend = async () => {
+    if (!input.trim() && selectedImages.length === 0) return;
+
+    let imageDataUrls = [];
+    if (selectedImages.length > 0) {
+      imageDataUrls = await Promise.all(
+        selectedImages.map(img => fileToBase64(img.file))
+      );
+    }
+
+    if (selectedImages.length > 0 && onImageUpload) {
+      onImageUpload(selectedImages.map(img => img.file), input);
+    }
+
+    onSend(imageDataUrls);
+
+    if (selectedImages.length > 0) {
+      selectedImages.forEach(img => URL.revokeObjectURL(img.preview));
+      setSelectedImages([]);
+    }
+  };
+
   return (
     <div className={cn(
       'p-4 border-t',
       darkMode ? 'border-white/10' : 'border-gray-200'
     )}>
+      {/* Image Previews */}
+      {selectedImages.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {selectedImages.map((image, index) => (
+            <div 
+              key={index}
+              className={cn(
+                'relative group rounded-lg overflow-hidden border',
+                darkMode ? 'border-white/10' : 'border-gray-200'
+              )}
+            >
+              <img 
+                src={image.preview} 
+                alt={image.name}
+                className="w-20 h-20 object-cover"
+              />
+              <button
+                onClick={() => removeImage(index)}
+                className="absolute top-1 right-1 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <X className="w-3 h-3" />
+              </button>
+              <div className={cn(
+                'absolute bottom-0 left-0 right-0 px-1.5 py-0.5 text-[10px] truncate',
+                'bg-black/60 text-white'
+              )}>
+                {image.name}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input Area */}
       <div className="relative">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyPress={onKeyPress}
+          onPaste={handlePaste}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
           placeholder={disabled ? "Select or create a project to start..." : discussMode ? "Ask anything, discuss ideas..." : "Describe your app..."}
           disabled={loading || disabled}
           rows="3"
@@ -40,8 +161,8 @@ const ChatInput = ({
           )}
         />
         <Button
-          onClick={onSend}
-          disabled={loading || !input.trim() || disabled}
+          onClick={handleSend}
+          disabled={loading || (!input.trim() && selectedImages.length === 0) || disabled}
           size="icon"
           className={cn(
             'absolute right-3 bottom-3 w-8 h-8 rounded-lg transition-all',
@@ -62,18 +183,37 @@ const ChatInput = ({
         darkMode ? 'text-gray-500' : 'text-gray-400'
       )}>
         <div className="flex items-center gap-2">
-          {/* <Button 
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+          <Button 
             variant="ghost"
             size="sm"
             disabled={disabled}
+            onClick={() => fileInputRef.current?.click()}
             className={cn(
               'flex items-center gap-1 h-6 px-2 text-xs',
-              darkMode ? 'hover:text-gray-300' : 'hover:text-gray-600'
+              darkMode ? 'hover:text-gray-300' : 'hover:text-gray-600',
+              selectedImages.length > 0 && 'text-purple-500'
             )}
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Attach</span>
-          </Button> */}
+            {selectedImages.length > 0 ? (
+              <>
+                <ImageIcon className="w-3.5 h-3.5" />
+                <span>{selectedImages.length} image{selectedImages.length > 1 ? 's' : ''}</span>
+              </>
+            ) : (
+              <>
+                <Plus className="w-3.5 h-3.5" />
+                <span>Attach</span>
+              </>
+            )}
+          </Button>
 
           {/* Discuss mode toggle */}
           <button
