@@ -37,6 +37,8 @@ export const API_ENDPOINTS = {
     // AI
     AI_CONFIG: `${API_BASE_URL}/ai/config`,
     AI_ANALYZE: `${API_BASE_URL}/ai/analyze`,
+    // New chat endpoint used by the AssistantBot component
+    AI_CHAT: `${API_BASE_URL}/api/agent/assistant`,
     HISTORY: `${API_BASE_URL}/history`,
     HISTORY_ITEM: (id) => `${API_BASE_URL}/history/${id}`,
 

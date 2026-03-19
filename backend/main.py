@@ -432,6 +432,44 @@ async def analyze_document_with_ai(
     
     return result
 
+# ---------------------------------------------------------------------------
+# AI Assistant Chat Endpoint (used by AssistantBot frontend component)
+# ---------------------------------------------------------------------------
+
+class AssistantRequest(BaseModel):
+    """Payload for the AI chat endpoint.
+    ``message`` is the user message.
+    ``context`` (optional) provides route‑specific info.
+    ``conversation_history`` (optional) is a list of prior messages for continuity.
+    Currently the endpoint simply echoes the message; replace with a real LLM call
+    when available.
+    """
+    message: str = Field(..., description="User message sent to the assistant")
+    context: dict | None = Field(default=None, description="Current route context")
+    conversation_history: list | None = Field(default=None, description="Prior conversation messages")
+
+
+@app.post("/api/agent/assistant")
+async def assistant_chat(
+    payload: AssistantRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Context-aware AI assistant chat endpoint.
+    Provides intelligent help based on the user's current workflow step.
+    """
+    try:
+        # Extract context from the payload
+        context = getattr(payload, 'context', None)
+        
+        # Get intelligent assistant reply with context
+        assistant_reply = await ai_service.chat_with_llm(
+            message=payload.message,
+            context=context
+        )
+        return {"response": assistant_reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Auth Endpoints ---
 @app.post("/token", response_model=schemas.Token)
 async def login_for_access_token(

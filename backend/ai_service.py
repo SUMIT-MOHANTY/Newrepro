@@ -314,12 +314,12 @@ async def analyze_document(
             content = llm_gateway.extract_content_from_response(data)
             reasoning_from_api = llm_gateway.extract_reasoning_from_response(data)
 
-            # Clean up <think> blocks from content if present
-            if "<think>" in content:
-                think_match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+            # Clean up ქ blocks from content if present
+            if "ქ" in content:
+                think_match = re.search(r"ქ(.*?)ქ", content, re.DOTALL)
                 if think_match and not reasoning_from_api:
                     reasoning_from_api = think_match.group(1).strip()
-                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                content = re.sub(r"ქ.*?ქ", "", content, flags=re.DOTALL).strip()
 
             # Repair architecture block if missing
             if not _has_architecture_block(content):
@@ -867,7 +867,7 @@ def _normalize_task_wallets(tasks: list, project_wallet: int) -> list:
 
 def _parse_llm_task_response(content: str) -> list:
     """Parse the LLM response content into a list of tasks, handling think tags and markdown fences."""
-    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    content = re.sub(r"ქ.*?ქ", "", content, flags=re.DOTALL)
     content = content.replace("```json", "").replace("```", "").strip()
     start_idx = content.find("[")
     end_idx = content.rfind("]")
@@ -1475,3 +1475,119 @@ async def generate_tasks_for_project(
         import traceback
         error_details = traceback.format_exc()
         raise Exception(f"Failed during task generation: {str(e)}\n\nTraceback:\n{error_details}")
+
+
+async def chat_with_llm(
+    message: str,
+    context: Optional[dict] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """
+    Context-aware chat function for conversational interactions with the LLM.
+    
+    Args:
+        message: The user's message/question
+        context: Optional context about current page, workflow step, etc.
+        api_url: Optional API URL override
+        api_key: Optional API key override  
+        model: Optional model override
+        
+    Returns:
+        The LLM's response as a string
+    """
+    if not llm_gateway.check_api_key(api_key):
+        raise Exception("API key not configured.")
+
+    # Build context-aware system prompt
+    system_prompt = """You are an intelligent AI assistant for a project management platform that helps organizations create and manage AI-powered development projects.
+
+PLATFORM OVERVIEW:
+This platform guides users through a complete workflow:
+1. Authentication (Signup/Login)
+2. Project Creation & Governance Assessment
+3. Prerequisite Classification & Configuration  
+4. AI-Powered Task Generation
+5. AI Agent Resource Onboarding
+6. Project Execution & Monitoring
+
+KEY FEATURES:
+- AI-powered Business Requirements Document (BRD) analysis
+- Governance questionnaire across 6 dimensions (Business Value, Data Sensitivity, Integration Complexity, Operational Impact, AI Risk, Ownership & Support)
+- Automatic prerequisite extraction and classification
+- AI task generation with sprints and milestones
+- Multiple process modes (Developer Only, AI Assist, Vibe Coding, Coexistence, AI-First)
+- Real-time agent monitoring and execution
+- Integration with GitHub and Azure DevOps
+
+CURRENT CONTEXT:"""
+
+    if context:
+        current_step = context.get('currentStep', 'Unknown')
+        current_path = context.get('currentPath', '/')
+        workflow = context.get('workflow', [])
+        
+        system_prompt += f"""
+- Current Step: {current_step}
+- Current Page: {current_path}
+- Workflow Position: {' → '.join(workflow) if workflow else 'Not specified'}
+
+STEP-SPECIFIC GUIDANCE:
+"""
+        
+        # Add step-specific guidance
+        step_guidance = {
+            'Organization Registration': 'Help users create their organization account. Explain that they become the admin and can invite team members later.',
+            'Sign In': 'Guide users through login process. Mention SSO options if available.',
+            'Project Initiation': 'Help users start a new project by entering a descriptive project name.',
+            'Governance Questionnaire': 'Guide users through 6 governance dimensions. Explain they can skip questions if unsure.',
+            'Prerequisite Classification': 'Help users review AI-extracted prerequisites, provide values, configure Git repos, and select process modes.',
+            'Task Generation': 'Assist with AI task generation, deadline setting, and task plan review.',
+            'AI Agent Onboarding': 'Help users request appropriate numbers of Shared/Dedicated Dev/Test agents.',
+            'Project Status Dashboard': 'Guide users in monitoring agents, viewing progress, and managing execution.',
+            'AI Analysis Results': 'Help users review AI-generated analysis and download reports.'
+        }
+        
+        guidance = step_guidance.get(current_step, f'Provide helpful guidance for {current_step}')
+        system_prompt += f"- {guidance}"
+
+    system_prompt += """
+
+RESPONSE GUIDELINES:
+- Be helpful, friendly, and knowledgeable about the platform
+- Provide specific, actionable guidance based on the current step
+- Explain form fields, buttons, and UI elements when asked
+- Help troubleshoot common issues
+- Guide users through the workflow logically
+- Use clear, concise language
+- Include relevant tips and best practices
+- Reference specific features and capabilities when relevant
+
+Always be contextually aware of where the user is in the workflow and provide relevant, step-specific assistance."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message},
+    ]
+
+    try:
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=60.0,
+        )
+        return content.strip()
+
+    except httpx.HTTPStatusError as e:
+        try:
+            error_body = e.response.json()
+        except Exception:
+            error_body = e.response.text
+        raise Exception(
+            f"Chat request failed. HTTP {e.response.status_code}: {error_body}"
+        )
+    except Exception as e:
+        raise Exception(f"Failed during chat: {str(e)}")
