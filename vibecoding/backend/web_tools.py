@@ -268,8 +268,14 @@ async def make_request_with_tools(
     feed results back, and let the model continue until it produces
     a final text response (no more tool_calls).
 
+    For providers that don't support function calling, falls back to
+    ``ai_config.make_async_request()`` — no provider-specific code here.
+
     Returns the final API response dict with the model's text answer.
     """
+    if not ai_config.supports_function_calling:
+        return await ai_config.make_async_request(messages, **kwargs)
+
     headers = ai_config.get_headers()
 
     # Build payload with tools

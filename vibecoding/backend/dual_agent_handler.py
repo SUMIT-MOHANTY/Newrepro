@@ -101,9 +101,8 @@ class DualAgentHandler:
             if not self.agent_initialized:
                 logger.info("🚀 Starting AI agent container...")
                 
-                # Get API key from config
                 api_key = ai_config.api_key
-                provider = "anthropic" if "anthropic" in ai_config.base_url.lower() else "openai"
+                provider = ai_config.provider
                 
                 agent_url = self.agent_manager.start_agent_container(api_key, provider)
                 

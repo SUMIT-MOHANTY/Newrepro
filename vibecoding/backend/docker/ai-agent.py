@@ -223,19 +223,37 @@ class AIAgent:
             self.log("⚠️", "No AI API key — skipping AI call")
             return None
 
+        provider = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
+
         try:
             import requests
-            response = requests.post(
-                self.config.api_url,
-                headers={
+
+            if provider == 'bournai':
+                headers = {"Content-Type": "application/json"}
+                payload = {
+                    "agent_id": self.config.api_key,
+                    "model": self.config.ai_model or "BournAI",
+                    "platform_id": os.environ.get('BOURNAI_PLATFORM_ID', 'DSuite'),
+                    "stream": True,
+                    "prompt": prompt,
+                }
+            else:
+                headers = {
                     "Authorization": f"Bearer {self.config.api_key}",
                     "Content-Type": "application/json",
-                },
-                json={
+                }
+                payload = {
                     "model": self.config.ai_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": temperature,
-                },
+                }
+
+            is_stream = payload.get("stream", False)
+            response = requests.post(
+                self.config.api_url,
+                headers=headers,
+                json=payload,
+                stream=is_stream,
                 timeout=self.config.ai_timeout,
             )
 
@@ -243,7 +261,10 @@ class AIAgent:
                 self.log("❌", f"AI API error {response.status_code}: {response.text[:300]}")
                 return None
 
-            content = response.json()["choices"][0]["message"]["content"]
+            if is_stream:
+                content = self._aggregate_stream(response)
+            else:
+                content = response.json()["choices"][0]["message"]["content"]
 
             for pattern in (r"```(?:json)?\s*(\{.*?\})\s*```", r"(\{.*\})"):
                 match = re.search(pattern, content, re.DOTALL)
@@ -258,6 +279,35 @@ class AIAgent:
             self.log("❌", f"AI call failed: {e}")
 
         return None
+
+    def _aggregate_stream(self, response) -> str:
+        """Aggregate SSE stream into a single string. Handles both OpenAI and BournAI formats."""
+        provider = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
+        content = ""
+        for raw_line in response.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line.decode("utf-8")
+            if line.startswith("data: "):
+                line = line[6:]
+            if line.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(line)
+                if provider == 'bournai':
+                    for part in chunk.get("content", []):
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            content += part.get("text", "")
+                    if chunk.get("stop_reason") == "end_turn":
+                        break
+                else:
+                    if "choices" in chunk and chunk["choices"]:
+                        delta = chunk["choices"][0].get("delta", {})
+                        if delta.get("content"):
+                            content += delta["content"]
+            except json.JSONDecodeError:
+                continue
+        return content
 
     # ------------------------------------------------------------------
     # Project file scanner

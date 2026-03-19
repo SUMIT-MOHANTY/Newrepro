@@ -38,12 +38,12 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={
-        isAuthenticated ? <Workspace key="default" user={user} logout={logout} isAuthenticated={isAuthenticated} /> : 
-        <LandingPage onGetStarted={() => navigate('/signup')} onSignIn={() => navigate('/login')} />
+        isAuthenticated ? <Workspace key="default" user={user} logout={logout} isAuthenticated={isAuthenticated} /> :
+          <LandingPage onGetStarted={() => navigate('/signup')} onSignIn={() => navigate('/login')} />
       } />
       <Route path="/a/:project_id" element={
-        isAuthenticated ? <Workspace key={location.pathname} user={user} logout={logout} isAuthenticated={isAuthenticated} /> : 
-        <Navigate to="/login" replace />
+        isAuthenticated ? <Workspace key={location.pathname} user={user} logout={logout} isAuthenticated={isAuthenticated} /> :
+          <Navigate to="/login" replace />
       } />
       <Route path="/login" element={
         isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><LoginPage onSwitchToSignup={() => navigate('/signup')} onForgotPassword={() => navigate('/forgot-password')} /></AuthLayout>
@@ -74,23 +74,23 @@ function AuthLayout({ children }) {
 function Workspace({ user, logout, isAuthenticated }) {
   // Router hooks must come first
   const { project_id: urlParamId } = useParams();
-  
+
   // Refs
   const iframeRef = useRef(null);
   const iframeContainerRef = useRef(null);
   const prevProjectIdRef = useRef(null);
   const containerLoadExpectedRef = useRef(false);
   const containerPollIntervalRef = useRef(null);
-  
+
   // Determine active project ID from URL
   const params = new URLSearchParams(window.location.search);
   const urlProjectId = urlParamId || params.get('project_id');
-  
+
   // Initialize prevProjectIdRef
   if (prevProjectIdRef.current === null) {
     prevProjectIdRef.current = urlProjectId;
   }
-  
+
   // State declarations
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showProjectDropdown, setShowProjectDropdown] = useState(false);
@@ -128,6 +128,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [errorHeader, setErrorHeader] = useState(null);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
   const [isContainerLoading, setIsContainerLoading] = useState(false);
+  const [isCheckpointLoading, setIsCheckpointLoading] = useState(false);
   const [discussMode, setDiscussMode] = useState(false);
   const [frozenFiles, setFrozenFiles] = useState([]);
   const [freezeLoading, setFreezeLoading] = useState(false);
@@ -145,7 +146,7 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   const fetchFrozenFiles = async () => {
     if (!currentProjectId) return;
-    
+
     try {
       const token = localStorage.getItem('vibecoding_token');
       const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
@@ -160,19 +161,19 @@ function Workspace({ user, logout, isAuthenticated }) {
   const toggleFileFrozen = async (filePath, e) => {
     e.stopPropagation();
     if (!currentProjectId) return;
-    
+
     setFreezeLoading(true);
     try {
       const token = localStorage.getItem('vibecoding_token');
       const isFrozen = frozenFiles.includes(filePath);
-      
+
       await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
         file_path: filePath,
         frozen: !isFrozen
       }, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       // Update local state
       if (isFrozen) {
         setFrozenFiles(frozenFiles.filter(f => f !== filePath));
@@ -253,39 +254,39 @@ function Workspace({ user, logout, isAuthenticated }) {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions`);
       const backendBranches = response.data.versions || [];
-      
+
       if (backendBranches.length > 0) {
         console.log(`📦 Found ${backendBranches.length} branches on backend for project ${projectId}`);
-        
+
         // Set branches
         setBranches(backendBranches);
-        
+
         // Find current branch
         const currentBranchData = backendBranches.find(b => b.is_current);
         const currentBranchName = currentBranchData ? currentBranchData.version_id : backendBranches[0].version_id;
         setCurrentBranch(currentBranchName);
-        
+
         // Load commits for current branch
         await loadBranchCommits(projectId, currentBranchName);
-        
+
         // Load files for current branch
         try {
           const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions/${currentBranchName}/files`);
           const filesMap = filesResp.data.files || {};
-          
+
           // Build code string with file markers
           let fullCode = '';
           Object.entries(filesMap).forEach(([filePath, content]) => {
             fullCode += `// FILE: ${filePath}\n${content}\n\n`;
           });
-          
+
           // Parse into file tree
           const fileTree = parseCodeToFiles(fullCode);
-          
+
           setPreviewCode(fullCode);
           setFullCode(fullCode);
           setFileTree(fileTree);
-          
+
           // Select first file
           const findFirstFile = (items) => {
             for (const item of items) {
@@ -299,7 +300,7 @@ function Workspace({ user, logout, isAuthenticated }) {
           };
           const firstFile = findFirstFile(fileTree);
           if (firstFile) setSelectedFile(firstFile);
-          
+
           // Get or create preview URL — retry if Docker is still starting after PC restart
           const startPreviewWithRetry = async (retries = 3, delay = 3000) => {
             for (let attempt = 1; attempt <= retries; attempt++) {
@@ -323,12 +324,12 @@ function Workspace({ user, logout, isAuthenticated }) {
             console.error('Failed to get preview URL after all retries');
           };
           startPreviewWithRetry();
-          
+
         } catch (err) {
           console.error('Failed to load branch files:', err);
         }
       }
-      
+
       setVersionsLoaded(true);
     } catch (err) {
       console.error('Failed to load branches from backend:', err);
@@ -364,24 +365,24 @@ function Workspace({ user, logout, isAuthenticated }) {
             project_id: urlProjectId,
             name: projectName || urlProjectId
           }, {
-             headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+            headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
           });
-          
+
           setCurrentProjectId(urlProjectId);
           projectIdToLoad = urlProjectId;
-          
+
           // Clear URL params without reloading
           window.history.replaceState({}, '', `/vibecoding/a/${urlProjectId}`);
         } catch (error) {
           console.error('Failed to initialize project from URL:', error);
         }
       }
-      
+
       fetchProjects();
-      
+
       // Load branches from the backend (this will also restore preview URL)
       await loadBranchesFromBackend(projectIdToLoad);
-      
+
       // Load chat history for the current version
       try {
         const chatResp = await axios.get(`${API_BASE_URL}/api/projects/${projectIdToLoad}/chat/v${chatVersion}`);
@@ -402,32 +403,32 @@ function Workspace({ user, logout, isAuthenticated }) {
   const switchToBranch = async (branchName) => {
     try {
       console.log(`🔀 Switching to branch: ${branchName}`);
-      
+
       // Checkout the branch on backend
       await axios.post(`${API_BASE_URL}/api/git/checkout`, {
         project_id: currentProjectId,
         branch_name: branchName
       });
-      
+
       setCurrentBranch(branchName);
-      
+
       // Load commits for this branch
       await loadBranchCommits(currentProjectId, branchName);
-      
+
       // Load files for this branch
       const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${branchName}/files`);
       const filesMap = filesResp.data.files || {};
-      
+
       let fullCode = '';
       Object.entries(filesMap).forEach(([filePath, content]) => {
         fullCode += `// FILE: ${filePath}\n${content}\n\n`;
       });
-      
+
       const fileTree = parseCodeToFiles(fullCode);
       setPreviewCode(fullCode);
       setFullCode(fullCode);
       setFileTree(fileTree);
-      
+
       // Update preview
       const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
       if (previewResp.data.preview_url) {
@@ -436,7 +437,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         setPreviewUrl(previewResp.data.preview_url);
         startContainerRetry(previewResp.data.preview_url);
       }
-      
+
       // Load chat history for this branch
       try {
         const chatResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/${branchName}`);
@@ -449,7 +450,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         console.error('Failed to load chat for branch:', err);
         setMessages([]);
       }
-      
+
       setShowVersionHistory(false);
     } catch (err) {
       console.error('Failed to switch branch:', err);
@@ -459,24 +460,25 @@ function Workspace({ user, logout, isAuthenticated }) {
   // Load code from a specific commit (checkpoint)
   const loadCommitCheckpoint = async (commitHash) => {
     try {
+      setIsCheckpointLoading(true);
       console.log(`🔖 Loading checkpoint: ${commitHash}`);
       console.log(`📍 Current project: ${currentProjectId}`);
-      
+
       // Find the commit info from branchCommits
       const commitInfo = branchCommits.find(c => c.hash === commitHash);
-      
+
       // Checkout the commit
       const checkoutResp = await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
         project_id: currentProjectId,
         version_id: commitHash
       });
       console.log('✅ Checkout response:', checkoutResp.data);
-      
+
       if (checkoutResp.data.status === 'error') {
         console.error('❌ Checkout failed:', checkoutResp.data.message);
         return;
       }
-      
+
       // Set viewing checkpoint state
       if (commitInfo) {
         setViewingCheckpoint({
@@ -485,30 +487,34 @@ function Workspace({ user, logout, isAuthenticated }) {
           date: commitInfo.date
         });
         setShowCheckpointSnackbar(true);
-        
+
         // Auto-hide snackbar after 5 seconds
         setTimeout(() => {
           setShowCheckpointSnackbar(false);
         }, 5000);
       }
-      
+
       // Load files from workspace (now at this commit)
       const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
       const filesMap = filesResp.data.files || {};
       console.log(`📁 Loaded ${Object.keys(filesMap).length} files from workspace`);
-      
+
       let fullCode = '';
+      let htmlContent = '';
       Object.entries(filesMap).forEach(([filePath, content]) => {
         fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+        if (filePath.endsWith('.html')) {
+          htmlContent = content;
+        }
       });
-      
+
       const fileTree = parseCodeToFiles(fullCode);
       console.log(`🌳 Built file tree with ${fileTree.length} items`);
-      
-      setPreviewCode(fullCode);
+
+      setPreviewCode(htmlContent || fullCode);
       setFullCode(fullCode);
       setFileTree(fileTree);
-      
+
       // Expand all folders
       const allFolderPaths = new Set();
       const collectFolders = (items) => {
@@ -524,7 +530,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       collectFolders(fileTree);
       setExpandedFolders(allFolderPaths);
       console.log(`📂 Expanded ${allFolderPaths.size} folders`);
-      
+
       // Select first file with unique timestamp to force re-render
       const findFirstFile = (items) => {
         for (const item of items) {
@@ -544,34 +550,37 @@ function Workspace({ user, logout, isAuthenticated }) {
       } else {
         console.warn('⚠️ No file found to select');
       }
-      
+
       // Get preview URL for the workspace at this commit
       try {
         const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
         if (previewResp.data.preview_url) {
           console.log('🌐 Checkpoint preview:', previewResp.data.preview_url);
           console.log('📊 Setting isContainerLoading = true for checkpoint');
-          
-          // Set loading state and start retry mechanism
+
+          setIsCheckpointLoading(false);
           containerLoadExpectedRef.current = true;
           setIsContainerLoading(true);
           setPreviewUrl(previewResp.data.preview_url);
           setActiveView('preview');
-          
-          // Start retry loop to wait for container to be ready
+
           startContainerRetry(previewResp.data.preview_url);
-          
+
           console.log('🔄 Container loading started for checkpoint');
+        } else {
+          setIsCheckpointLoading(false);
         }
       } catch (previewErr) {
         console.error('Failed to get preview URL:', previewErr);
+        setIsCheckpointLoading(false);
       }
-      
+
       console.log('✅ Checkpoint loaded successfully');
-      
+
     } catch (err) {
       console.error('❌ Failed to load commit checkpoint:', err);
       console.error('Error details:', err.response?.data || err.message);
+      setIsCheckpointLoading(false);
     }
   };
 
@@ -589,7 +598,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         }
       }
     };
-    
+
     if (messages.length > 0) {
       saveChat();
     }
@@ -644,7 +653,7 @@ function Workspace({ user, logout, isAuthenticated }) {
     setEditMode(false);
     setSelectedElement(null);
     setHoveredElement(null);
-    
+
     console.log(`🆕 Created new project ${newProjectId}, chat cleared`);
   };
 
@@ -687,15 +696,14 @@ function Workspace({ user, logout, isAuthenticated }) {
       } else {
         const isFrozen = frozenFiles.includes(item.path);
         const FreezeIcon = isFrozen ? Lock : Unlock;
-        
+
         return (
           <div
             key={item.path}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors group ${
-              selectedFile?.path === item.path
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors group ${selectedFile?.path === item.path
                 ? 'bg-white/10 text-white'
                 : 'text-gray-400 hover:bg-white/5 hover:text-white'
-            }`}
+              }`}
             style={{ paddingLeft: `${12 + level * 16}px` }}
           >
             <div className="flex items-center gap-2 flex-1 min-w-0" onClick={() => setSelectedFile(item)}>
@@ -706,11 +714,10 @@ function Workspace({ user, logout, isAuthenticated }) {
               <button
                 onClick={(e) => toggleFileFrozen(item.path, e)}
                 disabled={freezeLoading}
-                className={`p-1 rounded flex-shrink-0 ${
-                  isFrozen 
-                    ? 'text-yellow-500 hover:text-yellow-600' 
+                className={`p-1 rounded flex-shrink-0 ${isFrozen
+                    ? 'text-yellow-500 hover:text-yellow-600'
                     : 'opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-300'
-                }`}
+                  }`}
                 title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
               >
                 <FreezeIcon className="w-3.5 h-3.5" />
@@ -751,11 +758,10 @@ function Workspace({ user, logout, isAuthenticated }) {
           <div
             key={item.path}
             onClick={() => setSelectedFile(item)}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
-              selectedFile?.path === item.path
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${selectedFile?.path === item.path
                 ? 'bg-white/10 text-white'
                 : 'text-gray-400 hover:bg-white/5 hover:text-white'
-            }`}
+              }`}
             style={{ paddingLeft: `${12 + level * 16}px` }}
           >
             <File className="w-4 h-4 flex-shrink-0" />
@@ -768,7 +774,7 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   const handleSend = async (imageDataUrls = []) => {
     if ((!input.trim() && imageDataUrls.length === 0) || loading) return;
-    
+
     // Check if a project is selected
     if (!currentProjectId) {
       alert('Please select or create a project first');
@@ -808,7 +814,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       };
 
       setMessages(prev => [...prev, aiMessage]);
-      
+
       if (response.data.code) {
         const fullCodeContent = response.data.code;
         const isPatchResponse = /\/\/\s*PATCH:\s*/.test(fullCodeContent);
@@ -864,78 +870,78 @@ function Workspace({ user, logout, isAuthenticated }) {
             console.error('Failed to reload workspace after patch:', err);
           }
         } else {
-        setFullCode(fullCodeContent); // Store full code
-        setPreviewCode(fullCodeContent);
-        setIframeKey(prev => prev + 1); // Force iframe refresh
-        
-        // Parse code to build file tree
-        const code = fullCodeContent;
-        const files = parseCodeToFiles(code);
-        setFileTree(files);
-        
-        // Expand all folders by default
-        const allFolderPaths = new Set();
-        const collectFolders = (items) => {
-          items.forEach(item => {
-            if (item.type === 'folder') {
-              allFolderPaths.add(item.path);
-              if (item.children) {
-                collectFolders(item.children);
+          setFullCode(fullCodeContent); // Store full code
+          setPreviewCode(fullCodeContent);
+          setIframeKey(prev => prev + 1); // Force iframe refresh
+
+          // Parse code to build file tree
+          const code = fullCodeContent;
+          const files = parseCodeToFiles(code);
+          setFileTree(files);
+
+          // Expand all folders by default
+          const allFolderPaths = new Set();
+          const collectFolders = (items) => {
+            items.forEach(item => {
+              if (item.type === 'folder') {
+                allFolderPaths.add(item.path);
+                if (item.children) {
+                  collectFolders(item.children);
+                }
+              }
+            });
+          };
+          collectFolders(files);
+          setExpandedFolders(allFolderPaths);
+
+          // Select first file
+          const findFirstFile = (items) => {
+            for (const item of items) {
+              if (item.type === 'file') return item;
+              if (item.type === 'folder' && item.children) {
+                const found = findFirstFile(item.children);
+                if (found) return found;
               }
             }
-          });
-        };
-        collectFolders(files);
-        setExpandedFolders(allFolderPaths);
-        
-        // Select first file
-        const findFirstFile = (items) => {
-          for (const item of items) {
-            if (item.type === 'file') return item;
-            if (item.type === 'folder' && item.children) {
-              const found = findFirstFile(item.children);
-              if (found) return found;
-            }
+            return null;
+          };
+          const firstFile = findFirstFile(files);
+          if (firstFile) {
+            setSelectedFile(firstFile);
           }
-          return null;
-        };
-        const firstFile = findFirstFile(files);
-        if (firstFile) {
-          setSelectedFile(firstFile);
-        }
-        
-        // For preview display (not edit mode), extract the first HTML file or use full code
-        const findPreviewHtmlFile = (items) => {
-          for (const item of items) {
-            if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
-              return item.content;
+
+          // For preview display (not edit mode), extract the first HTML file or use full code
+          const findPreviewHtmlFile = (items) => {
+            for (const item of items) {
+              if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
+                return item.content;
+              }
+              if (item.type === 'folder' && item.children) {
+                const found = findPreviewHtmlFile(item.children);
+                if (found) return found;
+              }
             }
-            if (item.type === 'folder' && item.children) {
-              const found = findPreviewHtmlFile(item.children);
-              if (found) return found;
+            for (const item of items) {
+              if (item.type === 'file' && item.name.endsWith('.html')) {
+                return item.content;
+              }
+              if (item.type === 'folder' && item.children) {
+                const found = findPreviewHtmlFile(item.children);
+                if (found) return found;
+              }
             }
+            return null;
+          };
+
+          const htmlContent = findPreviewHtmlFile(files);
+          if (htmlContent) {
+            setPreviewCode(htmlContent);
+          } else if (files.length === 1 && files[0].type === 'file') {
+            setPreviewCode(files[0].content);
           }
-          for (const item of items) {
-            if (item.type === 'file' && item.name.endsWith('.html')) {
-              return item.content;
-            }
-            if (item.type === 'folder' && item.children) {
-              const found = findPreviewHtmlFile(item.children);
-              if (found) return found;
-            }
-          }
-          return null;
-        };
-        
-        const htmlContent = findPreviewHtmlFile(files);
-        if (htmlContent) {
-          setPreviewCode(htmlContent);
-        } else if (files.length === 1 && files[0].type === 'file') {
-          setPreviewCode(files[0].content);
-        }
         } // end non-patch branch
       }
-      
+
       if (response.data.preview_url) {
         console.log('🌐 Container preview:', response.data.preview_url);
         console.log('📊 Setting isContainerLoading = true');
@@ -971,19 +977,19 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   const handleDeploy = async () => {
     if (!currentProjectId || loading || isDeploying) return;
-    
+
     setIsDeploying(true);
     setDeployStatus(null);
-    
+
     try {
       // Step 1: Simulate preparation
       await new Promise(resolve => setTimeout(resolve, 1500));
-      
+
       // Step 2: Call download API to prepare build
       const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/download`, {
         responseType: 'blob'
       });
-      
+
       // Step 3: Trigger download as if "deployed" to a local package
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
@@ -992,7 +998,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      
+
       setDeployStatus('success');
       setTimeout(() => setDeployStatus(null), 5000);
     } catch (error) {
@@ -1035,7 +1041,7 @@ function Workspace({ user, logout, isAuthenticated }) {
 - Current styles: ${JSON.stringify(elementInfo.styles)}
 
 Please suggest improvements or modifications for this element.`;
-    
+
     setInput(prompt);
     // Focus on chat input
     document.getElementById('chat-input')?.focus();
@@ -1044,7 +1050,7 @@ Please suggest improvements or modifications for this element.`;
   const handleUpdateCode = (updatedHTML) => {
     setPreviewCode(updatedHTML);
     setFullCode(updatedHTML);
-    
+
     // Save as new version
     saveCodeVersion(updatedHTML, previewUrl, fileTree, 'Element edited in preview');
   };
@@ -1193,7 +1199,7 @@ Please suggest improvements or modifications for this element.`;
           const containerRect = container.getBoundingClientRect();
           const offsetTop = iframeRect.top - containerRect.top;
           const offsetLeft = iframeRect.left - containerRect.left;
-          
+
           const elementData = {
             ...msg.data,
             rect: {
@@ -1203,12 +1209,12 @@ Please suggest improvements or modifications for this element.`;
               height: msg.data.rect.height,
             }
           };
-          
+
           setSelectedElement(elementData);
-          
+
           // Position menu at mouse click position (offset from iframe top-left)
           const menuX = iframeRect.left + (msg.data.mouseX || (msg.data.rect.left + msg.data.rect.width / 2));
-          const menuY = iframeRect.top  + (msg.data.mouseY || msg.data.rect.top);
+          const menuY = iframeRect.top + (msg.data.mouseY || msg.data.rect.top);
           // Clamp so menu doesn't go off-screen right/bottom
           const clampedX = Math.min(menuX, window.innerWidth - 220);
           const clampedY = Math.min(menuY, window.innerHeight - 320);
@@ -1283,7 +1289,7 @@ Please suggest improvements or modifications for this element.`;
     setMessages(prev => [...prev, editMessage]);
     setEditPrompt('');
     setLoading(true);
-    
+
     try {
       const response = await axios.post(`${API_BASE_URL}/api/generate`, {
         prompt: editMessage.content,
@@ -1301,16 +1307,16 @@ Please suggest improvements or modifications for this element.`;
       };
 
       setMessages(prev => [...prev, aiMessage]);
-      
+
       if (response.data.code) {
         const fullCodeContent = response.data.code;
         setFullCode(fullCodeContent);
         setPreviewCode(fullCodeContent);
-        
+
         const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
-        
+
         // Expand all folders
         const allFolderPaths = new Set();
         const collectFolders = (items) => {
@@ -1325,7 +1331,7 @@ Please suggest improvements or modifications for this element.`;
         };
         collectFolders(files);
         setExpandedFolders(allFolderPaths);
-        
+
         // Select first file
         const findFirstFile = (items) => {
           for (const item of items) {
@@ -1341,7 +1347,7 @@ Please suggest improvements or modifications for this element.`;
         if (firstFile) {
           setSelectedFile(firstFile);
         }
-        
+
         // Find HTML for preview
         const findPreviewHtmlFile = (items) => {
           for (const item of items) {
@@ -1353,7 +1359,7 @@ Please suggest improvements or modifications for this element.`;
               if (found) return found;
             }
           }
-          
+
           for (const item of items) {
             if (item.type === 'file' && item.name.endsWith('.html')) {
               return item.content;
@@ -1365,7 +1371,7 @@ Please suggest improvements or modifications for this element.`;
           }
           return null;
         };
-        
+
         const htmlContent = findPreviewHtmlFile(files);
         if (htmlContent) {
           setPreviewCode(htmlContent);
@@ -1373,7 +1379,7 @@ Please suggest improvements or modifications for this element.`;
           setPreviewCode(files[0].content);
         }
       }
-      
+
       // Update preview URL if provided
       if (response.data.preview_url) {
         console.log('🌐 Container preview:', response.data.preview_url);
@@ -1384,10 +1390,10 @@ Please suggest improvements or modifications for this element.`;
         // Start retry loop imperatively — bypasses React batching issues
         startContainerRetry(response.data.preview_url);
       }
-      
+
       // Reload branches to show new commit
       await loadBranchesFromBackend(currentProjectId);
-      
+
       setSelectedElement(null);
     } catch (error) {
       console.error('Error:', error);
@@ -1408,19 +1414,19 @@ Please suggest improvements or modifications for this element.`;
     const now = new Date();
     const diffMs = now - date;
     const diffMins = Math.floor(diffMs / 60000);
-    
+
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins}m ago`;
-    
+
     const diffHours = Math.floor(diffMins / 60);
     if (diffHours < 24) return `${diffHours}h ago`;
-    
+
     // Show time for today, date for older
     const isToday = date.toDateString() === now.toDateString();
     if (isToday) {
       return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     }
-    
+
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   };
 
@@ -1429,30 +1435,46 @@ Please suggest improvements or modifications for this element.`;
     // Check if code contains file markers
     const fileMarkerRegex = /\/\/\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->/gi;
     const matches = [...code.matchAll(fileMarkerRegex)];
-    
+
     if (matches.length > 0) {
-      // Multi-file structure
-      const files = [];
-      
+      // Collect all file blocks, deduplicating by cleaned path (last occurrence wins)
+      const fileMap = new Map();
+
       for (let i = 0; i < matches.length; i++) {
         const match = matches[i];
-        const filename = (match[1] || match[2] || match[3]).trim();
+        const rawFilename = (match[1] || match[2] || match[3]).trim();
+        // Strip "(Updated)" suffix that some AI models append
+        const filename = rawFilename.replace(/\s*\(Updated\)\s*$/i, '').trim();
+        if (!filename || filename === 'metadata.json') continue;
+
         const startPos = match.index + match[0].length;
         const endPos = i < matches.length - 1 ? matches[i + 1].index : code.length;
-        const content = code.substring(startPos, endPos).trim();
-        
-        files.push({
-          name: filename.split('/').pop(),
-          path: filename,
-          content: content,
-          type: 'file'
-        });
+        let content = code.substring(startPos, endPos).trim();
+
+        // Skip entries whose content is only SEARCH/REPLACE artifacts
+        if (/^<<<\s*SEARCH/.test(content) && !content.includes('<!DOCTYPE') && !content.includes('<html')) {
+          continue;
+        }
+
+        // Only keep entries with actual content (skip empty "// FILE:" labels)
+        if (content) {
+          fileMap.set(filename, {
+            name: filename.split('/').pop(),
+            path: filename,
+            content: content,
+            type: 'file'
+          });
+        }
       }
-      
-      // Build tree structure from flat file list
-      return buildFileTree(files);
-    } else {
-      // Single file - detect type
+
+      const files = [...fileMap.values()];
+      if (files.length > 0) {
+        return buildFileTree(files);
+      }
+    }
+
+    // Fallback: single file - detect type by content
+    {
       let filename = 'app.py';
       if (code.includes('from flask') || code.includes('Flask(')) {
         filename = 'app.py';
@@ -1467,7 +1489,7 @@ Please suggest improvements or modifications for this element.`;
       } else if (code.includes('const express') || code.includes('require(')) {
         filename = 'server.js';
       }
-      
+
       return [{
         name: filename,
         path: filename,
@@ -1482,13 +1504,13 @@ Please suggest improvements or modifications for this element.`;
   const buildFileTree = (files) => {
     const tree = [];
     const folderMap = new Map();
-    
+
     // Sort files by path to ensure folders come before their contents
     files.sort((a, b) => a.path.localeCompare(b.path));
-    
+
     files.forEach(file => {
       const parts = file.path.split('/');
-      
+
       if (parts.length === 1) {
         // Root level file
         tree.push({
@@ -1499,13 +1521,13 @@ Please suggest improvements or modifications for this element.`;
         // Nested file - create folder structure
         let currentPath = '';
         let currentLevel = tree;
-        
+
         for (let i = 0; i < parts.length - 1; i++) {
           const folderName = parts[i];
           currentPath = currentPath ? `${currentPath}/${folderName}` : folderName;
-          
+
           let folder = folderMap.get(currentPath);
-          
+
           if (!folder) {
             folder = {
               name: folderName,
@@ -1517,10 +1539,10 @@ Please suggest improvements or modifications for this element.`;
             folderMap.set(currentPath, folder);
             currentLevel.push(folder);
           }
-          
+
           currentLevel = folder.children;
         }
-        
+
         // Add file to its parent folder
         currentLevel.push({
           ...file,
@@ -1528,7 +1550,7 @@ Please suggest improvements or modifications for this element.`;
         });
       }
     });
-    
+
     return tree;
   };
 
@@ -1635,7 +1657,7 @@ Please suggest improvements or modifications for this element.`;
 
   return (
     <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
-      <Header 
+      <Header
         chatVersion={`v${chatVersion}`}
         user={user}
         showUserMenu={showUserMenu}
@@ -1662,9 +1684,8 @@ Please suggest improvements or modifications for this element.`;
 
       {/* Error/Status Banner */}
       {(errorHeader || deployStatus === 'success') && (
-        <div className={`h-10 flex items-center justify-center px-6 text-sm animate-in slide-in-from-top duration-300 ${
-          deployStatus === 'success' ? 'bg-green-600/20 text-green-300' : 'bg-red-600/20 text-red-300'
-        }`}>
+        <div className={`h-10 flex items-center justify-center px-6 text-sm animate-in slide-in-from-top duration-300 ${deployStatus === 'success' ? 'bg-green-600/20 text-green-300' : 'bg-red-600/20 text-red-300'
+          }`}>
           <div className="flex items-center gap-2">
             {deployStatus === 'success' ? (
               <Check className="w-4 h-4" />
@@ -1673,7 +1694,7 @@ Please suggest improvements or modifications for this element.`;
             )}
             <span>{deployStatus === 'success' ? 'Project successfully deployed and downloaded!' : errorHeader}</span>
           </div>
-          <button 
+          <button
             onClick={() => { setErrorHeader(null); setDeployStatus(null); }}
             className="ml-4 hover:text-white"
           >
@@ -1693,11 +1714,10 @@ Please suggest improvements or modifications for this element.`;
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveView('preview')}
-                className={`${
-                  activeView === 'preview'
+                className={`${activeView === 'preview'
                     ? 'bg-white/10 text-white'
                     : 'text-white hover:bg-white/5'
-                }`}
+                  }`}
               >
                 <Eye className="w-4 h-4 inline mr-2" />
                 Preview
@@ -1706,18 +1726,17 @@ Please suggest improvements or modifications for this element.`;
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveView('code')}
-                className={`${
-                  activeView === 'code'
+                className={`${activeView === 'code'
                     ? 'bg-white/10 text-white'
                     : 'text-white hover:bg-white/5'
-                }`}
+                  }`}
               >
                 <Code className="w-4 h-4 inline mr-2" />
                 Code
               </Button>
             </div>
 
-            
+
             {previewCode && activeView === 'preview' && (
               <div className="flex items-center gap-2">
                 {/* Screen Size Selector */}
@@ -1726,41 +1745,38 @@ Please suggest improvements or modifications for this element.`;
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('mobile')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-white'
-                    }`}
+                    className={`h-8 w-8 ${screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-white'
+                      }`}
                     title="Mobile (375px)"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2"/>
+                      <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2" />
                     </svg>
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('tablet')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-white'
-                    }`}
+                    className={`h-8 w-8 ${screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-white'
+                      }`}
                     title="Tablet (768px)"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2"/>
+                      <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2" />
                     </svg>
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('desktop')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-white'
-                    }`}
+                    className={`h-8 w-8 ${screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-white'
+                      }`}
                     title="Desktop (100%)"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="2" y="4" width="20" height="12" rx="2" strokeWidth="2"/>
-                      <path d="M8 20h8" strokeWidth="2"/>
-                      <path d="M12 16v4" strokeWidth="2"/>
+                      <rect x="2" y="4" width="20" height="12" rx="2" strokeWidth="2" />
+                      <path d="M8 20h8" strokeWidth="2" />
+                      <path d="M12 16v4" strokeWidth="2" />
                     </svg>
                   </Button>
                 </div>
@@ -1770,11 +1786,10 @@ Please suggest improvements or modifications for this element.`;
                   variant={editMode ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => setEditMode(!editMode)}
-                  className={`${
-                    editMode 
-                      ? 'bg-purple-600 text-white hover:bg-purple-700' 
+                  className={`${editMode
+                      ? 'bg-purple-600 text-white hover:bg-purple-700'
                       : 'bg-white/5 hover:bg-white/10 text-white'
-                  }`}
+                    }`}
                   title="Edit Mode - Click elements to edit"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1782,9 +1797,9 @@ Please suggest improvements or modifications for this element.`;
                   </svg>
                   {editMode ? 'Editing' : 'Edit'}
                 </Button>
-                
+
                 <div className="h-6 w-px bg-white/10" />
-                
+
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1814,7 +1829,7 @@ Please suggest improvements or modifications for this element.`;
                 </Button> */}
               </div>
             )}
-            
+
             {previewCode && activeView === 'code' && (
               <div className="flex items-center gap-2">
                 {/* <Button
@@ -1853,7 +1868,7 @@ Please suggest improvements or modifications for this element.`;
               </div>
             ) : activeView === 'preview' ? (
               <div className="h-full flex flex-col">
-                
+
                 {/* Edit Mode Banner */}
                 {editMode && (
                   <div className="flex-shrink-0 bg-purple-600/20 border-b border-purple-500/30 px-4 py-2">
@@ -1875,19 +1890,18 @@ Please suggest improvements or modifications for this element.`;
                     </div>
                   </div>
                 )}
-                
+
                 {/* Preview iframe with responsive sizing */}
                 {/* The iframe source NEVER changes when toggle edit mode.
                     Editor script is always injected into srcDoc; it stays dormant until activated. */}
-                <div 
+                <div
                   className={`flex-1 relative flex items-center justify-center bg-[#0A0A0F]`}
                 >
-                  <div 
-                    className={`h-full transition-all duration-300 relative ${
-                      screenSize === 'mobile' ? 'w-[375px]' :
-                      screenSize === 'tablet' ? 'w-[768px]' :
-                      'w-full'
-                    }`}
+                  <div
+                    className={`h-full transition-all duration-300 relative ${screenSize === 'mobile' ? 'w-[375px]' :
+                        screenSize === 'tablet' ? 'w-[768px]' :
+                          'w-full'
+                      }`}
                     style={{
                       boxShadow: screenSize !== 'desktop' ? (editMode ? '0 0 0 1px rgba(0,0,0,0.1)' : '0 0 0 1px rgba(255,255,255,0.1)') : 'none'
                     }}
@@ -1905,8 +1919,8 @@ Please suggest improvements or modifications for this element.`;
                       }}
                     />
 
-                    {/* Container deploy loader overlay */}
-                    {isContainerLoading && previewUrl && (
+                    {/* Container / Checkpoint loader overlay */}
+                    {(isCheckpointLoading || (isContainerLoading && previewUrl)) && (
                       <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#0A0A0F]/95 backdrop-blur-sm">
                         {/* Animated rings */}
                         <div className="relative flex items-center justify-center mb-8">
@@ -1914,7 +1928,11 @@ Please suggest improvements or modifications for this element.`;
                           <div className="absolute w-20 h-20 rounded-full border border-purple-400/30 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.3s' }} />
                           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center shadow-lg shadow-purple-500/30 animate-pulse">
                             <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M12 5l7 7-7 7" />
+                              {isCheckpointLoading ? (
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              ) : (
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M12 5l7 7-7 7" />
+                              )}
                             </svg>
                           </div>
                         </div>
@@ -1923,9 +1941,9 @@ Please suggest improvements or modifications for this element.`;
                         <div className="relative w-12 h-12 mb-6">
                           <svg className="w-12 h-12 animate-spin" viewBox="0 0 48 48" fill="none">
                             <circle cx="24" cy="24" r="20" stroke="rgba(168,85,247,0.15)" strokeWidth="3" />
-                            <path d="M24 4 A20 20 0 0 1 44 24" stroke="url(#grad)" strokeWidth="3" strokeLinecap="round" />
+                            <path d="M24 4 A20 20 0 0 1 44 24" stroke="url(#gradLoader)" strokeWidth="3" strokeLinecap="round" />
                             <defs>
-                              <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                              <linearGradient id="gradLoader" x1="0%" y1="0%" x2="100%" y2="0%">
                                 <stop offset="0%" stopColor="#a855f7" />
                                 <stop offset="100%" stopColor="#ec4899" />
                               </linearGradient>
@@ -1934,8 +1952,12 @@ Please suggest improvements or modifications for this element.`;
                         </div>
 
                         {/* Text */}
-                        <p className="text-white font-semibold text-base mb-1 tracking-wide">Starting container</p>
-                        <p className="text-gray-400 text-sm">Waiting for your app to be ready...</p>
+                        <p className="text-white font-semibold text-base mb-1 tracking-wide">
+                          {isCheckpointLoading ? 'Loading checkpoint' : 'Starting your app'}
+                        </p>
+                        <p className="text-gray-400 text-sm">
+                          {isCheckpointLoading ? 'Restoring files from commit...' : 'Waiting for your app to be ready...'}
+                        </p>
 
                         {/* Animated dots progress */}
                         <div className="flex items-center gap-1.5 mt-5">
@@ -2015,10 +2037,9 @@ Please suggest improvements or modifications for this element.`;
                             {selectedElement.id && <span className="text-violet-200">#{selectedElement.id}</span>}
                             {selectedElement.className && <span className="text-violet-200">.{selectedElement.className.trim().split(/\s+/)[0]}</span>}
                           </div>
-                          {['tl','tr','bl','br'].map(c => (
-                            <div key={c} className={`absolute w-2.5 h-2.5 bg-violet-500 rounded-sm border border-white ${
-                              c==='tl' ? '-top-1.5 -left-1.5' : c==='tr' ? '-top-1.5 -right-1.5' : c==='bl' ? '-bottom-1.5 -left-1.5' : '-bottom-1.5 -right-1.5'
-                            }`} />
+                          {['tl', 'tr', 'bl', 'br'].map(c => (
+                            <div key={c} className={`absolute w-2.5 h-2.5 bg-violet-500 rounded-sm border border-white ${c === 'tl' ? '-top-1.5 -left-1.5' : c === 'tr' ? '-top-1.5 -right-1.5' : c === 'bl' ? '-bottom-1.5 -left-1.5' : '-bottom-1.5 -right-1.5'
+                              }`} />
                           ))}
                         </div>
                       )}
@@ -2032,7 +2053,7 @@ Please suggest improvements or modifications for this element.`;
                     </div>
                   )}
                 </div>
-                
+
                 {/* Edit Prompt Panel */}
                 {editMode && selectedElement && (
                   <div className="flex-shrink-0 border-t border-white/10 bg-[#0F0F14] p-4">
@@ -2135,7 +2156,7 @@ Please suggest improvements or modifications for this element.`;
                           ))}
                         </pre>
                       </div>
-                      
+
                       {/* Code Content */}
                       <div className="flex-1 py-4 px-4 overflow-x-auto custom-scrollbar bg-[#0A0A0F] min-w-0">
                         <pre className="text-sm font-mono leading-relaxed text-gray-300">
@@ -2166,7 +2187,7 @@ Please suggest improvements or modifications for this element.`;
           onCopyMessage={async (text) => {
             await navigator.clipboard.writeText(text);
           }}
-          onRegenerate={() => {}}
+          onRegenerate={() => { }}
           onClearHistory={() => {
             setMessages([]);
             setPreviewCode('');
