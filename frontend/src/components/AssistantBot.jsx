@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { MessageSquare, X, Send, Minimize2, Maximize2, Sparkles, Loader2, ChevronDown, Bot, Mic, MicOff, RefreshCw } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { API_ENDPOINTS } from '../config';
 
 // Add CSS animations
@@ -43,127 +45,83 @@ const ROUTE_CONTEXTS = {
   '/': {
     title: 'Landing Page',
     description: 'Welcome to the AI-powered project management platform. Start by signing up or logging in.',
-    tips: [
-      'Click "Get Started" to create your organization account',
-      'Use "Sign In" if you already have an account',
-      'Learn more about AI-powered project management'
-    ],
-    nextSteps: ['Sign up for a new organization', 'Log in to existing account'],
-    workflow: 'Entry Point → Authentication → Project Creation'
   },
   '/signup': {
     title: 'Organization Registration',
     description: 'Create your organization account. You\'ll become the admin and can invite team members later.',
-    tips: [
-      'Enter your first and last name',
-      'Choose a unique organization name',
-      'Use your business email address',
-      'Create a strong password for security'
-    ],
-    fields: {
-      'First Name': 'Your personal first name',
-      'Last Name': 'Your personal last name', 
-      'Organization Name': 'Your company or team name - this will be used throughout the platform',
-      'Email': 'Your business email - this will be your login username',
-      'Password': 'Secure password - you\'ll use this to sign in'
-    },
-    nextSteps: ['Complete registration', 'Verify email', 'Log in to start first project'],
-    workflow: 'Registration → Login → New Project'
+  },
+  '/invite': {
+    title: 'Team Invitation',
+    description: 'You\'ve been invited to join an organization. Complete your account setup here.',
   },
   '/login': {
     title: 'Sign In',
     description: 'Access your organization\'s projects and AI agents.',
-    tips: [
-      'Enter the email you used during registration',
-      'Use your organization password',
-      'Try SSO if your organization has it configured',
-      'Use "Forgot Password" if needed'
-    ],
-    fields: {
-      'Email': 'The email address you registered with',
-      'Password': 'Your account password'
-    },
-    nextSteps: ['Access Status Dashboard', 'Create new project', 'View existing projects'],
-    workflow: 'Login → Status Dashboard → Project Management'
   },
-  '/new-project': {
-    title: 'Project Initiation',
-    description: 'Start a new project by providing basic information and governance details.',
-    tips: [
-      'Enter a descriptive project name',
-      'This will create a new project in your organization',
-      'You\'ll proceed to governance questionnaire next'
-    ],
-    fields: {
-      'Project Name': 'A clear, descriptive name for your project'
-    },
-    nextSteps: ['Enter project name', 'Proceed to governance questionnaire'],
-    workflow: 'Project Name → Governance Form → Prerequisites → Task Creation'
+  '/forgot-password': {
+    title: 'Forgot Password',
+    description: 'Reset your account password.',
+  },
+  '/reset-password': {
+    title: 'Reset Password',
+    description: 'Set a new password for your account.',
+  },
+  '/how-it-works': {
+    title: 'How It Works',
+    description: 'Learn how the AI-powered project management platform works end-to-end.',
+  },
+  '/dashboard': {
+    title: 'Project Dashboard',
+    description: 'Your main project hub — view progress, roadmap steps, and navigate to any stage.',
   },
   '/new-project/governance': {
     title: 'Governance Questionnaire',
     description: 'Answer questions across 6 dimensions to classify your project and extract requirements.',
-    tips: [
-      'Answer questions about Business Value, Data Sensitivity, Integration Complexity',
-      'Consider Operational Impact, AI Risk, and Ownership & Support',
-      'You can skip questions if unsure',
-      'AI will analyze your answers to extract prerequisites'
-    ],
-    nextSteps: ['Complete all 6 dimensions', 'Review answers', 'Submit for AI analysis'],
-    workflow: 'Governance Questions → AI Analysis → Prerequisites Classification'
+  },
+  '/new-project': {
+    title: 'New Project',
+    description: 'Start a new project by providing basic information and governance details.',
   },
   '/prerequisites': {
     title: 'Prerequisite Classification',
     description: 'Review AI-extracted prerequisites and provide the necessary information for your project.',
-    tips: [
-      'Review prerequisites grouped by category (Credentials, APIs, Infrastructure, etc.)',
-      'Provide values for each required prerequisite',
-      'Mark sensitive information as "secret" to protect from AI',
-      'Configure your Git repository connection',
-      'Select the process mode for your team'
-    ],
-    nextSteps: ['Provide prerequisite values', 'Configure Git repository', 'Select process mode', 'Proceed to task creation'],
-    workflow: 'Prerequisites → Git Setup → Process Mode → Task Creation'
+  },
+  '/agent-analysis': {
+    title: 'Agent Analysis',
+    description: 'The AI is analyzing your project requirements and governance answers to build a comprehensive understanding.',
   },
   '/task-creation': {
     title: 'Task Generation',
     description: 'AI generates a comprehensive task plan with sprints, milestones, and individual tasks.',
-    tips: [
-      'Set your project deadline for proper planning',
-      'Review the AI-generated task plan',
-      'Tasks are organized into sprints and milestones',
-      'Download the plan as CSV if needed',
-      'Create tasks in your external task management system'
-    ],
-    nextSteps: ['Set project deadline', 'Review generated tasks', 'Create tasks in system', 'Proceed to resource onboarding'],
-    workflow: 'Task Generation → Task Review → Task Creation → Resource Onboarding'
   },
   '/resource-onboarding': {
     title: 'AI Agent Onboarding',
     description: 'Request AI agents to work on your project tasks.',
-    tips: [
-      'Specify how many Shared Dev and Test agents you need',
-      'Request Dedicated agents for exclusive project work',
-      'Check your organization\'s agent quota',
-      'Shared agents work across multiple projects',
-      'Dedicated agents focus only on your project'
-    ],
-    nextSteps: ['Specify agent requirements', 'Check quota availability', 'Submit agent request', 'Monitor in Status Dashboard'],
-    workflow: 'Agent Request → Quota Check → Agent Allocation → Status Dashboard'
   },
   '/status-dashboard': {
     title: 'Project Status Dashboard',
     description: 'Monitor your project progress, agent execution, and task completion in real-time.',
-    tips: [
-      'View all your agents and their current status',
-      'Run agents manually or let them auto-execute',
-      'Monitor task progress and completion',
-      'View agent logs and error messages',
-      'Download progress reports'
-    ],
-    nextSteps: ['Monitor agent progress', 'Review completed work', 'Handle any failures', 'Download final reports'],
-    workflow: 'Agent Monitoring → Progress Tracking → Issue Resolution → Project Completion'
-  }
+  },
+  '/agents': {
+    title: 'Agents Overview',
+    description: 'View and manage all AI agents across your organization.',
+  },
+  '/organization-admin': {
+    title: 'Organization Admin',
+    description: 'Manage your organization — users, roles, quotas, and settings.',
+  },
+  '/governance-management': {
+    title: 'Governance Management',
+    description: 'Configure and manage governance templates and scoring dimensions for your organization.',
+  },
+  '/plugins': {
+    title: 'Plugins',
+    description: 'Connect and manage integrations like GitHub, Azure DevOps, and other tools.',
+  },
+  '/a/': {
+    title: 'Project View',
+    description: 'Viewing a specific project\'s live status and agent activity.',
+  },
 };
 
 const AssistantBot = () => {
@@ -228,64 +186,93 @@ const AssistantBot = () => {
     }
   }, [isOpen]);
 
-  // Get current route context and show proactive welcome
+  // Shared streaming helper — calls the stream endpoint and appends chunks to a message by id
+  const streamToMessage = async (msgId, prompt, context) => {
+    const token = localStorage.getItem('token');
+    try {
+      const response = await fetch(API_ENDPOINTS.AI_CHAT_STREAM, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ message: prompt, context })
+      });
+
+      if (response.ok && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const lines = decoder.decode(value, { stream: true }).split('\n');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6).trim();
+            if (data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.content) {
+                accumulated += parsed.content;
+                setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text: accumulated } : m));
+              }
+            } catch { /* skip malformed chunks */ }
+          }
+        }
+        return accumulated;
+      } else {
+        // fallback: non-streaming
+        const data = await response.json().catch(() => null);
+        const text = data?.response || '';
+        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text } : m));
+        return text;
+      }
+    } catch (err) {
+      console.error('Stream error:', err);
+      return null;
+    }
+  };
+
+  // Get current route context and show AI-generated page welcome
   useEffect(() => {
     const path = location.pathname;
-    // Sort routes longest-first so specific routes match before '/'
     const matchedRoute = Object.keys(ROUTE_CONTEXTS)
       .sort((a, b) => b.length - a.length)
-      .find(route => path === route || path.startsWith(route + '/'));
+      .find(route => path === route || path.startsWith(route + '/') || (route.endsWith('/') && path.startsWith(route)));
     const context = matchedRoute ? ROUTE_CONTEXTS[matchedRoute] : null;
-    
+
     setCurrentContext(context);
-    setHasShownPageWelcome(false);
     hasShownWelcomeRef.current = false;
     setIdleMessageShown(false);
-    
-    if (context) {
-      setMessages([]);
-      setTimeout(() => {
-        showPageWelcome(context, path);
-      }, 2000);
-    }
+    setMessages([]);
+
+    if (!context) return;
+
+    const timer = setTimeout(async () => {
+      if (hasShownWelcomeRef.current) return;
+      hasShownWelcomeRef.current = true;
+
+      const msgId = Date.now();
+      // Seed empty message to stream into
+      setMessages([{ id: msgId, type: 'bot', text: '', timestamp: new Date(), isWelcome: true }]);
+
+      const prompt = `I just navigated to the "${context.title}" page (path: ${path}). 
+In 3-5 sentences, tell me exactly what this page does, why it matters in the workflow, and what I should focus on here. Be specific and practical — no generic greetings.`;
+
+      const result = await streamToMessage(msgId, prompt, { currentStep: context.title, currentPath: path });
+
+      // If stream failed or returned nothing, use a concise fallback
+      if (!result) {
+        setMessages([{
+          id: msgId, type: 'bot', text: `You're on the **${context.title}** page.\n\n${context.description}\n\nAsk me anything about this step!`,
+          timestamp: new Date(), isWelcome: true
+        }]);
+      }
+    }, 600);
+
+    return () => clearTimeout(timer);
   }, [location.pathname]);
 
-  const showPageWelcome = (context, path) => {
-    if (hasShownWelcomeRef.current) return;
-    hasShownWelcomeRef.current = true;
+  const showPageWelcome = () => { hasShownWelcomeRef.current = false; };
 
-    const welcomeMessages = {
-      '/': "👋 Welcome! This is the entry point to your AI-powered project management platform.\n\nFrom here you can sign up to create a new organization or log in to an existing one. Everything starts here — your projects, your AI agents, and your team all live under the organization you create.",
-      '/signup': "� This is the Organization Registration' page — one of the most important steps!\n\nYou're creating the admin account for your organization. The organization name you choose will be used across the entire platform. As admin, you'll be able to invite team members, manage projects, and control agent quotas.\n\nTip: Use your business email — it becomes your login username.",
-      '/login': "🔐 This is the Sign In page.\n\nEnter the email and password you registered with to access your organization's projects and AI agents. All your project history, agent statuses, and task progress are waiting for you inside.",
-      '/new-project': "🚀 You're starting a new project!\n\nThis is where it all begins. Give your project a clear, descriptive name — it'll be used throughout the platform. After this, you'll go through a governance questionnaire that helps the AI understand your project's complexity and requirements.",
-      '/new-project/governance': "📋 This is the Governance Questionnaire — a critical step!\n\nYou'll answer questions across 6 dimensions: Business Value, Data Sensitivity, Integration Complexity, Operational Impact, AI Risk, and Ownership & Support.\n\nYour answers directly shape how the AI classifies your project and extracts the prerequisites it needs. Take your time here — the quality of your answers determines the quality of everything that follows.",
-      '/prerequisites': "🔧 This is the Prerequisite Classification page.\n\nThe AI has analyzed your governance answers and extracted everything your project needs — credentials, API keys, infrastructure details, and more. You need to provide values for each item here before the AI agents can start working.\n\nMark anything sensitive as a secret so it stays protected. Also configure your Git repository connection and choose your process mode.",
-      '/task-creation': "📝 This is the Task Generation page — where your project plan comes to life!\n\nThe AI generates a full task breakdown with sprints, milestones, and individual tasks based on everything you've provided. Set your project deadline first so the plan is properly scheduled.\n\nReview the tasks carefully, then create them in your external task management system to kick off execution.",
-      '/resource-onboarding': "🤖 This is the AI Agent Onboarding page.\n\nHere you request the AI agents that will actually do the work on your project. You can choose Shared agents (cost-effective, work across multiple projects) or Dedicated agents (exclusive to your project, faster execution).\n\nCheck your organization's quota before requesting — once agents are allocated, they'll appear in your Status Dashboard ready to run.",
-      '/status-dashboard': "📊 Welcome to your Project Command Center!\n\nThis is where you monitor everything in real-time — agent statuses, task progress, logs, and completion rates. You can trigger agents manually, review their output, handle failures, and track your project all the way to completion.\n\nThis page is your main hub once your project is running."
-    };
-
-    // Match the most specific path
-    const matchedKey = Object.keys(welcomeMessages)
-      .sort((a, b) => b.length - a.length)
-      .find(key => path === key || path.startsWith(key + '/'));
-
-    const welcomeText = matchedKey
-      ? welcomeMessages[matchedKey]
-      : `👋 You're on the ${context?.title} page.\n\n${context?.description}`;
-
-    const welcomeMsg = {
-      id: Date.now(),
-      type: 'bot',
-      text: `${welcomeText}\n\nNeed help with anything? Just ask! 😊`,
-      timestamp: new Date(),
-      isWelcome: true
-    };
-
-    setMessages([welcomeMsg]);
-    setHasShownPageWelcome(true);
-  };
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -294,86 +281,25 @@ const AssistantBot = () => {
     scrollToBottom();
   }, [messages]);
 
-  const generateResponse = (userMessage) => {
-    const lowerMsg = userMessage.toLowerCase();
-    const context = currentContext || ROUTE_CONTEXTS['/'];
-    
-    if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
-      return `👋 Hello! I'm your AI assistant for **${context?.title}**.\n\n${context?.description || ''}\n\nWhat would you like to know?`;
-    }
-
-    if (lowerMsg.includes('help')) {
-      return `I can help you with **${context?.title}**:\n\n${context?.tips ? context.tips.map(tip => `• ${tip}`).join('\n') : 'Navigate through the application'}`;
-    }
-
-    if (lowerMsg.includes('next') || lowerMsg.includes('what should i do')) {
-      return `Your next steps are:\n${context?.nextSteps ? context.nextSteps.map((step, i) => `${i + 1}. ${step}`).join('\n') : 'Follow the on-screen instructions'}`;
-    }
-
-    return `I'm here to help you with **${context?.title}**. ${context?.description || ''}\n\nYou can ask me:\n• "What should I do next?"\n• "Help me with this step"\n• "What is [field name]?"`;
-  };
-
   const handleSend = async () => {
     if (!inputValue.trim()) return;
 
-    const userMsg = {
-      id: Date.now(),
-      type: 'user',
-      text: inputValue,
-      timestamp: new Date()
-    };
+    const userMsg = { id: Date.now(), type: 'user', text: inputValue, timestamp: new Date() };
+    const botId = Date.now() + 1;
+    const sentInput = inputValue;
 
-    setMessages(prev => [...prev, userMsg]);
+    setMessages(prev => [...prev, userMsg, { id: botId, type: 'bot', text: '', timestamp: new Date() }]);
     setInputValue('');
     setIsTyping(true);
 
-    try {
-      const token = localStorage.getItem('token');
-      const context = currentContext || ROUTE_CONTEXTS['/'];
-      
-      const response = await fetch(API_ENDPOINTS.AI_CHAT || '/api/agent/assistant', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          message: inputValue,
-          context: {
-            currentStep: context?.title,
-            currentPath: location.pathname
-          }
-        })
-      });
+    const context = currentContext || ROUTE_CONTEXTS['/'];
+    const result = await streamToMessage(botId, sentInput, { currentStep: context?.title, currentPath: location.pathname });
 
-      let botResponseText;
-      
-      if (response.ok) {
-        const data = await response.json();
-        botResponseText = data.response || generateResponse(inputValue);
-      } else {
-        botResponseText = generateResponse(inputValue);
-      }
-
-      const botMsg = {
-        id: Date.now() + 1,
-        type: 'bot',
-        text: botResponseText,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, botMsg]);
-    } catch (error) {
-      console.error('AI chat error:', error);
-      const botMsg = {
-        id: Date.now() + 1,
-        type: 'bot',
-        text: generateResponse(inputValue),
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, botMsg]);
-    } finally {
-      setIsTyping(false);
+    if (!result) {
+      setMessages(prev => prev.map(m => m.id === botId ? { ...m, text: `I'm here to help with **${context?.title}**. What would you like to know?` } : m));
     }
+
+    setIsTyping(false);
   };
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -382,14 +308,20 @@ const AssistantBot = () => {
     }
   };
 
-  const clearChat = () => {
-    setMessages([]);
-    if (currentContext) {
-      showPageWelcome(currentContext, location.pathname);
+  const clearChat = async () => {
+    hasShownWelcomeRef.current = false;
+    const context = currentContext;
+    if (!context) { setMessages([]); return; }
+    const msgId = Date.now();
+    setMessages([{ id: msgId, type: 'bot', text: '', timestamp: new Date(), isWelcome: true }]);
+    const prompt = `I just navigated to the "${context.title}" page. In 3-5 sentences, tell me exactly what this page does, why it matters in the workflow, and what I should focus on here. Be specific and practical.`;
+    const result = await streamToMessage(msgId, prompt, { currentStep: context.title, currentPath: location.pathname });
+    if (!result) {
+      setMessages([{ id: msgId, type: 'bot', text: `**${context.title}** — ${context.description}\n\nAsk me anything!`, timestamp: new Date(), isWelcome: true }]);
     }
   };
 
-  const handleBotClick = (e) => {
+    const handleBotClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     setIsOpen(true);
@@ -495,8 +427,8 @@ const AssistantBot = () => {
         <div
           className={`fixed z-[1000] backdrop-blur-xl border shadow-2xl transition-all duration-300 ${
             isMinimized
-              ? 'bottom-6 right-6 w-80 h-16'
-              : 'bottom-6 right-6 w-[420px] h-[650px] flex flex-col'
+              ? 'bottom-6 right-6 w-72 h-14'
+              : 'bottom-6 right-6 w-[360px] h-[520px] flex flex-col'
           }`}
           style={{ 
             borderRadius: '20px',
@@ -593,7 +525,15 @@ const AssistantBot = () => {
                           </div>
                         )}
                         
-                        <div className="whitespace-pre-wrap leading-relaxed">{msg.text}</div>
+                        <div className="prose prose-sm max-w-none leading-relaxed
+                          prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0
+                          prose-headings:my-1 prose-strong:font-semibold
+                          prose-code:bg-black/10 prose-code:px-1 prose-code:rounded
+                          prose-a:text-violet-600 prose-a:underline">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {msg.text}
+                          </ReactMarkdown>
+                        </div>
                         <div
                           className={`text-xs mt-2 ${
                             msg.type === 'user' ? 'text-white/70' : 'text-gray-500'
@@ -605,7 +545,7 @@ const AssistantBot = () => {
                     </div>
                   </div>
                 ))}
-                {isTyping && (
+                {isTyping && messages[messages.length - 1]?.text === '' && (
                   <div className="flex justify-start animate-fadeIn">
                     <div className="flex items-end gap-2">
                       <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white flex items-center justify-center">
@@ -617,7 +557,7 @@ const AssistantBot = () => {
                           <div className="w-2 h-2 bg-violet-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                           <div className="w-2 h-2 bg-violet-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                         </div>
-                        <span className="text-xs text-gray-500 ml-2">AI is thinking...</span>
+                        <span className="text-xs text-gray-500 ml-2">Thinking...</span>
                       </div>
                     </div>
                   </div>

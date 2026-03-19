@@ -437,13 +437,7 @@ async def analyze_document_with_ai(
 # ---------------------------------------------------------------------------
 
 class AssistantRequest(BaseModel):
-    """Payload for the AI chat endpoint.
-    ``message`` is the user message.
-    ``context`` (optional) provides route‑specific info.
-    ``conversation_history`` (optional) is a list of prior messages for continuity.
-    Currently the endpoint simply echoes the message; replace with a real LLM call
-    when available.
-    """
+    """Payload for the AI chat endpoint."""
     message: str = Field(..., description="User message sent to the assistant")
     context: dict | None = Field(default=None, description="Current route context")
     conversation_history: list | None = Field(default=None, description="Prior conversation messages")
@@ -454,14 +448,9 @@ async def assistant_chat(
     payload: AssistantRequest,
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Context-aware AI assistant chat endpoint.
-    Provides intelligent help based on the user's current workflow step.
-    """
+    """Context-aware AI assistant chat endpoint."""
     try:
-        # Extract context from the payload
         context = getattr(payload, 'context', None)
-        
-        # Get intelligent assistant reply with context
         assistant_reply = await ai_service.chat_with_llm(
             message=payload.message,
             context=context
@@ -469,6 +458,34 @@ async def assistant_chat(
         return {"response": assistant_reply}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/agent/assistant/stream")
+async def assistant_chat_stream(
+    payload: AssistantRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Streaming version of the assistant chat endpoint using SSE."""
+    from fastapi.responses import StreamingResponse
+    import json
+
+    async def generate():
+        try:
+            context = getattr(payload, 'context', None)
+            assistant_reply = await ai_service.chat_with_llm(
+                message=payload.message,
+                context=context
+            )
+            # Simulate streaming by chunking the response into words
+            words = assistant_reply.split(' ')
+            for i, word in enumerate(words):
+                chunk = word if i == 0 else ' ' + word
+                yield f"data: {json.dumps({'content': chunk})}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 # --- Auth Endpoints ---
 @app.post("/token", response_model=schemas.Token)

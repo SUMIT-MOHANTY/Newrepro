@@ -39,6 +39,7 @@ export const API_ENDPOINTS = {
     AI_ANALYZE: `${API_BASE_URL}/ai/analyze`,
     // New chat endpoint used by the AssistantBot component
     AI_CHAT: `${API_BASE_URL}/api/agent/assistant`,
+    AI_CHAT_STREAM: `${API_BASE_URL}/api/agent/assistant/stream`,
     HISTORY: `${API_BASE_URL}/history`,
     HISTORY_ITEM: (id) => `${API_BASE_URL}/history/${id}`,
 
