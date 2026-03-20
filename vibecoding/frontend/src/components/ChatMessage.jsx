@@ -3,32 +3,55 @@ import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, FileText, FileC
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-// Extract file structure from code
+// Extract file structure from code — deduped and cleaned
 const extractFileStructure = (code) => {
   if (!code) return [];
 
-  const files = [];
-  // Match file markers like // FILE: path/to/file.ext
+  const isPatchResponse = /\/\/\s*PATCH:\s*/.test(code);
+
+  // For patch responses, extract patched file names from PATCH headers
+  if (isPatchResponse) {
+    const patchFiles = new Map();
+    const patchRegex = /\/\/\s*PATCH:\s*([^\n<]+)/g;
+    let match;
+    while ((match = patchRegex.exec(code)) !== null) {
+      const raw = match[1].trim();
+      const cleaned = raw.replace(/\s*\(Updated\)\s*$/i, '').trim();
+      if (cleaned && !patchFiles.has(cleaned)) {
+        const ext = cleaned.split('.').pop().toLowerCase();
+        patchFiles.set(cleaned, {
+          name: cleaned,
+          type: ext === 'html' ? 'html' : (ext === 'js' || ext === 'jsx') ? 'js' : 'text'
+        });
+      }
+    }
+    if (patchFiles.size > 0) return [...patchFiles.values()];
+  }
+
+  // For FILE-based responses, extract and deduplicate
+  const fileMap = new Map();
   const fileMarkerRegex = /\/\/\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->/g;
   let match;
 
   while ((match = fileMarkerRegex.exec(code)) !== null) {
-    const fileName = (match[1] || match[2] || match[3]).trim();
-    const extension = fileName.split('.').pop().toLowerCase();
-    files.push({
-      name: fileName,
-      type: extension === 'html' ? 'html' : extension === 'js' || extension === 'jsx' ? 'js' : 'text'
+    const raw = (match[1] || match[2] || match[3]).trim();
+    const cleaned = raw.replace(/\s*\(Updated\)\s*$/i, '').trim();
+    if (!cleaned || cleaned === 'metadata.json') continue;
+    const extension = cleaned.split('.').pop().toLowerCase();
+    fileMap.set(cleaned, {
+      name: cleaned,
+      type: extension === 'html' ? 'html' : (extension === 'js' || extension === 'jsx') ? 'js' : 'text'
     });
   }
 
+  if (fileMap.size > 0) return [...fileMap.values()];
+
   // Fallback to old logic if no markers found (legacy support)
-  if (files.length === 0) {
-    if (code.includes('<!DOCTYPE html>') || code.includes('<html')) {
-      files.push({ name: 'index', type: 'html' });
-    }
+  if (code.includes('<!DOCTYPE html>') || code.includes('<html')) {
+    return [{ name: 'index.html', type: 'html' }];
   }
 
-  return files;
+  return [];
 };
 
 // Tool Calls Display Component

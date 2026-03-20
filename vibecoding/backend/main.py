@@ -1,7 +1,6 @@
 import json
 import hashlib
 from pathlib import Path
-
 from fastapi import FastAPI, HTTPException, Depends, Request
 import requests
 from requests.adapters import HTTPAdapter
@@ -339,11 +338,10 @@ async def dual_agent_chat(request: GenerateRequest):
             preview_url = result.get("preview_url")
             
             if code:
-                # Use git-based workspace update (auto-detects incremental vs full)
+                code = _preprocess_ai_response(code)
                 version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
                 
                 # Save chat history for the current branch (not commit hash)
-                # Get current branch name
                 status = git_manager.get_status(project_id)
                 current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
                 
@@ -351,7 +349,6 @@ async def dual_agent_chat(request: GenerateRequest):
                 history.append({"role": "assistant", "content": result.get("message", "")})
                 await project_manager.save_chat_version(project_id, current_branch, history)
                 
-                # Create or switch container to workspace mode and get preview URL
                 container_url = await project_manager.create_container_for_code(project_id, "workspace")
                 if container_url:
                     preview_url = container_url
@@ -372,6 +369,69 @@ async def dual_agent_chat(request: GenerateRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+def _preprocess_ai_response(text: str) -> str:
+    """Fix mixed AI output where // FILE: headers are used for SEARCH/REPLACE patches.
+
+    Handles three common AI mis-formats:
+    1. "// FILE: path" followed by <<<SEARCH → converted to "// PATCH: path"
+    2. "// FILE: path (Updated)" empty markers → removed entirely
+    3. Duplicate "// FILE: path" blocks where only the last has real content → deduplicated
+    """
+    import re
+
+    # Pass 1: Remove "// FILE: path (Updated)" artifact markers (always empty labels)
+    text = re.sub(r'(?m)^//\s*FILE:\s*[^\n]+?\s*\(Updated\)\s*$', '', text)
+
+    # Pass 2: Convert "// FILE: path" that precede <<<SEARCH into "// PATCH: path"
+    # Walk line-by-line so we can look ahead
+    lines = text.split('\n')
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        file_match = re.match(r'^(//\s*)FILE:\s*(.+)$', line.strip())
+        if file_match:
+            filename = file_match.group(2).strip()
+            # Look ahead past blank lines for <<<SEARCH
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and re.match(r'\s*<<<\s*SEARCH', lines[j]):
+                result.append(f'// PATCH: {filename}')
+            else:
+                result.append(line)
+        else:
+            result.append(line)
+        i += 1
+
+    text = '\n'.join(result)
+
+    # Pass 3: Deduplicate // FILE: markers with the same path (keep last)
+    file_positions = {}
+    for m in re.finditer(r'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]+)', text):
+        path = m.group(1).strip().rstrip(' ->')
+        file_positions.setdefault(path, []).append(m.start())
+
+    remove_ranges = []
+    for path, positions in file_positions.items():
+        if len(positions) > 1:
+            all_occurrences = list(re.finditer(
+                r'(?:(?://|#|<!--)\s*FILE:\s*' + re.escape(path) + r'[^\n]*\n)',
+                text
+            ))
+            for occ in all_occurrences[:-1]:
+                next_file = re.search(r'(?://|#|<!--)\s*FILE:\s*', text[occ.end():])
+                end = occ.end() + next_file.start() if next_file else occ.end()
+                content_between = text[occ.end():end].strip()
+                if not content_between or content_between.startswith('<<<'):
+                    remove_ranges.append((occ.start(), end))
+
+    for start, end in sorted(remove_ranges, reverse=True):
+        text = text[:start] + text[end:]
+
+    return text.strip()
+
 
 @app.post("/vibecoding/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest):
@@ -494,6 +554,11 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         import re as _re
         code = None
         
+        # ── Preprocess: fix mixed AI format (// FILE: + SEARCH/REPLACE) ──
+        # Some models output "// FILE: path" headers for SEARCH/REPLACE blocks
+        # instead of "// PATCH: path". Detect and convert before the main parser.
+        ai_response = _preprocess_ai_response(ai_response)
+        
         has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
         has_raw_search_replace = (
             not has_patch_markers
@@ -503,8 +568,6 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
 
         if has_patch_markers or has_raw_search_replace:
-            # AI returned patch hunks — pass raw response so update_workspace_from_code can apply them
-            # (apply_patch_response will auto-fix missing // PATCH: headers and malformed delimiters)
             code = ai_response
         elif has_markers:
             # Extract code ONLY from within markdown fences to avoid including
@@ -587,6 +650,8 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                     message = preamble
             else:
                 message = ai_response.split("```")[0].strip()
+            # Remove stray markdown fences from the message portion
+            message = message.replace('```', '').strip()
 
         # Save code version if code was generated
         version_id = None

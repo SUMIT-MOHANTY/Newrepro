@@ -197,9 +197,9 @@ const ChatInput = ({
             disabled={disabled}
             onClick={() => fileInputRef.current?.click()}
             className={cn(
-              'flex items-center gap-1 h-6 px-2 text-xs',
-              darkMode ? 'hover:text-gray-300' : 'hover:text-gray-600',
-              selectedImages.length > 0 && 'text-purple-500'
+              'flex items-center gap-1 h-6 px-2 text-xs hover:bg-transparent',
+              darkMode ? '!text-gray-400 hover:!text-gray-300' : '!text-gray-500 hover:!text-gray-600',
+              selectedImages.length > 0 && '!text-purple-500'
             )}
           >
             {selectedImages.length > 0 ? (
@@ -219,7 +219,7 @@ const ChatInput = ({
           <button
             onClick={onToggleDiscuss}
             disabled={disabled}
-            title={discussMode ? 'Switch to Build mode' : 'Switch to Discuss mode'}
+            title={discussMode ? 'Discuss mode enabled - Click to disable' : 'Discuss mode disabled - Click to enable'}
             className={cn(
               'flex items-center gap-1.5 h-6 px-2.5 rounded-full text-xs font-medium transition-all border',
               discussMode
@@ -230,10 +230,8 @@ const ChatInput = ({
               disabled && 'opacity-40 cursor-not-allowed'
             )}
           >
-            {discussMode
-              ? <><MessageSquare className="w-3 h-3" /><span>Discuss</span></>
-              : <><Code2 className="w-3 h-3" /><span>Build</span></>
-            }
+            <MessageSquare className="w-3 h-3" />
+            <span>Discuss</span>
           </button>
         </div>
         <span>{disabled ? 'Select a project first' : 'Press Enter to send'}</span>

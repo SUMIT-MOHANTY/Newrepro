@@ -1202,9 +1202,11 @@ except Exception as e:
                         'PORT': str(primary_port),
                         'ADDITIONAL_PORTS': ','.join(map(str, additional_ports)),
                         'INITIAL_VERSION': version_id,
+                        'AI_PROVIDER': ai_config.provider,
                         'AI_API_KEY': ai_config.api_key,
                         'AI_API_URL': ai_config.base_url,
                         'AI_MODEL': ai_config.model,
+                        'BOURNAI_PLATFORM_ID': getattr(ai_config, 'platform_id', ''),
                         'USER_PROMPT': self._current_user_prompt or '',
                     }
                 )
