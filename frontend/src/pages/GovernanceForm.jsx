@@ -502,12 +502,32 @@ const GovernanceForm = ({
             setSelectedProjectKey?.(draftProject.key);
             setIsNewProjectMode?.(false);
 
-            const targetPath = `/a/${draftProject.projectToken}`;
-            navigate(targetPath, { replace: true });
+            // After successful draft creation, navigate straight to the Requirement Screening step.
+            // Previously the code redirected to the generic project URL (`/a/{token}`), which caused
+            // the AppLayout effect to immediately route back to the initiation step because the
+            // roadmap data hadn't been refreshed yet. Direct navigation to `/dashboard` (the
+            // Requirement Screening page) ensures a seamless one‑click transition.
+            // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
+            try {
+                sessionStorage.setItem('skipAppLayoutRedirect', 'true');
+            } catch (e) {
+                // ignore storage errors (e.g., in private mode)
+            }
 
+            // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
+            try {
+                sessionStorage.setItem('skipAppLayoutRedirect', 'true');
+            } catch (e) {
+                // ignore storage errors
+            }
+
+            const nextStepPath = '/dashboard';
+            navigate(nextStepPath, { replace: true });
+
+            // Fallback navigation in case the SPA router does not update the URL promptly.
             window.setTimeout(() => {
-                if (window.location.pathname !== targetPath) {
-                    window.location.assign(targetPath);
+                if (window.location.pathname !== nextStepPath) {
+                    window.location.assign(nextStepPath);
                 }
             }, 0);
         } catch (err) {
