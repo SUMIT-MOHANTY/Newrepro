@@ -153,15 +153,17 @@ class CodegenAgent:
         self.log("🏗️", f"Generating Version {version_id}...")
 
         ai_prompt = f"""You are an expert developer generating code for a SINGLE-CONTAINER Docker deployment.
-The entire project runs inside ONE container, but it can have MULTIPLE processes (e.g. a separate frontend and backend) on DIFFERENT ports if needed.
+The container has Python 3, Node.js 18, Nginx, and `serve` (static file server) pre-installed.
+An AI DevOps agent inside the container auto-detects the stack, runs setup/install, builds, and starts the server.
 
 ════════════════════════════════════════════════════
- UNDERSTAND THE NETWORKING
+ DEPLOYMENT ENVIRONMENT
 ════════════════════════════════════════════════════
 Browser → Host Ports → Docker Container
-                           └── Multiple processes managed by an AI Supervisor
+                           └── AI Agent auto-manages: install → build → serve
 
-DEFAULT PRIMARY PORT: {{self.port}} (Usually for the Frontend)
+DEFAULT PRIMARY PORT: {self.port}
+Pre-installed: Python3, pip3, Node.js 18, npm, Nginx, serve, git, curl
 
 ════════════════════════════════════════════════════
  ABSOLUTE RULES
@@ -169,37 +171,50 @@ DEFAULT PRIMARY PORT: {{self.port}} (Usually for the Frontend)
 
 RULE 1 — PORT BINDING
   ✅ Servers MUST bind to 0.0.0.0 (NOT 127.0.0.1)
-  ✅ Primary service should use PORT environment variable (default {self.port})
-  ✅ Secondary services should use unique ports (e.g. 5000, 3000).
+  ✅ Primary service uses PORT env var (default {self.port})
 
-RULE 2 — MULTI-SERVICE DISCOVERY
-  ✅ If you have a separate Backend and Frontend, the Frontend must know how to find the Backend.
-  ✅ Use relative paths if possible, or environment variables.
+RULE 2 — COMPLETE BUILDABLE CODE
+  ✅ All source files must be COMPLETE — no truncation or placeholders
+  ✅ If a package manager is used (npm, pip, etc.), include the manifest listing ALL dependencies
+  ✅ Choose the BEST technology stack for the user's request — do NOT default to any specific stack
 
-RULE 3 — RUN SCRIPT (CRITICAL)
-  ✅ ALWAYS include a 'run.sh' bash script at the project root.
-  ✅ run.sh MUST start ALL required services.
-  ✅ Use '&' for background processes and 'wait' at the end, or similar.
+RULE 3 — STRUCTURE REFERENCE (follow the standard patterns for whichever stack you choose)
+  The AI agent inside the container auto-detects ANY stack, installs deps, builds, and serves.
+  Here are deployment patterns for COMMON frameworks (use the right one, or invent your own):
+
+  React (CRA):   public/index.html + src/index.js + src/App.js + package.json (with react-scripts)
+  React (Vite):  index.html + src/main.jsx + src/App.jsx + package.json + vite.config.js
+  Vue.js:        src/main.js + src/App.vue + package.json
+  Angular:       src/app/ + package.json (with @angular/cli)
+  Svelte:        src/App.svelte + package.json
+  Next.js:       pages/index.js (or app/page.js) + package.json (with next)
+  Python:        app.py + requirements.txt (bind to 0.0.0.0, use PORT env var)
+  Node.js:       server.js + package.json (bind to 0.0.0.0, use PORT env var)
+  Go:            main.go + go.mod
+  Static:        index.html (no manifest needed — served directly)
+  ANY OTHER:     Include the standard project structure for that stack
 
 RULE 4 — SPA FALLBACK
-  ✅ If you use a frontend framework, the server MUST handle routing (serve index.html for unknown paths).
+  ✅ For frontend frameworks, `serve -s build` handles SPA routing automatically.
 
 ════════════════════════════════════════════════════
  EXPECTED JSON STRUCTURE
 ════════════════════════════════════════════════════
-Return ONLY a raw JSON object:
+Return ONLY a raw JSON object (no markdown fences):
 {{
     "files": {{
-        "path/to/file1": "...content...",
-        "run.sh": "#!/bin/bash\n# start backend\npython app.py &\n# start frontend\nnpm start",
+        "path/to/file1": "...complete file content...",
+        "package.json": "...complete valid JSON...",
         "metadata.json": {{
-            "project_type": "React + Flask",
-            "port": {self.port},
-            "additional_ports": [5000],
-            "entrypoint": "run.sh"
+            "project_type": "React | Vue | Flask | Static HTML | etc.",
+            "port": {self.port}
         }}
     }}
 }}
+
+CRITICAL: Every file must contain COMPLETE, WORKING content. Do NOT truncate.
+The metadata.json helps the AI agent understand the project type.
+Do NOT include run.sh — the AI agent auto-detects how to run the project.
 
 USER REQUEST: {prompt}
 """

@@ -627,7 +627,35 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         # (skip this check for patch responses — they never start with code prefixes)
         is_any_patch = has_patch_markers or has_raw_search_replace
         if code and not is_any_patch and (
-            not code.strip().startswith(('from', 'import', 'def', 'class', 'app =', '<!DOCTYPE', '<html', '{', '[')) and
+            not code.strip().startswith((
+                # Python
+                'from', 'import', 'def', 'class', 'app =', 'if __name__',
+                # HTML
+                '<!DOCTYPE', '<!doctype', '<html', '<HTML', '<!--',
+                # JSON / JS objects
+                '{', '[',
+                # JavaScript / TypeScript
+                'const ', 'let ', 'var ', 'function ', 'export ', 'import ',
+                'async ', 'module.', 'require(',
+                # React/JSX
+                'React', 'useState', 'useEffect',
+                # Go
+                'package ', 'func ',
+                # Rust
+                'fn ', 'use ', 'mod ', 'pub ', 'extern ',
+                # Java / C#
+                'public ', 'private ', 'protected ', 'namespace ', 'using ',
+                # Ruby
+                'require ', 'gem ', 'module ',
+                # PHP
+                '<?php', '<?=',
+                # Shell
+                '#!/', '#!',
+                # CSS
+                '@import', '@media', '@keyframes', '@charset',
+                # Comments (code often starts with comments)
+                '//', '/*', '#',
+            )) and
             len(code.strip().split('\n')) < 5
         ):
             code = None

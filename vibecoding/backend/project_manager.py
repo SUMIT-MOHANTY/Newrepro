@@ -118,6 +118,104 @@ class ProjectManager:
         self.running_containers: Dict[str, docker.models.containers.Container] = {}
         self.log_threads: Dict[str, threading.Thread] = {}
     
+    @staticmethod
+    def _detect_single_file_name(code: str) -> str:
+        """Detect the most appropriate filename for a single-file code snippet.
+        Handles Python, JavaScript, TypeScript, Go, Rust, Ruby, PHP, Java, C#,
+        Shell, CSS, and HTML — no hardcoded assumptions for just two languages."""
+        c = code.strip()
+        cl = c.lower()
+
+        # Shebang detection (shell, python, node, ruby, perl, etc.)
+        if c.startswith('#!'):
+            first_line = c.split('\n', 1)[0].lower()
+            if 'python' in first_line:
+                return 'app.py'
+            if 'node' in first_line:
+                return 'index.js'
+            if 'ruby' in first_line:
+                return 'app.rb'
+            if 'perl' in first_line:
+                return 'app.pl'
+            return 'run.sh'
+
+        # HTML detection (most reliable — check first)
+        if '<html' in cl or '<!doctype html' in cl:
+            return 'index.html'
+
+        # TypeScript (must check before JavaScript since TS is superset)
+        if any(k in c for k in ['interface ', ': string', ': number', ': boolean',
+                                  'type Props', 'React.FC<']):
+            if any(k in c for k in ['React', 'jsx', 'tsx', 'render(', 'Component']):
+                return 'App.tsx'
+            return 'index.ts'
+
+        # JSX / React detection
+        if any(k in c for k in ['React', 'useState', 'useEffect', 'jsx', 'createRoot',
+                                  'ReactDOM', 'Component', '<div', 'className=']):
+            return 'App.jsx' if any(k in c for k in ['export default', 'function App']) else 'index.jsx'
+
+        # JavaScript detection
+        if any(k in c for k in ['const ', 'let ', 'var ', 'function ', 'require(',
+                                  'module.exports', 'export default', 'export const',
+                                  'import ', '=>', 'async ', 'console.log']):
+            # More specific: is it a server?
+            if any(k in c for k in ['express', 'createServer', 'listen(', 'app.get(',
+                                      'app.post(', 'fastify', 'koa']):
+                return 'server.js'
+            return 'index.js'
+
+        # Python detection
+        if any(k in c for k in ['import ', 'from ', 'def ', 'class ', 'print(',
+                                  'if __name__', 'flask', 'fastapi', 'django']):
+            return 'app.py'
+
+        # Go detection
+        if 'package main' in c or 'func main()' in c or 'import "fmt"' in c:
+            return 'main.go'
+
+        # Rust detection
+        if 'fn main()' in c or 'use std::' in c or 'impl ' in c:
+            return 'main.rs'
+
+        # Java detection
+        if 'public class ' in c or 'public static void main' in c:
+            return 'Main.java'
+
+        # C# detection
+        if 'namespace ' in c and ('class ' in c or 'static void Main' in c):
+            return 'Program.cs'
+
+        # Ruby detection
+        if 'require ' in c and ('end' in c or 'def ' in c) and 'puts' in c:
+            return 'app.rb'
+
+        # PHP detection
+        if '<?php' in c or '<?=' in c:
+            return 'index.php'
+
+        # CSS detection
+        if any(k in c for k in ['{', '}']) and any(k in c for k in [
+            'color:', 'margin:', 'padding:', 'display:', 'font-', 'background'
+        ]):
+            return 'styles.css'
+
+        # JSON detection
+        if (c.startswith('{') and c.endswith('}')) or (c.startswith('[') and c.endswith(']')):
+            try:
+                import json as _json
+                _json.loads(c)
+                return 'data.json'
+            except Exception:
+                pass
+
+        # Markdown detection
+        if c.startswith('# ') or c.startswith('## '):
+            return 'README.md'
+
+        # Default fallback — still app.py, but now only as true last resort
+        return 'app.py'
+
     @property
     def docker_client(self):
         """Lazy load Docker client on first access"""
@@ -277,7 +375,7 @@ class ProjectManager:
             # Single file - use universal defaults
             runtime_name = "universal"
             runtime_config = {'image': self.DEFAULT_IMAGE, 'port': self.DEFAULT_PORT}
-            filename = "app.py" if any(k in code for k in ["import ", "def ", "class "]) else "index.html"
+            filename = self._detect_single_file_name(code)
             
             logger.info(f"📄 Single file detected")
             logger.info(f"🔍 Detected runtime: {runtime_name}")
@@ -456,7 +554,7 @@ class ProjectManager:
     def apply_patch_response(self, project_id: str, code: str) -> Tuple[bool, list]:
         """
         Parse and apply PATCH hunks from AI response.
-        Returns (any_applied: bool, patched_files: list)
+        Returns (any_applied: bool, patched_files: list) or (any_applied: bool, patched_files: list, failed_hunks: dict)
         """
         import difflib
         workspace_dir = self.artifacts_dir / project_id / "workspace"
@@ -708,6 +806,8 @@ class ProjectManager:
             file_hunks.setdefault(rel_path, []).append((m.group(2), m.group(3)))
 
         patched_files = []
+        failed_hunks = {}  # Track failed hunks per file for AI retry
+        
         for rel_path, hunks in file_hunks.items():
             filepath = workspace_dir / rel_path
             if not filepath.exists():
@@ -729,36 +829,97 @@ class ProjectManager:
             original = filepath.read_text(encoding='utf-8')
             line_sep = _detect_line_sep(original)
             content = original
-            all_ok = True
-
-            for search_text, replace_text in hunks:
+            file_failed_hunks = []
+            
+            for hunk_idx, (search_text, replace_text) in enumerate(hunks):
                 new_content, tier = _match_hunk(content, search_text, replace_text, line_sep)
+                
                 if new_content is None:
-                    logger.warning(f"⚠️ Hunk failed in {rel_path}: {tier} — rolling back file")
-                    all_ok = False
-                    break
-                logger.info(f"  ✅ Hunk matched in {rel_path}: {tier}")
-                content = new_content
+                    # Retry mechanism: re-read file from disk and try again
+                    logger.warning(f"⚠️ Hunk {hunk_idx + 1} failed in {rel_path}: {tier} — re-reading file and retrying")
+                    
+                    # Re-read current file state from disk
+                    fresh_content = filepath.read_text(encoding='utf-8')
+                    fresh_line_sep = _detect_line_sep(fresh_content)
+                    
+                    # Retry the hunk with fresh content
+                    new_content, retry_tier = _match_hunk(fresh_content, search_text, replace_text, fresh_line_sep)
+                    
+                    if new_content is None:
+                        # Still failed after retry - track for AI regeneration
+                        logger.warning(f"⚠️ Hunk {hunk_idx + 1} failed again after retry in {rel_path}: {retry_tier} — will request AI fix")
+                        file_failed_hunks.append({
+                            'hunk_number': hunk_idx + 1,
+                            'search': search_text,
+                            'replace': replace_text,
+                            'reason': retry_tier
+                        })
+                        continue
+                    else:
+                        # Retry succeeded
+                        logger.info(f"  ✅ Hunk {hunk_idx + 1} matched after retry in {rel_path}: {retry_tier}")
+                        content = new_content
+                        line_sep = fresh_line_sep
+                else:
+                    logger.info(f"  ✅ Hunk {hunk_idx + 1} matched in {rel_path}: {tier}")
+                    content = new_content
 
-            if not all_ok or content == original:
-                continue
+            # Write the file with successfully applied hunks
+            if content != original:
+                is_valid, err = _validate_syntax(content, filepath)
+                if not is_valid:
+                    logger.warning(f"⚠️ Post-patch syntax error in {rel_path}: {err} — skipping file")
+                    continue
 
-            is_valid, err = _validate_syntax(content, filepath)
-            if not is_valid:
-                logger.warning(f"⚠️ Post-patch syntax error in {rel_path}: {err} — skipping file")
-                continue
+                try:
+                    _atomic_write(filepath, content)
+                    logger.info(f"🩹 Patched: {rel_path}")
+                    if rel_path not in patched_files:
+                        patched_files.append(rel_path)
+                except Exception as e:
+                    logger.error(f"❌ Atomic write failed for {rel_path}: {e}")
+                    continue
+            
+            # Track failed hunks for this file
+            if file_failed_hunks:
+                failed_hunks[rel_path] = {
+                    'current_content': filepath.read_text(encoding='utf-8'),
+                    'failed_hunks': file_failed_hunks
+                }
 
-            try:
-                _atomic_write(filepath, content)
-            except Exception as e:
-                logger.error(f"❌ Atomic write failed for {rel_path}: {e}")
-                continue
+        # If there were failed hunks, return them for AI regeneration
+        if failed_hunks:
+            return len(patched_files) > 0, patched_files, failed_hunks
 
-            logger.info(f"🩹 Patched: {rel_path}")
-            if rel_path not in patched_files:
-                patched_files.append(rel_path)
+        return len(patched_files) > 0, patched_files, {}
 
-        return len(patched_files) > 0, patched_files
+    def _generate_retry_patch_prompt(self, failed_hunks: dict, original_prompt: str) -> str:
+        """Generate a prompt asking AI to create new patches based on current file state"""
+        prompt_parts = [
+            f"The following patch hunks failed to apply. Please generate NEW patches based on the CURRENT file content below.",
+            f"",
+            f"ORIGINAL USER REQUEST: {original_prompt}",
+            f"",
+        ]
+        
+        for filepath, info in failed_hunks.items():
+            prompt_parts.append(f"FILE: {filepath}")
+            prompt_parts.append(f"CURRENT CONTENT:")
+            prompt_parts.append(f"```")
+            prompt_parts.append(info['current_content'][:5000])  # Limit to avoid token overflow
+            prompt_parts.append(f"```")
+            prompt_parts.append(f"")
+            prompt_parts.append(f"FAILED HUNKS (what we tried to change):")
+            for hunk in info['failed_hunks']:
+                prompt_parts.append(f"  Hunk #{hunk['hunk_number']} - {hunk['reason']}")
+                prompt_parts.append(f"    Tried to find: {hunk['search'][:200]}...")
+                prompt_parts.append(f"    Wanted to replace with: {hunk['replace'][:200]}...")
+            prompt_parts.append(f"")
+        
+        prompt_parts.append(f"Please generate NEW // PATCH: blocks that will work with the CURRENT file content above.")
+        prompt_parts.append(f"Use the <<<SEARCH and <<<REPLACE format with content that EXACTLY matches what's in the current file.")
+        
+        return "\n".join(prompt_parts)
 
     def update_workspace_from_code(self, project_id: str, code: str, prompt: str, is_incremental: bool = None) -> Tuple[str, Path]:
         """Update the git workspace directly with new code and commit it."""
@@ -790,7 +951,14 @@ class ProjectManager:
             and bool(re.search(r'<<<\s*REPLACE', code))
         )
         if has_patches or has_raw_search:
-            applied, patched_files = self.apply_patch_response(project_id, code)
+            result = self.apply_patch_response(project_id, code)
+            
+            # Unpack result (handles both 2-tuple and 3-tuple returns)
+            if len(result) == 3:
+                applied, patched_files, failed_hunks = result
+            else:
+                applied, patched_files = result
+                failed_hunks = {}
             
             # Check if patches were rejected due to frozen files
             if not applied and patched_files == []:
@@ -803,6 +971,30 @@ class ProjectManager:
                     if frozen_violations:
                         # Raise exception to be caught by main.py
                         raise ValueError(f"FROZEN_FILES_VIOLATION:{','.join(frozen_violations)}")
+            
+            # If there were failed hunks, ask AI to regenerate patches for current file state
+            if failed_hunks:
+                logger.warning(f"⚠️ {sum(len(v['failed_hunks']) for v in failed_hunks.values())} hunks failed — requesting AI to regenerate patches")
+                
+                # Ask AI to regenerate patches based on current file state
+                retry_prompt = self._generate_retry_patch_prompt(failed_hunks, prompt)
+                
+                try:
+                    from ai_service import ai_service
+                    retry_response = ai_service.call_ai(retry_prompt, temperature=0.1)
+                    
+                    if retry_response:
+                        logger.info("🔄 AI generated retry patches — applying...")
+                        retry_result = self.apply_patch_response(project_id, retry_response)
+                        
+                        if len(retry_result) >= 2:
+                            retry_applied, retry_patched = retry_result[0], retry_result[1]
+                            if retry_applied:
+                                logger.info(f"✅ Retry patches applied to: {', '.join(retry_patched)}")
+                                patched_files.extend([f for f in retry_patched if f not in patched_files])
+                                applied = True
+                except Exception as e:
+                    logger.error(f"❌ Failed to get AI retry patches: {e}")
             
             if applied:
                 logger.info(f"🩹 Applied patches to: {', '.join(patched_files)}")
@@ -829,6 +1021,10 @@ class ProjectManager:
                 commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
                 # Preserve existing metadata
                 self._ensure_workspace_metadata(project_id, workspace_dir, commit_hash)
+                
+                # Trigger container restart to rebuild with new code
+                self._trigger_container_restart(project_id)
+                
                 return commit_hash, workspace_dir / patched_files[0]
             else:
                 logger.warning("⚠️ Patch parsing found no applicable hunks — returning without writing raw patch text as file")
@@ -932,7 +1128,7 @@ class ProjectManager:
                 main_file_path = workspace_dir / filename
         else:
             # Single file
-            filename = "app.py" if any(k in code for k in ["import ", "def ", "class "]) else "index.html"
+            filename = self._detect_single_file_name(code)
             if filename.endswith('.html'):
                 if '</body>' in code:
                     code = code.replace('</body>', f'{EDITOR_INJECTION_SCRIPT}</body>')
@@ -998,6 +1194,9 @@ class ProjectManager:
         metadata_file = workspace_dir / "metadata.json"
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
+        
+        # Trigger container restart to rebuild with new code
+        self._trigger_container_restart(project_id)
         
         return commit_hash, main_file_path
     
@@ -1087,10 +1286,46 @@ except Exception as e:
                 logger.info(f"🆕 Container not found, creating for project {project_id}")
                 preview_url = await self.create_container_for_code(project_id, "workspace")
                 return preview_url is not None
+        except Exception as e:
+            logger.error(f"❌ Error switching to workspace: {e}")
+            return False
+    
+    def _trigger_container_restart(self, project_id: str):
+        """Send restart command to supervisor to rebuild with new code"""
+        container_name = f"vibecoding_{project_id}"
+        
+        if container_name not in self.running_containers:
+            logger.debug(f"No running container for {project_id}, skipping restart")
+            return
+        
+        try:
+            container = self.running_containers[container_name]
+            
+            # Create a Python script to send the restart command
+            python_cmd = f"""
+import socket, json, sys
+try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect('{self.SUPERVISOR_SOCKET}')
+        s.send(json.dumps({{'action': 'restart'}}).encode())
+        print(s.recv(1024).decode())
+except Exception as e:
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+"""
+            exec_result = container.exec_run(
+                ['python3', '-c', python_cmd],
+                demux=True
+            )
+            
+            if exec_result.exit_code == 0:
+                logger.info(f"🔄 Triggered container restart for {project_id}")
+            else:
+                error = exec_result.output[1].decode() if exec_result.output and exec_result.output[1] else ""
+                logger.warning(f"⚠️ Container restart command failed: {error}")
                 
         except Exception as e:
-            logger.error(f"Failed to switch to workspace: {e}")
-            return False
+            logger.warning(f"⚠️ Failed to trigger container restart: {e}")
     
     async def create_container_for_code(self, project_id: str, version_id: str) -> Optional[str]:
         """Create or reuse Docker container and switch to the specified version"""

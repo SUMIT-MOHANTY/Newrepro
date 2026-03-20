@@ -20,6 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Pre-install essential tooling for all major frameworks
+# - serve: Static file server for React/Vue/Angular/Svelte production builds
+# - concurrently: For running multiple processes (frontend+backend)
+RUN npm install -g serve@latest concurrently@latest 2>/dev/null || npm install -g serve concurrently
+
 WORKDIR /project
 
 # Copy the "Intelligence" (Supervisor, AI Agent, and Codegen)
@@ -31,12 +36,15 @@ COPY codegen.py /usr/local/bin/codegen.py
 RUN sed -i 's/\r$//' /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py && \
     chmod +x /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py
 
-# Install absolute essentials for the Agent's own AI communication
-RUN pip3 install --no-cache-dir --default-timeout=1000 --retries 10 requests
+# Install absolute essentials for the Agent's own AI communication + common Python web frameworks
+RUN pip3 install --no-cache-dir --default-timeout=1000 --retries 10 \
+    requests flask fastapi uvicorn gunicorn
 
 # Dynamic healthcheck — follows PORT env var, lenient start period for AI provisioning
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8080}/ || exit 0
+# Uses exit 1 so Docker actually marks the container unhealthy on failure
+HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=5 \
+    CMD curl -f http://localhost:${PORT:-8080}/ || exit 1
 
 # Supervisor manages the dynamic lifecycle
 ENTRYPOINT ["/usr/local/bin/supervisor.py"]
+

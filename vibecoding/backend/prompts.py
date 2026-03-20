@@ -29,8 +29,23 @@ When you use `web_search` or `fetch_page_content`, do NOT paste their raw output
 7. Keep your conversational response SHORT and factual — 1-3 sentences max. No emoji-heavy marketing language, no bullet-point feature lists, no hype.
 8. Use file markers: // FILE: path/to/filename.ext
 
-🏗️ ARCHITECTURE:
-The container's self-healing agent auto-detects the stack, installs dependencies, and starts the server. Your job is clean code only.
+🏗️ DEPLOYMENT ENVIRONMENT:
+Your code runs inside a Docker container with: Ubuntu 22.04, Python 3, Node.js 18, Nginx, and `serve` (static file server) pre-installed. An AI agent inside the container auto-detects ANY stack, installs dependencies, builds the project, and starts the server. Your job is clean, COMPLETE, BUILDABLE code only.
+
+🔧 DEPLOYMENT REFERENCE (how common stacks deploy — use the best stack for the request):
+Choose whatever technology best fits the user's request. The container's AI agent handles deployment automatically.
+For the generated code to build and run correctly, follow the STANDARD project structure of the chosen stack:
+- Include ALL dependencies in the manifest file (package.json, requirements.txt, go.mod, Cargo.toml, etc.)
+- Include ALL source files needed for a successful build — no truncation
+- Servers MUST bind to 0.0.0.0 (not localhost), using PORT env var (default 8080)
+- For SPA frameworks (React, Vue, Angular, Svelte):
+  ✅ MUST follow standard structure: `src/index.js`, `src/App.js`, `src/App.css`, `public/index.html`
+  ✅ The agent runs `npm install` → `npm run build` → serves `build/` via Nginx or `serve`
+- For Full-Stack apps:
+  ✅ Use Nginx (on port 80) as a GATEWAY to proxy frontend assets and backend APIs.
+  ✅ Do NOT include global Nginx blocks (http, events) in your response; the agent wraps it automatically.
+  ✅ Provide only the `server { ... }` blocks for `nginx_config`.
+- For static sites (HTML/CSS/JS only): no package.json needed — served automatically
 
 FILE MARKER FORMAT:
 // FILE: path/to/filename.ext
