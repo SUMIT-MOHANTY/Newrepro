@@ -659,21 +659,45 @@ class ProjectManager:
             # Tier 4: fuzzy with variable window (±2 lines)
             base_win = len(srch_lines)
             best_score, best_idx, best_size = 0.0, -1, base_win
+            
+            def norm_text(s: str) -> str:
+                # Collapse whitespace for more resilient matching (CSS/HTML often changes formatting).
+                return re.sub(r'\s+', ' ', s).strip()
+
+            search_norm = norm_text(search_text)
             for size_delta in (0, -1, 1, -2, 2):
                 ws = base_win + size_delta
                 if ws < 1 or ws > len(cont_lines):
                     continue
                 for idx in range(len(cont_lines) - ws + 1):
-                    score = difflib.SequenceMatcher(
-                        None, search_text, "\n".join(cont_lines[idx:idx + ws])
-                    ).ratio()
+                    window_text = "\n".join(cont_lines[idx:idx + ws])
+                    # Prefer whitespace-normalized ratio for resilient matching.
+                    score = difflib.SequenceMatcher(None, search_norm, norm_text(window_text)).ratio()
                     if score > best_score:
                         best_score, best_idx, best_size = score, idx, ws
-
+            
+            # Strict fuzzy threshold
             if best_score >= 0.85:
                 cont_lines[best_idx:best_idx + best_size] = repl_lines
                 return rejoin(cont_lines), f"fuzzy(score={best_score:.2f})"
-
+            
+            # Relaxed fuzzy threshold (second-chance retry)
+            # This helps when the patch search text is "semantically the same" but formatted differently.
+            relaxed_threshold = 0.65
+            if best_score >= relaxed_threshold and best_idx >= 0:
+                window_norm = norm_text("\n".join(cont_lines[best_idx:best_idx + best_size]))
+                anchor_lines = [l.strip() for l in srch_lines if l.strip()][:2]
+                anchor_ok = False
+                for a in anchor_lines:
+                    a_norm = norm_text(a)
+                    if a_norm and a_norm in window_norm:
+                        anchor_ok = True
+                        break
+                # If we couldn't determine anchors, still allow if the score is decent.
+                if anchor_lines == [] or anchor_ok:
+                    cont_lines[best_idx:best_idx + best_size] = repl_lines
+                    return rejoin(cont_lines), f"fuzzy-relaxed(score={best_score:.2f})"
+            
             return None, f"no-match(best={best_score:.2f})"
 
         # Group hunks by file for all-or-nothing application per file
@@ -687,8 +711,20 @@ class ProjectManager:
         for rel_path, hunks in file_hunks.items():
             filepath = workspace_dir / rel_path
             if not filepath.exists():
-                logger.warning(f"⚠️ Patch target not found: {rel_path}")
-                continue
+                # Fallback: search for the file by basename in the workspace
+                target_name = Path(rel_path).name
+                candidates = [
+                    f for f in workspace_dir.rglob(target_name)
+                    if f.is_file() and '.git' not in f.parts
+                ]
+                if candidates:
+                    filepath = candidates[0]
+                    resolved_rel = str(filepath.relative_to(workspace_dir))
+                    logger.info(f"🔍 Patch target resolved: {rel_path} → {resolved_rel}")
+                    rel_path = resolved_rel
+                else:
+                    logger.warning(f"⚠️ Patch target not found: {rel_path}")
+                    continue
 
             original = filepath.read_text(encoding='utf-8')
             line_sep = _detect_line_sep(original)

@@ -479,10 +479,25 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [showRedirectionConfirmation, setShowRedirectionConfirmation] = useState(false);
     const [redirectionTarget, setRedirectionTarget] = useState(null);
 
-    const handleConfirmRedirection = () => {
-        if (redirectionTarget) {
-            window.location.href = redirectionTarget;
+    const handleConfirmRedirection = async () => {
+        if (!redirectionTarget) return;
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(`${API_ENDPOINTS.VIBECODING_HANDOFF}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ project_token: selectedProjectKey }),
+            });
+            if (res.ok) {
+                const { handoff_token } = await res.json();
+                const sep = redirectionTarget.includes('?') ? '&' : '?';
+                window.location.href = `${redirectionTarget}${sep}handoff_token=${encodeURIComponent(handoff_token)}`;
+                return;
+            }
+        } catch (err) {
+            console.error('Failed to get handoff token:', err);
         }
+        window.location.href = redirectionTarget;
     };
 
     const handleCancelRedirection = () => {

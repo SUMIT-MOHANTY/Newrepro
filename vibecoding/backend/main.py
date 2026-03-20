@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Depends, Request
@@ -177,6 +178,136 @@ async def reset_password_endpoint(request: ResetPasswordRequest):
     return reset_password(request)
 
 
+# ─── SSO / Handoff from BRDAnalyzer ─────────────────────────────────────────────
+import hmac as _hmac
+import base64 as _base64
+import time as _time_mod
+
+HANDOFF_SECRET = os.getenv("HANDOFF_SECRET", "dsuite-vibecoding-handoff-secret-local-dev")
+
+
+def _verify_handoff_token(token_str: str) -> dict:
+    """Verify HMAC-signed handoff token and return payload."""
+    parts = token_str.rsplit(".", 1)
+    if len(parts) != 2:
+        raise ValueError("Malformed handoff token")
+    payload_b64, sig = parts
+    expected_sig = _hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected_sig, sig):
+        raise ValueError("Invalid handoff token signature")
+    padding = 4 - len(payload_b64) % 4
+    if padding != 4:
+        payload_b64 += "=" * padding
+    payload = json.loads(_base64.urlsafe_b64decode(payload_b64))
+    if payload.get("exp", 0) < int(_time_mod.time()):
+        raise ValueError("Handoff token expired")
+    return payload
+
+
+class SSOHandoffRequest(BaseModel):
+    handoff_token: str
+
+
+@app.post("/vibecoding/api/auth/sso")
+async def sso_handoff(request: SSOHandoffRequest):
+    """
+    Accept a handoff token from BRDAnalyzer, auto-create or login the user,
+    create the project if needed, and return a Vibecoding JWT.
+    """
+    try:
+        payload = _verify_handoff_token(request.handoff_token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    email = payload.get("email", "").lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Handoff token missing email")
+
+    first_name = payload.get("first_name", "")
+    last_name = payload.get("last_name", "")
+    full_name = f"{first_name} {last_name}".strip() or email.split("@")[0]
+    username = email.split("@")[0].replace(".", "_").replace("+", "_").lower()
+
+    project_token = payload.get("project_token")
+    project_context = payload.get("project_context", {})
+
+    from auth import get_db as get_auth_db, create_jwt_token, hash_password, generate_avatar_color, generate_random_password
+
+    conn = get_auth_db()
+    try:
+        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        if user:
+            user_id = user["id"]
+            user_data = {
+                "id": user["id"],
+                "username": user["username"],
+                "email": user["email"],
+                "full_name": user["full_name"],
+                "avatar_color": user["avatar_color"],
+                "created_at": user["created_at"],
+            }
+        else:
+            password = generate_random_password()
+            password_hash, salt = hash_password(password)
+            avatar_color = generate_avatar_color(email)
+            from datetime import datetime
+            now = datetime.utcnow().isoformat()
+            base_username = username
+            suffix = 0
+            while conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone():
+                suffix += 1
+                username = f"{base_username}_{suffix}"
+            cursor = conn.execute(
+                """INSERT INTO users (username, email, password_hash, salt, full_name, avatar_color, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (username, email, password_hash, salt, full_name, avatar_color, now, now),
+            )
+            conn.commit()
+            user_id = cursor.lastrowid
+            user_data = {
+                "id": user_id,
+                "username": username,
+                "email": email,
+                "full_name": full_name,
+                "avatar_color": avatar_color,
+                "created_at": now,
+            }
+
+        token = create_jwt_token({"user_id": user_id, "email": email, "username": username})
+    finally:
+        conn.close()
+
+    project_info = None
+    if project_token:
+        existing = project_manager.get_project_info(project_token)
+        if existing:
+            if existing.get("owner_id") is None:
+                existing["owner_id"] = user_id
+            if project_context:
+                existing["brd_context"] = project_context
+            project_manager.update_project_metadata(project_token, existing)
+            project_info = existing
+        else:
+            project_name = project_context.get("project_name") or f"Project {project_token[:8]}"
+            project_manager.create_project_directory(project_token, metadata={
+                "name": project_name,
+                "description": project_context.get("brd_summary", ""),
+                "owner_id": user_id,
+            })
+            new_project = project_manager.get_project_info(project_token)
+            if new_project and project_context:
+                new_project["brd_context"] = project_context
+                project_manager.update_project_metadata(project_token, new_project)
+            project_info = project_manager.get_project_info(project_token)
+
+    return {
+        "token": token,
+        "user": user_data,
+        "project": project_info,
+        "message": "SSO login successful",
+    }
+
+
 @app.get("/vibecoding/api")
 async def root():
     return {"message": f"{APP_NAME} API is running"}
@@ -287,7 +418,26 @@ async def generate_code(request: GenerateRequest):
         # Get frozen files list
         frozen_files = project_manager.get_frozen_files(project_id)
         frozen_files_str = "\n".join([f"- {path} (READ-ONLY)" for path in frozen_files]) if frozen_files else "None"
-        
+
+        # Inject BRD project context if available
+        brd_context_str = ""
+        project_meta = project_manager.get_project_info(project_id)
+        if project_meta and project_meta.get("brd_context"):
+            brd = project_meta["brd_context"]
+            parts = []
+            if brd.get("project_name"):
+                parts.append(f"Project Name: {brd['project_name']}")
+            if brd.get("classification"):
+                parts.append(f"Governance Classification: {brd['classification']}")
+            if brd.get("recommendation"):
+                parts.append(f"Governance Recommendation: {brd['recommendation']}")
+            if brd.get("brd_summary"):
+                parts.append(f"BRD Summary: {brd['brd_summary']}")
+            if brd.get("agent_analysis"):
+                parts.append(f"Agent Analysis: {brd['agent_analysis']}")
+            if parts:
+                brd_context_str = "\n\n📄 PROJECT CONTEXT (from BRD Analyzer):\n" + "\n".join(parts) + "\n"
+
         # Build conversation history with appropriate system prompt
         if has_existing_code:
             # Provide context about existing code and let AI decide whether to do incremental or full edit
@@ -308,7 +458,7 @@ async def generate_code(request: GenerateRequest):
         from datetime import datetime
         now = datetime.now()
         date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
-        messages = [{"role": "system", "content": date_context + system_prompt}]
+        messages = [{"role": "system", "content": date_context + system_prompt + brd_context_str}]
         for msg in request.history:
             messages.append({
                 "role": msg.role,
@@ -357,11 +507,22 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
             # (apply_patch_response will auto-fix missing // PATCH: headers and malformed delimiters)
             code = ai_response
         elif has_markers:
-            # AI provided file markers. Keep the entire response but strip markdown code wrappers
-            # so the frontend can split by file markers cleanly without including ` ```html ` in the file content.
-            cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response)
-            cleaned = cleaned.replace('```', '')
-            code = cleaned.strip()
+            # Extract code ONLY from within markdown fences to avoid including
+            # preamble / epilogue narrative in the preview iframe.
+            fenced_blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
+            fenced_code = "\n\n".join(b.strip() for b in fenced_blocks).strip() if fenced_blocks else ""
+
+            if fenced_code and _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', fenced_code):
+                code = fenced_code
+            else:
+                # Fallback: strip fences, then take only from the first file marker onward.
+                cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response)
+                cleaned = cleaned.replace('```', '')
+                first_marker = _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', cleaned)
+                if first_marker:
+                    code = cleaned[first_marker.start():].strip()
+                else:
+                    code = cleaned.strip()
         else:
             # No file markers. Extract all markdown code blocks and join them.
             blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
@@ -415,6 +576,15 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                 message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
             elif has_raw_search_replace:
                 message = _re.split(r'<<<\s*SEARCH', ai_response)[0].strip()
+            elif has_markers:
+                # Capture both preamble (before first fence) and epilogue (after last fence)
+                parts = ai_response.split("```")
+                preamble = parts[0].strip()
+                epilogue = parts[-1].strip() if len(parts) >= 3 else ""
+                if epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue):
+                    message = f"{preamble}\n\n{epilogue}".strip()
+                else:
+                    message = preamble
             else:
                 message = ai_response.split("```")[0].strip()
 
@@ -1216,4 +1386,4 @@ async def route_proxy(token: str, request: Request, path: str = ""):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

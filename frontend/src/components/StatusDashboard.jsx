@@ -2538,16 +2538,32 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             <p className="text-xs text-app-text-light mb-4">
                                                 Your project is configured for Vibe Coding. Open the VibeCoding workspace to start building with AI assistance.
                                             </p>
-                                            <a
-                                                href={`${VIBE_WORKSPACE_URL}/a/${selectedProjectKey}?name=${encodeURIComponent(selectedProject?.name || selectedProjectKey)}&mode=vibe_coding`}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
+                                            <button
+                                                onClick={async () => {
+                                                    const baseUrl = `${VIBE_WORKSPACE_URL}/a/${selectedProjectKey}?name=${encodeURIComponent(selectedProject?.name || selectedProjectKey)}&mode=vibe_coding`;
+                                                    try {
+                                                        const token = localStorage.getItem('token');
+                                                        const res = await fetch(API_ENDPOINTS.VIBECODING_HANDOFF, {
+                                                            method: 'POST',
+                                                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                            body: JSON.stringify({ project_token: selectedProjectKey }),
+                                                        });
+                                                        if (res.ok) {
+                                                            const { handoff_token } = await res.json();
+                                                            window.open(`${baseUrl}&handoff_token=${encodeURIComponent(handoff_token)}`, '_blank', 'noopener,noreferrer');
+                                                            return;
+                                                        }
+                                                    } catch (err) {
+                                                        console.error('Failed to get handoff token:', err);
+                                                    }
+                                                    window.open(baseUrl, '_blank', 'noopener,noreferrer');
+                                                }}
                                                 className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl hover:from-purple-700 hover:to-pink-700 shadow-lg shadow-purple-500/25 active:scale-95 transition-all"
                                             >
                                                 <Zap className="w-4 h-4" />
                                                 Open VibeCoding Workspace
                                                 <ExternalLink className="w-3.5 h-3.5 ml-1 opacity-70" />
-                                            </a>
+                                            </button>
                                         </div>
                                     </div>
                                 )}

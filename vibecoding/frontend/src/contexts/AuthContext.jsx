@@ -1,9 +1,19 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// Vibecoding backend routes are mounted under `/vibecoding/api/*`
+// (can be overridden via VITE_API_BASE_URL)
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001/vibecoding';
 
 const AuthContext = createContext(null);
+
+function _stripHandoffParam() {
+  const url = new URL(window.location.href);
+  if (url.searchParams.has('handoff_token')) {
+    url.searchParams.delete('handoff_token');
+    window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+  }
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -19,8 +29,43 @@ export function AuthProvider({ children }) {
     }
   }, [token]);
 
-  // Verify token on mount
+  // SSO handoff: exchange BRDAnalyzer handoff_token for a Vibecoding JWT
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const handoffToken = params.get('handoff_token');
+    if (!handoffToken) return;
+
+    let cancelled = false;
+
+    const exchangeHandoff = async () => {
+      try {
+        const res = await axios.post(`${API_BASE_URL}/api/auth/sso`, {
+          handoff_token: handoffToken,
+        });
+        if (cancelled) return;
+        const { token: newToken, user: userData } = res.data;
+        localStorage.setItem('vibecoding_token', newToken);
+        setToken(newToken);
+        setUser(userData);
+      } catch (err) {
+        console.error('SSO handoff failed:', err);
+      } finally {
+        if (!cancelled) {
+          _stripHandoffParam();
+          setLoading(false);
+        }
+      }
+    };
+
+    exchangeHandoff();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Verify existing token on mount (skip if handoff is in progress)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('handoff_token')) return;
+
     const verifyToken = async () => {
       if (!token) {
         setLoading(false);
@@ -33,7 +78,6 @@ export function AuthProvider({ children }) {
         });
         setUser(response.data.user);
       } catch (error) {
-        // Token is invalid/expired
         localStorage.removeItem('vibecoding_token');
         setToken(null);
         setUser(null);

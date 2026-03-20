@@ -39,11 +39,11 @@ const ToolCallsDisplay = ({ toolCalls, darkMode }) => {
     switch (tool.tool) {
       case 'web_search':
         return {
-          icon: <Search className="w-3.5 h-3.5" />,
+          icon: <Globe className="w-3.5 h-3.5" />,
           label: 'Web Search',
           detail: tool.arguments?.query || '',
-          color: darkMode ? 'text-blue-400' : 'text-blue-600',
-          bgColor: darkMode ? 'bg-blue-500/10 border-blue-500/20' : 'bg-blue-50 border-blue-200'
+          color: darkMode ? 'text-purple-400' : 'text-purple-600',
+          bgColor: darkMode ? 'bg-purple-500/10 border-purple-500/20' : 'bg-purple-50 border-purple-200'
         };
       case 'fetch_page_content':
         return {
@@ -103,28 +103,66 @@ const ToolCallsDisplay = ({ toolCalls, darkMode }) => {
             {isExpanded && (
               <div className={`px-2.5 pb-2 pt-1 border-t ${darkMode ? 'border-white/5' : 'border-black/5'}`}>
                 {parsed?.results ? (
-                  <div className="space-y-1">
-                    {parsed.results.slice(0, 3).map((r, i) => (
-                      <div key={i} className={`${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                        <span className="font-medium">{r.title}</span>
-                        {r.snippet && <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} line-clamp-1`}>{r.snippet}</p>}
+                  <>
+                    {/* Web search header (styled to match the second screenshot) */}
+                    <div className="flex items-start justify-between gap-3 px-1 pb-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Globe className={`w-4 h-4 ${darkMode ? 'text-purple-400' : 'text-purple-600'} flex-shrink-0`} />
+                          <span className={`text-xs font-semibold ${darkMode ? 'text-purple-300' : 'text-purple-800'} truncate`}>
+                            Web search:
+                          </span>
+                          <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'} truncate`}>
+                            {parsed.query || tc.arguments?.query || info.detail || ''}
+                          </span>
+                        </div>
                       </div>
-                    ))}
-                    {parsed.results_count > 3 && (
-                      <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} italic`}>
-                        +{parsed.results_count - 3} more results
-                      </p>
-                    )}
-                  </div>
+                      {typeof parsed.results_count === 'number' && (
+                        <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'} whitespace-nowrap`}>
+                          {parsed.results_count} results
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      {parsed.results.slice(0, 3).map((r, i) => (
+                        <div key={i} className={`rounded-md px-2 py-1 ${darkMode ? 'bg-white/5' : 'bg-black/5'}`}>
+                          <span className={`block text-xs font-semibold ${darkMode ? 'text-purple-300' : 'text-purple-700'} leading-snug`}>
+                            {r.title}
+                          </span>
+                          {r.snippet && (
+                            <p className={`${darkMode ? 'text-purple-200/80' : 'text-purple-900/70'} text-xs line-clamp-2`}>
+                              {r.snippet}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                      {parsed.results_count > 3 && (
+                        <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} italic text-xs px-1`}>
+                          +{parsed.results_count - 3} more results
+                        </p>
+                      )}
+                    </div>
+                  </>
                 ) : parsed?.title ? (
                   <div className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
                     <p className="font-medium">{parsed.title}</p>
                     {parsed.description && <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} line-clamp-2`}>{parsed.description}</p>}
                   </div>
                 ) : (
-                  <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} line-clamp-3`}>
-                    {tc.result_preview}
-                  </p>
+                  tc.tool === 'web_search' ? (
+                    <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} line-clamp-3`}>
+                      Web search results unavailable.
+                    </p>
+                  ) : tc.tool === 'fetch_page_content' ? (
+                    <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} line-clamp-3`}>
+                      Reading page preview unavailable.
+                    </p>
+                  ) : (
+                    <p className={`${darkMode ? 'text-gray-500' : 'text-gray-400'} line-clamp-3`}>
+                      {tc.result_preview}
+                    </p>
+                  )
                 )}
               </div>
             )}

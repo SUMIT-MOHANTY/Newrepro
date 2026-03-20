@@ -340,10 +340,39 @@ async def make_request_with_tools(
             tool_result = await execute_tool_call(tool_name, arguments)
 
             # Log for frontend
+            # IMPORTANT:
+            # The frontend expects `result_preview` to be valid/parseable JSON for some tools.
+            # Previously we truncated the raw JSON string which often broke JSON parsing
+            # (leading to "unavailable" UI). Instead, we reduce the JSON to a small,
+            # valid payload per tool so the frontend can render results cleanly.
+            result_preview = tool_result[:300] + "..." if len(tool_result) > 300 else tool_result
+            try:
+                parsed_tool_result = json.loads(tool_result)
+                if isinstance(parsed_tool_result, dict):
+                    if tool_name == "web_search":
+                        reduced = {
+                            "status": parsed_tool_result.get("status"),
+                            "query": parsed_tool_result.get("query"),
+                            "results_count": parsed_tool_result.get("results_count"),
+                            "results": (parsed_tool_result.get("results") or [])[:10],
+                        }
+                        result_preview = json.dumps(reduced, ensure_ascii=False)
+                    elif tool_name == "fetch_page_content":
+                        reduced = {
+                            "status": parsed_tool_result.get("status"),
+                            "url": parsed_tool_result.get("url"),
+                            "title": parsed_tool_result.get("title"),
+                            "description": parsed_tool_result.get("description"),
+                        }
+                        result_preview = json.dumps(reduced, ensure_ascii=False)
+            except Exception:
+                # If tool_result isn't JSON or reduction fails, fall back to truncated string.
+                pass
+
             tool_call_log.append({
                 "tool": tool_name,
                 "arguments": arguments,
-                "result_preview": tool_result[:300] + "..." if len(tool_result) > 300 else tool_result
+                "result_preview": result_preview,
             })
 
             # Add tool result to conversation
