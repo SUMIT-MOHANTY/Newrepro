@@ -476,6 +476,34 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const navigate = useNavigate();
     const [prerequisites, setPrerequisites] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [showRedirectionConfirmation, setShowRedirectionConfirmation] = useState(false);
+    const [redirectionTarget, setRedirectionTarget] = useState(null);
+
+    const handleConfirmRedirection = async () => {
+        if (!redirectionTarget) return;
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(`${API_ENDPOINTS.VIBECODING_HANDOFF}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ project_token: selectedProjectKey }),
+            });
+            if (res.ok) {
+                const { handoff_token } = await res.json();
+                const sep = redirectionTarget.includes('?') ? '&' : '?';
+                window.location.href = `${redirectionTarget}${sep}handoff_token=${encodeURIComponent(handoff_token)}`;
+                return;
+            }
+        } catch (err) {
+            console.error('Failed to get handoff token:', err);
+        }
+        window.location.href = redirectionTarget;
+    };
+
+    const handleCancelRedirection = () => {
+        setShowRedirectionConfirmation(false);
+        setSubmitting(false);
+    };
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);

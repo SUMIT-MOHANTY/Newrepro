@@ -2,6 +2,7 @@
 // Uses environment variables with fallback defaults
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const VIBE_WORKSPACE_URL = import.meta.env.VITE_VIBE_WORKSPACE_URL || 'http://localhost:5174/vibecoding';
 
 // API Endpoints
 export const API_ENDPOINTS = {
@@ -108,6 +109,9 @@ export const API_ENDPOINTS = {
     AGENT_MILESTONES: `${API_BASE_URL}/api/agent/milestones/`,
     AGENT_PROJECT_INFO: `${API_BASE_URL}/api/agent/project-info/`,
     AGENT_DASHBOARD: `${API_BASE_URL}/api/agent/dashboard/`,
+
+    // VibeCoding Handoff
+    VIBECODING_HANDOFF: `${API_BASE_URL}/api/vibecoding/handoff-token`,
 
     // Knowledge Graph + RAG
     KG_INDEX: `${API_BASE_URL}/api/knowledge-graph/index`,

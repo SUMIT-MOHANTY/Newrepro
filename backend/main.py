@@ -2,13 +2,16 @@ import os
 import requests
 import asyncio
 import logging
+import os
 import secrets
 import re
 import uuid
 import html as html_lib
 import hashlib
-import time
-import json
+import hmac
+import json as json_stdlib
+import base64
+import time as _time
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 import ipaddress
@@ -3162,6 +3165,93 @@ async def get_governance_result(
         client_id=response.client_id,
         client_secret=response.client_secret,
     )
+
+
+# ─── VibeCoding Handoff ─────────────────────────────────────────────────────────
+HANDOFF_SECRET = os.getenv("HANDOFF_SECRET", "dsuite-vibecoding-handoff-secret-local-dev")
+
+def _create_handoff_token(payload: dict) -> str:
+    """Create an HMAC-signed handoff token with 5-minute expiry."""
+    payload["exp"] = int(_time.time()) + 300
+    payload["iat"] = int(_time.time())
+    payload_bytes = json_stdlib.dumps(payload, separators=(",", ":")).encode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode()
+    sig = hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+
+class VibeCodingHandoffRequest(BaseModel):
+    project_token: str
+
+
+@app.post("/api/vibecoding/handoff-token")
+async def create_vibecoding_handoff_token(
+    request: VibeCodingHandoffRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a short-lived handoff token so that VibeCoding can auto-login the
+    user and receive project context without a separate sign-in.
+    """
+    gov = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == request.project_token,
+        models.GovernanceResponse.owner_id == current_user.id,
+    ).first()
+
+    brd_doc = None
+    user_docs = db.query(models.Document).filter(
+        models.Document.owner_id == current_user.id
+    ).all()
+    for doc in user_docs:
+        if not doc.analysis_result:
+            continue
+        try:
+            parsed = json_stdlib.loads(doc.analysis_result)
+        except (TypeError, ValueError):
+            continue
+        gov_ctx = parsed.get("governanceContext") or {}
+        proj_meta = parsed.get("projectMeta") or {}
+        doc_token = proj_meta.get("project_token") or gov_ctx.get("project_token")
+        if doc_token and str(doc_token) == str(request.project_token):
+            brd_doc = parsed
+            break
+
+    project_context = {}
+    if gov:
+        project_context["project_name"] = gov.project_name
+        project_context["classification"] = gov.classification
+        project_context["recommendation"] = (gov.recommendation or "")[:2000]
+        project_context["weighted_score"] = gov.weighted_score
+        project_context["steps_data"] = gov.steps_data
+    if brd_doc:
+        summary = brd_doc.get("summary") or brd_doc.get("projectMeta", {}).get("description") or ""
+        project_context["brd_summary"] = str(summary)[:2000]
+        # Store full agent analysis (from the saved Document.analysis_result) for Vibecoding prompt context.
+        # We truncate to avoid token/payload bloat.
+        agent_analysis_raw = None
+        for k in ("analysis", "agent_analysis", "analysis_report"):
+            if brd_doc.get(k) is not None:
+                agent_analysis_raw = brd_doc.get(k)
+                break
+        if agent_analysis_raw is not None:
+            if isinstance(agent_analysis_raw, (dict, list)):
+                agent_analysis_text = json_stdlib.dumps(agent_analysis_raw, ensure_ascii=False)
+            else:
+                agent_analysis_text = str(agent_analysis_raw)
+
+            max_chars = int(os.getenv("AGENT_ANALYSIS_MAX_CHARS", "32000"))
+            project_context["agent_analysis"] = agent_analysis_text[:max_chars]
+
+    payload = {
+        "email": current_user.email,
+        "first_name": current_user.first_name or "",
+        "last_name": current_user.last_name or "",
+        "project_token": request.project_token,
+        "project_context": project_context,
+    }
+    token = _create_handoff_token(payload)
+    return {"handoff_token": token}
 
 
 @app.delete("/governance/{identifier}")
