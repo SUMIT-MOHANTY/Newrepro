@@ -12099,6 +12099,10 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     claimed_task_ids = state["claimed_task_ids"]
     task_claim_lock = state["task_claim_lock"]
     
+    # Get agent reference FIRST before any operations that might reference it
+    agent = project_agents.get(agent_id)
+    agent_username = build_external_agent_username(agent_id, agent.get("name") if agent else None)
+    
     # Check integration gate - if blocked, only allow fix tasks
     try:
         import context_manager as ctx_mgr
@@ -12166,8 +12170,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     # ── GUARD: Check if this agent already has an active (non-completed) task ──
     # If the agent is already assigned to a task, return that task instead of picking a new one.
     # This prevents a single agent from being assigned to multiple tasks simultaneously.
-    agent = project_agents.get(agent_id)
-    agent_username = build_external_agent_username(agent_id, agent.get("name") if agent else None)
+    # agent and agent_username already retrieved at function start
     for t in external_tasks:
         if _task_status_is_done(t.get("status")):
             continue
