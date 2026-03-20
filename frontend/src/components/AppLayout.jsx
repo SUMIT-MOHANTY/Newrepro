@@ -8,6 +8,7 @@ import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
 import AIConfig from '../components/AIConfig';
+import AssistantBot from '../components/AssistantBot';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
 import { fetchRoadmapStep } from '../api/projects';
@@ -1172,6 +1173,8 @@ export default function AppLayout({ children }) {
                     </div>
                 )
             }
+            {/* AI Assistant Bot - available on all pages */}
+            <AssistantBot />
         </div >
     );
 }

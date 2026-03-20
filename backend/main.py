@@ -33,6 +33,7 @@ import models
 import schemas
 import ingestion
 import ai_service
+import llm_gateway
 import governance_scoring
 import github_service
 import azure_devops_service
@@ -437,6 +438,70 @@ async def analyze_document_with_ai(
         return StreamingResponse(result, media_type="text/event-stream")
     
     return result
+
+# ---------------------------------------------------------------------------
+# AI Assistant Chat Endpoint (used by AssistantBot frontend component)
+# ---------------------------------------------------------------------------
+
+class AssistantRequest(BaseModel):
+    """Payload for the AI chat endpoint."""
+    message: str = Field(..., description="User message sent to the assistant")
+    context: dict | None = Field(default=None, description="Current route context")
+    conversation_history: list | None = Field(default=None, description="Prior conversation messages")
+
+
+@app.post("/api/agent/assistant")
+async def assistant_chat(
+    payload: AssistantRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Context-aware AI assistant chat endpoint."""
+    try:
+        context = getattr(payload, 'context', None)
+        assistant_reply = await ai_service.chat_with_llm(
+            message=payload.message,
+            context=context
+        )
+        return {"response": assistant_reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/agent/assistant/stream")
+async def assistant_chat_stream(
+    payload: AssistantRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Streaming version of the assistant chat endpoint using real LLM SSE streaming."""
+    from fastapi.responses import StreamingResponse
+    import json
+
+    async def generate():
+        try:
+            context = getattr(payload, 'context', None)
+            messages = ai_service.build_chat_messages(payload.message, context)
+            async for chunk in llm_gateway.call_llm_streaming(messages=messages):
+                if chunk.startswith("data: "):
+                    data_str = chunk[6:].strip()
+                    if data_str == "[DONE]":
+                        yield "data: [DONE]\n\n"
+                        break
+                    try:
+                        parsed = json.loads(data_str)
+                        content = None
+                        if "choices" in parsed and parsed["choices"]:
+                            content = parsed["choices"][0].get("delta", {}).get("content")
+                        elif "error" in parsed:
+                            yield f"data: {json.dumps({'error': parsed['error']})}\n\n"
+                            break
+                        if content:
+                            yield f"data: {json.dumps({'content': content})}\n\n"
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 # --- Auth Endpoints ---
 @app.post("/token", response_model=schemas.Token)
