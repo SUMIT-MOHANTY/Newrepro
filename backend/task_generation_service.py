@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 INTELLIGENT_TASK_GENERATION_PROMPT = """You are an EXPERT Project Architect and Task Breakdown Specialist with 100% SUCCESS RATE REQUIREMENT.
 
-CRITICAL MISSION: Generate tasks that GUARANTEE 90%+ agent execution success for ANY tech stack.
+CRITICAL MISSION: Generate ONLY the tasks needed to fulfill the BRD requirements. No forced padding, no artificial minimums.
 
 BULLETPROOF TASK RULES:
 1. Every task MUST be executable by AI agents with 90%+ success rate
@@ -23,26 +23,22 @@ BULLETPROOF TASK RULES:
 4. Every task MUST include error handling and fallback approaches
 5. Every task MUST be testable and verifiable
 
-MANDATORY HIERARCHY RULE — THIS IS NON-NEGOTIABLE:
-Every EPIC must have FEATUREs.
-Every FEATURE must have STORYs.
-Every STORY must have at least 2-3 TASKs.
-If you generate an EPIC or FEATURE without drilling down to TASK level, your output is WRONG.
+FLEXIBLE HIERARCHY RULE — CREATE ONLY WHAT'S NEEDED:
+- Use EPICs for large multi-feature projects
+- Use FEATUREs for major capabilities
+- Use STORYs for user-facing slices
+- Use TASKs for atomic implementation units
+- For simple projects, you may only need 1 EPIC → 1 FEATURE → 1 STORY → 1-3 TASKs
+- Create as many or as few tasks as the BRD actually requires
 
-REQUIRED STRUCTURE (you MUST follow this):
+EXAMPLE STRUCTURE (adapt based on project complexity):
 EPIC-01: [High-level goal]
   └── FEATURE-01: [Major capability under EPIC-01]
         └── STORY-01: [User-facing slice of FEATURE-01]
               ├── TASK-01: [Implement specific file/endpoint/component]
-              ├── TASK-02: [Implement another specific file/endpoint/component]
-              └── TASK-03: [Write tests / validation for the above]
-        └── STORY-02: [Another slice of FEATURE-01]
-              ├── TASK-04: ...
-              └── TASK-05: ...
-  └── FEATURE-02: [Another capability under EPIC-01]
-        └── STORY-03: ...
-              ├── TASK-06: ...
-              └── TASK-07: ...
+              └── TASK-02: [Implement another specific file/endpoint/component] (only if needed)
+        └── STORY-02: [Another slice] (only if needed)
+              └── TASK-03: ... (only if needed)
 
 TASK TYPE DEFINITIONS (100% SUCCESS FOCUSED):
 - EPIC     → Large goal spanning multiple features. wallet: 8-10. linked_tasks: []
@@ -123,7 +119,8 @@ EXAMPLE — DB migration belongs INSIDE the task that needs it:
 
 BULLETPROOF CHECKLIST QUALITY — MICRO-STEP PRECISION:
 
-Each checklist item must be a MICRO-STEP that an AI agent can execute with 100% clarity:
+Each checklist item must be a MICRO-STEP that an AI agent can execute with 100% clarity.
+Create ONLY the checklist items needed for the task - no forced minimums.
 
 ✅ BULLETPROOF EXAMPLES:
 - "Create directory: mkdir -p src/components/auth"
@@ -147,11 +144,21 @@ Each checklist item must be a MICRO-STEP that an AI agent can execute with 100% 
 - "Configure database" → UNCLEAR STEPS
 - "Implement API" → TOO BROAD
 
+CHECKLIST LENGTH: Create as many or as few items as needed. 1 item is fine if that's all the task requires.
+
 DEPENDENCY LINKING (linked_tasks field):
 - EPIC: linked_tasks = []
 - FEATURE: linked_tasks = ["EPIC-01"]  ← its parent EPIC
 - STORY: linked_tasks = ["FEATURE-01"]  ← its parent FEATURE
-- TASK: linked_tasks = ["STORY-01"]  ← its parent STORY
+- TASK: linked_tasks = ["STORY-01", "TASK-XX"]  ← parent STORY + previous sibling TASK if sequential dependency exists
+
+CRITICAL: If tasks within the same STORY must execute sequentially (e.g., TASK-02 needs files created by TASK-01), 
+add the previous TASK to linked_tasks. Example:
+- TASK-01: linked_tasks = ["STORY-01"]  ← first task in story
+- TASK-02: linked_tasks = ["STORY-01", "TASK-01"]  ← depends on TASK-01 completing first
+- TASK-03: linked_tasks = ["STORY-01", "TASK-02"]  ← depends on TASK-02 completing first
+
+This ensures agents execute tasks in the correct order and prevents race conditions on shared files.
 
 TASK ID NAMING CONVENTION:
 - EPICs:    EPIC-01, EPIC-02, ...
@@ -228,26 +235,48 @@ OUTPUT FORMAT — STRICT JSON ARRAY:
     "reported_by": "system",
     "linked_tasks": ["STORY-01"],
     "checklist": "{\"checklistItems\": [{\"text\": \"Create DB migration if schema change needed\", \"completed\": false}, {\"text\": \"Implement the model/endpoint/component\", \"completed\": false}, {\"text\": \"Add input validation\", \"completed\": false}, {\"text\": \"Write unit tests\", \"completed\": false}]}"
+  },
+  {
+    "task_id": "TASK-02",
+    "taskName": "TASK: Extend [file from TASK-01]",
+    "task_type": "TASK",
+    "assignedTo": [],
+    "description": "<p>Add functionality to files created in TASK-01.</p>",
+    "startdate": "YYYY-MM-DD",
+    "planned_start": "YYYY-MM-DD",
+    "deadline": "YYYY-MM-DD",
+    "priority": "high",
+    "task_wallet": 2,
+    "sprint": "new",
+    "milestone": "main",
+    "reported_by": "system",
+    "linked_tasks": ["STORY-01", "TASK-01"],
+    "checklist": "{\"checklistItems\": [{\"text\": \"Extend existing file from TASK-01\", \"completed\": false}]}"
   }
 ]
 
 ANALYSIS PROCESS — FOLLOW THIS EXACTLY:
 1. Read the full BRD, governance context, prerequisites, and tech stack.
 2. Identify the core deliverables of the project.
-3. For each deliverable, create ONE EPIC.
-4. Under each EPIC, create FEATUREs (major capabilities).
-5. Under each FEATURE, create STORYs (user-facing slices).
-6. Under each STORY, create 2-4 TASKs (each TASK = one file/endpoint/component to implement).
+3. For each deliverable, create ONE EPIC (or skip if project is very simple).
+4. Under each EPIC, create FEATUREs for major capabilities (only if needed).
+5. Under each FEATURE, create STORYs for user-facing slices (only if needed).
+6. Under each STORY, create TASKs - AS MANY OR AS FEW AS NEEDED (each TASK = one file/endpoint/component to implement).
 7. Put DB migrations, config changes, installs as CHECKLIST ITEMS inside the relevant TASK — never as standalone TASKs.
-8. Set dates: TASKs first, then STORYs after their TASKs, then FEATUREs after their STORYs, then EPICs last.
-9. Write specific, actionable checklists for every task.
+8. **CRITICAL**: For TASKs within the same STORY, determine if they have sequential dependencies:
+   - If TASK-02 modifies/extends files created by TASK-01, add TASK-01 to TASK-02's linked_tasks
+   - If TASK-03 needs TASK-02's output, add TASK-02 to TASK-03's linked_tasks
+   - If tasks are independent (different files, no shared dependencies), they can run in parallel
+9. Set dates: TASKs first, then STORYs after their TASKs, then FEATUREs after their STORYs, then EPICs last.
+10. Write specific, actionable checklists for every task - only the steps actually needed.
 
 FINAL CHECK BEFORE OUTPUT:
-- Does every STORY have at least 2 TASK children? If not, add them.
 - Does any TASK represent only "run a command" or "create a config file"? If yes, merge it into the checklist of the relevant TASK.
 - Are all linked_tasks referencing valid task_ids in the array? If not, fix them.
+- **CRITICAL**: For each TASK, check if it modifies files created by a previous TASK in the same STORY. If yes, add that previous TASK to linked_tasks.
 - Is every TASK wallet 1 or 2? If not, fix it.
 - Are TASK numbers sequential across ALL stories (TASK-01, TASK-02, ... never reset)? If not, fix them.
+- Did you create ONLY tasks for BRD requirements (no deployment/security/infrastructure unless explicitly required)? If not, remove extras.
 - Output ONLY the JSON array. No markdown, no explanation, no text before or after.
 """
 
@@ -563,25 +592,23 @@ Tasks must be designed around what is confirmed above.
 
 CRITICAL TASK GENERATION RULES:
 ==============================
-1. EVERY requirement from the BRD MUST be covered by at least one task
-2. Tasks must be SPECIFIC to the exact features described in the BRD
-3. Use the EXACT terminology and feature names from the BRD analysis
-4. Create tasks that implement the PRECISE business logic described
-5. Include ALL user roles, permissions, and workflows mentioned in the BRD
-6. Implement ALL data models, APIs, and UI components specified
-7. Cover ALL business rules and validation requirements
-8. Address ALL non-functional requirements (performance, security, etc.)
+1. ONLY create tasks for requirements EXPLICITLY stated in the BRD
+2. DO NOT add tasks for deployment, security, or infrastructure unless the BRD specifically requires them
+3. DO NOT pad task counts - if 1 task fulfills the requirement, create only 1 task
+4. Tasks must be SPECIFIC to the exact features described in the BRD
+5. Use the EXACT terminology and feature names from the BRD analysis
+6. Create tasks that implement the PRECISE business logic described
 
 TASK GENERATION INSTRUCTIONS:
 ============================
-Based on the above context, generate the COMPLETE set of tasks needed to deliver EXACTLY what is specified in the BRD.
+Based on the above context, generate ONLY the tasks needed to deliver what is specified in the BRD.
 
 Focus on:
-1. EXACT implementation of every BRD requirement
+1. EXACT implementation of every BRD requirement (nothing more, nothing less)
 2. Proper task hierarchy and dependencies
 3. Realistic timelines within the {project_deadline.strftime('%Y-%m-%d')} deadline
 4. Specific, actionable checklist items that implement the precise business logic
-5. Complete coverage - no BRD requirement should be left unimplemented
+5. Minimal viable implementation - avoid gold-plating or over-engineering
 
 Generate tasks now:
 """
@@ -868,65 +895,27 @@ def _validate_bulletproof_task(task: Dict[str, Any]) -> Dict[str, Any]:
     return validation_result
 
 def _enhance_task_for_bulletproof_execution(task: Dict[str, Any]) -> Dict[str, Any]:
-    """Enhance task to guarantee 90%+ execution success"""
+    """Enhance task to guarantee 90%+ execution success - NO FORCED ADDITIONS"""
     
     enhanced_task = dict(task)
     
-    # Enhance description with bulletproof details
+    # Only add bulletproof requirements if they're genuinely missing and critical
     description = enhanced_task.get("description", "")
     task_type = enhanced_task.get("task_type", "")
     
     if task_type == "TASK":
-        # Add bulletproof implementation details
+        # Only add critical missing elements, don't pad unnecessarily
         bulletproof_additions = []
         
-        # Add error handling requirement
-        if "error" not in description.lower():
-            bulletproof_additions.append("Include comprehensive error handling and validation.")
-        
-        # Add testing requirement
-        if "test" not in description.lower():
-            bulletproof_additions.append("Include basic testing and verification steps.")
-        
-        # Add logging requirement
-        if "log" not in description.lower():
-            bulletproof_additions.append("Add logging for debugging and monitoring.")
-        
-        # Add dependency management
-        if any(tech in description.lower() for tech in ["npm", "pip", "package"]):
-            bulletproof_additions.append("Verify all dependencies are properly installed and configured.")
+        # Only add error handling if it's a backend/API task and not mentioned
+        if "error" not in description.lower() and any(keyword in description.lower() for keyword in ["api", "endpoint", "service", "backend"]):
+            bulletproof_additions.append("Include error handling for edge cases.")
         
         if bulletproof_additions:
             enhanced_task["description"] = f"{description}\n\nBULLETPROOF REQUIREMENTS:\n" + "\n".join(f"- {req}" for req in bulletproof_additions)
     
-    # Enhance checklist with bulletproof steps
-    checklist_str = enhanced_task.get("checklist", "{}")
-    try:
-        checklist_data = json.loads(checklist_str) if isinstance(checklist_str, str) else checklist_str
-        checklist_items = checklist_data.get("checklistItems", [])
-        
-        # Add bulletproof validation steps
-        bulletproof_steps = [
-            {"text": "Verify all required dependencies are available", "completed": False},
-            {"text": "Test the implementation with sample data", "completed": False},
-            {"text": "Validate error handling works correctly", "completed": False},
-            {"text": "Confirm the feature works end-to-end", "completed": False}
-        ]
-        
-        # Insert bulletproof steps at appropriate positions
-        enhanced_items = []
-        for i, item in enumerate(checklist_items):
-            enhanced_items.append(item)
-            
-            # Add validation after implementation steps
-            if i == len(checklist_items) - 1:  # Last item
-                enhanced_items.extend(bulletproof_steps)
-        
-        checklist_data["checklistItems"] = enhanced_items
-        enhanced_task["checklist"] = json.dumps(checklist_data)
-        
-    except Exception as e:
-        logger.warning(f"Failed to enhance checklist: {e}")
+    # DO NOT add generic checklist items - keep only what the AI generated
+    # The checklist should already be complete from the AI generation
     
     return enhanced_task
 

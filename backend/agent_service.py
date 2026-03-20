@@ -11704,6 +11704,7 @@ async def _sync_rollup_status_for_completed_task(
         "milestone_completed": False,
         "sprint_completed": False,
         "project_completed": False,
+        "parent_containers_completed": [],
     }
 
     sprint_id = _extract_task_parent_id(task, "sprint")
@@ -11714,10 +11715,53 @@ async def _sync_rollup_status_for_completed_task(
         if not all_tasks:
             return result
 
+        # FIX: Auto-complete parent containers (EPIC/FEATURE/STORY) when all their children are done
+        # This ensures the hierarchy rolls up correctly
+        completed_task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+        if completed_task_id:
+            # Find all tasks that have this task as a linked_task (children pointing to parent)
+            for parent_task in all_tasks:
+                parent_type = (parent_task.get("task_type") or "").upper()
+                if parent_type not in ["EPIC", "FEATURE", "STORY"]:
+                    continue
+                
+                parent_id = str(_normalize_task_id(parent_task) or parent_task.get("external_id") or parent_task.get("id") or "")
+                if not parent_id:
+                    continue
+                
+                # Check if this parent is already completed
+                if _is_completed_task_status(parent_task.get("status")):
+                    continue
+                
+                # Find all children of this parent (tasks that link to it)
+                children = [
+                    t for t in all_tasks
+                    if str(parent_id) in [str(lt) for lt in (t.get("linked_tasks") or [])]
+                    and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
+                ]
+                
+                # If all children are complete, mark parent complete
+                if children and all(_is_completed_task_status(c.get("status")) for c in children):
+                    try:
+                        await task_service.update_task_status(
+                            task_id=int(parent_id),
+                            status="Completed",
+                            task_token=effective_token,
+                        )
+                        result["parent_containers_completed"].append(parent_id)
+                        _log_master_agent(
+                            f"Master sync: {parent_type} {parent_id} auto-completed (all children done)",
+                            project_token=resolved_project,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-complete parent {parent_type} {parent_id}: {e}")
+
         if milestone_id is not None and milestone_id not in state["completed_milestones_synced"]:
+            # FIX: Only check executable tasks (TASK/BUG) for milestone completion
             milestone_tasks = [
                 t for t in all_tasks
                 if _extract_task_parent_id(t, "milestone") == milestone_id
+                and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
             ]
             if milestone_tasks and all(_is_completed_task_status(t.get("status")) for t in milestone_tasks):
                 try:
@@ -11740,9 +11784,11 @@ async def _sync_rollup_status_for_completed_task(
                     )
 
         if sprint_id is not None and sprint_id not in state["completed_sprints_synced"]:
+            # FIX: Only check executable tasks (TASK/BUG) for sprint completion
             sprint_tasks = [
                 t for t in all_tasks
                 if _extract_task_parent_id(t, "sprint") == sprint_id
+                and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
             ]
             if sprint_tasks and all(_is_completed_task_status(t.get("status")) for t in sprint_tasks):
                 try:
@@ -11764,7 +11810,9 @@ async def _sync_rollup_status_for_completed_task(
                         project_token=resolved_project,
                     )
 
-        if all(_is_completed_task_status(t.get("status")) for t in all_tasks):
+        # FIX: Only check executable tasks (TASK/BUG) for project completion, not containers
+        executable_tasks = [t for t in all_tasks if (t.get("task_type") or "").upper() in ["TASK", "BUG"]]
+        if executable_tasks and all(_is_completed_task_status(t.get("status")) for t in executable_tasks):
             result["project_completed"] = await _update_project_status(
                 "Completed",
                 project_token=resolved_project,
@@ -11933,6 +11981,14 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 skip_reasons["completed_or_claimed"] += 1
                 continue
             
+            # ── CRITICAL: Only work on TASK and BUG types ──
+            # EPIC, FEATURE, STORY are organizational containers, not implementation units
+            task_type = (t.get("task_type") or "").upper()
+            if task_type not in ["TASK", "BUG"]:
+                skip_reasons.setdefault("non_executable_type", 0)
+                skip_reasons["non_executable_type"] += 1
+                continue
+            
             # If the task explicitly has the "BLOCKED" tag or status, skip it
             task_tags = [str(tag).lower() for tag in (t.get("tags") or [])]
             if status_lower == "blocked" or "blocked" in task_tags:
@@ -11955,9 +12011,20 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             if live_mem:
                 task_deps = t.get("dependencies", [])
                 if not task_deps:
+                    # FIX: linked_tasks points to parent containers (EPIC/FEATURE/STORY), not real dependencies
+                    # Only use linked_tasks as dependencies if they are executable task types (TASK/BUG)
                     linked = t.get("linked_tasks", [])
                     if linked:
-                        task_deps = [str(lt) for lt in linked]
+                        # Filter out parent containers - only keep TASK/BUG as real dependencies
+                        executable_deps = []
+                        for lt_id in linked:
+                            # Find the linked task in external_tasks to check its type
+                            linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                            if linked_task:
+                                linked_type = (linked_task.get("task_type") or "").upper()
+                                if linked_type in ["TASK", "BUG"]:
+                                    executable_deps.append(str(lt_id))
+                        task_deps = executable_deps
 
                 if task_deps:
                     live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
@@ -11986,15 +12053,23 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 )
                 logger.info(f"[{agent_id}] ✅ Serial opt-in succeeded for task {tid}")
                 
-                # Auto-assign all linked tasks to the same agent so they process them serially afterwards
+                # FIX: Don't auto-assign linked_tasks - they are parent containers (EPIC/FEATURE/STORY), not child tasks
+                # Only auto-assign if the linked task is an executable type (TASK/BUG)
                 for lt_id in (t.get("linked_tasks") or []):
                     try:
-                        await task_service.assign_task(
-                            task_id=int(lt_id),
-                            assignees=[{"username": agent_username}],
-                            task_token=effective_token,
-                        )
-                        logger.info(f"[{agent_id}] ✅ Auto-assigned linked task {lt_id} to myself to process serially")
+                        # Check if linked task is executable before assigning
+                        linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                        if linked_task:
+                            linked_type = (linked_task.get("task_type") or "").upper()
+                            if linked_type in ["TASK", "BUG"]:
+                                await task_service.assign_task(
+                                    task_id=int(lt_id),
+                                    assignees=[{"username": agent_username}],
+                                    task_token=effective_token,
+                                )
+                                logger.info(f"[{agent_id}] ✅ Auto-assigned linked executable task {lt_id} to myself to process serially")
+                            else:
+                                logger.debug(f"[{agent_id}] Skipped auto-assign of linked task {lt_id} (type: {linked_type}, not executable)")
                     except Exception as assign_err:
                         logger.warning(f"[{agent_id}] ⚠️ Failed to auto-assign linked task {lt_id}: {assign_err}")
                         
@@ -12018,8 +12093,13 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
 
             # Opt-in succeeded — claim locally
             claimed_task_ids.add(tid)
-            for lt in (t.get("linked_tasks") or []):
-                claimed_task_ids.add(str(lt))
+            # FIX: Only claim linked tasks if they are executable (TASK/BUG), not parent containers
+            for lt_id in (t.get("linked_tasks") or []):
+                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                if linked_task:
+                    linked_type = (linked_task.get("task_type") or "").upper()
+                    if linked_type in ["TASK", "BUG"]:
+                        claimed_task_ids.add(str(lt_id))
             if agent:
                 reserved_task = _apply_master_task_metadata(dict(t), project_token=project_token)
                 if project_token:
@@ -16041,7 +16121,7 @@ async def _master_supervisor_loop(
                 if agent["status"] == "idle" and not _is_system_agent_id(agent["id"])
             ]
             
-            # Find available tasks (not completed, not claimed)
+            # Find available tasks (not completed, not claimed, and EXECUTABLE types only)
             available_tasks = []
             claimed_task_ids = state["claimed_task_ids"]
             
@@ -16052,6 +16132,10 @@ async def _master_supervisor_loop(
                 if _task_status_is_done(task.get("status")):
                     continue
                 if tid in claimed_task_ids:
+                    continue
+                # FIX: Master supervisor should only assign executable tasks (TASK/BUG), not containers
+                task_type = (task.get("task_type") or "").upper()
+                if task_type not in ["TASK", "BUG"]:
                     continue
                 available_tasks.append(task)
             
