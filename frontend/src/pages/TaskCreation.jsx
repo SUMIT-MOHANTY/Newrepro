@@ -331,6 +331,7 @@ export default function TaskCreation({
     const [generatedTaskPlan, setGeneratedTaskPlan] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [creationStageIndex, setCreationStageIndex] = useState(0);
@@ -767,11 +768,8 @@ export default function TaskCreation({
             // First, try to resolve task token from existing credentials
             let taskToken = await resolveTaskToken();
 
-            // Project creation is handled inside the backend auto-generate endpoint.
-            // This ensures the project deadline is derived strictly from the selected process_mode.
-            if (!taskToken) {
-                throw new Error('Task token is required. Please ensure the project has been created in the task management system with valid credentials.');
-            }
+            // Task token is optional for local AI generation — only needed for NXDUNE sync.
+            // We proceed without it; the backend will skip sync if no token is available.
 
             // Now proceed with task generation
             const headers = {
@@ -832,11 +830,17 @@ export default function TaskCreation({
                 : (generateJson?.tasks_created ?? 0);
             const backendMessage =
                 typeof generateJson?.message === 'string' ? generateJson.message : '';
+            const syncedToNxdune = generateJson?.synced_to_nxdune === true;
+            const syncError = generateJson?.sync_error;
 
             if (backendMessage) {
-                setSuccess(backendMessage);
+                setSuccess(backendMessage + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
             } else {
-                setSuccess(`Generated ${createdCount} task preview item(s).`);
+                setSuccess(`Generated ${createdCount} task preview item(s).` + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
+            }
+            if (!syncedToNxdune && syncError) {
+                console.warn('NXDUNE sync failed:', syncError);
+                setError(`Tasks generated but NXDUNE sync failed: ${syncError}`);
             }
             setLiveCreatedTaskCount(createdCount);
             setCreationStageIndex(1);
@@ -846,6 +850,33 @@ export default function TaskCreation({
             setIsGenerating(false);
         }
     }, [selectedProjectKey, selectedProject, buildHeaders, customRules, hydrateGeneratedPlan, resolveTaskToken, projectInfo, token, projectDeadline]);
+
+    const handleSync = useCallback(async () => {
+        if (!selectedProjectKey || !taskToken) return;
+        setIsSyncing(true);
+        setError('');
+        setSuccess('');
+        try {
+            const url = new URL(API_ENDPOINTS.AGENT_TASKS_SYNC);
+            url.searchParams.set('project_token', selectedProjectKey);
+            const res = await fetch(url.toString(), {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, 'x-task-token': taskToken },
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.status === 'success') {
+                setSuccess(`✅ Synced ${data.synced} task(s) to NXDUNE.`);
+                await loadData();
+            } else {
+                const msg = data.detail || data.message || data.error || 'Sync failed';
+                setError(`Sync failed: ${msg}`);
+            }
+        } catch (e) {
+            setError(e?.message || 'Sync failed');
+        } finally {
+            setIsSyncing(false);
+        }
+    }, [selectedProjectKey, taskToken, token, loadData]);
 
     useEffect(() => {
         const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
@@ -1007,6 +1038,16 @@ export default function TaskCreation({
                                 <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
                                 <span>Tasks have already been created for this project. You can view them below or refresh to see the latest tasks.</span>
                             </p>
+                        )}
+                        {tasks.some(t => !t.synced_to_nxdune) && taskToken && (
+                            <button
+                                onClick={handleSync}
+                                disabled={isSyncing}
+                                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors bg-gradient-to-r from-emerald-600 to-emerald-700 text-white hover:from-emerald-700 hover:to-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                                {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                                {isSyncing ? 'Syncing...' : `Sync ${tasks.filter(t => !t.synced_to_nxdune).length} task(s) to NXDUNE`}
+                            </button>
                         )}
                         {/* {selectedProjectKey && (
                             <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2">

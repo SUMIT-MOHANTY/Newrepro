@@ -115,10 +115,14 @@ def _check_agent_status_rate_limit(agent_id: str, user_id: int, project_token: O
 
 def _invalidate_agent_cache(organization_name: str, project_token: Optional[str] = None) -> None:
     """Invalidate agent cache for organization/project when status changes"""
-    # Remove all cache entries for this organization/project
     keys_to_remove = []
     for cache_key in _agent_status_cache.keys():
-        if cache_key.startswith(f"{organization_name}:{project_token or 'none'}:"):
+        # "__all__" sentinel means invalidate all entries matching this project_token
+        if organization_name == "__all__":
+            pt = project_token or "none"
+            if f":{pt}:" in cache_key:
+                keys_to_remove.append(cache_key)
+        elif cache_key.startswith(f"{organization_name}:{project_token or 'none'}:"):
             keys_to_remove.append(cache_key)
     
     for key in keys_to_remove:
@@ -3484,7 +3488,7 @@ async def get_project_roadmap_step(
     try:
         runtime_agents = agent_service.get_all_agents(roadmap_project_token)
         any_agent_working = any(
-            (a.get("status") or "").lower() == "running" and a.get("id") not in {"agent_03", "agent_04"}
+            (a.get("status") or "").lower() == "running" and not agent_service._is_system_agent_id(a.get("id"))
             for a in runtime_agents
         )
     except Exception as e:
@@ -4909,17 +4913,33 @@ def _cleanup_legacy_default_dev_agents(db: Session) -> None:
     """
     Remove the old built-in dev agents so only system agents remain default.
     New dev agents must come from org shared/dedicated capacity.
+    
+    IMPORTANT: Only delete agents that were marked as DEFAULT (is_default=True).
+    User-added agents with agent_01/agent_02 IDs should NOT be deleted.
     """
+    # First, get the list of agent IDs that are marked as default
+    default_agent_ids = {
+        row[0] for row in db.query(models.OrganizationAgentMapping.agent_id).filter(
+            models.OrganizationAgentMapping.is_default.is_(True),
+            _legacy_default_dev_agent_filter(models.OrganizationAgentMapping.agent_id),
+        ).all()
+    }
+    
+    # Delete the default mappings
     deleted_mappings = db.query(models.OrganizationAgentMapping).filter(
         models.OrganizationAgentMapping.is_default.is_(True),
         _legacy_default_dev_agent_filter(models.OrganizationAgentMapping.agent_id),
     ).delete(synchronize_session=False)
 
-    deleted_agents = db.query(models.Agent).filter(
-        _legacy_default_dev_agent_filter(models.Agent.id),
-    ).delete(synchronize_session=False)
+    # Only delete Agent records that were marked as default (not user-added ones)
+    deleted_agents = 0
+    if default_agent_ids:
+        deleted_agents = db.query(models.Agent).filter(
+            models.Agent.id.in_(default_agent_ids),
+        ).delete(synchronize_session=False)
 
     if deleted_mappings or deleted_agents:
+        logger.info(f"[cleanup] Removed {deleted_mappings} legacy default mappings and {deleted_agents} legacy default agents")
         db.commit()
         agent_service.clear_all_runtime_state()
 
@@ -5164,18 +5184,21 @@ async def list_agents(
     project_token = _normalize_project_token(project_token)
     requested_kind = _normalized_text(kind).lower() or None
     
+    # CACHE DISABLED - Always fetch fresh data for real-time agent status
     # Check cache first
-    cache_key = _get_cache_key(organization_name, project_token, current_user.id)
-    cached_result = _get_cached_agents(cache_key)
-    if cached_result is not None:
-        # Filter by kind if requested
-        if requested_kind:
-            filtered_agents = [
-                agent for agent in cached_result["agents"] 
-                if agent.get("agent_kind") == requested_kind
-            ]
-            return {"agents": filtered_agents}
-        return cached_result
+    # cache_key = _get_cache_key(organization_name, project_token, current_user.id)
+    # cached_result = _get_cached_agents(cache_key)
+    # if cached_result is not None:
+    #     # Merge live output_log from in-memory state into cached structural data
+    #     live_agents = {a["id"]: a for a in agent_service.get_all_agents(project_token)}
+    #     merged_agents = []
+    #     for a in cached_result["agents"]:
+    #         live = live_agents.get(a.get("id"), {})
+    #         merged_agents.append({**a, "output_log": live.get("output_log", []), "status": live.get("status", a.get("status")), "progress": live.get("progress", a.get("progress")), "progress_message": live.get("progress_message", a.get("progress_message")), "current_task": live.get("current_task", a.get("current_task"))})
+    #     merged = {"agents": merged_agents}
+    #     if requested_kind:
+    #         return {"agents": [a for a in merged_agents if a.get("agent_kind") == requested_kind]}
+    #     return merged
     
     _ensure_default_agents_for_org(db, organization_name, project_token)
     _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
@@ -5195,18 +5218,73 @@ async def list_agents(
         mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
     mapping_rows = mapping_q.all()
     mapped_ids = [row[0] for row in mapping_rows]
+    
+    logger.info(f"[GET /agents] org={organization_name}, project={project_token}, mapped_ids={mapped_ids}")
 
-    query = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids))
-    if project_token:
-        query = query.filter(models.Agent.project_token == project_token)
+    # Query without project_token filter so we catch agents that were created with NULL project_token
+    if mapped_ids:
+        query = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids))
+        logger.info(f"[GET /agents] SQL Query: {query}")
+        records = query.all()
     else:
-        query = query.filter(models.Agent.project_token.is_(None))
-    records = query.all()
+        records = []
+    logger.info(f"[GET /agents] DB records: {[r.id for r in records]}")
+
+    # Upsert: create missing records or fix project_token on existing ones
+    existing_by_id = {r.id: r for r in records}
+    for mid in mapped_ids:
+        public_id = _public_agent_id(mid, project_token)
+        if mid not in existing_by_id:
+            logger.info(f"[GET /agents] Creating missing Agent record for {mid}")
+            # Try to insert, but ignore if it already exists (concurrent insert race)
+            try:
+                new_record = models.Agent(
+                    id=mid,
+                    name=public_id,
+                    type="validator",
+                    project_token=project_token,
+                )
+                db.add(new_record)
+                db.flush()  # Flush immediately to catch IntegrityError
+                logger.info(f"[GET /agents] Successfully flushed new record for {mid}")
+                records.append(new_record)
+            except Exception as e:
+                # Likely IntegrityError due to concurrent insert - that's fine, record exists
+                logger.info(f"[GET /agents] Insert failed for {mid}, re-fetching: {e}")
+                db.rollback()
+                # Re-fetch the existing record
+                existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                if existing:
+                    logger.info(f"[GET /agents] Found existing record for {mid}")
+                    records.append(existing)
+                else:
+                    logger.error(f"[GET /agents] Could not find existing record for {mid} after insert failure!")
+        elif existing_by_id[mid].project_token != project_token:
+            # Fix stale project_token
+            logger.info(f"[GET /agents] Updating project_token for {mid}")
+            existing_by_id[mid].project_token = project_token
+    
+    # Final commit for any project_token updates
+    try:
+        db.commit()
+        logger.info(f"[GET /agents] Committed {len(records)} agent records")
+    except Exception as e:
+        logger.error(f"[GET /agents] Commit failed: {e}")
+        db.rollback()
+    
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
-    await agent_service._restore_persisted_agent_assignments(
-        project_token=project_token,
-        task_token=x_task_token,
-    )
+    logger.info(f"[GET /agents] In-memory after init: {[a['id'] for a in agent_service.get_all_agents(project_token)]}")
+    
+    # Only restore persisted assignments if we have a task token (otherwise it's too slow)
+    if x_task_token:
+        logger.info(f"[GET /agents] About to restore persisted assignments, task_token={x_task_token}")
+        await agent_service._restore_persisted_agent_assignments(
+            project_token=project_token,
+            task_token=x_task_token,
+        )
+        logger.info(f"[GET /agents] Restored persisted assignments")
+    else:
+        logger.info(f"[GET /agents] Skipping persisted assignment restore (no task token)")
 
     # Build lookup: public_agent_id -> (kind, sub_type)
     visible_runtime_ids: Dict[str, tuple] = {}
@@ -5216,10 +5294,14 @@ async def list_agents(
         row_kind = _normalize_agent_kind(row[3], row_project_token, is_default=row_is_default)
         row_sub_type = row[4] or 'dev'
         if not include_defaults and row_is_default:
+            logger.info(f"[GET /agents] Skipping default agent: {row[0]}")
             continue
         if requested_kind and row_kind != requested_kind:
+            logger.info(f"[GET /agents] Skipping agent {row[0]} with kind={row_kind} (requested={requested_kind})")
             continue
         visible_runtime_ids[_public_agent_id(row[0], project_token)] = (row_kind, row_sub_type)
+    
+    logger.info(f"[GET /agents] visible_runtime_ids after filtering: {list(visible_runtime_ids.keys())}")
 
     global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
     
@@ -5244,8 +5326,15 @@ async def list_agents(
     
     result = {"agents": agents}
     
-    # Cache the result
-    _cache_agents(cache_key, result)
+    logger.info(f"[GET /agents] Returning {len(agents)} agents for kind={requested_kind}, include_defaults={include_defaults}")
+    
+    # CACHE DISABLED - Don't cache for real-time updates
+    # Cache only the structural data (not output_log which changes constantly)
+    # agents_for_cache = [
+    #     {k: v for k, v in a.items() if k != "output_log"}
+    #     for a in agents
+    # ]
+    # _cache_agents(cache_key, {"agents": agents_for_cache})
     
     # Filter by kind if requested
     if requested_kind:
@@ -5733,22 +5822,64 @@ async def run_all_agents(
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
     
-    _ensure_default_agents(db, project_token)
-    query = db.query(models.Agent)
+    _ensure_default_agents_for_org(db, organization_name, project_token)
+    _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
+
+    # Load ALL mapped agents (including user-added ones that may be missing DB records)
+    mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+    )
     if project_token:
-        query = query.filter(models.Agent.project_token == project_token)
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
     else:
-        query = query.filter(models.Agent.project_token.is_(None))
-    records = query.all()
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+    mapped_ids = [row[0] for row in mapping_q.all()]
+
+    records = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids)).all() if mapped_ids else []
+
+    # Upsert: create missing records or fix project_token on existing ones
+    existing_by_id = {r.id: r for r in records}
+    for mid in mapped_ids:
+        public_id = _public_agent_id(mid, project_token)
+        if mid not in existing_by_id:
+            try:
+                new_record = models.Agent(
+                    id=mid,
+                    name=public_id,
+                    type="validator",
+                    project_token=project_token,
+                )
+                db.add(new_record)
+                db.flush()
+                records.append(new_record)
+            except Exception:
+                db.rollback()
+                existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                if existing:
+                    records.append(existing)
+        elif existing_by_id[mid].project_token != project_token:
+            existing_by_id[mid].project_token = project_token
+    
+    try:
+        db.commit()
+    except:
+        db.rollback()
+
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
     # Get available agents (excluding system agents)
+    all_agents_in_memory = agent_service.get_all_agents(project_token)
     available_agents = [
-        a["id"] for a in agent_service.get_all_agents(project_token)
-        if a["status"] == "idle" and a["id"] not in ("agent_03", "agent_04")
+        a["id"] for a in all_agents_in_memory
+        if a["status"] == "idle" and not agent_service._is_system_agent_id(a["id"])
     ]
+    
     if not available_agents:
-        raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
+        raise HTTPException(status_code=400, detail="No idle worker agents available. Please add agents via the UI.")
+
+    # Store task token in project state so _fetch_external_tasks can use it
+    if x_task_token:
+        agent_service.set_project_task_token(project_token, x_task_token)
 
     # Get project tasks from external API
     try:
@@ -5779,7 +5910,7 @@ async def run_all_agents(
         logger.error(f"Failed to fetch tasks: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to fetch tasks from external API: {str(e)}")
 
-    # Set up git credentials (same as before)
+    # Set up git credentials
     agents_config = dict(request.agents_config) if request and request.agents_config else {}
     provided_repo = None
     provided_token = None
@@ -5801,20 +5932,24 @@ async def run_all_agents(
             project_token=project_token,
         )
 
-    # 🎯 START COORDINATED PROJECT WITH MASTER TASK MANAGER
-    coordination_result = await master_coordination_service.master_coordination_service.start_coordinated_project(
-        project_token=project_token,
-        tasks=project_tasks,
-        agents=available_agents
-    )
+    # Launch all idle agents — each picks tasks from the queue independently
+    task_token = x_task_token or agent_service.get_project_task_token(project_token)
+    for agent_id in available_agents:
+        asyncio.create_task(
+            agent_service.run_agent(
+                agent_id=agent_id,
+                project_token=project_token,
+                task_token=task_token,
+                continuous=True,
+            )
+        )
+        logger.info(f"🚀 Launched {agent_id} for project {project_token}")
 
     return {
         "started": True,
-        "coordination_mode": "master_controlled",
         "agents": available_agents,
         "total_tasks": len(project_tasks),
-        "message": "🎯 Master Task Manager is now controlling all agents - no more conflicts!",
-        "coordination_result": coordination_result
+        "message": f"Launched {len(available_agents)} agent(s) on {len(project_tasks)} pending task(s).",
     }
 
 
@@ -5857,47 +5992,106 @@ async def add_agent(
 
     # Enforce org quota by requested agent kind and sub_type for the project.
     quota = _get_or_init_org_agent_quota(db, organization_name)
-    project_usage = _count_org_agent_usage_for_project(db, organization_name, project_token)
+    org_usage = _count_org_agent_usage(db, organization_name)
     agent_sub_type = (_normalized_text(getattr(request, 'sub_type', None) or '').lower()) or 'dev'
-    
+
+    # Auto-expand quota to accommodate new agent (quota is a high-water mark, not a hard cap)
     if agent_kind == "dedicated":
         if agent_sub_type == "dev":
-            if project_usage["dedicated_dev"] >= int(quota.dedicated_dev_quota or 0):
-                raise HTTPException(status_code=400, detail="Dedicated Dev agent capacity exceeded for this project.")
+            needed = org_usage.get("dedicated_dev", 0) + 1
+            if needed > int(quota.dedicated_dev_quota or 0):
+                quota.dedicated_dev_quota = needed
+                quota.dedicated_quota = int(quota.dedicated_quota or 0) + 1
+                db.commit()
         elif agent_sub_type == "test":
-            if project_usage["dedicated_test"] >= int(quota.dedicated_test_quota or 0):
-                raise HTTPException(status_code=400, detail="Dedicated Test agent capacity exceeded for this project.")
+            needed = org_usage.get("dedicated_test", 0) + 1
+            if needed > int(quota.dedicated_test_quota or 0):
+                quota.dedicated_test_quota = needed
+                quota.dedicated_quota = int(quota.dedicated_quota or 0) + 1
+                db.commit()
     else:
         if agent_sub_type == "dev":
-            if project_usage["shared_dev"] >= int(quota.shared_dev_quota or 0):
-                raise HTTPException(status_code=400, detail="Shared Dev agent capacity exceeded for this project.")
+            needed = org_usage.get("shared_dev", 0) + 1
+            if needed > int(quota.shared_dev_quota or 0):
+                quota.shared_dev_quota = needed
+                quota.shared_quota = int(quota.shared_quota or 0) + 1
+                db.commit()
         elif agent_sub_type == "test":
-            if project_usage["shared_test"] >= int(quota.shared_test_quota or 0):
-                raise HTTPException(status_code=400, detail="Shared Test agent capacity exceeded for this project.")
+            needed = org_usage.get("shared_test", 0) + 1
+            if needed > int(quota.shared_test_quota or 0):
+                quota.shared_test_quota = needed
+                quota.shared_quota = int(quota.shared_quota or 0) + 1
+                db.commit()
 
-    query = db.query(models.Agent)
-    if project_token:
-        query = query.filter(models.Agent.project_token == project_token)
-    else:
-        query = query.filter(models.Agent.project_token.is_(None))
-    records = query.all()
-    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+    # CRITICAL: Serialize agent creation per project to prevent race conditions
+    # Multiple parallel calls would all see the same DB state and create duplicate agent_01
+    logger.info(f"[add_agent] Waiting for lock (project={project_token})")
+    async with agent_service.get_project_agent_creation_lock(project_token):
+        logger.info(f"[add_agent] Lock acquired (project={project_token})")
+        
+        # Load ALL mapped agents (including user-added ones that may be missing DB records)
+        mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+        )
+        if project_token:
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
+        else:
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+        mapped_ids = [row[0] for row in mapping_q.all()]
+        logger.info(f"[add_agent] Mapped agent IDs: {mapped_ids}")
 
-    agent = agent_service.add_agent(
-        name=name,
-        kind=agent_kind,
-        project_token=project_token,
-    )
-    record = _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
-    _ensure_org_agent_mapping(
-        db,
-        organization_name,
-        record.id,
-        project_token,
-        agent_kind=agent_kind,
-        agent_sub_type=agent_sub_type,
-        is_default=False,
-    )
+        records = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids)).all() if mapped_ids else []
+        logger.info(f"[add_agent] Before init: DB has {len(records)} records: {[r.id for r in records]}, memory has {len(agent_service.get_all_agents(project_token))} agents")
+
+        # Upsert: create missing records or fix project_token on existing ones
+        existing_by_id = {r.id: r for r in records}
+        for mid in mapped_ids:
+            public_id = _public_agent_id(mid, project_token)
+            if mid not in existing_by_id:
+                try:
+                    new_record = models.Agent(
+                        id=mid,
+                        name=public_id,
+                        type="validator",
+                        project_token=project_token,
+                    )
+                    db.add(new_record)
+                    db.flush()
+                    records.append(new_record)
+                except Exception:
+                    db.rollback()
+                    existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                    if existing:
+                        records.append(existing)
+            elif existing_by_id[mid].project_token != project_token:
+                existing_by_id[mid].project_token = project_token
+        
+        try:
+            db.commit()
+        except:
+            db.rollback()
+        
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+        logger.info(f"[add_agent] After init: memory has {len(agent_service.get_all_agents(project_token))} agents: {[a['id'] for a in agent_service.get_all_agents(project_token)]}")
+
+        agent = agent_service.add_agent(
+            name=name,
+            kind=agent_kind,
+            project_token=project_token,
+        )
+        logger.info(f"[add_agent] Created agent: {agent['id']}")
+        record = _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
+        logger.info(f"[add_agent] Stored DB record with id: {record.id}")
+        _ensure_org_agent_mapping(
+            db,
+            organization_name,
+            record.id,
+            project_token,
+            agent_kind=agent_kind,
+            agent_sub_type=agent_sub_type,
+            is_default=False,
+        )
+        logger.info(f"[add_agent] Committed {agent['id']} to DB, releasing lock")
     if git_repo_url or git_token:
         _upsert_project_global_credentials(
             db,
@@ -6049,17 +6243,64 @@ async def remove_agent(
     """Remove an idle agent."""
     try:
         project_token = _normalize_project_token(project_token)
-        _ensure_default_agents(db, project_token)
-        query = db.query(models.Agent)
+        organization_name = _require_organization(current_user)
+        
+        _ensure_default_agents_for_org(db, organization_name, project_token)
+        _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
+
+        # Load ALL mapped agents (including user-added ones that may be missing DB records)
+        mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+        )
         if project_token:
-            query = query.filter(models.Agent.project_token == project_token)
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
         else:
-            query = query.filter(models.Agent.project_token.is_(None))
-        records = query.all()
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+        mapped_ids = [row[0] for row in mapping_q.all()]
+
+        records = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids)).all() if mapped_ids else []
+
+        # Upsert: create missing records or fix project_token on existing ones
+        existing_by_id = {r.id: r for r in records}
+        for mid in mapped_ids:
+            public_id = _public_agent_id(mid, project_token)
+            if mid not in existing_by_id:
+                try:
+                    new_record = models.Agent(
+                        id=mid,
+                        name=public_id,
+                        type="validator",
+                        project_token=project_token,
+                    )
+                    db.add(new_record)
+                    db.flush()
+                    records.append(new_record)
+                except Exception:
+                    db.rollback()
+                    existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                    if existing:
+                        records.append(existing)
+            elif existing_by_id[mid].project_token != project_token:
+                existing_by_id[mid].project_token = project_token
+        
+        try:
+            db.commit()
+        except:
+            db.rollback()
+
         agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
         agent_service.remove_agent(agent_id, project_token)
         _delete_agent_record(db, agent_id, project_token)
+        
+        # Also remove the mapping
+        stored_id = _stored_agent_id(agent_id, project_token)
+        db.query(models.OrganizationAgentMapping).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+            models.OrganizationAgentMapping.agent_id == stored_id,
+        ).delete()
+        db.commit()
+        
         return {"success": True, "removed": agent_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -7227,6 +7468,7 @@ async def generate_tasks_locally(
         
         # Always sync to NXDUNE via batch file upload if task token is provided
         synced = False
+        sync_error_detail = None
         if x_task_token:
             try:
                 import io
@@ -7241,6 +7483,10 @@ async def generate_tasks_locally(
                 import hashlib
                 short_hash = hashlib.md5(request.project_token.encode()).hexdigest()[:6]
 
+                # Valid NXDUNE priority values
+                VALID_PRIORITIES = {"low", "medium", "high"}
+                PRIORITY_MAP = {"critical": "high", "urgent": "high", "normal": "medium", "minor": "low"}
+
                 prefixed_tasks = []
                 for t in tasks:
                     pt = dict(t)
@@ -7249,6 +7495,9 @@ async def generate_tasks_locally(
                         pt["linked_tasks"] = [
                             f"{short_hash}_{lid}" for lid in pt["linked_tasks"]
                         ]
+                    # Normalize priority to valid NXDUNE values
+                    raw_priority = str(pt.get("priority") or "medium").lower()
+                    pt["priority"] = PRIORITY_MAP.get(raw_priority, raw_priority) if raw_priority not in VALID_PRIORITIES else raw_priority
                     prefixed_tasks.append(pt)
 
                 # Serialize raw array directly — no wrapper key
@@ -7270,11 +7519,15 @@ async def generate_tasks_locally(
                         task.synced_to_nxdune = True
                     db.commit()
                     synced = True
+                    # Use prefixed tasks as the canonical response (IDs match NXDUNE)
+                    tasks = prefixed_tasks
                     logger.info(f"Synced {len(tasks)} tasks to NXDUNE batch API")
                 else:
-                    logger.warning(f"NXDUNE batch sync returned {response.status_code}: {response.text[:300]}")
+                    sync_error_detail = f"NXDUNE returned {response.status_code}: {response.text[:300]}"
+                    logger.warning(f"NXDUNE batch sync failed — {sync_error_detail}")
             except Exception as sync_error:
-                logger.warning(f"Failed to sync tasks to NXDUNE: {sync_error}")
+                sync_error_detail = str(sync_error)
+                logger.warning(f"Failed to sync tasks to NXDUNE: {sync_error_detail}")
                 # Tasks are stored locally — continue regardless
         
         return {
@@ -7282,7 +7535,8 @@ async def generate_tasks_locally(
             "message": f"Generated {len(tasks)} tasks successfully",
             "tasks": tasks,
             "tasks_created": len(tasks),
-            "synced_to_nxdune": synced
+            "synced_to_nxdune": synced,
+            "sync_error": sync_error_detail if not synced and x_task_token else None,
         }
     
     except Exception as e:
@@ -7291,6 +7545,91 @@ async def generate_tasks_locally(
             status_code=500,
             detail=f"Task generation failed: {str(e)}"
         )
+
+
+@app.post("/api/agent/tasks/sync/")
+async def sync_tasks_to_nxdune(
+    project_token: str = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Sync locally stored (unsynced) tasks to NXDUNE."""
+    if not x_task_token:
+        raise HTTPException(status_code=400, detail="X-Task-Token header is required.")
+    if not project_token:
+        raise HTTPException(status_code=400, detail="project_token query param is required.")
+
+    unsynced = db.query(models.Task).filter(
+        models.Task.project_token == project_token,
+        models.Task.owner_id == current_user.id,
+        models.Task.synced_to_nxdune == False,
+    ).all()
+
+    if not unsynced:
+        return {"status": "success", "message": "All tasks already synced.", "synced": 0, "failed": 0}
+
+    try:
+        import io, json as json_mod, hashlib, httpx
+
+        nxdune_base = settings.task_api_base_url.rstrip("/")
+        batch_url = f"{nxdune_base}/api/agent/tasks/batch/"
+        short_hash = hashlib.md5(project_token.encode()).hexdigest()[:6]
+
+        VALID_PRIORITIES = {"low", "medium", "high"}
+        PRIORITY_MAP = {"critical": "high", "urgent": "high", "normal": "medium", "minor": "low"}
+
+        def _strip_prefix(task_id: str) -> str:
+            prefix = f"{project_token}_"
+            return task_id[len(prefix):] if task_id.startswith(prefix) else task_id
+
+        prefixed_tasks = []
+        for t in unsynced:
+            clean_id = _strip_prefix(t.task_id)
+            raw_priority = str(t.priority or "medium").lower()
+            priority = PRIORITY_MAP.get(raw_priority, raw_priority) if raw_priority not in VALID_PRIORITIES else raw_priority
+            linked = [f"{short_hash}_{lid}" for lid in (t.linked_tasks or [])]
+            prefixed_tasks.append({
+                "task_id": f"{short_hash}_{clean_id}",
+                "taskName": t.task_name,
+                "task_type": t.task_type,
+                "description": t.description or "",
+                "priority": priority,
+                "task_wallet": t.task_wallet,
+                "startdate": t.startdate,
+                "planned_start": t.planned_start,
+                "deadline": t.deadline,
+                "assignedTo": t.assigned_to or [],
+                "reported_by": t.reported_by or "system",
+                "sprint": t.sprint or "new",
+                "milestone": t.milestone or "main",
+                "linked_tasks": linked,
+                "checklist": t.checklist or "",
+            })
+
+        tasks_json_bytes = json_mod.dumps(prefixed_tasks, ensure_ascii=False, indent=2).encode("utf-8")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                batch_url,
+                headers={"Authorization": f"Bearer {x_task_token}"},
+                files={"file": ("tasks.json", io.BytesIO(tasks_json_bytes), "application/json")},
+            )
+
+        if response.status_code in (200, 201):
+            for t in unsynced:
+                t.synced_to_nxdune = True
+            db.commit()
+            return {"status": "success", "message": f"Synced {len(unsynced)} tasks to NXDUNE.", "synced": len(unsynced), "failed": 0}
+        else:
+            error_detail = f"NXDUNE returned {response.status_code}: {response.text[:400]}"
+            logger.warning(f"Sync failed — {error_detail}")
+            raise HTTPException(status_code=502, detail=error_detail)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sync to NXDUNE failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/agent/tasks/local/")

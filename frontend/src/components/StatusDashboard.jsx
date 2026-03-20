@@ -315,6 +315,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             return fetchedAgents;
         },
         enabled: !!token,
+        // Always poll every 5s when any agent is running, 15s otherwise
+        refetchInterval: (query) => {
+            // query.state.data is the array returned by queryFn
+            const agentList = query?.state?.data ?? [];
+            const hasRunning = Array.isArray(agentList) && agentList.some(a => a?.status === 'running');
+            return hasRunning ? 5000 : 15000;
+        },
+        refetchIntervalInBackground: true,
     });
     const hasGlobalGitConfigured = agents.some(agent => Boolean(agent.git_repo_url && agent.has_git_token));
     const devAgents = useMemo(() => {
@@ -325,7 +333,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         };
 
         return [...agents]
-            .filter(agent => agent.id !== 'agent_03' && agent.id !== 'agent_04')
+            .filter(agent => agent.agent_kind !== 'system')
             .sort((a, b) => {
                 const aNumber = parseAgentNumber(a.id);
                 const bNumber = parseAgentNumber(b.id);
@@ -335,11 +343,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     }, [agents]);
 
     const orderedAgents = useMemo(() => {
-        const masterAgent = agents.find(agent => agent.id === 'agent_04');
-        const gitManagerAgent = agents.find(agent => agent.id === 'agent_03');
+        const systemAgents = agents.filter(agent => agent.agent_kind === 'system');
         return [
-            ...(masterAgent ? [masterAgent] : []),
-            ...(gitManagerAgent ? [gitManagerAgent] : []),
+            ...systemAgents,
             ...devAgents,
         ];
     }, [agents, devAgents]);
@@ -574,36 +580,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         load();
     }, [fetchTasks, selectedProjectKey, hasValidTaskToken]);
 
-    // Poll while agents are running - adaptive polling based on server suggestions
-    useEffect(() => {
-        const hasRunning = agents.some(a => a.status === 'running');
-        if (!hasRunning) return;
-        
-        // Use adaptive polling: check for server-suggested interval or use defaults
-        // Server can send X-Polling-Interval header to suggest optimal polling frequency
-        const getPollingInterval = () => {
-            // Check if we have a cached polling interval from server headers
-            const cachedInterval = localStorage.getItem('agent-polling-interval');
-            if (cachedInterval) {
-                return parseInt(cachedInterval, 10);
-            }
-            // Default: 10s when running, 30s when idle
-            return hasRunning ? 10000 : 30000;
-        };
-        
-        const pollInterval = getPollingInterval();
-        
-        const interval = setInterval(() => {
-            fetchAgents(true);
-            fetchTasks(false, 1, true); // silent reload
-            refreshRoadmap();
-        }, pollInterval);
-        return () => clearInterval(interval);
-    }, [agents, fetchAgents, fetchTasks, refreshRoadmap]);
+    // useQuery refetchInterval above handles polling — no separate interval needed
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
-        if (agent.id === 'agent_03' || agent.id === 'agent_04') return;
+        if (agent.agent_kind === 'system') return;
         // For private repos, require both URL and PAT. For public repos, only URL is needed.
         const needsRepoUrl = !agent.git_repo_url;
         const needsPatForPrivateRepo = agent.git_repo_url && !agent.is_public_repo && !agent.has_git_token;
@@ -715,7 +696,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [runningAll, setRunningAll] = useState(false);
 
     const handleRunAll = useCallback(async () => {
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system');
         if (idleAgents.length === 0) return;
 
         // Check for missing config: require repo URL for all, and PAT only for private repos
@@ -732,7 +713,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.agent_kind !== 'system')
             ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
             : a));
 
@@ -762,7 +743,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         if (!hasValidTaskToken) return;
         if (agents.some(a => a.status === 'running')) return;
 
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04');
+        const idleAgents = agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system');
         if (idleAgents.length === 0) return;
 
         const autoKey = `${selectedProjectKey}:${processMode}`;
@@ -775,7 +756,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const globalConfig = agentsGitConfig.__global__ || {};
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgents(prev => prev.map(a => (a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04')
+        setAgents(prev => prev.map(a => (a.status === 'idle' && a.agent_kind !== 'system')
             ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
             : a));
         try {
@@ -1098,7 +1079,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             stats: ['risks', 'critical', 'avg_time'],
             statLabels: { risks: 'Risks', critical: 'Critical', avg_time: 'Duration' },
         },
-        agent_03: {
+        G_agent_01: {
             icon: <GitBranch className="w-5 h-5 text-white" />,
             gradient: 'from-app-primary to-app-primary',
             shadow: 'shadow-app-primary-ring',
@@ -1107,7 +1088,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             stats: ['avg_time'],
             statLabels: { avg_time: 'Duration' },
         },
-        agent_04: {
+        M_agent_01: {
             icon: <Bot className="w-5 h-5 text-white" />,
             logo: masterLogo,
             gradient: 'from-app-bg-page to-app-bg-muted',
@@ -1123,10 +1104,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Render Agent Card ────────────────────────────────────────────
     const renderAgentCard = (agent) => {
-        const isGitManager = agent.id === 'agent_03';
-        const isMasterAgent = agent.id === 'agent_04';
+        const isSystemAgent = agent.agent_kind === 'system';
+        const isGitManager = agent.id === 'G_agent_01';
+        const isMasterAgent = agent.id === 'M_agent_01';
         const isTest = agent.sub_type === 'test';
-        const isSystemAgent = isGitManager || isMasterAgent;
         const isShared = agent.id?.startsWith('shared_');
         const isDedicated = agent.id?.startsWith('dedicated_');
         const agentType = isShared ? 'Shared' : isDedicated ? 'Dedicated' : null;
@@ -2303,8 +2284,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 </span>
                                                 <button
                                                     onClick={() => handleRunAll()}
-                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04').length === 0}
-                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.id !== 'agent_03' && a.id !== 'agent_04' && a.id !== 'agent_05').length === 0
+                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system').length === 0}
+                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system').length === 0
                                                         ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
                                                         : 'bg-gradient-to-r from-orange-500 to-app-status-warning text-white shadow-md hover:shadow-lg hover:scale-105'
                                                         }`}
@@ -2539,12 +2520,24 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <div className="flex items-center gap-3">
                                         <Terminal className="w-5 h-5 text-green-400" />
                                         <h3 className="font-bold text-white text-sm">{getAgentDisplayName(agent)} — Execution Log</h3>
+                                        {agent.status === 'running' && (
+                                            <span className="flex items-center gap-1 text-[10px] text-green-400 font-bold">
+                                                <span className="relative flex h-2 w-2">
+                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                                                </span>
+                                                LIVE
+                                            </span>
+                                        )}
                                     </div>
                                     <button onClick={() => setShowLogModal(null)} className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition-colors">
                                         <X className="w-5 h-5" />
                                     </button>
                                 </div>
-                                <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5">
+                                <div
+                                    className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5"
+                                    ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}
+                                >
                                     {logs.length === 0 ? (
                                         <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
                                     ) : logs.map((log, idx) => {

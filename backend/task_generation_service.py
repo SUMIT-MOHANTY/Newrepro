@@ -44,8 +44,11 @@ TASK TYPE DEFINITIONS (100% SUCCESS FOCUSED):
 - EPIC     → Large goal spanning multiple features. wallet: 8-10. linked_tasks: []
 - FEATURE  → Major capability with COMPLETE implementation plan. wallet: 5-7. linked_tasks: [parent EPIC id]
 - STORY    → User-facing slice with DETAILED acceptance criteria. wallet: 3-4. linked_tasks: [parent FEATURE id]
-- TASK     → Single atomic unit with BULLETPROOF implementation steps (1 dev, 1-4 hrs). wallet: 1-2. linked_tasks: [parent STORY id]
+- TASK     → Single atomic unit with BULLETPROOF implementation steps (1 dev, 1-4 hrs). wallet: 1-3. linked_tasks: [parent STORY id]
 - BUG      → Defect fix with EXACT reproduction steps. wallet: 1-3. linked_tasks: [related STORY or TASK id]
+
+CRITICAL: TASK-00 is ALWAYS the first task generated with type TASK. It creates the complete project scaffold.
+All other TASKs must include "TASK-00" in their linked_tasks to ensure they run after the scaffold is ready.
 
 ═══════════════════════════════════════════════════════════════
 BULLETPROOF TASK REQUIREMENTS — 100% SUCCESS GUARANTEE
@@ -164,10 +167,30 @@ TASK ID NAMING CONVENTION:
 - EPICs:    EPIC-01, EPIC-02, ...
 - FEATUREs: FEATURE-01, FEATURE-02, ...
 - STORYs:   STORY-01, STORY-02, ...
-- TASKs:    TASK-01, TASK-02, TASK-03, ... (sequential across ALL stories, never reset)
+- TASKs:    TASK-00 (bootstrap), TASK-01, TASK-02, ... (sequential across ALL stories, never reset)
 
 OUTPUT FORMAT — STRICT JSON ARRAY:
+
+CRITICAL: The FIRST task in the array MUST ALWAYS be TASK-00 with type TASK (the project bootstrap task).
+
 [
+  {
+    "task_id": "TASK-00",
+    "taskName": "TASK: Project Bootstrap",
+    "task_type": "TASK",
+    "assignedTo": [],
+    "description": "<p>Create the complete project scaffold with all directories, config files, and empty file skeletons based on the tech stack.</p><p>Directory structure to create:</p><pre>[FULL DIRECTORY TREE HERE - copy from FILE STRUCTURE section]</pre><p>Files to create: package.json, requirements.txt, app.py skeleton, index.html skeleton, etc.</p>",
+    "startdate": "YYYY-MM-DD",
+    "planned_start": "YYYY-MM-DD",
+    "deadline": "YYYY-MM-DD",
+    "priority": "critical",
+    "task_wallet": 3,
+    "sprint": "new",
+    "milestone": "main",
+    "reported_by": "system",
+    "linked_tasks": [],
+    "checklist": "{\"checklistItems\": [{\"text\": \"Create directory structure as specified\", \"completed\": false}, {\"text\": \"Create all config files (package.json, requirements.txt, etc.)\", \"completed\": false}, {\"text\": \"Create empty skeleton files for main modules\", \"completed\": false}, {\"text\": \"Initialize git repo if needed\", \"completed\": false}, {\"text\": \"Verify all directories and files are created\", \"completed\": false}]}"
+  },
   {
     "task_id": "EPIC-01",
     "taskName": "EPIC: [Descriptive name]",
@@ -221,10 +244,10 @@ OUTPUT FORMAT — STRICT JSON ARRAY:
   },
   {
     "task_id": "TASK-01",
-    "taskName": "TASK: Implement [specific file/endpoint/component]",
+    "taskName": "TASK: Implement [specific functionality]",
     "task_type": "TASK",
     "assignedTo": [],
-    "description": "<p>Implement [specific technical description]. Files: [list files to create/modify].</p>",
+    "description": "<p>Implement [specific technical description].</p><p>Files to modify:</p><ul><li>backend/app.py - Add database connection</li><li>backend/models.py - Create User model</li></ul><p>Specific changes: In backend/app.py, add SQLAlchemy setup. In backend/models.py, create User class with email and password fields.</p>",
     "startdate": "YYYY-MM-DD",
     "planned_start": "YYYY-MM-DD",
     "deadline": "YYYY-MM-DD",
@@ -233,15 +256,15 @@ OUTPUT FORMAT — STRICT JSON ARRAY:
     "sprint": "new",
     "milestone": "main",
     "reported_by": "system",
-    "linked_tasks": ["STORY-01"],
-    "checklist": "{\"checklistItems\": [{\"text\": \"Create DB migration if schema change needed\", \"completed\": false}, {\"text\": \"Implement the model/endpoint/component\", \"completed\": false}, {\"text\": \"Add input validation\", \"completed\": false}, {\"text\": \"Write unit tests\", \"completed\": false}]}"
+    "linked_tasks": ["STORY-01", "TASK-00"],
+    "checklist": "{\"checklistItems\": [{\"text\": \"Edit backend/app.py: add SQLAlchemy config\", \"completed\": false}, {\"text\": \"Edit backend/models.py: create User model\", \"completed\": false}, {\"text\": \"Add input validation\", \"completed\": false}]}"
   },
   {
     "task_id": "TASK-02",
     "taskName": "TASK: Extend [file from TASK-01]",
     "task_type": "TASK",
     "assignedTo": [],
-    "description": "<p>Add functionality to files created in TASK-01.</p>",
+    "description": "<p>Add REST endpoints to backend/app.py.</p><p>Files to modify:</p><ul><li>backend/app.py - Add CRUD endpoints</li></ul><p>Specific changes: In backend/app.py, add POST /api/users, GET /api/users, PUT /api/users/:id, DELETE /api/users/:id endpoints.</p>",
     "startdate": "YYYY-MM-DD",
     "planned_start": "YYYY-MM-DD",
     "deadline": "YYYY-MM-DD",
@@ -250,32 +273,39 @@ OUTPUT FORMAT — STRICT JSON ARRAY:
     "sprint": "new",
     "milestone": "main",
     "reported_by": "system",
-    "linked_tasks": ["STORY-01", "TASK-01"],
-    "checklist": "{\"checklistItems\": [{\"text\": \"Extend existing file from TASK-01\", \"completed\": false}]}"
+    "linked_tasks": ["STORY-01", "TASK-00", "TASK-01"],
+    "checklist": "{\"checklistItems\": [{\"text\": \"Edit backend/app.py: add POST /api/users endpoint\", \"completed\": false}, {\"text\": \"Edit backend/app.py: add GET /api/users endpoint\", \"completed\": false}, {\"text\": \"Edit backend/app.py: add PUT /api/users/:id endpoint\", \"completed\": false}, {\"text\": \"Edit backend/app.py: add DELETE /api/users/:id endpoint\", \"completed\": false}]}"
   }
 ]
 
 ANALYSIS PROCESS — FOLLOW THIS EXACTLY:
 1. Read the full BRD, governance context, prerequisites, and tech stack.
 2. Identify the core deliverables of the project.
-3. For each deliverable, create ONE EPIC (or skip if project is very simple).
-4. Under each EPIC, create FEATUREs for major capabilities (only if needed).
-5. Under each FEATURE, create STORYs for user-facing slices (only if needed).
-6. Under each STORY, create TASKs - AS MANY OR AS FEW AS NEEDED (each TASK = one file/endpoint/component to implement).
-7. Put DB migrations, config changes, installs as CHECKLIST ITEMS inside the relevant TASK — never as standalone TASKs.
-8. **CRITICAL**: For TASKs within the same STORY, determine if they have sequential dependencies:
+3. **FIRST**: Create TASK-00 with type TASK. This is the bootstrap task that creates the complete project scaffold (all directories, config files, empty skeletons). Include the full directory tree from FILE STRUCTURE section in its description.
+4. For each deliverable, create ONE EPIC (or skip if project is very simple).
+5. Under each EPIC, create FEATUREs for major capabilities (only if needed).
+6. Under each FEATURE, create STORYs for user-facing slices (only if needed).
+7. Under each STORY, create TASKs - AS MANY OR AS FEW AS NEEDED (each TASK = one file/endpoint/component to implement).
+8. **CRITICAL**: For every TASK (TASK-01, TASK-02, etc.), include explicit file paths in the description. Example: "Edit backend/app.py to add CRUD endpoints" or "Modify frontend/src/App.jsx to add routing". This tells agents exactly which files to work on.
+9. Put DB migrations, config changes, installs as CHECKLIST ITEMS inside the relevant TASK — never as standalone TASKs.
+10. **CRITICAL**: For TASKs within the same STORY, determine if they have sequential dependencies:
    - If TASK-02 modifies/extends files created by TASK-01, add TASK-01 to TASK-02's linked_tasks
    - If TASK-03 needs TASK-02's output, add TASK-02 to TASK-03's linked_tasks
+   - ALL TASKs (TASK-01 onwards) must include "TASK-00" in linked_tasks (bootstrap dependency)
    - If tasks are independent (different files, no shared dependencies), they can run in parallel
-9. Set dates: TASKs first, then STORYs after their TASKs, then FEATUREs after their STORYs, then EPICs last.
-10. Write specific, actionable checklists for every task - only the steps actually needed.
+11. Set dates: TASKs first, then STORYs after their TASKs, then FEATUREs after their STORYs, then EPICs last.
+12. Write specific, actionable checklists for every task - only the steps actually needed.
 
 FINAL CHECK BEFORE OUTPUT:
+- **CRITICAL**: Is TASK-00 with type TASK the first task in the array? If not, add it.
+- Does TASK-00 description contain the full directory tree from FILE STRUCTURE section? If not, add it.
+- Do all other TASKs (TASK-01, TASK-02, etc.) have "TASK-00" in their linked_tasks? If not, add it.
+- Do all TASK descriptions include explicit file paths (e.g., "Edit backend/app.py", "Modify frontend/src/App.jsx")? If not, add them.
 - Does any TASK represent only "run a command" or "create a config file"? If yes, merge it into the checklist of the relevant TASK.
 - Are all linked_tasks referencing valid task_ids in the array? If not, fix them.
 - **CRITICAL**: For each TASK, check if it modifies files created by a previous TASK in the same STORY. If yes, add that previous TASK to linked_tasks.
-- Is every TASK wallet 1 or 2? If not, fix it.
-- Are TASK numbers sequential across ALL stories (TASK-01, TASK-02, ... never reset)? If not, fix them.
+- Is every TASK wallet 1-3? If not, fix it.
+- Are TASK numbers sequential starting from TASK-01 (after TASK-00) across ALL stories? If not, fix them.
 - Did you create ONLY tasks for BRD requirements (no deployment/security/infrastructure unless explicitly required)? If not, remove extras.
 - Output ONLY the JSON array. No markdown, no explanation, no text before or after.
 """

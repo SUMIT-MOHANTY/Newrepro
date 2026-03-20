@@ -59,14 +59,19 @@ class MasterCoordinationService:
                 assignment = await master_task_manager.assign_next_task(project_token)
                 
                 if assignment["status"] == "assigned":
-                    # Start the assigned agent
-                    agent_id = assignment["agent_id"]
-                    task = assignment["task"]
-                    
-                    # Launch agent with coordination
-                    asyncio.create_task(
-                        self._run_coordinated_agent(agent_id, task, project_token)
-                    )
+                    # assignment["assignments"] is a list of {agent_id, task_title, task_type}
+                    for a in assignment.get("assignments", []):
+                        agent_id = a["agent_id"]
+                        # Find the actual task object from the task queue
+                        task = next(
+                            (t for t in master_task_manager.task_queue
+                             if t.get("assigned_agent") == agent_id and t.get("status") == "assigned"),
+                            None
+                        )
+                        if task:
+                            asyncio.create_task(
+                                self._run_coordinated_agent(agent_id, task, project_token)
+                            )
                 
                 elif assignment["status"] == "no_available_tasks":
                     # Check if project is complete
@@ -115,53 +120,39 @@ class MasterCoordinationService:
                 {"status": "failed", "error": str(e)}
             )
     
+    def _resolve_real_agent_id(self, agent_id: str) -> str:
+        """Map coordination agent IDs (dedicated_agent_01) to real agent IDs (agent_01)."""
+        # dedicated_agent_01 → agent_01, dedicated_agent_02 → agent_02, etc.
+        if agent_id.startswith("dedicated_agent_"):
+            suffix = agent_id[len("dedicated_agent_"):]
+            return f"agent_{suffix}"
+        return agent_id
+
     async def _execute_agent_task(
         self, 
         agent_id: str, 
         task: Dict[str, Any], 
         project_token: str
     ) -> Dict[str, Any]:
-        """
-        Execute agent task with coordination hooks
-        """
-        # This replaces the old agent_service.run_agent with coordinated version
-        
-        # Step 1: Request file locks for files this task will modify
-        file_intents = self._extract_file_intents_from_task(task)
-        locked_files = []
-        
-        for file_path in file_intents:
-            lock_result = await master_task_manager.request_file_lock(agent_id, file_path)
-            if lock_result["granted"]:
-                locked_files.append(file_path)
-            else:
-                # Wait for file to be available
-                logger.info(f"⏳ {agent_id} waiting for file: {file_path}")
-                await self._wait_for_file_lock(agent_id, file_path)
-                locked_files.append(file_path)
-        
+        """Execute agent task using the real agent_service.run_agent."""
+        real_agent_id = self._resolve_real_agent_id(agent_id)
+        task_token = agent_service.get_project_task_token(project_token)
+
+        logger.info(f"🚀 Dispatching {real_agent_id} (mapped from {agent_id}) for task: {task.get('title')}")
+
         try:
-            # Step 2: Execute the actual work (call existing agent_service)
-            # But with coordination hooks
-            result = await agent_service._run_agent_once(
-                agent_id=agent_id,
+            result = await agent_service.run_agent(
+                agent_id=real_agent_id,
                 project_token=project_token,
-                task_token=None,  # Master manages tasks, not external system
-                coordination_mode=True  # New flag to indicate coordinated execution
+                task_token=task_token,
+                assigned_task=task,
             )
-            
-            # Step 3: Report progress periodically
-            await master_task_manager.report_task_progress(
-                agent_id,
-                {"status": "in_progress", "progress": 50}
-            )
-            
-            return result
-            
+            return result or {}
         finally:
-            # Step 4: Always release file locks
-            for file_path in locked_files:
-                await master_task_manager.release_file_lock(agent_id, file_path)
+            # Release any file locks this agent held
+            for file_path, holder in list(master_task_manager.file_locks.items()):
+                if holder == agent_id:
+                    await master_task_manager.release_file_lock(agent_id, file_path)
     
     def _extract_file_intents_from_task(self, task: Dict[str, Any]) -> List[str]:
         """

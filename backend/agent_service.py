@@ -35,11 +35,18 @@ def set_cache_invalidation_callback(callback):
 
 def _invalidate_cache_if_available(organization_name: str = None, project_token: Optional[str] = None):
     """Call cache invalidation callback if available"""
-    if _cache_invalidation_callback and organization_name:
-        try:
+    if not _cache_invalidation_callback:
+        return
+    try:
+        if organization_name:
+            # Precise invalidation by org
             _cache_invalidation_callback(organization_name, project_token)
-        except Exception as e:
-            logger.warning(f"Cache invalidation failed: {e}")
+        else:
+            # No org known — invalidate all entries for this project token
+            # Pass a sentinel that main.py's _invalidate_agent_cache handles
+            _cache_invalidation_callback("__all__", project_token)
+    except Exception as e:
+        logger.warning(f"Cache invalidation failed: {e}")
 
 
 # ── AI Response Cleaner ─────────────────────────────────────────────────────
@@ -128,9 +135,13 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
 _AGENT_TYPES = ["validator", "risk", "estimator"]
 _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimation"]
 
-GIT_MANAGER_AGENT_ID = "agent_03"
-MASTER_AGENT_ID = "agent_04"
-DEPLOY_AGENT_ID = "agent_05"
+# Global lock dict for agent creation serialization (keyed by project_token)
+_agent_creation_locks: Dict[str, asyncio.Lock] = {}
+_agent_creation_locks_lock = asyncio.Lock()
+
+GIT_MANAGER_AGENT_ID = "G_agent_01"
+MASTER_AGENT_ID = "M_agent_01"
+DEPLOY_AGENT_ID = "M_agent_02"
 GIT_INTEGRATION_BRANCH = "agent/integration"
 MASTER_NOTE_PREFIX = "MASTER_PLAN"
 MASTER_NOTE_SCOPE = "Canonical Project Tree and Task Plan"
@@ -239,7 +250,16 @@ MASTER_TREE_VALIDATOR_SYSTEM_PROMPT = (
 
 
 def _is_system_agent_id(agent_id: Optional[str]) -> bool:
-    return agent_id in {GIT_MANAGER_AGENT_ID, MASTER_AGENT_ID}
+    if not agent_id:
+        return False
+    aid = str(agent_id).strip().lower()
+    # Explicit system agent IDs
+    if aid in {GIT_MANAGER_AGENT_ID.lower(), MASTER_AGENT_ID.lower(), DEPLOY_AGENT_ID.lower()}:
+        return True
+    # Pattern-based: M_agent_XX or G_agent_XX are always system agents
+    if aid.startswith("m_agent_") or aid.startswith("g_agent_"):
+        return True
+    return False
 
 
 def _extract_dev_agent_sequence(agent_id: Optional[str]) -> Optional[int]:
@@ -302,6 +322,11 @@ def _next_dev_agent_sequence(project_agents: Dict[str, Dict[str, Any]]) -> int:
 
 def build_external_agent_username(agent_id: Optional[str], fallback_name: Optional[str] = None) -> str:
     source_id = str(agent_id or "").strip().lower()
+    
+    # System agents keep their own ID format
+    if source_id.startswith("m_agent_") or source_id.startswith("g_agent_"):
+        return source_id.replace("_", "")  # M_agent_01 -> magent01
+    
     match = _re.search(r"(\d+)$", source_id)
     if match:
         sequence = int(match.group(1))
@@ -314,7 +339,6 @@ def build_external_agent_username(agent_id: Optional[str], fallback_name: Option
     fallback_match = _re.search(r"(\d+)$", fallback.lower())
     if fallback_match:
         sequence = int(fallback_match.group(1))
-        # Shared agents use agent3, agent4, etc. to avoid conflicts
         if "shared" in fallback.lower():
             sequence = sequence + 2
         return f"agent{sequence}"
@@ -395,6 +419,14 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
 
 def _get_agent_states(project_token: Optional[str]) -> Dict[str, Dict[str, Any]]:
     return _ensure_project_state(project_token)["agent_states"]
+
+
+def get_project_agent_creation_lock(project_token: Optional[str]) -> asyncio.Lock:
+    """Get the agent creation lock for a project to serialize add_agent calls."""
+    key = _project_key(project_token)
+    if key not in _agent_creation_locks:
+        _agent_creation_locks[key] = asyncio.Lock()
+    return _agent_creation_locks[key]
 
 
 def _flatten_seed_checklists(raw_groups: Any) -> List[Dict[str, Any]]:
@@ -717,8 +749,8 @@ def _pick_best_dev_agent(project_token: Optional[str]) -> str:
 
 def get_default_agents() -> List[Dict[str, Any]]:
     return [
-        _make_agent("agent_03", 2),
-        _make_agent("agent_04", 3),
+        _make_agent(GIT_MANAGER_AGENT_ID, 0),
+        _make_agent(MASTER_AGENT_ID, 1),
     ]
 
 def initialize_agents_from_records(records: List[Any], project_token: Optional[str] = None) -> None:
@@ -5617,6 +5649,13 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
                 str(direct_name).strip() if direct_name not in (None, "") else None,
             )
 
+        # Check NXDUNE's camelCase assignedTo field (list of usernames like ["agent1"])
+        assigned_to_list = task_payload.get("assignedTo")
+        if isinstance(assigned_to_list, list) and assigned_to_list:
+            first = assigned_to_list[0]
+            if first not in (None, ""):
+                return str(first).strip(), None
+
         raw_assignees = task_payload.get("assignees")
         assignees = raw_assignees if isinstance(raw_assignees, list) else [raw_assignees]
         for assignee in assignees:
@@ -5749,8 +5788,10 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
         normalized.sort(key=_task_sort_key)
         return normalized
     except Exception as e:
-        logger.error(f"[agent_service] Failed to fetch external tasks: {e}")
-        return []
+        error_msg = str(e)
+        logger.error(f"[agent_service] Failed to fetch external tasks: {error_msg}")
+        # Re-raise so caller can handle and log to agent output_log
+        raise Exception(f"Failed to fetch tasks from NXDUNE: {error_msg}")
 
 
 async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, project_token: Optional[str] = None, task_token: Optional[str] = None):
@@ -11204,10 +11245,8 @@ async def _claim_initial_task_assignments(
             continue
         if tid in claimed_task_ids:
             continue
-        # Skip tasks already assigned to a specific agent (they'll pick those up in _pick_next_task)
-        existing_assignee = _resolve_assigned_runtime_agent_id(t, project_agents)
-        if existing_assignee:
-            continue
+        # FIX: Do NOT skip tasks based on assignedTo — any free agent can claim any task
+        # (first-come-first-served via opt_in_task claim lock)
         available_tasks.append(t)
 
     # Serial round-robin: task 1 → agent 1, task 2 → agent 2, ...
@@ -11855,20 +11894,55 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         workspace_contract = {"status": "insufficient"}
         integration_blocked = False
 
-    if live_mem and workspace_contract.get("status") != "ready":
-        with live_mem._lock:
-            other_active = [
-                aid for aid in live_mem.active_tasks
-                if aid != agent_id and not _is_system_agent_id(aid)
-            ]
-        if other_active:
-            logger.info(
-                f"[{agent_id}] Workspace contract not ready; waiting for bootstrap agent(s): {other_active}"
-            )
-            return None
+    # WORKSPACE CONTRACT GATE DISABLED - Let agents work immediately
+    # Don't block agents waiting for workspace contract or other agents
+    # if live_mem and workspace_contract.get("status") != "ready":
+    #     ...blocked logic removed...
     
-    external_tasks = await _fetch_external_tasks(project_token)
+    try:
+        external_tasks = await _fetch_external_tasks(project_token)
+    except Exception as fetch_err:
+        # Log the error to agent output_log so user can see it in UI
+        error_msg = str(fetch_err)
+        if agent:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "error",
+                "message": f"❌ Failed to fetch tasks from NXDUNE: {error_msg}"
+            })
+            # Add helpful hint if it's a 401 error
+            if "401" in error_msg or "Invalid client_id" in error_msg:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": "💡 Fix: Update your project's NXDUNE credentials (client_id/client_secret) in project settings"
+                })
+        logger.error(f"[{agent_id}] Failed to fetch tasks: {fetch_err}")
+        return None
+    
     external_tasks = _sort_tasks_for_execution(external_tasks)
+    
+    # DEBUG: Log what tasks were fetched to agent output_log for UI visibility
+    if agent:
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"📋 Fetched {len(external_tasks)} tasks from NXDUNE"
+        })
+        # Log first few tasks
+        for i, t in enumerate(external_tasks[:3]):
+            task_type = t.get('task_type', 'UNKNOWN')
+            task_title = t.get('title') or t.get('taskName') or 'Untitled'
+            task_status = t.get('status') or 'No status'
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"  Task {i+1}: {task_title[:50]} | Status: {task_status} | Type: {task_type}"
+            })
+    
+    logger.info(f"[{agent_id}] DEBUG: Fetched {len(external_tasks)} tasks from external API")
+    for i, t in enumerate(external_tasks[:5]):  # Log first 5 tasks
+        logger.info(f"[{agent_id}] DEBUG: Task {i+1}: {t.get('title')} | Status: {t.get('status')} | Type: {t.get('task_type')}")
 
     # ── GUARD: Check if this agent already has an active (non-completed) task ──
     # If the agent is already assigned to a task, return that task instead of picking a new one.
@@ -11959,19 +12033,13 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             "opt_in_failed": 0,
         }
         
-        # ── Step 1: Separate tasks into assigned-to-me vs unassigned ──
-        assigned_to_me = []
-        other_tasks = []
+        # ── FIX: Ignore assignedTo field — any free agent can claim any unstarted task ──
+        # This allows first-come-first-served task distribution across all dev agents.
+        # The claimed_task_ids lock mechanism prevents two agents from claiming the same task.
+        # System agents (G_agent_01, M_agent_01) are never assigned tasks via _is_system_agent_id check.
         
+        # ── Serial pick — iterate through all tasks in priority order ──
         for t in external_tasks:
-            resolved_agent_id = _resolve_assigned_runtime_agent_id(t, project_agents)
-            if resolved_agent_id == agent_id:
-                assigned_to_me.append(t)
-            elif not resolved_agent_id:
-                other_tasks.append(t)
-        
-        # ── Step 2: Serial pick — assigned-to-me first, then unassigned ──
-        for t in assigned_to_me + other_tasks:
             _apply_master_task_metadata(t, project_token=project_token)
             tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
             status_lower = (t.get("status") or "").lower()
@@ -11983,12 +12051,51 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             
             # ── CRITICAL: Only work on TASK and BUG types ──
             # EPIC, FEATURE, STORY are organizational containers, not implementation units
+            # TASK-00 is the bootstrap task (type TASK) and runs first — all others wait for it
             task_type = (t.get("task_type") or "").upper()
             if task_type not in ["TASK", "BUG"]:
                 skip_reasons.setdefault("non_executable_type", 0)
                 skip_reasons["non_executable_type"] += 1
                 continue
+
+            # ── TASK-00 BOOTSTRAP GATE ──
+            # If TASK-00 exists and is not yet complete, only allow agents to pick TASK-00.
+            # All other tasks must wait until TASK-00 is done (scaffold is ready in the repo).
+            # Match by task_id "TASK-00" OR by title containing "Project Bootstrap"
+            task_id_str = (t.get("task_id") or t.get("external_task_id") or "").strip().upper()
+            task_title_str = (t.get("title") or t.get("taskName") or "").strip().lower()
+            is_bootstrap_task = (
+                task_id_str == "TASK-00"
+                or "project bootstrap" in task_title_str
+            )
             
+            # If THIS task is the bootstrap task, allow it to proceed (don't check if bootstrap is complete)
+            if is_bootstrap_task:
+                logger.info(f"[{agent_id}] Found bootstrap task {tid}, allowing it to proceed")
+                # Continue to next checks (don't skip, don't check if bootstrap is done)
+            elif not is_bootstrap_task:
+                # Check if bootstrap task exists and is incomplete
+                task00 = next(
+                    (ext_t for ext_t in external_tasks
+                     if (
+                         (ext_t.get("task_id") or ext_t.get("external_task_id") or "").strip().upper() == "TASK-00"
+                         or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
+                     )),
+                    None
+                )
+                if task00 and not _task_status_is_done(task00.get("status")):
+                    msg = f"⏸️ Task {tid} waiting for bootstrap (TASK-00) to complete first"
+                    logger.info(f"[{agent_id}] {msg}")
+                    if agent:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": msg
+                        })
+                    skip_reasons.setdefault("bootstrap_pending", 0)
+                    skip_reasons["bootstrap_pending"] += 1
+                    continue
+
             # If the task explicitly has the "BLOCKED" tag or status, skip it
             task_tags = [str(tag).lower() for tag in (t.get("tags") or [])]
             if status_lower == "blocked" or "blocked" in task_tags:
@@ -12009,33 +12116,36 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     continue
 
             if live_mem:
-                task_deps = t.get("dependencies", [])
-                if not task_deps:
-                    # FIX: linked_tasks points to parent containers (EPIC/FEATURE/STORY), not real dependencies
-                    # Only use linked_tasks as dependencies if they are executable task types (TASK/BUG)
-                    linked = t.get("linked_tasks", [])
-                    if linked:
-                        # Filter out parent containers - only keep TASK/BUG as real dependencies
-                        executable_deps = []
-                        for lt_id in linked:
-                            # Find the linked task in external_tasks to check its type
-                            linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
-                            if linked_task:
-                                linked_type = (linked_task.get("task_type") or "").upper()
-                                if linked_type in ["TASK", "BUG"]:
-                                    executable_deps.append(str(lt_id))
-                        task_deps = executable_deps
+                # Bootstrap task should NEVER be blocked by dependencies
+                # It runs first and has no prerequisites
+                if not is_bootstrap_task:
+                    task_deps = t.get("dependencies", [])
+                    if not task_deps:
+                        # FIX: linked_tasks points to parent containers (EPIC/FEATURE/STORY), not real dependencies
+                        # Only use linked_tasks as dependencies if they are executable task types (TASK/BUG)
+                        linked = t.get("linked_tasks", [])
+                        if linked:
+                            # Filter out parent containers - only keep TASK/BUG as real dependencies
+                            executable_deps = []
+                            for lt_id in linked:
+                                # Find the linked task in external_tasks to check its type
+                                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                                if linked_task:
+                                    linked_type = (linked_task.get("task_type") or "").upper()
+                                    if linked_type in ["TASK", "BUG"]:
+                                        executable_deps.append(str(lt_id))
+                            task_deps = executable_deps
 
-                if task_deps:
-                    live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+                    if task_deps:
+                        live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
 
-                if not live_mem.check_task_dependencies(tid):
-                    blocking = live_mem.get_blocking_tasks(tid)
-                    logger.info(
-                        f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
-                    )
-                    skip_reasons["dependency_blocked"] += 1
-                    continue
+                    if not live_mem.check_task_dependencies(tid):
+                        blocking = live_mem.get_blocking_tasks(tid)
+                        logger.info(
+                            f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
+                        )
+                        skip_reasons["dependency_blocked"] += 1
+                        continue
 
                 blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
                 if blocked:
@@ -12053,25 +12163,8 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 )
                 logger.info(f"[{agent_id}] ✅ Serial opt-in succeeded for task {tid}")
                 
-                # FIX: Don't auto-assign linked_tasks - they are parent containers (EPIC/FEATURE/STORY), not child tasks
-                # Only auto-assign if the linked task is an executable type (TASK/BUG)
-                for lt_id in (t.get("linked_tasks") or []):
-                    try:
-                        # Check if linked task is executable before assigning
-                        linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
-                        if linked_task:
-                            linked_type = (linked_task.get("task_type") or "").upper()
-                            if linked_type in ["TASK", "BUG"]:
-                                await task_service.assign_task(
-                                    task_id=int(lt_id),
-                                    assignees=[{"username": agent_username}],
-                                    task_token=effective_token,
-                                )
-                                logger.info(f"[{agent_id}] ✅ Auto-assigned linked executable task {lt_id} to myself to process serially")
-                            else:
-                                logger.debug(f"[{agent_id}] Skipped auto-assign of linked task {lt_id} (type: {linked_type}, not executable)")
-                    except Exception as assign_err:
-                        logger.warning(f"[{agent_id}] ⚠️ Failed to auto-assign linked task {lt_id}: {assign_err}")
+                # Do NOT auto-assign linked tasks — they are parent containers (EPIC/FEATURE/STORY)
+                # or sibling tasks that other agents should be free to pick up independently.
                         
             except Exception as opt_err:
                 # If upstream reports that the task already has assigned users,
@@ -12091,15 +12184,9 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 skip_reasons["opt_in_failed"] += 1
                 continue
 
-            # Opt-in succeeded — claim locally
+            # Opt-in succeeded — claim locally (only THIS task, not linked tasks)
+            # Do NOT pre-claim linked tasks — other agents should be free to pick them up
             claimed_task_ids.add(tid)
-            # FIX: Only claim linked tasks if they are executable (TASK/BUG), not parent containers
-            for lt_id in (t.get("linked_tasks") or []):
-                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
-                if linked_task:
-                    linked_type = (linked_task.get("task_type") or "").upper()
-                    if linked_type in ["TASK", "BUG"]:
-                        claimed_task_ids.add(str(lt_id))
             if agent:
                 reserved_task = _apply_master_task_metadata(dict(t), project_token=project_token)
                 if project_token:
@@ -12113,6 +12200,18 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             f"Skip summary: {skip_reasons}. Claimed ids remaining: {len(claimed_task_ids)}. "
             f"Master supervisor will assign if agent stays idle."
         )
+        # DEBUG: Log details about why tasks were skipped
+        logger.info(f"[{agent_id}] DEBUG: Skip reasons breakdown: {dict(skip_reasons)}")
+        logger.info(f"[{agent_id}] DEBUG: Claimed task IDs: {list(claimed_task_ids)[:10]}")
+        
+        # Add summary to agent output_log for UI visibility
+        if agent:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"❌ No eligible tasks found. Reasons: {dict(skip_reasons)}"
+            })
+        
         return None
 
 
@@ -12303,22 +12402,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         agent["git_token"] = git_token.strip()
 
     use_git = bool(agent.get("git_repo_url"))
-    master_note_result = None
-    if not _is_system_agent_id(agent_id):
-        try:
-            master_note_result = await ensure_master_workspace_note(
-                project_token=project_token,
-                task_token=task_token,
-            )
-        except Exception as exc:
-            master_note_result = {"success": False, "error": str(exc)}
-        if not master_note_result.get("success"):
-            validation_summary = _summarize_master_tree_validation(master_note_result.get("validation"))
-            raise ValueError(
-                "Master project tree is not validated yet. "
-                f"Reason: {master_note_result.get('error') or master_note_result.get('reason') or 'unknown'}"
-                + (f" ({validation_summary})" if validation_summary else "")
-            )
+    # MASTER NOTE DISABLED - Agents don't need to wait for master tree
+    # They can start working immediately on their assigned tasks
+    master_note_result = {"success": True, "approved": True, "skipped": True}
 
     # 1. Get the first task
     resumed_existing_task = False
@@ -12349,7 +12435,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
     else:
         task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
-    if not task:
+    
+    # If no task found and NOT in continuous mode, exit immediately
+    if not task and not continuous:
         now = datetime.utcnow().isoformat()
         agent["status"] = "idle"
         agent["resume_pending_task"] = False
@@ -12370,14 +12458,37 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             "tasks_completed": 0,
             "duration": 0,
         }
-    task = _apply_master_task_metadata(task, project_token=project_token)
-    if isinstance(task, dict) and project_token:
-        task.setdefault("_project_token", project_token)
+    
+    # If no task found but IN continuous mode, enter polling loop
+    # (task will be None, triggering the polling logic in the main while loop below)
+    if task:
+        task = _apply_master_task_metadata(task, project_token=project_token)
+        if isinstance(task, dict) and project_token:
+            task.setdefault("_project_token", project_token)
 
-    # Set agent to running
-    agent["status"] = "running"
+    # Set agent to running (or idle if no task in continuous mode)
+    if task:
+        agent["status"] = "running"
+    else:
+        # Continuous mode with no initial task — start in idle, will poll below
+        agent["status"] = "idle"
+        agent["progress_message"] = "Waiting for tasks..."
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": "⏸️ No tasks available yet. Entering continuous polling mode (will check every 30s)..."
+        })
     agent["resume_pending_task"] = False
-    agent["output_log"] = []
+    # Don't clear output_log — keep history so users can see what happened
+    # agent["output_log"] = []  # REMOVED: This was erasing all previous logs
+    
+    # Add a log entry when starting work on a task
+    if task:
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"🚀 Starting work on task: {task.get('title') or task.get('taskName') or 'Untitled'}"
+        })
     
     # Invalidate cache when agent status changes
     _invalidate_cache_if_available(project_token=project_token)
@@ -12525,11 +12636,31 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"{'═' * 50}"
             })
+            
+            # Show assignment reason (affinity vs fresh pick)
+            task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+            assignment_reason = "self-selected from available tasks"
+            if tasks_completed > 1:
+                assignment_reason = "agent affinity (continuing in same container)"
+            elif task.get("assigned_agent") == agent_id:
+                assignment_reason = "pre-assigned by master supervisor"
+            
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
                 "message": f"▶ TASK {tasks_completed}: {task['title']}{task_count_label}"
             })
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"  Assignment: {assignment_reason}"
+            })
+            if task_id:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"  Task ID: {task_id}"
+                })
             if checklist:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
@@ -12613,6 +12744,16 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             if use_git:
                 branch_name = force_branch if force_branch else _branch_name_for_task(task)
                 if tasks_completed > 1:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"🔄 Container reuse: Continuing in existing container '{container_name}' (task #{tasks_completed})"
+                    })
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"📦 Skipping repo clone — code already present from previous task"
+                    })
                     # Reset any stale index (merge conflicts from previous task)
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
@@ -13593,6 +13734,73 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             agent["progress"] = 100
             agent["progress_message"] = "Task completed"
 
+            # ── AGENT AFFINITY: Assign dependent tasks to same agent ──
+            # If this task has dependent tasks waiting, assign the next one to this agent
+            # to reuse the container and avoid re-cloning the repo.
+            try:
+                task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                if task_id and result["exit_code"] == 0:
+                    # Find tasks that depend on this completed task
+                    external_tasks_for_affinity = await _fetch_external_tasks(project_token)
+                    dependent_tasks = [
+                        t for t in external_tasks_for_affinity
+                        if task_id in [str(lt) for lt in (t.get("linked_tasks") or [])]
+                        and not _task_status_is_done(t.get("status"))
+                        and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
+                    ]
+                    
+                    if dependent_tasks:
+                        # Sort by execution order and pick the first unassigned one
+                        dependent_tasks = _sort_tasks_for_execution(dependent_tasks)
+                        next_task = None
+                        for dep_task in dependent_tasks:
+                            # Check if already assigned to someone
+                            resolved_owner = _resolve_assigned_runtime_agent_id(dep_task, project_agents)
+                            if not resolved_owner:
+                                next_task = dep_task
+                                break
+                        
+                        if next_task:
+                            next_task_id = str(_normalize_task_id(next_task) or next_task.get("external_id") or next_task.get("id") or "")
+                            next_task_title = next_task.get("title") or next_task.get("taskName") or "Untitled"
+                            
+                            # Assign it to this agent via API
+                            try:
+                                from task_service import task_service
+                                agent_username = build_external_agent_username(agent_id, agent.get("name"))
+                                await task_service.assign_task(
+                                    task_id=int(next_task_id),
+                                    assignees=[{"username": agent_username}],
+                                    task_token=task_token or get_project_task_token(project_token),
+                                )
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"🔗 Agent affinity: Assigned dependent task {next_task_id} ('{next_task_title}') to continue in same container"
+                                })
+                                logger.info(
+                                    f"[{agent_id}] ✅ Agent affinity: Assigned dependent task {next_task_id} "
+                                    f"('{next_task_title}') to same agent for container reuse"
+                                )
+                            except Exception as assign_err:
+                                logger.warning(
+                                    f"[{agent_id}] Failed to assign dependent task {next_task_id} via affinity: {assign_err}"
+                                )
+                        else:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"ℹ️ {len(dependent_tasks)} dependent task(s) found but all already assigned"
+                            })
+                    else:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "ℹ️ No dependent tasks waiting — agent available for any task"
+                        })
+            except Exception as affinity_err:
+                logger.warning(f"[{agent_id}] Agent affinity check failed: {affinity_err}")
+
             # ── Feed Output Back to KG + Cross-Agent Memory ─────────
             # Blitzy pattern: KG is a LIVING document. Agent output is
             # parsed and inserted back into the KG + RAG so downstream
@@ -13747,11 +13955,50 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "message": f"⏩ Moving to next task..."
                     })
                 else:
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": "🎉 All tasks completed! No more tasks in queue."
-                    })
+                    # CONTINUOUS MODE: Keep polling for new tasks
+                    agent["status"] = "idle"
+                    agent["progress"] = 0
+                    agent["progress_message"] = "Waiting for new tasks..."
+                    agent["current_task"] = None
+                    _invalidate_cache_if_available(project_token=project_token)
+                    
+                    # Poll for new tasks every 30 seconds
+                    max_idle_polls = 120  # 120 * 30s = 1 hour max idle time
+                    poll_count = 0
+                    
+                    while poll_count < max_idle_polls:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"⏸️ No tasks available. Checking again in 30s... (poll {poll_count + 1}/{max_idle_polls})"
+                        })
+                        
+                        await asyncio.sleep(30)  # Wait 30 seconds
+                        
+                        # Check for new tasks
+                        task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+                        task = _apply_master_task_metadata(task, project_token=project_token)
+                        if isinstance(task, dict) and project_token:
+                            task.setdefault("_project_token", project_token)
+                        
+                        if task:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"✓ New task found! Resuming work..."
+                            })
+                            break  # Exit polling loop, continue with new task
+                        
+                        poll_count += 1
+                    
+                    # If no task found after max polls, exit gracefully
+                    if not task:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "⏹️ No tasks available after 1 hour. Agent stopping."
+                        })
+                        task = None  # Exit main loop
 
         # ── END OF WHILE LOOP ────────────────────────────────────────
 
@@ -13770,19 +14017,23 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         failed_tasks = [r for r in all_results if r.get("exit_code", 0) != 0]
         has_failures = len(failed_tasks) > 0
         
-        if has_failures:
-            agent["status"] = "completed_with_errors"
-            agent["progress_message"] = f"Completed {tasks_completed} task(s) in {total_elapsed}s ({len(failed_tasks)} failed)"
-        else:
-            agent["status"] = "completed"
-            agent["progress_message"] = f"All done! {tasks_completed} task(s) in {total_elapsed}s"
+        # In continuous mode with no tasks, agent is already set to idle above
+        # Don't override it to "completed"
+        if agent.get("status") != "idle":
+            if has_failures:
+                agent["status"] = "completed_with_errors"
+                agent["progress_message"] = f"Completed {tasks_completed} task(s) in {total_elapsed}s ({len(failed_tasks)} failed)"
+            else:
+                agent["status"] = "completed"
+                agent["progress_message"] = f"All done! {tasks_completed} task(s) in {total_elapsed}s"
             
         # Invalidate cache when agent completes
         _invalidate_cache_if_available(project_token=project_token)
             
-        agent["resume_pending_task"] = False
-        agent["progress"] = 100
-        agent["current_task"] = None
+        if agent.get("status") != "idle":
+            agent["resume_pending_task"] = False
+            agent["progress"] = 100
+            agent["current_task"] = None
 
         # Update coordination status to reflect actual outcome
         try:
@@ -15425,20 +15676,13 @@ def add_agent(name: str = None, git_repo_url: str = None, git_token: str = None,
     normalized_kind = str(kind or "").strip().lower()
     sequence = _next_dev_agent_sequence(project_agents)
 
-    if normalized_kind in {"shared", "dedicated"}:
-        prefix = f"{normalized_kind}_agent_"
-        agent_id = f"{prefix}{sequence:02d}"
-        while agent_id in project_agents:
-            sequence += 1
-            agent_id = f"{prefix}{sequence:02d}"
-        seed_idx = sequence - 1
-    else:
-        seed_idx = sequence - 1
+    # All dev/test agents use agent_XX format regardless of kind (dedicated/shared)
+    # System agents use M_agent_XX / G_agent_XX
+    agent_id = f"agent_{sequence:02d}"
+    while agent_id in project_agents:
+        sequence += 1
         agent_id = f"agent_{sequence:02d}"
-        while agent_id in project_agents:
-            sequence += 1
-            seed_idx = sequence - 1
-            agent_id = f"agent_{sequence:02d}"
+    seed_idx = sequence - 1
 
     agent = _make_agent(agent_id, seed_idx)
     agent["name"] = normalize_agent_name(agent_id, name)
