@@ -5395,7 +5395,7 @@ def _create_persistent_container(container_name: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def _exec_script_in_container(container_name: str, code: str, script_label: str = "script") -> Dict[str, Any]:
+def _exec_script_in_container(container_name: str, code: str, script_label: str = "script", project_token: Optional[str] = None) -> Dict[str, Any]:
     """Copy a shell script into a running container and execute it with bash."""
     script_body = str(code or "").strip()
     if not script_body:
@@ -5534,8 +5534,20 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
         logger.info(f"Script in container (first 5 lines):\n{verify_result.stdout}")
 
         # Execute inside container with explicit bash
+        # Detect project root from captured tree (e.g., my-todo-app/)
+        project_root = "/workspace"
+        if project_token:
+            spec_record = _project_tech_specs.get(project_token, {})
+            if spec_record.get("source") == "bootstrap_actual_tree":
+                spec_text = spec_record.get("spec", "")
+                # Extract first-level directory from tree (e.g., "./my-todo-app/backend/app.py" → "my-todo-app")
+                import re
+                match = re.search(r'\./([^/\n]+)/', spec_text)
+                if match:
+                    project_root = f"/workspace/{match.group(1)}"
+        
         result = subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name, "/bin/bash", container_script],
+            ["docker", "exec", "-w", project_root, container_name, "/bin/bash", container_script],
             capture_output=True, text=True, timeout=180,
         )
 
@@ -5574,22 +5586,22 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
             pass
 
 
-def _capture_workspace_tree(container_name: str) -> str:
+def _capture_workspace_tree(container_name: str, project_root: str = "/workspace") -> str:
     """
-    Capture the entire /workspace/ file tree with file contents.
+    Capture the entire project file tree with file contents.
     Returns a formatted string showing the project structure and code.
     """
     try:
-        # Get file listing
+        # Get file listing from project root
         find_result = subprocess.run(
-            ["docker", "exec", container_name, "find", "/workspace", "-type", "f",
+            ["docker", "exec", container_name, "find", project_root, "-type", "f",
              "-not", "-path", "*/\\.git/*", "-not", "-path", "*/__pycache__/*",
              "-not", "-name", "*.pyc"],
             capture_output=True, text=True, timeout=15,
         )
 
         if find_result.returncode != 0 or not find_result.stdout.strip():
-            return "# No files found in /workspace/"
+            return f"# No files found in {project_root}/"
 
         files = sorted(find_result.stdout.strip().split("\n"))
 
@@ -5603,7 +5615,7 @@ def _capture_workspace_tree(container_name: str) -> str:
         # File tree summary
         output_parts.append("File Tree:")
         for f in files:
-            rel = f.replace("/workspace/", "")
+            rel = f.replace(f"{project_root}/", "")
             depth = rel.count("/")
             indent = "  " * depth
             name = os.path.basename(rel)
@@ -5614,7 +5626,7 @@ def _capture_workspace_tree(container_name: str) -> str:
 
         # File contents
         for filepath in files:
-            rel_path = filepath.replace("/workspace/", "")
+            rel_path = filepath.replace(f"{project_root}/", "")
             output_parts.append("-" * 60)
             output_parts.append(f"FILE: {rel_path}")
             output_parts.append("-" * 60)
@@ -12365,7 +12377,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 if task00 and not _task_status_is_done(task00.get("status")):
                     # Also check in-memory bootstrap state — if the scaffold was already pushed
                     # the gate should open even if the external API hasn't updated yet
-                    _bs = state.get("repo_bootstrap", {})
+                    _bs = project_state.get("repo_bootstrap", {})
                     _bootstrap_released = (
                         _bs.get("status") in ("completed", "not_required", "failed")
                         or _bs.get("required") is False
@@ -12915,7 +12927,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
     container_name = f"{agent_id}_{uuid.uuid4().hex[:8]}"
     container_created = False
-    repo_base_branch = "main"
+    
+    # Use bootstrap branch as base if available
+    bootstrap_state = state.get("repo_bootstrap", {})
+    repo_base_branch = bootstrap_state.get("source_branch") or "main"
     bootstrap_role = "none"
     bootstrap_signal_sent = False
 
@@ -13426,7 +13441,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # ── Execute build script ─────────────────────────────────
             result = await asyncio.to_thread(
-                _exec_script_in_container, container_name, generated_code, f"build_{agent_id}"
+                _exec_script_in_container, container_name, generated_code, f"build_{agent_id}", project_token
             )
             
             # ── Post-execution structure validation ──────────────────
@@ -13530,11 +13545,23 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # ═════════════════════════════════════════════════════════
             agent["progress"] = 88
             agent["progress_message"] = "Capturing project workspace..."
-            workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name)
+            
+            # Detect project root from captured tree
+            capture_root = "/workspace"
+            if project_token:
+                spec_record = _project_tech_specs.get(project_token, {})
+                if spec_record.get("source") == "bootstrap_actual_tree":
+                    spec_text = spec_record.get("spec", "")
+                    import re
+                    match = re.search(r'\./([^/\n]+)/', spec_text)
+                    if match:
+                        capture_root = f"/workspace/{match.group(1)}"
+            
+            workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name, capture_root)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"Captured {workspace_tree.count('FILE:')} files from /workspace/"
+                "message": f"Captured {workspace_tree.count('FILE:')} files from {capture_root}/"
             })
 
             # ═════════════════════════════════════════════════════════
@@ -13994,6 +14021,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             bootstrap_signal_sent = True
                             repo_base_branch = effective_branch
                             
+                            # Store bootstrap branch as the new base for all subsequent tasks
+                            state["repo_bootstrap"]["source_branch"] = effective_branch
+                            
                             # Capture actual file tree from container and store as canonical spec
                             try:
                                 tree_result = subprocess.run(
@@ -14209,72 +14239,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             agent["progress"] = 100
             agent["progress_message"] = "Task completed"
 
-            # ── AGENT AFFINITY: Assign dependent tasks to same agent ──
-            # If this task has dependent tasks waiting, assign the next one to this agent
-            # to reuse the container and avoid re-cloning the repo.
-            try:
-                task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
-                if task_id and result["exit_code"] == 0:
-                    # Find tasks that depend on this completed task
-                    external_tasks_for_affinity = await _fetch_external_tasks(project_token)
-                    dependent_tasks = [
-                        t for t in external_tasks_for_affinity
-                        if task_id in [str(lt) for lt in (t.get("linked_tasks") or [])]
-                        and not _task_status_is_done(t.get("status"))
-                        and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
-                    ]
-                    
-                    if dependent_tasks:
-                        # Sort by execution order and pick the first unassigned one
-                        dependent_tasks = _sort_tasks_for_execution(dependent_tasks)
-                        next_task = None
-                        for dep_task in dependent_tasks:
-                            # Check if already assigned to someone
-                            resolved_owner = _resolve_assigned_runtime_agent_id(dep_task, project_agents)
-                            if not resolved_owner:
-                                next_task = dep_task
-                                break
-                        
-                        if next_task:
-                            next_task_id = str(_normalize_task_id(next_task) or next_task.get("external_id") or next_task.get("id") or "")
-                            next_task_title = next_task.get("title") or next_task.get("taskName") or "Untitled"
-                            
-                            # Assign it to this agent via API
-                            try:
-                                from task_service import task_service
-                                agent_username = build_external_agent_username(agent_id, agent.get("name"))
-                                await task_service.assign_task(
-                                    task_id=int(next_task_id),
-                                    assignees=[{"username": agent_username}],
-                                    task_token=task_token or get_project_task_token(project_token),
-                                )
-                                agent["output_log"].append({
-                                    "time": datetime.utcnow().isoformat(),
-                                    "type": "info",
-                                    "message": f"🔗 Agent affinity: Assigned dependent task {next_task_id} ('{next_task_title}') to continue in same container"
-                                })
-                                logger.info(
-                                    f"[{agent_id}] ✅ Agent affinity: Assigned dependent task {next_task_id} "
-                                    f"('{next_task_title}') to same agent for container reuse"
-                                )
-                            except Exception as assign_err:
-                                logger.warning(
-                                    f"[{agent_id}] Failed to assign dependent task {next_task_id} via affinity: {assign_err}"
-                                )
-                        else:
-                            agent["output_log"].append({
-                                "time": datetime.utcnow().isoformat(),
-                                "type": "info",
-                                "message": f"ℹ️ {len(dependent_tasks)} dependent task(s) found but all already assigned"
-                            })
-                    else:
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": "ℹ️ No dependent tasks waiting — agent available for any task"
-                        })
-            except Exception as affinity_err:
-                logger.warning(f"[{agent_id}] Agent affinity check failed: {affinity_err}")
+            # ── AGENT AFFINITY: DISABLED ──
+            # Agent affinity is disabled to allow parallel task execution.
+            # Each agent completes one task and stops, allowing other agents
+            # to pick up remaining tasks independently.
+            # This prevents one agent from monopolizing all tasks sequentially.
 
             # ── Feed Output Back to KG + Cross-Agent Memory ─────────
             # Blitzy pattern: KG is a LIVING document. Agent output is
@@ -14287,6 +14256,25 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 # Extract files and symbols from what the agent produced
                 touched_files = ctx_mgr.extract_files_from_workspace_tree(workspace_tree)
                 symbols = ctx_mgr.extract_symbols_from_code(all_generated_code)
+
+                # Capture file contents for UI display
+                for file_path in touched_files[:20]:  # Limit to first 20 files
+                    try:
+                        read_result = subprocess.run(
+                            ["docker", "exec", container_name, "cat", f"/workspace/{file_path}"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if read_result.returncode == 0:
+                            content = read_result.stdout[:5000]  # Limit to 5KB per file
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "file_created",
+                                "file_path": file_path,
+                                "file_content": content,
+                                "message": f"📄 Created: {file_path}"
+                            })
+                    except Exception:
+                        pass
 
                 # 1) Register completion in shared memory (for active task tracking)
                 task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
