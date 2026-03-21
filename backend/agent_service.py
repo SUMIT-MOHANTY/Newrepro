@@ -6301,16 +6301,23 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
         logger.info(f"Script in container (first 5 lines):\n{verify_result.stdout}")
 
         # Execute inside container with explicit bash
-        # Detect project root from captured tree (e.g., my-todo-app/)
+        # Get project root from bootstrap state (stored explicitly during bootstrap)
         project_root = "/workspace"
         if project_token:
-            spec_record = _project_tech_specs.get(project_token, {})
-            if spec_record.get("source") in ("bootstrap_actual_tree", "bootstrap_with_api_contract"):
-                spec_text = spec_record.get("spec", "")
-                import re as _re2
-                match = _re2.search(r'\./([^/\n]+)/', spec_text)
-                if match:
-                    project_root = f"/workspace/{match.group(1)}"
+            state = _ensure_project_state(project_token)
+            # First try: Get from bootstrap state
+            bootstrap_state = state.get("repo_bootstrap", {})
+            stored_root = bootstrap_state.get("project_root")
+            if stored_root:
+                project_root = stored_root
+                logger.info(f"Script execution using stored project root: {project_root}")
+            else:
+                # Fallback: Get from spec record
+                spec_record = _project_tech_specs.get(project_token, {})
+                stored_root = spec_record.get("project_root")
+                if stored_root:
+                    project_root = stored_root
+                    logger.info(f"Script execution using project root from spec: {project_root}")
         
         result = subprocess.run(
             ["docker", "exec", "-w", project_root, container_name, "/bin/bash", container_script],
@@ -14521,17 +14528,22 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             agent["progress"] = 88
             agent["progress_message"] = "Capturing project workspace..."
             
-            # Detect project root from captured tree
+            # Get project root from bootstrap state (stored explicitly during bootstrap)
             capture_root = "/workspace"
             if project_token:
-                spec_record = _project_tech_specs.get(project_token, {})
-                # Works for both bootstrap_actual_tree and bootstrap_with_api_contract sources
-                if spec_record.get("source") in ("bootstrap_actual_tree", "bootstrap_with_api_contract"):
-                    spec_text = spec_record.get("spec", "")
-                    import re as _re2
-                    match = _re2.search(r'\./([^/\n]+)/', spec_text)
-                    if match:
-                        capture_root = f"/workspace/{match.group(1)}"
+                # First try: Get from bootstrap state
+                bootstrap_state = state.get("repo_bootstrap", {})
+                stored_root = bootstrap_state.get("project_root")
+                if stored_root:
+                    capture_root = stored_root
+                    logger.info(f"Using stored project root from bootstrap: {capture_root}")
+                else:
+                    # Fallback: Get from spec record
+                    spec_record = _project_tech_specs.get(project_token, {})
+                    stored_root = spec_record.get("project_root")
+                    if stored_root:
+                        capture_root = stored_root
+                        logger.info(f"Using stored project root from spec: {capture_root}")
             
             workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name, capture_root)
             if workspace_tree is None:
@@ -14716,34 +14728,69 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     })
 
             # ═════════════════════════════════════════════════════════
-            # PROCESS LINKED TASKS
+            # PROCESS LINKED TASKS (RECURSIVE)
             # ═════════════════════════════════════════════════════════
-            # Bootstrap agent skips linked tasks — they are left for other
-            # agents to pick up independently after the gate is released.
-            if linked_task_ids and use_git and bootstrap_role != "bootstrap":
+            # Linked tasks are executed inline in the same container to preserve context.
+            # This function recursively processes linked tasks of linked tasks.
+            # Bootstrap agent skips linked tasks — they are left for other agents.
+            
+            async def _execute_linked_tasks_recursive(
+                task_ids: List[str],
+                depth: int = 0,
+                max_depth: int = 10
+            ):
+                """Recursively execute linked tasks and their nested linked tasks."""
+                if not task_ids or depth >= max_depth:
+                    return
+                
                 all_ext_tasks = await _fetch_external_tasks(project_token)
                 linked_lookup = {str(_normalize_task_id(t) or t.get("external_id") or t.get("id")): t for t in all_ext_tasks}
 
-                for li_idx, linked_id in enumerate(linked_task_ids):
+                for li_idx, linked_id in enumerate(task_ids):
                     linked_task = linked_lookup.get(linked_id)
                     if not linked_task:
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"Linked task {linked_id} not found in API, skipping."
+                            "message": f"{'  ' * depth}Linked task {linked_id} not found in API, skipping."
                         })
                         continue
 
                     lt_title = linked_task.get("title", f"linked-{linked_id}")
                     lt_branch = _branch_name_for_task(linked_task)
                     lt_checklist = linked_task.get("checklist") or []
+                    lt_nested_linked_ids = [str(lt) for lt in (linked_task.get("linked_tasks") or [])]
 
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"═══ LINKED TASK {li_idx+1}/{len(linked_task_ids)}: {lt_title} ═══"
+                        "message": f"{'  ' * depth}═══ LINKED TASK {li_idx+1}/{len(task_ids)}: {lt_title} (depth {depth}) ═══"
                     })
 
+                    # OPT-IN to linked task first
+                    try:
+                        from task_service import task_service
+                        effective_token = task_token or get_project_task_token(project_token)
+                        lt_task_id_for_optin = _normalize_task_id(linked_task)
+                        lt_username = build_external_agent_username(agent_id, agent.get("name"))
+                        if lt_task_id_for_optin:
+                            await task_service.opt_in_task(
+                                {"task_id": int(lt_task_id_for_optin), "username": lt_username},
+                                task_token=effective_token,
+                            )
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"{'  ' * depth}API: linked task opt-in ok (agent: {lt_username})"
+                            })
+                    except Exception as opt_err:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "warning",
+                            "message": f"{'  ' * depth}API: linked task opt-in failed: {str(opt_err)[:100]}"
+                        })
+
+                    # Create branch for linked task
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "fetch", "origin"],
@@ -14760,12 +14807,14 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         capture_output=True, text=True, timeout=15,
                     )
 
+                    # Clock in
                     lt_clock_in_ok = await _post_timer_log(linked_task, "clock_in", task_token=task_token)
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"API: linked task clock_in {'ok' if lt_clock_in_ok else 'failed'}"
+                        "message": f"{'  ' * depth}API: linked task clock_in {'ok' if lt_clock_in_ok else 'failed'}"
                     })
+                    
                     linked_task["assigned_agent"] = agent_id
                     linked_task["assigned_agent_name"] = started_by_name
                     msg_ok = await _post_task_message(linked_task, f"Started by {started_by_name}.", task_token=task_token)
@@ -14773,10 +14822,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"API: linked task start message {'ok' if msg_ok else 'failed'}, progress 10% {'ok' if prog_ok else 'skipped/failed'}"
+                        "message": f"{'  ' * depth}API: linked task start message {'ok' if msg_ok else 'failed'}, progress 10% {'ok' if prog_ok else 'skipped/failed'}"
                     })
 
-                    # Fetch JIT context for linked task too
+                    # Fetch JIT context
                     lt_jit_context = ""
                     try:
                         import context_manager as ctx_mgr
@@ -14790,32 +14839,45 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     except Exception:
                         pass
 
+                    # Generate and execute code
                     lt_code, thought = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"], code_context=lt_jit_context)
                     if thought:
                         await _post_task_message(linked_task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
                     lt_result = await asyncio.to_thread(
-                        _exec_script_in_container, container_name, lt_code, f"linked_{linked_id}"
+                        _exec_script_in_container, container_name, lt_code, f"linked_{linked_id}_d{depth}", project_token
                     )
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"Linked task builder finished (exit={lt_result['exit_code']})"
+                        "message": f"{'  ' * depth}Linked task builder finished (exit={lt_result['exit_code']})"
                     })
+                    
+                    # Update progress based on result
                     if lt_result["exit_code"] == 0:
                         prog_ok = await _post_task_progress(linked_task, 70, "Build completed", task_token=task_token)
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"API: linked task progress 70% {'ok' if prog_ok else 'skipped/failed'}"
+                            "message": f"{'  ' * depth}API: linked task progress 70% {'ok' if prog_ok else 'skipped/failed'}"
                         })
                     else:
                         prog_ok = await _post_task_progress(linked_task, 40, "Build finished with errors", task_token=task_token)
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"API: linked task progress 40% {'ok' if prog_ok else 'skipped/failed'}"
+                            "message": f"{'  ' * depth}API: linked task progress 40% {'ok' if prog_ok else 'skipped/failed'}"
                         })
 
+                    # RECURSIVELY execute nested linked tasks BEFORE committing this task
+                    if lt_nested_linked_ids:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"{'  ' * depth}📋 Task has {len(lt_nested_linked_ids)} nested linked task(s), executing recursively..."
+                        })
+                        await _execute_linked_tasks_recursive(lt_nested_linked_ids, depth + 1, max_depth)
+
+                    # Commit and push
                     lt_commit = await asyncio.to_thread(
                         _commit_and_push, container_name, lt_title, lt_branch
                     )
@@ -14826,25 +14888,25 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
                                 "type": "info",
-                                "message": f"Pushed linked task to branch: {effective_lt_branch}"
+                                "message": f"{'  ' * depth}Pushed linked task to branch: {effective_lt_branch}"
                             })
                             if lt_commit.get("rebased"):
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
                                     "type": "info",
-                                    "message": f"Git pull --rebase integrated remote changes before push"
+                                    "message": f"{'  ' * depth}Git pull --rebase integrated remote changes before push"
                                 })
                             if lt_commit.get("renamed"):
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
                                     "type": "info",
-                                    "message": f"Git push fallback used (new branch: {effective_lt_branch})"
+                                    "message": f"{'  ' * depth}Git push fallback used (new branch: {effective_lt_branch})"
                                 })
                             prog_ok = await _post_task_progress(linked_task, 95, "Pushed to git", task_token=task_token)
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
                                 "type": "info",
-                                "message": f"API: linked task progress 95% {'ok' if prog_ok else 'skipped/failed'}"
+                                "message": f"{'  ' * depth}API: linked task progress 95% {'ok' if prog_ok else 'skipped/failed'}"
                             })
                             await _enqueue_git_merge(
                                 effective_lt_branch,
@@ -14858,19 +14920,19 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
                                 "type": "info",
-                                "message": f"No changes to push for branch: {effective_lt_branch}"
+                                "message": f"{'  ' * depth}No changes to push for branch: {effective_lt_branch}"
                             })
                             prog_ok = await _post_task_progress(linked_task, 95, "No changes to push", task_token=task_token)
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
                                 "type": "info",
-                                "message": f"API: linked task progress 95% {'ok' if prog_ok else 'skipped/failed'}"
+                                "message": f"{'  ' * depth}API: linked task progress 95% {'ok' if prog_ok else 'skipped/failed'}"
                             })
                         clock_out_ok = await _post_timer_log(linked_task, "clock_out", task_token=task_token)
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"API: linked task clock_out {'ok' if clock_out_ok else 'failed'}"
+                            "message": f"{'  ' * depth}API: linked task clock_out {'ok' if clock_out_ok else 'failed'}"
                         })
                     else:
                         msg_ok = await _post_task_message(
@@ -14882,9 +14944,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"API: linked task push failure message {'ok' if msg_ok else 'failed'}, progress 80% {'ok' if prog_ok else 'skipped/failed'}"
+                            "message": f"{'  ' * depth}API: linked task push failure message {'ok' if msg_ok else 'failed'}, progress 80% {'ok' if prog_ok else 'skipped/failed'}"
                         })
 
+                    # Mark checklist items
                     lt_task_id = _normalize_task_id(linked_task)
                     if lt_checklist and lt_task_id:
                         for ci in range(len(lt_checklist)):
@@ -14895,29 +14958,21 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 project_token=project_token,
                                 task_token=task_token,
                             )
-                            # Update dynamic percentage strictly based on checklist tracking for Linked Tasks
                             lt_percent = int(((ci + 1) / len(lt_checklist)) * 100)
                             await _post_task_progress(linked_task, lt_percent, f"Completed linked checklist step {ci+1}/{len(lt_checklist)}", task_token=task_token)
 
-                    # Update linked task progress/completion in external system
-                    # Always complete linked task if build succeeded, regardless of git push
+                    # Mark task complete
                     if lt_result["exit_code"] == 0:
                         if lt_commit_success:
                             lt_completion_message = f"Completed by {agent_id}."
                         else:
                             lt_completion_message = f"Completed by {agent_id} (with git errors)."
                         msg_ok = await _post_task_message(linked_task, lt_completion_message, task_token=task_token)
-                        
-                        # Note: We rely on the checklist iteration above to have updated progress to exactly 100%.
-                        # To ensure the final state registers, we still mark task_complete.
                         complete_ok = await _post_task_complete(linked_task, task_token=task_token)
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": (
-                                f"API: linked task complete message {'ok' if msg_ok else 'failed'}, "
-                                f"complete {'ok' if complete_ok else 'failed'}"
-                            )
+                            "message": f"{'  ' * depth}API: linked task complete message {'ok' if msg_ok else 'failed'}, complete {'ok' if complete_ok else 'failed'}"
                         })
                     else:
                         lt_failure_message = f"Failed (exit={lt_result['exit_code']})."
@@ -14925,14 +14980,18 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"API: linked task failure message {'ok' if msg_ok else 'failed'}"
+                            "message": f"{'  ' * depth}API: linked task failure message {'ok' if msg_ok else 'failed'}"
                         })
 
-                    # Clear tracking state for linked task
+                    # Clear tracking state
                     lt_task_key = str(_normalize_task_id(linked_task) or linked_task.get("external_id") or linked_task.get("id"))
                     task_progress_state.pop(lt_task_key, None)
                     timer_log_state.pop(lt_task_key, None)
 
+            # Execute linked tasks recursively
+            if linked_task_ids and use_git and bootstrap_role != "bootstrap":
+                await _execute_linked_tasks_recursive(linked_task_ids, depth=0)
+                
                 # Switch back to main task branch
                 if branch_name:
                     subprocess.run(
@@ -15053,12 +15112,34 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 )
                                 if tree_result.returncode == 0:
                                     actual_tree = tree_result.stdout.strip()
+                                    
+                                    # Detect and store project root directory
+                                    project_root = "/workspace"
+                                    import re as _re_bootstrap
+                                    tree_lines = actual_tree.splitlines()
+                                    excluded_dirs = {'node_modules', '.git', '__pycache__', 'dist', 'build', '.vscode',
+                                                    'venv', 'env', '.env', 'coverage', '.pytest_cache', '.mypy_cache'}
+                                    for line in tree_lines:
+                                        line = line.strip()
+                                        # Match patterns like: ./my-todo-app or ./my-todo-app/
+                                        match = _re_bootstrap.match(r'^\./([a-zA-Z0-9_-]+)/?$', line)
+                                        if match:
+                                            dir_name = match.group(1)
+                                            if dir_name not in excluded_dirs:
+                                                project_root = f"/workspace/{dir_name}"
+                                                logger.info(f"[Bootstrap] Detected project root: {project_root}")
+                                                break
+                                    
+                                    # Store project root in state for all subsequent tasks
+                                    state["repo_bootstrap"]["project_root"] = project_root
+                                    
                                     canonical_spec = f"# Canonical Project Structure (from Bootstrap)\n\n```\n{actual_tree}\n```\n\n{task.get('description', '')}"
                                     _project_tech_specs[project_token] = {
                                         "spec": canonical_spec,
                                         "generated_at": datetime.utcnow().isoformat(),
                                         "source": "bootstrap_actual_tree",
                                         "char_length": len(canonical_spec),
+                                        "project_root": project_root,  # Store here too for easy access
                                     }
                                     agent["output_log"].append({
                                         "time": datetime.utcnow().isoformat(),
