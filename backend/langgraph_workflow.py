@@ -126,6 +126,11 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
 
     async def _run_coordinated_agent(agent_id: str, assigned_task: dict = None) -> Dict[str, Any]:
         try:
+            # Pull per-agent git credentials from agents_config
+            agent_cfg = agents_config.get(agent_id) or {}
+            git_repo_url = agent_cfg.get("git_repo_url") or None
+            git_token = agent_cfg.get("git_token") or None
+
             # Use coordinated agent wrapper instead of direct agent call
             result = await run_coordinated_agent(
                 agent_id=agent_id,
@@ -135,6 +140,8 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
                 continuous=True,
                 ignore_running_check=True,
                 task_token=state.get("task_token"),
+                git_repo_url=git_repo_url,
+                git_token=git_token,
             )
             if isinstance(result, dict):
                 result.setdefault("agent_id", agent_id)

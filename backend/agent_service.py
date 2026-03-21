@@ -2775,6 +2775,63 @@ def _sync_local_branch_from_remote(
     return {"success": True, "base_branch": source_branch}
 
 
+async def _publish_agent_event(
+    project_token: Optional[str],
+    event_type: str,
+    agent_id: str,
+    **kwargs: Any,
+) -> None:
+    """Broadcast an agent lifecycle event to all subscribers on the project event bus."""
+    try:
+        state = _ensure_project_state(project_token)
+        bus: AgentEventBus = state.get("event_bus")
+        if bus is None:
+            return
+        await bus.publish({
+            "event": event_type,
+            "agent_id": agent_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            **kwargs,
+        })
+    except Exception:
+        pass  # never let event publishing crash the agent
+
+
+def _ledger_complete_task(
+    project_token: Optional[str],
+    task_id: str,
+    files_written: List[str] = None,
+    branch_name: str = "",
+) -> None:
+    """Mark a task as done in the in-memory task ledger."""
+    try:
+        state = _ensure_project_state(project_token)
+        ledger: Dict[str, TaskLedgerEntry] = state.setdefault("task_ledger", {})
+        entry = ledger.get(task_id)
+        if entry is None:
+            return
+        entry.status = "done"
+        entry.completed_at = time.time()
+        if files_written:
+            entry.files_written = list(files_written)
+        if branch_name:
+            entry.branch_name = branch_name
+    except Exception:
+        pass
+
+
+def _ledger_mark_merged(project_token: Optional[str], task_id: str) -> None:
+    """Mark a task's branch as merged in the in-memory task ledger."""
+    try:
+        state = _ensure_project_state(project_token)
+        ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
+        entry = ledger.get(task_id)
+        if entry is not None:
+            entry.merged = True
+    except Exception:
+        pass
+
+
 async def _mark_repo_bootstrap_result(
     project_token: Optional[str],
     source_agent: str,
@@ -12306,17 +12363,25 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     None
                 )
                 if task00 and not _task_status_is_done(task00.get("status")):
-                    msg = f"⏸️ Task {tid} waiting for bootstrap (TASK-00) to complete first"
-                    logger.info(f"[{agent_id}] {msg}")
-                    if agent:
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": msg
-                        })
-                    skip_reasons.setdefault("bootstrap_pending", 0)
-                    skip_reasons["bootstrap_pending"] += 1
-                    continue
+                    # Also check in-memory bootstrap state — if the scaffold was already pushed
+                    # the gate should open even if the external API hasn't updated yet
+                    _bs = state.get("repo_bootstrap", {})
+                    _bootstrap_released = (
+                        _bs.get("status") in ("completed", "not_required", "failed")
+                        or _bs.get("required") is False
+                    )
+                    if not _bootstrap_released:
+                        msg = f"⏸️ Task {tid} waiting for bootstrap (TASK-00) to complete first"
+                        logger.info(f"[{agent_id}] {msg}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": msg
+                            })
+                        skip_reasons.setdefault("bootstrap_pending", 0)
+                        skip_reasons["bootstrap_pending"] += 1
+                        continue
 
             # If the task explicitly has the "BLOCKED" tag or status, skip it
             task_tags = [str(tag).lower() for tag in (t.get("tags") or [])]
@@ -13162,7 +13227,16 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             try:
                 tech_spec = get_technical_spec(project_token or "")
-                if not tech_spec and project_token:
+                
+                # Bootstrap task: use task description directly as spec (no AI generation)
+                if bootstrap_role == "bootstrap" and not tech_spec:
+                    tech_spec = f"# Bootstrap Project Structure\n\n{task.get('description', '')}"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "🏗️ Bootstrap: using task description as canonical spec"
+                    })
+                elif not tech_spec and project_token:
                     # Generate tech spec for the first time (runs once per project)
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -13596,7 +13670,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # ═════════════════════════════════════════════════════════
             # PROCESS LINKED TASKS
             # ═════════════════════════════════════════════════════════
-            if linked_task_ids and use_git:
+            # Bootstrap agent skips linked tasks — they are left for other
+            # agents to pick up independently after the gate is released.
+            if linked_task_ids and use_git and bootstrap_role != "bootstrap":
                 all_ext_tasks = await _fetch_external_tasks(project_token)
                 linked_lookup = {str(_normalize_task_id(t) or t.get("external_id") or t.get("id")): t for t in all_ext_tasks}
 
@@ -13822,6 +13898,30 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # ═════════════════════════════════════════════════════════
             commit_result = None
             git_success = not use_git
+
+            # ── No-git bootstrap signal ───────────────────────────────
+            # When git is not configured, bootstrap_role is never set inside
+            # the git block, so _mark_repo_bootstrap_result is never called.
+            # Release the bootstrap gate here so dependent tasks can proceed.
+            if not use_git and not bootstrap_signal_sent:
+                _task_id_str = (task.get("task_id") or task.get("external_task_id") or "").strip().upper()
+                _task_title_str = (task.get("title") or task.get("taskName") or "").strip().lower()
+                _is_bootstrap = (_task_id_str == "TASK-00" or "project bootstrap" in _task_title_str)
+                if _is_bootstrap:
+                    await _mark_repo_bootstrap_result(
+                        project_token=project_token,
+                        source_agent=agent_id,
+                        success=True,
+                        source_branch=None,
+                        message=f"Bootstrap task completed by {agent_id} (no-git mode).",
+                    )
+                    bootstrap_signal_sent = True
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "Bootstrap gate released (no-git mode). Dependent tasks can now start.",
+                    })
+
             if use_git and branch_name:
                 agent["progress"] = 95
                 agent["progress_message"] = f"Committing and pushing to {branch_name}..."
@@ -13893,11 +13993,35 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             )
                             bootstrap_signal_sent = True
                             repo_base_branch = effective_branch
+                            
+                            # Capture actual file tree from container and store as canonical spec
+                            try:
+                                tree_result = subprocess.run(
+                                    ["docker", "exec", "-w", "/workspace", container_name, "find", ".", "-type", "f", "-o", "-type", "d"],
+                                    capture_output=True, text=True, timeout=30,
+                                )
+                                if tree_result.returncode == 0:
+                                    actual_tree = tree_result.stdout.strip()
+                                    canonical_spec = f"# Canonical Project Structure (from Bootstrap)\n\n```\n{actual_tree}\n```\n\n{task.get('description', '')}"
+                                    _project_tech_specs[project_token] = {
+                                        "spec": canonical_spec,
+                                        "generated_at": datetime.utcnow().isoformat(),
+                                        "source": "bootstrap_actual_tree",
+                                        "char_length": len(canonical_spec),
+                                    }
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": f"Captured actual file tree as canonical spec ({len(actual_tree)} chars)"
+                                    })
+                            except Exception as tree_err:
+                                logger.warning(f"Failed to capture bootstrap tree: {tree_err}")
+                            
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
                                 "type": "info",
                                 "message": (
-                                    "Bootstrap release sent. Waiting agents can now sync and start work."
+                                    "Bootstrap gate released after push. Other agents can now start work."
                                 )
                             })
                     else:
