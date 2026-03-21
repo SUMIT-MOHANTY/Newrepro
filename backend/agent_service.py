@@ -426,6 +426,12 @@ def build_external_agent_username(agent_id: Optional[str], fallback_name: Option
 
 _project_states: Dict[str, Dict[str, Any]] = {}
 
+# Simple module-level bootstrap completion flag.
+# Bootstrap agent sets this to True when it successfully pushes.
+# All other agents check this before picking tasks.
+# Keyed by project_token so multiple projects work independently.
+_bootstrap_pushed: Dict[str, bool] = {}
+
 
 def _new_repo_bootstrap_state() -> Dict[str, Any]:
     return {
@@ -2933,7 +2939,19 @@ def _repo_has_project_structure(container_name: str) -> bool:
     return (result.stdout or "").strip().lower() == "yes"
 
 
-def _choose_bootstrap_agent_id(project_token: Optional[str], fallback_agent_id: str) -> str:
+def _choose_bootstrap_agent_id(project_token: Optional[str], fallback_agent_id: str, current_task: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Choose which agent should be the bootstrap owner.
+    If current_task is TASK-00 (bootstrap task), return fallback_agent_id (the current agent).
+    Otherwise, pick the first running agent alphabetically.
+    """
+    # If the current agent has TASK-00, it's the bootstrap owner
+    if current_task:
+        task_id_str = (current_task.get("task_id") or current_task.get("external_task_id") or "").strip().upper()
+        task_title_str = (current_task.get("title") or current_task.get("taskName") or "").strip().lower()
+        if task_id_str == "TASK-00" or "project bootstrap" in task_title_str:
+            return fallback_agent_id
+    
     project_agents = _get_agent_states(project_token)
     running = sorted(
         aid for aid, data in project_agents.items()
@@ -3060,6 +3078,9 @@ async def _mark_repo_bootstrap_result(
             if success else f"Bootstrap failed on {source_agent}"
         )
     state["repo_bootstrap_event"].set()
+    # Signal all waiting agents via the simple module-level flag
+    _bootstrap_pushed[_project_key(project_token)] = True
+    logger.info(f"[{source_agent}] Bootstrap flag set for project {project_token}")
 
 
 async def _coordinate_repo_bootstrap(
@@ -3071,6 +3092,7 @@ async def _coordinate_repo_bootstrap(
     local_branch: str,
     needs_bootstrap: bool,
     project_token: Optional[str] = None,
+    current_task: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     state = _ensure_project_state(project_token)
     lock = state["repo_bootstrap_lock"]
@@ -3091,7 +3113,7 @@ async def _coordinate_repo_bootstrap(
         if bootstrap.get("required") is None:
             now = datetime.utcnow().isoformat()
             if needs_bootstrap:
-                bootstrap_agent = _choose_bootstrap_agent_id(project_token, agent_id)
+                bootstrap_agent = _choose_bootstrap_agent_id(project_token, agent_id, current_task=current_task)
                 bootstrap["required"] = True
                 bootstrap["agent_id"] = bootstrap_agent
                 bootstrap["status"] = "running"
@@ -4077,6 +4099,10 @@ async def _git_merge_worker(project_token: Optional[str] = None) -> None:
             git_agent["progress"] = 100
             git_agent["progress_message"] = "Git manager idle"
 
+        # ── PHASE 3: Integration check after all merges complete ──
+        # If all tasks are done and queue is empty, run integration validation
+        asyncio.create_task(_run_integration_check(project_token))
+
 
 async def wait_for_git_merge_drain(
     project_token: Optional[str] = None,
@@ -4095,6 +4121,430 @@ async def wait_for_git_merge_drain(
             return True
         await asyncio.sleep(max(0.2, poll_interval))
     return False
+async def _run_integration_check(project_token: Optional[str]) -> None:
+    """
+    PHASE 3: Integration agent — runs after all task branches are merged.
+    Checks the merged codebase for wiring issues (API mismatches, missing imports, etc.)
+    and applies fixes. Only runs once per project.
+    """
+    if not project_token:
+        return
+    state = _ensure_project_state(project_token)
+
+    # Guard: only run once
+    if state.get("integration_check_done"):
+        return
+
+    # Only run if there are merged branches
+    merged = state.get("merged_branches", [])
+    if not merged:
+        return
+
+    await asyncio.sleep(5)  # Let any in-flight merges settle
+
+    if state.get("git_merge_running") or state.get("git_merge_queue"):
+        return
+
+    state["integration_check_done"] = True
+    logger.info(f"[integration] Starting integration check for project {project_token}")
+
+    project_agents = _get_agent_states(project_token)
+    idle_agent_id = next(
+        (aid for aid, data in project_agents.items()
+         if not _is_system_agent_id(aid) and data.get("status") in ("idle", "completed")),
+        None
+    )
+    if not idle_agent_id:
+        return
+
+    agent = project_agents.get(idle_agent_id)
+    if not agent:
+        return
+
+    git_repo_url = agent.get("git_repo_url")
+    git_token = agent.get("git_token")
+    bootstrap_branch = state.get("repo_bootstrap", {}).get("source_branch")
+
+    if not git_repo_url or not bootstrap_branch:
+        return
+
+    agent["status"] = "running"
+    agent["progress"] = 0
+    agent["progress_message"] = "Integration check running..."
+    agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": "info",
+        "message": "🔧 Integration Agent: checking merged codebase for wiring issues..."
+    })
+
+    container_name = f"integration_{uuid.uuid4().hex[:8]}"
+    try:
+        subprocess.run(
+            ["docker", "run", "-d", "--name", container_name,
+             "python:3.11-slim", "sleep", "3600"],
+            capture_output=True, timeout=30,
+        )
+
+        auth_url = _build_git_auth_url(git_repo_url, git_token) if git_token else git_repo_url
+        clone = subprocess.run(
+            ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone.returncode != 0:
+            raise Exception(f"Clone failed: {clone.stderr[:200]}")
+
+        # Try integration branch first, fall back to bootstrap branch
+        for branch in [GIT_INTEGRATION_BRANCH, bootstrap_branch]:
+            r = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "checkout", branch],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0:
+                break
+
+        # Read key files for analysis
+        tree_result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "find", ".", "-type", "f", "-not", "-path", "./.git/*"],
+            capture_output=True, text=True, timeout=30,
+        )
+        actual_files = [f.strip() for f in (tree_result.stdout or "").splitlines() if f.strip()]
+
+        file_contents = {}
+        for fpath in actual_files[:30]:
+            if any(fpath.endswith(ext) for ext in [".py", ".ts", ".tsx", ".js", ".jsx", ".json"]):
+                try:
+                    cat = subprocess.run(
+                        ["docker", "exec", container_name, "cat", f"/workspace/{fpath.lstrip('./')}"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if cat.returncode == 0:
+                        file_contents[fpath] = cat.stdout[:3000]
+                except Exception:
+                    pass
+
+        if not file_contents:
+            return
+
+        files_block = "\n\n".join(
+            f"### {fp}\n```\n{content}\n```"
+            for fp, content in list(file_contents.items())[:20]
+        )
+        api_contract = (_project_tech_specs.get(project_token) or {}).get("api_contract", "")
+
+        messages = [
+            {"role": "system", "content": "You are a precise integration validator. Output only fixes in the specified format."},
+            {"role": "user", "content": f"""Review the merged codebase and identify ALL wiring issues that would prevent the app from running.
+
+API CONTRACT (source of truth):
+{api_contract[:3000] if api_contract else "Not available — infer from code."}
+
+MERGED CODEBASE:
+{files_block[:10000]}
+
+Find and fix:
+1. Frontend API calls that don't match backend endpoint paths
+2. Frontend field names that don't match backend response field names
+3. Missing imports or incorrect import paths
+4. CORS configuration missing or incorrect
+5. Environment variables referenced but not defined
+6. Port mismatches between frontend proxy and backend server
+
+For each issue, output:
+FIX: <description>
+COMMAND: <shell command using sed/echo to fix it in /workspace>
+
+If no issues: output NO_ISSUES_FOUND"""},
+        ]
+
+        fix_output = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=llm_gateway.resolve_url(),
+            api_key=llm_gateway.resolve_key(),
+            model=llm_gateway.resolve_model(),
+            timeout=120.0,
+        )
+
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"🔍 Integration analysis complete"
+        })
+
+        if "NO_ISSUES_FOUND" in fix_output:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "✅ Integration check passed — no wiring issues found"
+            })
+            return
+
+        # Apply fixes
+        fixes_applied = 0
+        for line in fix_output.splitlines():
+            if line.startswith("COMMAND:"):
+                cmd = line[len("COMMAND:"):].strip()
+                if cmd:
+                    try:
+                        r = subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", cmd],
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        if r.returncode == 0:
+                            fixes_applied += 1
+                    except Exception:
+                        pass
+
+        if fixes_applied > 0:
+            for cfg_cmd in [
+                ["git", "config", "user.email", "integration@agent.ai"],
+                ["git", "config", "user.name", "Integration Agent"],
+                ["git", "add", "-A"],
+            ]:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name] + cfg_cmd,
+                    capture_output=True, timeout=15,
+                )
+            commit = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "commit", "-m", f"fix: integration agent wiring fixes ({fixes_applied} fixes)"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if commit.returncode == 0:
+                push_url = _build_git_auth_url(git_repo_url, git_token) if git_token else git_repo_url
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "push", push_url, f"HEAD:{GIT_INTEGRATION_BRANCH}"],
+                    capture_output=True, timeout=60,
+                )
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"✅ Integration agent applied {fixes_applied} wiring fix(es) and pushed"
+                })
+    except Exception as e:
+        logger.warning(f"[integration] Integration check failed: {e}")
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"⚠️ Integration check error: {str(e)[:100]}"
+        })
+    finally:
+        agent["status"] = "idle"
+        agent["progress"] = 100
+        agent["progress_message"] = "Integration check complete"
+        try:
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+
+async def _run_integration_check(project_token: Optional[str]) -> None:
+    """
+    PHASE 3: Integration agent — runs after all task branches are merged.
+    Checks the merged codebase for wiring issues and applies fixes. Runs once per project.
+    """
+    if not project_token:
+        return
+    state = _ensure_project_state(project_token)
+    if state.get("integration_check_done"):
+        return
+    
+    # Only run if at least one non-bootstrap task has completed
+    completed_tasks = state.get("completed_tasks", [])
+    if not completed_tasks:
+        return
+    
+    merged = state.get("merged_branches", [])
+    if not merged:
+        return
+    await asyncio.sleep(5)
+    if state.get("git_merge_running") or state.get("git_merge_queue"):
+        return
+    state["integration_check_done"] = True
+    logger.info(f"[integration] Starting integration check for project {project_token}")
+
+    project_agents = _get_agent_states(project_token)
+    idle_agent_id = next(
+        (aid for aid, data in project_agents.items()
+         if not _is_system_agent_id(aid) and data.get("status") in ("idle", "completed")),
+        None
+    )
+    if not idle_agent_id:
+        return
+    agent = project_agents.get(idle_agent_id)
+    if not agent:
+        return
+
+    git_repo_url = agent.get("git_repo_url")
+    git_token = agent.get("git_token")
+    bootstrap_branch = state.get("repo_bootstrap", {}).get("source_branch")
+    if not git_repo_url or not bootstrap_branch:
+        return
+
+    agent["status"] = "running"
+    agent["progress"] = 0
+    agent["progress_message"] = "Integration check running..."
+    agent["output_log"].append({
+        "time": datetime.utcnow().isoformat(),
+        "type": "info",
+        "message": "🔧 Integration Agent: checking merged codebase for wiring issues..."
+    })
+
+    container_name = f"integration_{uuid.uuid4().hex[:8]}"
+    try:
+        subprocess.run(
+            ["docker", "run", "-d", "--name", container_name, "python:3.11-slim", "sleep", "3600"],
+            capture_output=True, timeout=30,
+        )
+        auth_url = _build_git_auth_url(git_repo_url, git_token) if git_token else git_repo_url
+        clone = subprocess.run(
+            ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone.returncode != 0:
+            raise Exception(f"Clone failed: {clone.stderr[:200]}")
+
+        for branch in [GIT_INTEGRATION_BRANCH, bootstrap_branch]:
+            r = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "checkout", branch],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0:
+                break
+
+        tree_result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "find", ".", "-type", "f", "-not", "-path", "./.git/*"],
+            capture_output=True, text=True, timeout=30,
+        )
+        actual_files = [f.strip() for f in (tree_result.stdout or "").splitlines() if f.strip()]
+
+        file_contents = {}
+        for fpath in actual_files[:30]:
+            if any(fpath.endswith(ext) for ext in [".py", ".ts", ".tsx", ".js", ".jsx", ".json"]):
+                try:
+                    cat = subprocess.run(
+                        ["docker", "exec", container_name, "cat", f"/workspace/{fpath.lstrip('./')}"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if cat.returncode == 0:
+                        file_contents[fpath] = cat.stdout[:3000]
+                except Exception:
+                    pass
+
+        if not file_contents:
+            return
+
+        files_block = "\n\n".join(
+            f"### {fp}\n```\n{content}\n```" for fp, content in list(file_contents.items())[:20]
+        )
+        api_contract = (_project_tech_specs.get(project_token) or {}).get("api_contract", "")
+
+        messages = [
+            {"role": "system", "content": "You are a precise integration validator. Output only fixes in the specified format."},
+            {"role": "user", "content": f"""Review the merged codebase and identify ALL wiring issues that would prevent the app from running.
+
+API CONTRACT (source of truth):
+{api_contract[:3000] if api_contract else "Not available — infer from code."}
+
+MERGED CODEBASE:
+{files_block[:10000]}
+
+Find and fix:
+1. Frontend API calls that don't match backend endpoint paths
+2. Frontend field names that don't match backend response field names
+3. Missing imports or incorrect import paths
+4. CORS configuration missing or incorrect
+5. Environment variables referenced but not defined
+6. Port mismatches between frontend proxy and backend server
+
+For each issue output:
+FIX: <description>
+COMMAND: <shell command using sed/echo to fix it in /workspace>
+
+If no issues: output NO_ISSUES_FOUND"""},
+        ]
+
+        fix_output = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=llm_gateway.resolve_url(),
+            api_key=llm_gateway.resolve_key(),
+            model=llm_gateway.resolve_model(),
+            timeout=120.0,
+        )
+
+        if "NO_ISSUES_FOUND" in fix_output:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "✅ Integration check passed — no wiring issues found"
+            })
+            return
+
+        fixes_applied = 0
+        for line in fix_output.splitlines():
+            if line.startswith("COMMAND:"):
+                cmd = line[len("COMMAND:"):].strip()
+                if cmd:
+                    try:
+                        r = subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", cmd],
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        if r.returncode == 0:
+                            fixes_applied += 1
+                    except Exception:
+                        pass
+
+        if fixes_applied > 0:
+            for cfg_cmd in [
+                ["git", "config", "user.email", "integration@agent.ai"],
+                ["git", "config", "user.name", "Integration Agent"],
+                ["git", "add", "-A"],
+            ]:
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name] + cfg_cmd,
+                    capture_output=True, timeout=15,
+                )
+            commit = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "commit", "-m", f"fix: integration agent wiring fixes ({fixes_applied} fixes)"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if commit.returncode == 0:
+                push_url = _build_git_auth_url(git_repo_url, git_token) if git_token else git_repo_url
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "push", push_url, f"HEAD:{GIT_INTEGRATION_BRANCH}"],
+                    capture_output=True, timeout=60,
+                )
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"✅ Integration agent applied {fixes_applied} wiring fix(es) and pushed"
+                })
+        else:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "⚠️ Integration issues found but no auto-fixes could be applied"
+            })
+    except Exception as e:
+        logger.warning(f"[integration] Integration check failed: {e}")
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"⚠️ Integration check error: {str(e)[:100]}"
+        })
+    finally:
+        agent["status"] = "idle"
+        agent["progress"] = 100
+        agent["progress_message"] = "Integration check complete"
+        try:
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=15)
+        except Exception:
+            pass
 
 
 async def _try_create_pr(
@@ -5855,11 +6305,10 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
         project_root = "/workspace"
         if project_token:
             spec_record = _project_tech_specs.get(project_token, {})
-            if spec_record.get("source") == "bootstrap_actual_tree":
+            if spec_record.get("source") in ("bootstrap_actual_tree", "bootstrap_with_api_contract"):
                 spec_text = spec_record.get("spec", "")
-                # Extract first-level directory from tree (e.g., "./my-todo-app/backend/app.py" → "my-todo-app")
-                import re
-                match = re.search(r'\./([^/\n]+)/', spec_text)
+                import re as _re2
+                match = _re2.search(r'\./([^/\n]+)/', spec_text)
                 if match:
                     project_root = f"/workspace/{match.group(1)}"
         
@@ -5917,10 +6366,10 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
             capture_output=True, text=True, timeout=15,
         )
 
-        if find_result.returncode != 0 or not find_result.stdout.strip():
+        if find_result.returncode != 0 or not (find_result.stdout or "").strip():
             return f"# No files found in {project_root}/"
 
-        files = sorted(find_result.stdout.strip().split("\n"))
+        files = sorted((find_result.stdout or "").strip().split("\n"))
 
         # Build tree output
         output_parts = []
@@ -11481,73 +11930,73 @@ def _get_ready_task_ids(
 
 def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Sort tasks for serial execution order:
-      1. Sprint (earlier sprints first, by sprint_id numeric order)
-      2. Priority (High → Medium → Low)
-      3. Task serial number (task_number, sequence, etc.)
-      4. Original index as final tiebreaker
+    Sort tasks for execution order with wave-based domain sequencing:
+      Wave 0: Bootstrap (TASK-00)
+      Wave 1: Backend core (models, DB, API routes) — no frontend deps
+      Wave 2: Frontend (can read backend API from wave 1)
+      Wave 3: Integration, tests, docker, deployment
+      Within each wave: Sprint → Priority → Serial number
     """
     ordered = list(tasks or [])
     indexed_tasks = list(enumerate(ordered))
     order_fields = (
-        "task_number",
-        "number",
-        "sequence",
-        "sequence_number",
-        "position",
-        "sort_order",
-        "display_order",
-        "order",
-        "serial_number",
-        "serial",
+        "task_number", "number", "sequence", "sequence_number",
+        "position", "sort_order", "display_order", "order", "serial_number", "serial",
     )
+    _PRIORITY_RANK = {"critical": 0, "urgent": 0, "high": 1, "medium": 2, "normal": 2, "low": 3, "none": 4}
 
-    # Priority ranking: lower number = higher priority
-    _PRIORITY_RANK = {
-        "critical": 0,
-        "urgent": 0,
-        "high": 1,
-        "medium": 2,
-        "normal": 2,
-        "low": 3,
-        "none": 4,
-    }
+    def _wave_sort_key(task: Dict[str, Any]) -> int:
+        """Assign wave based on task title/description keywords."""
+        title = (task.get("title") or task.get("taskName") or "").lower()
+        task_id_str = (task.get("task_id") or task.get("external_task_id") or "").strip().upper()
+        # Wave 0: Bootstrap
+        if task_id_str == "TASK-00" or "project bootstrap" in title or "bootstrap" in title:
+            return 0
+        # Wave 3: Integration, tests, deployment
+        if any(k in title for k in ["integration", "test", "deploy", "docker", "ci/cd", "e2e", "end-to-end"]):
+            return 3
+        # Wave 1: Backend core
+        if any(k in title for k in ["backend", "api", "endpoint", "route", "model", "database", "db", "schema",
+                                      "migration", "auth", "server", "flask", "django", "express", "fastapi"]):
+            return 1
+        # Wave 2: Frontend
+        if any(k in title for k in ["frontend", "ui", "component", "page", "view", "react", "vue", "angular",
+                                      "css", "style", "html", "interface", "dashboard", "form"]):
+            return 2
+        # Default: wave 1 (backend-ish tasks run before frontend)
+        return 1
 
     def _sprint_sort_key(task: Dict[str, Any]) -> float:
-        """Return a numeric sprint rank. Lower = earlier sprint."""
         sprint_id = task.get("sprint_id") or task.get("sprint")
         if isinstance(sprint_id, dict):
             sprint_id = sprint_id.get("id")
         rank = _coerce_task_execution_order(sprint_id)
         if rank is not None:
             return rank
-        # Try to extract sprint number from sprint_name (e.g. "Sprint 2 - Feature Development")
         sprint_name = str(task.get("sprint_name") or "").strip().lower()
         if sprint_name:
-            # "foundation" sprints come first
             if "foundation" in sprint_name:
                 return 0.0
             match = _re.search(r"sprint\s*(\d+)", sprint_name)
             if match:
                 return float(match.group(1))
-        return 10**9  # Unknown sprint goes last
+        return 10**9
 
     def _priority_sort_key(task: Dict[str, Any]) -> int:
-        """Return priority rank. Lower = higher priority."""
         raw = str(task.get("priority") or "medium").strip().lower()
         return _PRIORITY_RANK.get(raw, 2)
 
     def _serial_sort_key(index: int, task: Dict[str, Any]) -> float:
-        """Return task serial number from order fields."""
         for field in order_fields:
             explicit = _coerce_task_execution_order(task.get(field))
             if explicit is not None:
                 return explicit
         return float(index)
 
-    def _task_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[float, int, float, int]:
+    def _task_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[int, float, int, float, int]:
         index, task = item
         return (
+            _wave_sort_key(task),          # 0. Wave (bootstrap → backend → frontend → integration)
             _sprint_sort_key(task),        # 1. Sprint order
             _priority_sort_key(task),      # 2. Priority (High first)
             _serial_sort_key(index, task), # 3. Task serial number
@@ -12668,22 +13117,19 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 continue
 
             # ── TASK-00 BOOTSTRAP GATE ──
-            # If TASK-00 exists, check if bootstrap branch has been pushed to the repo.
-            # If the branch exists, bootstrap is complete and all tasks can proceed.
-            # Match by task_id "TASK-00" OR by title containing "Project Bootstrap"
+            # Bootstrap agent sets _bootstrap_pushed[project_key] = True when it pushes.
+            # All other agents wait on that flag — no git calls, no status checks.
             task_id_str = (t.get("task_id") or t.get("external_task_id") or "").strip().upper()
             task_title_str = (t.get("title") or t.get("taskName") or "").strip().lower()
             is_bootstrap_task = (
                 task_id_str == "TASK-00"
                 or "project bootstrap" in task_title_str
             )
-            
-            # If THIS task is the bootstrap task, allow it to proceed
+
             if is_bootstrap_task:
                 logger.info(f"[{agent_id}] Found bootstrap task {tid}, allowing it to proceed")
-                # Continue to next checks (don't skip, don't check if bootstrap is done)
-            elif not is_bootstrap_task:
-                # Check if bootstrap task exists in the task list
+            else:
+                # Check if a bootstrap task exists in the list
                 task00 = next(
                     (ext_t for ext_t in external_tasks
                      if (
@@ -12693,41 +13139,9 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     None
                 )
                 if task00:
-                    # Check if bootstrap branch exists in the repo (means bootstrap is complete)
-                    # Generate the bootstrap branch name dynamically
-                    bootstrap_branch_name = f"agent/task-{_branch_name_for_task(task00)}"
-                    bootstrap_complete = False
-                    
-                    # Try to check if the branch exists in the remote repo
-                    try:
-                        # Get git repo URL from agent state
-                        git_repo_url = None
-                        if agent:
-                            git_repo_url = agent.get("git_repo_url")
-                        
-                        if git_repo_url:
-                            import subprocess
-                            # Use git ls-remote to check if branch exists without cloning
-                            result = subprocess.run(
-                                ["git", "ls-remote", "--heads", git_repo_url, f"refs/heads/{bootstrap_branch_name}"],
-                                capture_output=True,
-                                text=True,
-                                timeout=10
-                            )
-                            if result.returncode == 0 and bootstrap_branch_name in result.stdout:
-                                bootstrap_complete = True
-                                logger.info(f"[{agent_id}] Bootstrap branch '{bootstrap_branch_name}' found in repo - gate released")
-                        else:
-                            # No git configured - assume bootstrap not needed
-                            bootstrap_complete = True
-                            logger.info(f"[{agent_id}] No git repo configured - skipping bootstrap gate")
-                    except Exception as e:
-                        logger.warning(f"[{agent_id}] Could not check bootstrap branch: {e}")
-                        # On error, assume bootstrap is complete to avoid blocking
-                        bootstrap_complete = True
-                    
-                    if not bootstrap_complete:
-                        msg = f"⏸️ Task {tid} waiting for bootstrap branch to be pushed"
+                    _proj_key = _project_key(project_token)
+                    if not _bootstrap_pushed.get(_proj_key, False):
+                        msg = f"⏸️ Task {tid} waiting for bootstrap to push scaffold"
                         logger.info(f"[{agent_id}] {msg}")
                         if agent:
                             agent["output_log"].append({
@@ -12759,42 +13173,66 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     continue
 
             if live_mem:
+                # If bootstrap is pushed, mark bootstrap task as completed in live_mem
+                # so dependency checks pass for tasks that depend on it.
+                # Also clear any stale file locks from previous runs.
+                _proj_key = _project_key(project_token)
+                if _bootstrap_pushed.get(_proj_key, False):
+                    for ext_t in external_tasks:
+                        _is_bt = (
+                            (ext_t.get("task_id") or ext_t.get("external_task_id") or "").strip().upper() == "TASK-00"
+                            or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
+                        )
+                        if _is_bt:
+                            _bt_id = str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id") or "")
+                            if _bt_id:
+                                live_mem.mark_task_completed(_bt_id)
+                                logger.info(f"[{agent_id}] Marked bootstrap task {_bt_id} as completed in live_mem")
+                    # Clear stale file locks — these are from previous runs and block new tasks
+                    with live_mem._lock:
+                        live_mem.file_locks.clear()
+
                 # Bootstrap task should NEVER be blocked by dependencies
                 # It runs first and has no prerequisites
                 if not is_bootstrap_task:
-                    task_deps = t.get("dependencies", [])
-                    if not task_deps:
-                        # FIX: linked_tasks points to parent containers (EPIC/FEATURE/STORY), not real dependencies
-                        # Only use linked_tasks as dependencies if they are executable task types (TASK/BUG)
-                        linked = t.get("linked_tasks", [])
-                        if linked:
-                            # Filter out parent containers - only keep TASK/BUG as real dependencies
-                            executable_deps = []
-                            for lt_id in linked:
-                                # Find the linked task in external_tasks to check its type
-                                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
-                                if linked_task:
-                                    linked_type = (linked_task.get("task_type") or "").upper()
-                                    if linked_type in ["TASK", "BUG"]:
-                                        executable_deps.append(str(lt_id))
-                            task_deps = executable_deps
+                    # If bootstrap is pushed, skip all dependency checks — scaffold is ready
+                    _proj_key = _project_key(project_token)
+                    if not _bootstrap_pushed.get(_proj_key, False):
+                        task_deps = t.get("dependencies", [])
+                        if not task_deps:
+                            linked = t.get("linked_tasks", [])
+                            if linked:
+                                executable_deps = []
+                                for lt_id in linked:
+                                    linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                                    if linked_task:
+                                        linked_type = (linked_task.get("task_type") or "").upper()
+                                        if linked_type in ["TASK", "BUG"]:
+                                            executable_deps.append(str(lt_id))
+                                task_deps = executable_deps
 
-                    if task_deps:
-                        live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+                        if task_deps:
+                            live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
 
-                    if not live_mem.check_task_dependencies(tid):
-                        blocking = live_mem.get_blocking_tasks(tid)
-                        logger.info(
-                            f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}"
-                        )
-                        skip_reasons["dependency_blocked"] += 1
-                        continue
+                        if not live_mem.check_task_dependencies(tid):
+                            blocking = live_mem.get_blocking_tasks(tid)
+                            logger.info(f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}")
+                            skip_reasons["dependency_blocked"] += 1
+                            continue
 
-                blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
-                if blocked:
-                    logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
-                    skip_reasons["conflict_blocked"] += 1
-                    continue
+                    # Skip conflict checks too if bootstrap just pushed and no tasks completed yet
+                    if not _bootstrap_pushed.get(_proj_key, False) or live_mem.completed_history:
+                        blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+                        if blocked:
+                            logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                            if agent:
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"⚠️ Task {tid} conflict: {reason}"
+                                })
+                            skip_reasons["conflict_blocked"] += 1
+                            continue
 
             # ── Step 3: Serial opt-in — atomically claim via external API ──
             try:
@@ -13185,19 +13623,66 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         agent["progress_message"] = "No tasks available"
         agent["current_task"] = None
         agent["last_run"] = now
-        agent["output_log"].append({
-            "time": now,
-            "type": "info",
-            "message": "No tasks available or all are completed/claimed."
-        })
-        return {
-            "success": False,
-            "agent_id": agent_id,
-            "error": "No tasks available or all are completed/claimed.",
-            "reason": "no_tasks",
-            "tasks_completed": 0,
-            "duration": 0,
-        }
+        
+        # ── BOOTSTRAP WAIT: if bootstrap is pending, poll until it's done then retry ──
+        _proj_key = _project_key(project_token)
+        _bs_state = _ensure_project_state(project_token)
+        _has_bootstrap = any(
+            (ext_t.get("task_id") or ext_t.get("external_task_id") or "").strip().upper() == "TASK-00"
+            or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
+            for ext_t in (await _fetch_external_tasks(project_token) or [])
+        )
+        if _has_bootstrap and not _bootstrap_pushed.get(_proj_key, False):
+            agent["output_log"].append({
+                "time": now,
+                "type": "info",
+                "message": "⏳ Bootstrap not yet pushed. Waiting for scaffold before picking task..."
+            })
+            # Poll every 15s until bootstrap flag is set (max 30 min)
+            for _ in range(120):
+                await asyncio.sleep(15)
+                if _bootstrap_pushed.get(_proj_key, False):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "✅ Bootstrap pushed! Picking up task now..."
+                    })
+                    # Retry task pick
+                    task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+                    if task:
+                        task = _apply_master_task_metadata(task, project_token=project_token)
+                        if isinstance(task, dict) and project_token:
+                            task.setdefault("_project_token", project_token)
+                        agent["current_task"] = task
+                        break
+            if not task:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": "No tasks available after bootstrap wait."
+                })
+                return {
+                    "success": False,
+                    "agent_id": agent_id,
+                    "error": "No tasks available after bootstrap wait.",
+                    "reason": "no_tasks",
+                    "tasks_completed": 0,
+                    "duration": 0,
+                }
+        else:
+            agent["output_log"].append({
+                "time": now,
+                "type": "info",
+                "message": "No tasks available or all are completed/claimed."
+            })
+            return {
+                "success": False,
+                "agent_id": agent_id,
+                "error": "No tasks available or all are completed/claimed.",
+                "reason": "no_tasks",
+                "tasks_completed": 0,
+                "duration": 0,
+            }
     
     # If no task found but IN continuous mode, enter polling loop
     # (task will be None, triggering the polling logic in the main while loop below)
@@ -13210,14 +13695,53 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     if task:
         agent["status"] = "running"
     else:
-        # Continuous mode with no initial task — start in idle, will poll below
+        # Continuous mode with no initial task — check if bootstrap is pending
         agent["status"] = "idle"
         agent["progress_message"] = "Waiting for tasks..."
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": "⏸️ No tasks available yet. Entering continuous polling mode (will check every 30s)..."
-        })
+        
+        # ── BOOTSTRAP WAIT: if bootstrap is pending, poll until it's done then retry ──
+        _proj_key = _project_key(project_token)
+        _has_bootstrap = any(
+            (ext_t.get("task_id") or ext_t.get("external_task_id") or "").strip().upper() == "TASK-00"
+            or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
+            for ext_t in (await _fetch_external_tasks(project_token) or [])
+        )
+        if _has_bootstrap and not _bootstrap_pushed.get(_proj_key, False):
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "⏳ Bootstrap not yet pushed. Waiting for scaffold before picking task..."
+            })
+            # Poll every 15s until bootstrap flag is set (max 30 min)
+            for _ in range(120):
+                await asyncio.sleep(15)
+                if _bootstrap_pushed.get(_proj_key, False):
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "✅ Bootstrap pushed! Picking up task now..."
+                    })
+                    # Retry task pick
+                    task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+                    if task:
+                        task = _apply_master_task_metadata(task, project_token=project_token)
+                        if isinstance(task, dict) and project_token:
+                            task.setdefault("_project_token", project_token)
+                        agent["current_task"] = task
+                        agent["status"] = "running"
+                        break
+            if not task:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": "⏸️ No tasks available after bootstrap wait. Entering continuous polling mode (will check every 30s)..."
+                })
+        else:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "⏸️ No tasks available yet. Entering continuous polling mode (will check every 30s)..."
+            })
     agent["resume_pending_task"] = False
     # Don't clear output_log — keep history so users can see what happened
     # agent["output_log"] = []  # REMOVED: This was erasing all previous logs
@@ -13277,6 +13801,54 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     repo_base_branch = bootstrap_state.get("source_branch") or "main"
     bootstrap_role = "none"
     bootstrap_signal_sent = False
+
+    # ── CONTINUOUS MODE: Poll for tasks if none available initially ──
+    if not task and continuous:
+        max_idle_polls = 120  # 120 * 30s = 1 hour max idle time
+        poll_count = 0
+        
+        while poll_count < max_idle_polls and not task:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"⏸️ No tasks available. Checking again in 30s... (poll {poll_count + 1}/{max_idle_polls})"
+            })
+            
+            await asyncio.sleep(30)  # Wait 30 seconds
+            
+            # Check for new tasks
+            task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+            if task:
+                task = _apply_master_task_metadata(task, project_token=project_token)
+                if isinstance(task, dict) and project_token:
+                    task.setdefault("_project_token", project_token)
+                agent["current_task"] = task
+                agent["status"] = "running"
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"✓ New task found! Starting work..."
+                })
+                break  # Exit polling loop, continue with task
+            
+            poll_count += 1
+        
+        # If no task found after max polls, exit gracefully
+        if not task:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "⏹️ No tasks available after 1 hour. Agent stopping."
+            })
+            agent["status"] = "idle"
+            return {
+                "success": False,
+                "agent_id": agent_id,
+                "error": "No tasks available after continuous polling.",
+                "reason": "no_tasks",
+                "tasks_completed": 0,
+                "duration": 0,
+            }
 
     try:
         # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
@@ -13471,6 +14043,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         local_branch=first_branch,
                         needs_bootstrap=bool(git_result.get("needs_bootstrap")),
                         project_token=project_token,
+                        current_task=task,
                     )
                     bootstrap_role = bootstrap_info.get("role", "none")
                     if bootstrap_info.get("base_branch"):
@@ -13563,47 +14136,6 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 task_title=task.get("title") or task.get("taskName") or "",
                 branch_name=branch_name or "",
             )
-
-            # ── Bootstrap gate: wait for + rebase onto bootstrap branch ──────
-            # Non-bootstrap agents must start from the scaffold the bootstrap
-            # agent created. Poll git ls-remote until the branch exists, then
-            # rebase. This replaces the silent integration-branch-merge that
-            # used to be skipped when the branch wasn't found yet.
-            if bootstrap_role != "bootstrap" and use_git and git_repo_url:
-                external_tasks_for_bootstrap = await _fetch_external_tasks(project_token)
-                bootstrap_task_rec = next(
-                    (
-                        t for t in external_tasks_for_bootstrap
-                        if (
-                            (t.get("task_id") or t.get("external_task_id") or "").strip().upper() == "TASK-00"
-                            or "project bootstrap" in (t.get("title") or t.get("taskName") or "").strip().lower()
-                        )
-                    ),
-                    None,
-                )
-                if bootstrap_task_rec:
-                    bootstrap_br = f"agent/task-{_branch_name_for_task(bootstrap_task_rec)}"
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"⏳ Waiting for bootstrap branch: {bootstrap_br}"
-                    })
-                    rebased = await _wait_for_and_rebase_bootstrap_branch(
-                        container_name=container_name,
-                        bootstrap_branch=bootstrap_br,
-                        repo_url=git_repo_url,
-                        token=git_token or "",
-                        agent_id=agent_id,
-                    )
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": (
-                            f"✅ Rebased onto {bootstrap_br}"
-                            if rebased
-                            else f"⚠️ Bootstrap wait timed out — proceeding from current state"
-                        ),
-                    })
 
             # ── LAYER 1: Retrieve or generate Technical Spec ────────
             tech_spec = ""
@@ -13993,14 +14525,17 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             capture_root = "/workspace"
             if project_token:
                 spec_record = _project_tech_specs.get(project_token, {})
-                if spec_record.get("source") == "bootstrap_actual_tree":
+                # Works for both bootstrap_actual_tree and bootstrap_with_api_contract sources
+                if spec_record.get("source") in ("bootstrap_actual_tree", "bootstrap_with_api_contract"):
                     spec_text = spec_record.get("spec", "")
-                    import re
-                    match = re.search(r'\./([^/\n]+)/', spec_text)
+                    import re as _re2
+                    match = _re2.search(r'\./([^/\n]+)/', spec_text)
                     if match:
                         capture_root = f"/workspace/{match.group(1)}"
             
             workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name, capture_root)
+            if workspace_tree is None:
+                workspace_tree = ""
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
@@ -14530,6 +15065,82 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                         "type": "info",
                                         "message": f"Captured actual file tree as canonical spec ({len(actual_tree)} chars)"
                                     })
+
+                                    # ── PHASE 1: Generate API Contract from bootstrap scaffold ──
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": "🔗 Generating API contract from bootstrap scaffold..."
+                                    })
+                                    try:
+                                        scaffold_contents = {}
+                                        key_files = [f.strip() for f in actual_tree.splitlines()
+                                                     if f.strip() and not f.strip().startswith("./.")
+                                                     and any(f.strip().endswith(ext) for ext in
+                                                             [".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yml", ".yaml"])]
+                                        for fpath in key_files[:20]:
+                                            try:
+                                                cat = subprocess.run(
+                                                    ["docker", "exec", container_name, "cat", f"/workspace/{fpath.lstrip('./')}"],
+                                                    capture_output=True, text=True, timeout=5,
+                                                )
+                                                if cat.returncode == 0 and cat.stdout.strip():
+                                                    scaffold_contents[fpath] = cat.stdout[:2000]
+                                            except Exception:
+                                                pass
+
+                                        if scaffold_contents:
+                                            files_block = "\n\n".join(
+                                                f"### {fp}\n```\n{content}\n```"
+                                                for fp, content in scaffold_contents.items()
+                                            )
+                                            all_tasks_for_contract = state.get("tasks", [task])
+                                            task_titles = "\n".join(
+                                                f"- {t.get('title') or t.get('taskName', '')}"
+                                                for t in all_tasks_for_contract[:20]
+                                            )
+                                            contract_messages = [
+                                                {"role": "system", "content": "You are a precise API contract generator. Output only the contract, no preamble."},
+                                                {"role": "user", "content": f"""Given the bootstrap scaffold below, generate a precise API contract ALL agents must follow.
+
+PROJECT TASKS:
+{task_titles}
+
+BOOTSTRAP SCAFFOLD FILES:
+{files_block[:8000]}
+
+Generate a concise API CONTRACT with:
+## API ENDPOINTS
+List every endpoint: METHOD /path - description, request body fields (exact names+types), response fields (exact names+types)
+## DATA MODELS
+Every model/schema with exact field names and types
+## SHARED TYPES
+Types/interfaces shared between frontend and backend
+## NAMING CONVENTION
+State clearly: snake_case or camelCase for API fields
+
+Be extremely specific. Every field name must be exact. This is the single source of truth."""},
+                                            ]
+                                            api_contract = await llm_gateway.call_llm_and_extract(
+                                                messages=contract_messages,
+                                                api_url=llm_gateway.resolve_url(),
+                                                api_key=llm_gateway.resolve_key(),
+                                                model=llm_gateway.resolve_model(),
+                                                timeout=120.0,
+                                            )
+                                            if api_contract:
+                                                full_spec = f"{canonical_spec}\n\n# API CONTRACT\n\n{api_contract}"
+                                                _project_tech_specs[project_token]["spec"] = full_spec
+                                                _project_tech_specs[project_token]["api_contract"] = api_contract
+                                                _project_tech_specs[project_token]["char_length"] = len(full_spec)
+                                                _project_tech_specs[project_token]["source"] = "bootstrap_with_api_contract"
+                                                agent["output_log"].append({
+                                                    "time": datetime.utcnow().isoformat(),
+                                                    "type": "info",
+                                                    "message": f"✅ API contract generated ({len(api_contract)} chars) — all agents will use this"
+                                                })
+                                    except Exception as contract_err:
+                                        logger.warning(f"[{agent_id}] API contract generation failed: {contract_err}")
                             except Exception as tree_err:
                                 logger.warning(f"Failed to capture bootstrap tree: {tree_err}")
                             
@@ -14892,66 +15503,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
 
             # ═════════════════════════════════════════════════════════
-            # PICK NEXT TASK (only if continuous mode)
+            # AGENT AFFINITY DISABLED: Each agent does ONE task then stops
+            # This allows parallel execution - other agents can pick up remaining tasks
             # ═════════════════════════════════════════════════════════
-            if not continuous:
-                task = None  # exit loop
-            else:
-                task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
-                task = _apply_master_task_metadata(task, project_token=project_token)
-                if isinstance(task, dict) and project_token:
-                    task.setdefault("_project_token", project_token)
-                if task:
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"⏩ Moving to next task..."
-                    })
-                else:
-                    # CONTINUOUS MODE: Keep polling for new tasks
-                    agent["status"] = "idle"
-                    agent["progress"] = 0
-                    agent["progress_message"] = "Waiting for new tasks..."
-                    agent["current_task"] = None
-                    _invalidate_cache_if_available(project_token=project_token)
-                    
-                    # Poll for new tasks every 30 seconds
-                    max_idle_polls = 120  # 120 * 30s = 1 hour max idle time
-                    poll_count = 0
-                    
-                    while poll_count < max_idle_polls:
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"⏸️ No tasks available. Checking again in 30s... (poll {poll_count + 1}/{max_idle_polls})"
-                        })
-                        
-                        await asyncio.sleep(30)  # Wait 30 seconds
-                        
-                        # Check for new tasks
-                        task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
-                        task = _apply_master_task_metadata(task, project_token=project_token)
-                        if isinstance(task, dict) and project_token:
-                            task.setdefault("_project_token", project_token)
-                        
-                        if task:
-                            agent["output_log"].append({
-                                "time": datetime.utcnow().isoformat(),
-                                "type": "info",
-                                "message": f"✓ New task found! Resuming work..."
-                            })
-                            break  # Exit polling loop, continue with new task
-                        
-                        poll_count += 1
-                    
-                    # If no task found after max polls, exit gracefully
-                    if not task:
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": "⏹️ No tasks available after 1 hour. Agent stopping."
-                        })
-                        task = None  # Exit main loop
+            task = None  # Always exit after one task (agent affinity disabled)
 
         # ── END OF WHILE LOOP ────────────────────────────────────────
 

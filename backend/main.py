@@ -6012,7 +6012,7 @@ async def run_all_agents(
                 agent_id=agent_id,
                 project_token=project_token,
                 task_token=task_token,
-                continuous=False,  # Each agent does one task then stops
+                continuous=True,  # Agents keep picking tasks until all are done
                 git_repo_url=provided_repo or None,
                 git_token=provided_token or None,
             )
