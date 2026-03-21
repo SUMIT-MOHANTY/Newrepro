@@ -29,7 +29,7 @@ const hasCompletedStoredAnalysis = (analysis) => {
 };
 
 // Utility: layout architecture graph with dagre so nodes don't overlap
-const layoutArchitectureGraph = (nodes, edges, direction = 'LR') => {
+const layoutArchitectureGraph = (nodes, edges, direction = 'TB') => {
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: direction, nodesep: 80, ranksep: 120 });
     g.setDefaultEdgeLabel(() => ({}));
