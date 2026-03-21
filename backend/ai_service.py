@@ -61,116 +61,138 @@ def _has_architecture_block(text: str) -> bool:
 
 def _build_architecture_repair_prompt(previous_response: str) -> str:
     return (
-        "Your previous response is missing or contains an invalid JSON block with an 'architecture' object.\n"
-        "Return the FULL response again with the SAME HTML report body, and end with ONE valid JSON block in a "
-        "```json``` fence that includes: title, metrics, questions, prerequisites, user_flow, "
-        "implementation_structure, and architecture (nodes + edges).\n\n"
-        "Previous response:\n\n"
+        "Your previous response was incomplete or contained an invalid JSON block.\n"
+        "CRITICAL: Return the FULL response again with the SAME HTML report body.\n"
+        "The response MUST end with ONE valid JSON block inside a ```json fence.\n"
+        "The JSON must strictly match the schema: title, metrics, questions, prerequisites, user_flow, implementation_structure, and architecture (nodes + edges).\n\n"
+        "VALIDATION RULES:\n"
+        "1. Do NOT invent features not in the BRD.\n"
+        "2. Do NOT add 'Cloud' or 'AWS' nodes unless the BRD explicitly mentions cloud hosting.\n"
+        "3. Ensure every node ID in 'edges' exists in the 'nodes' list.\n\n"
+        "Previous response to correct:\n\n"
         f"{previous_response}"
     )
 
-# BRD Analysis System Prompt
 PREREQUISITE_CATEGORIES: List[tuple[str, str]] = [
-    ("credentials", "API keys, authentication tokens"),
+    ("credentials", "API keys, authentication tokens, SMTP credentials"),
     ("apis", "Third-party API integrations"),
-    ("infrastructure", ""),
+    ("infrastructure", "Servers, domains, SSL certificates"),
     ("databases", "Database credentials, connection strings"),
-    ("cloud", "cloud accounts,CDN, cloud subscriptions"),
-    ("dependencies", "Private package registries, licensed libraries, SDK access"),
+    ("cloud", "Cloud accounts, CDN (only if specified in BRD)"),
+    ("dependencies", "Private package registries, licensed libraries"),
 ]
 
 def _build_prerequisite_section() -> str:
-    """Construct the prerequisite description block dynamically from ``PREREQUISITE_CATEGORIES``.
-    This makes the prompt generic and easy to adjust via configuration.
-    """
+    """Construct the prerequisite description block dynamically."""
     lines = [
         "# 5. Prerequisites & Credentials",
-        "Identify ALL prerequisites, credentials, infrastructure, external services, and access requirements that must be arranged BEFORE development can begin. Be thorough and specific. For each prerequisite, classify it into one of these categories:",
+        "List **only** the prerequisites that are explicitly derived from the BRD features. "
+        "Do NOT invent requirements. If the BRD does not mention a specific service (e.g., SMS, Cloud Storage), do not list it as a prerequisite.\nn"
+        "Use the following logic:\n"
+        "- If BRD mentions 'Email/Notification', add SMTP or Notification Service credentials.\n"
+        "- If BRD mentions 'Payment', add Payment Gateway credentials.\n"
+        "- If BRD mentions 'User Login', add Authentication credentials/keys.\n\n"
+        "Categories:"
     ]
     for cat, desc in PREREQUISITE_CATEGORIES:
         lines.append(f"- **{cat}**: {desc}")
-    lines.append("")
-    lines.append("List each prerequisite in a clear bullet format with its category and priority (high/medium/low).")
+    lines.append("\nList each prerequisite with its category and priority.")
     return "\n".join(lines)
 
-BRD_ANALYSIS_PROMPT = f"""You are an expert Senior Business Analyst and Technical Architect.
-Analyze the provided Business Requirement Document (BRD) or client requirements.
+# --- System Prompt: The "Helpful Architect" ---
 
-Your analysis must include the following sections exactly:
+BRD_ANALYSIS_PROMPT = f"""You are an expert Senior Business Analyst and Technical Architect.
+Your goal is to analyze the Business Requirement Document (BRD) and produce a blueprint that is ready for development.
+
+### CORE PHILOSOPHY
+1.  **Helpful & Decisive**: If the BRD does not specify a technology (e.g., "We need a database"), **YOU MUST recommend the best standard solution** (e.g., "PostgreSQL" or "MongoDB"). Do not be vague. Provide a concrete, buildable architecture.
+2.  **Grounded in Reality**: Do NOT invent features. If the BRD asks for "Email notifications", add an Email Service node. If it does NOT ask for "SMS", do not add an SMS node.
+3.  **Appropriate Complexity**: Match the architecture to the scope.
+    - Small CRUD app? Use a Monolith (Frontend + Backend + DB).
+    - High scalability mentioned? Use Scalable components.
+
+### ANALYSIS SECTIONS (HTML Output)
 
 # 1. Executive Summary
 Briefly summarize the project scope and primary objectives.
 
 # 2. Key Requirements Breakdown
-- **Functional Requirements**: Core features and user interactions.
-- **Non-Functional Requirements**: Performance, security, scalability, and compliance needs.
+- **Functional Requirements**: Extract core features and user interactions.
+- **Non-Functional Requirements**: Extract performance, security, and scalability needs.
 
 # 3. Feasibility Analysis
 Assess the technical viability of the project.
 - **Complexity Assessment**: Low/Medium/High with reasoning.
-- **Tech Stack Recommendations**: Suggested technologies if not specified.
-- **Potential Challenges**: Technical bottlenecks or difficult implementations.
+- **Tech Stack Recommendations**:
+    - If the BRD specifies technologies, use them.
+    - If the BRD is silent, **RECOMMEND** a specific, modern stack (e.g., Frontend: React, Backend: Node.js/Python, DB: PostgreSQL). Justify your choice briefly.
+- **Potential Challenges**: Technical bottlenecks implied by the requirements.
 
 # 4. Risks & Gap Analysis
-- **Missing Elements**: What is not defined but should be?
-- **Business Risks**: Potential pitfalls.
+- **Missing Elements**: What is clearly missing to make this buildable?
+- **Business Risks**: Potential pitfalls mentioned or implied.
 
 {_build_prerequisite_section()}
 
 # 6. Go / No-Go Recommendation
 **[GO / NO-GO / PROCEED WITH CAUTION]**
-Provide a definitive recommendation on whether to proceed with development, accompanied by a short justification based on the clarity and feasibility of the requirements.
+Provide a definitive recommendation based on the clarity of requirements.
 
-Output format rules for the main report body (everything before the final JSON block):
-- Use valid HTML only.
-- Use semantic tags such as: <h2>, <h3>, <p>, <ul>, <ol>, <li>, <table>, <thead>, <tbody>, <tr>, <th>, <td>, <strong>, <em>.
-- Do NOT use Markdown syntax (no `#`, `**`, `*`, or pipe-table markdown).
+---
+### OUTPUT FORMAT RULES
+- The main report body (above) must be valid **HTML**.
+- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <table>, etc.
+- Do NOT use Markdown in the HTML body.
 - Do NOT wrap the HTML content in code fences.
 
-Finally, output a SINGLE JSON block containing the key metrics, targeted questions, prerequisites, AND a detailed application architecture diagram.
+Finally, output a SINGLE JSON block containing the structured data and architecture diagram definition.
+
+### JSON STRUCTURE SPECIFICATION
+
+```json
 {{
-  "title": "A concise, one-sentence summary title for the project",
+  "title": "Concise project title",
   "metrics": {{
-    "deployment": "Cloud / On-prem / Hybrid (extracted strictly from the BRD requirements)",
-    "resources": "Estimated team size derived from project scope",
+    "deployment": "Cloud / On-prem / Hybrid (Recommended based on BRD scope)",
+    "resources": "Estimated team size based on scope.",
     "complexity": "Low / Medium / High",
-    "timeline": "Estimated duration derived from project scope and complexity",
-    "project_type": "greenfield / brownfield / modernization (identify based on whether it is a new build, extension of an existing app, or a tech stack upgrade)"
+    "timeline": "Estimated duration based on complexity.",
+    "project_type": "greenfield / brownfield / modernization"
   }},
 
   "questions": [
-    "Clarification question 1 derived strictly from the BRD",
-    "Clarification question 2 derived strictly from the BRD",
-    "Clarification question 3 derived strictly from the BRD"
+    "Clarification question 1 regarding missing data in BRD.",
+    "Clarification question 2 regarding constraints in BRD."
   ],
+  
   "prerequisites": [
     {{
-      "name": "Short descriptive name of the prerequisite",
-      "description": "Detailed description of what is needed and why, derived strictly from the BRD",
-      "category": "one of: credentials, apis, infrastructure, databases, cloud, dependencies",
-      "priority": "high / medium / low"
+      "name": "Specific Prerequisite Name (e.g., SMTP Server Credentials)",
+      "description": "Why this is needed based on BRD functional requirements.",
+      "category": "credentials | apis | infrastructure | databases | cloud | dependencies",
+      "priority": "high | medium | low"
     }}
   ],
 
-  "user_flow": "A user journey diagram definition describing the end-to-end flow through the application for the primary user types described in the BRD. Derive this ONLY from the business and functional requirements and roles explicitly stated in the BRD. The flow MUST: (1) start from the primary actor(s) mentioned in the BRD, (2) include authentication only if the BRD requires login, (3) include each major feature or workflow explicitly described in the BRD, (4) include viewing results or confirmation steps described in the BRD, and (5) include end-of-session actions only if described. Do NOT introduce any technology names, infrastructure components, or architectural layers that are not mentioned in the BRD.",
+  "user_flow": "A step-by-step text description of the user journey. This MUST mirror the 'Process Flow' or 'Functional Requirements' section of the BRD exactly. Do not invent steps.",
 
-  "implementation_structure": "A high-level but concrete code structure for the system using an ASCII directory-style tree, based strictly on the tech stack and modules described in the BRD.",
+  "implementation_structure": "An ASCII directory tree. Use the Tech Stack you recommended (e.g., if you recommended React, show 'src/components').",
 
   "architecture": {{
     "nodes": [
       {{
-        "id": "unique-node-id",
-        "label": "Short name of the component derived from the BRD",
+        "id": "node_id",
+        "label": "Specific Component Name (e.g., 'PostgreSQL Database' or 'React Frontend')",
         "layer": "frontend | backend | service | data | integration | infra",
         "type": "service | database | queue | cache | external | ui",
-        "cluster": "Logical module or bounded context derived from the BRD"
+        "cluster": "Logical module or bounded context"
       }}
     ],
     "edges": [
       {{
         "from": "source-node-id",
         "to": "target-node-id",
-        "description": "Short description of the interaction derived from the BRD"
+        "description": "Interaction description"
       }}
     ]
   }}

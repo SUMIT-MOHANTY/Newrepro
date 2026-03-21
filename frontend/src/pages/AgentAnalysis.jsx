@@ -1577,7 +1577,7 @@ export default function AgentAnalysis({
                 const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
                 const edges = Array.isArray(arch.edges) ? arch.edges : [];
 
-                const rfNodes = layoutArchitectureGraph(nodes, edges, 'LR');
+                const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
 
                 const rfEdges = edges.map((edge, idx) => ({
                     id: String(edge.id || `e-${idx}`),

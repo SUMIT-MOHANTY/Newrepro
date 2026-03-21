@@ -103,7 +103,8 @@ const parseAIResponse = (text) => {
             questions: lastValidFenced.parsed.questions || [],
             metrics: lastValidFenced.parsed.metrics || null,
             title: lastValidFenced.parsed.title || null,
-            prerequisites: lastValidFenced.parsed.prerequisites || []
+            prerequisites: lastValidFenced.parsed.prerequisites || [],
+            architecture: lastValidFenced.parsed.architecture || null
         };
     }
 
@@ -111,7 +112,7 @@ const parseAIResponse = (text) => {
     if (lastJsonLikeFence) {
         const before = source.slice(0, lastJsonLikeFence.index);
         const after = source.slice(lastJsonLikeFence.index + lastJsonLikeFence.fullMatch.length);
-        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null, prerequisites: [] };
+        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null, prerequisites: [], architecture: null };
     }
 
     // 2) Fallback: parse trailing raw JSON object without fences
@@ -126,12 +127,13 @@ const parseAIResponse = (text) => {
                 questions: parsed.questions || [],
                 metrics: parsed.metrics || null,
                 title: parsed.title || null,
-                prerequisites: parsed.prerequisites || []
+                prerequisites: parsed.prerequisites || [],
+                architecture: parsed.architecture || null
             };
         }
     }
 
-    return { report: source, questions: [], metrics: null, title: null, prerequisites: [] };
+    return { report: source, questions: [], metrics: null, title: null, prerequisites: [], architecture: null };
 };
 
 const isLikelyHtml = (content = '') => {
@@ -1733,7 +1735,7 @@ const Dashboard = ({
             }
 
             const data = await response.json();
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(data.analysis || '');
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
@@ -1749,6 +1751,7 @@ const Dashboard = ({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
@@ -1919,7 +1922,7 @@ const Dashboard = ({
                             }
 
                             // Parse questions dynamically during stream
-                            const { report, questions, metrics, prerequisites } = parseAIResponse(aiText);
+                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText);
                             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
                             // Update UI gracefully
@@ -1932,7 +1935,8 @@ const Dashboard = ({
                                         reasoning: aiReasoning,
                                         model: payload.model || 'Streaming...',
                                         metrics: metrics,
-                                        prerequisites: prerequisites
+                                        prerequisites: prerequisites,
+                                        architecture: architecture
                                     }
                                 }
                             }));
@@ -1945,7 +1949,7 @@ const Dashboard = ({
             }
 
             // Save history after stream completes
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(aiText);
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
             const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
@@ -1959,6 +1963,7 @@ const Dashboard = ({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
