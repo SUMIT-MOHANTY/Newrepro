@@ -69,6 +69,7 @@ async def wait_for_container_ready(base_url: str, max_attempts: int = 5, delay: 
     """
     Wait for container to be ready by checking if it responds to requests.
     This handles the case where containers are dynamically starting.
+    First tries the /health endpoint, then falls back to HEAD request.
     """
     import asyncio
     import time
@@ -76,6 +77,22 @@ async def wait_for_container_ready(base_url: str, max_attempts: int = 5, delay: 
     for attempt in range(max_attempts):
         try:
             session = get_proxy_session()
+            
+            # First try the health endpoint if available
+            try:
+                health_resp = session.get(f"{base_url}/health", timeout=(2, 5))
+                if health_resp.status_code == 200:
+                    health_data = health_resp.json()
+                    if health_data.get("status") == "healthy":
+                        print(f"✅ Container {base_url} is healthy on attempt {attempt + 1}")
+                        return True
+                    else:
+                        print(f"⏳ Container responding but not healthy yet: {health_data.get('reason', 'unknown')}")
+            except:
+                # Health endpoint not available, try regular HEAD request
+                pass
+            
+            # Fallback to HEAD request
             resp = session.head(base_url, timeout=(2, 5))  # Quick check
             if resp.status_code < 500:  # 4xx is fine, means container is responding
                 print(f"✅ Container {base_url} is ready on attempt {attempt + 1}")
@@ -718,7 +735,8 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                 
                 history = [{"role": msg.role, "content": msg.content} for msg in request.history]
                 history.append({"role": "user", "content": request.prompt})
-                history.append({"role": "assistant", "content": message if message else "I've generated the code for you!"})
+                # Always use the AI's message - it should never be empty
+                history.append({"role": "assistant", "content": message})
                 
                 # Save with branch name so it persists across commits in the same branch
                 await project_manager.save_chat_version(project_id, current_branch, history)
@@ -740,7 +758,7 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                     preview_url = None
 
         return GenerateResponse(
-            message=message if message else "I've generated the code for you!",
+            message=message,  # Always return AI's message directly
             code=code,
             project_id=project_id,
             version_id=version_id,
@@ -1404,9 +1422,9 @@ async def proxy_request(target_base: str, request: Request, forward_path: str):
         
         # Wait for container to be ready (in case it's just starting)
         print(f"⏳ Checking if container is ready at {target_base}...")
-        is_ready = await wait_for_container_ready(target_base, max_attempts=3, delay=0.1)
+        is_ready = await wait_for_container_ready(target_base, max_attempts=5, delay=0.5)
         if not is_ready:
-            print(f"⚠️ Container not responding after 3 attempts, attempting request anyway...")
+            print(f"⚠️ Container not responding after 5 attempts, attempting request anyway...")
         
         # Use session with connection pooling
         session = get_or_create_proxy_session()
@@ -1452,7 +1470,7 @@ async def proxy_request(target_base: str, request: Request, forward_path: str):
         print(f"❌ Connection error to {target_url}: {error_str}")
         # Check if it's a protocol error (container not ready)
         if "ProtocolError" in error_str or "Connection refused" in error_str:
-            print(f"⏳ Container at {target_url} may still be starting up... Retried 3 times")
+            print(f"⏳ Container at {target_url} may still be starting up... Retried 5 times")
             detail = f"Container is starting. Please wait a moment and retry."
         else:
             detail = f"Cannot connect to container at {target_url}. Verify container is running."

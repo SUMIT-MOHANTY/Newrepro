@@ -414,8 +414,11 @@ def forgot_password(request: ForgotPasswordRequest) -> dict:
         ).fetchone()
         
         if not user:
-            # Don't reveal if email exists or not for security
-            return {"message": "If an account with that email exists, a password reset link has been sent."}
+            # Return clear error message that email is not registered
+            raise HTTPException(
+                status_code=404,
+                detail="This email is not registered with us. Please check your email or sign up for a new account."
+            )
         
         # Generate secure reset token (valid for 1 hour)
         reset_token = secrets.token_urlsafe(32)
@@ -442,10 +445,20 @@ def forgot_password(request: ForgotPasswordRequest) -> dict:
             )
             if not email_sent:
                 print(f"Warning: Failed to send password reset email to {user['email']}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to send password reset email. Please try again later."
+                )
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"Error sending password reset email: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to send password reset email. Please try again later."
+            )
         
-        return {"message": "If an account with that email exists, a password reset link has been sent."}
+        return {"message": "Password reset link has been sent to your email. Please check your inbox."}
     finally:
         conn.close()
 
