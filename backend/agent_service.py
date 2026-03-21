@@ -645,16 +645,21 @@ async def _build_peer_context_block(
     agent_id: str,
     task: Dict[str, Any],
     project_token: Optional[str],
+    container_name: Optional[str] = None,
 ) -> str:
     """
-    Build a summary of what other agents have already completed.
-    This gets injected into the AI prompt so the agent doesn't
-    re-implement things that are already built.
+    Build a rich summary of what other agents have already completed.
+    When container_name is provided, reads actual file content from the
+    container to extract exported symbols, class names, and function
+    signatures — so the current agent can import rather than re-implement.
 
     Returns a plain-text block like:
         COMPLETED WORK BY OTHER AGENTS (do not re-implement):
           [agent_01] Task 'TASK-01 User Auth' → branch: agent/task-01-user-auth
-                     files: app/models/user.py, app/routes/auth.py
+                     files: app/auth/models.py, app/auth/routes.py
+                     Signatures in app/auth/models.py:
+                       class User(db.Model):
+                       def check_password(self, password: str) -> bool:
     """
     state = _ensure_project_state(project_token)
     ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
@@ -667,26 +672,59 @@ async def _build_peer_context_block(
     if not completed_by_peers:
         return ""
 
+    # Keywords that indicate a public interface line worth extracting
+    _SIG_PREFIXES = (
+        "def ", "async def ", "class ", "export ", "export default",
+        "module.exports", "function ", "const ", "interface ", "type ",
+        "@app.route", "@router.", "app.get(", "app.post(", "app.put(",
+        "app.delete(", "app.patch(", "@api_view", "urlpatterns",
+    )
+
     lines = [
         "=" * 60,
         "COMPLETED WORK BY OTHER AGENTS — DO NOT RE-IMPLEMENT",
         "=" * 60,
     ]
 
-    for entry in completed_by_peers[-10:]:
-        file_summary = ", ".join(entry.files_written[:6])
-        if len(entry.files_written) > 6:
-            file_summary += f" (+{len(entry.files_written) - 6} more)"
-        lines.append(
-            f"  [{entry.agent_id}] '{entry.task_title}'\n"
-            f"    branch : {entry.branch_name}\n"
-            f"    files  : {file_summary or 'none recorded'}\n"
-        )
+    for entry in completed_by_peers[-8:]:
+        lines.append(f"\n[{entry.agent_id}] Task: '{entry.task_title}'")
+        lines.append(f"  Branch : {entry.branch_name}")
+        file_list = ", ".join(entry.files_written[:10])
+        if len(entry.files_written) > 10:
+            file_list += f" (+{len(entry.files_written) - 10} more)"
+        lines.append(f"  Files  : {file_list or 'none recorded'}")
+
+        # Read actual file content from the container to extract signatures
+        if container_name and entry.files_written:
+            for fpath in entry.files_written[:5]:
+                try:
+                    cat = subprocess.run(
+                        ["docker", "exec", container_name,
+                         "cat", f"/workspace/{fpath}"],
+                        capture_output=True, text=True, timeout=8,
+                    )
+                    if cat.returncode != 0 or not cat.stdout.strip():
+                        continue
+                    sig_lines = []
+                    for line in cat.stdout.splitlines():
+                        stripped = line.strip()
+                        if stripped and any(stripped.startswith(kw) for kw in _SIG_PREFIXES):
+                            sig_lines.append(f"    {line.rstrip()}")
+                        if len(sig_lines) >= 20:
+                            break
+                    if sig_lines:
+                        lines.append(f"\n  Signatures in {fpath}:")
+                        lines.extend(sig_lines)
+                except Exception:
+                    pass
 
     lines += [
-        "=" * 60,
-        "When you need something from the above files — IMPORT it.",
-        "Do NOT create a duplicate implementation.",
+        "\n" + "=" * 60,
+        "RULES:",
+        "- IMPORT from these files — do not rewrite them.",
+        "- Use the EXACT function/class names shown above.",
+        "- Reference the correct import path when using these symbols.",
+        "- DO NOT create a second implementation of anything listed here.",
         "=" * 60,
     ]
 
@@ -1548,6 +1586,158 @@ def get_technical_spec(project_token: str) -> str:
 #   - File conflict warnings
 
 
+def _build_file_ownership_block(
+    agent_id: str,
+    project_token: Optional[str],
+) -> str:
+    """
+    Fix 3: Build a hard DO-NOT-TOUCH constraint block listing every file
+    already owned by a peer agent. The current agent must not overwrite
+    these paths — it may only append/inject if absolutely required by the task.
+    """
+    state = _ensure_project_state(project_token)
+    ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
+
+    owned: Dict[str, str] = {}  # file_path → owner_agent_id
+    for entry in ledger.values():
+        if entry.agent_id == agent_id or entry.status != "done":
+            continue
+        for fpath in entry.files_written:
+            owned[fpath] = entry.agent_id
+
+    if not owned:
+        return ""
+
+    lines = [
+        "FILE OWNERSHIP — YOU MUST NOT OVERWRITE THESE FILES:",
+        "These files were created by other agents. Overwriting them causes merge conflicts.",
+        "",
+    ]
+    for fpath, owner in list(owned.items())[:40]:
+        lines.append(f"  \u274c {fpath}  (owned by {owner})")
+    lines += [
+        "",
+        "If your task requires content from these files: IMPORT it, do not copy the code.",
+        "If you must extend one of these files: use APPEND or a targeted sed/patch — never cat > overwrite.",
+        "If you create a file at the same path: your build will cause a merge conflict and FAIL.",
+    ]
+    return "\n".join(lines)
+
+
+def _resolve_canonical_files_for_task(
+    task: Dict[str, Any],
+    workspace_tree: str,
+    project_token: Optional[str],
+) -> List[str]:
+    """
+    Fix 4: Cross-reference the task's domain/title/description against the
+    canonical project tree to produce a concrete list of files this agent
+    should create or modify.
+
+    This replaces _predict_task_file_intents()'s guessing from task text
+    with a scored match against the actual canonical tree paths, so the AI
+    receives an explicit file target list instead of inventing paths.
+    """
+    if not workspace_tree:
+        return []
+
+    task_domain = str(task.get("domain") or task.get("task_domain") or "").lower().strip()
+    task_title  = str(task.get("title") or task.get("taskName") or "").lower()
+    task_desc   = str(task.get("description") or "").lower()
+
+    all_paths = _extract_paths_from_workspace_tree(workspace_tree)
+    if not all_paths:
+        return []
+
+    keywords = set(_re.findall(r"[a-z]{4,}", task_title + " " + task_desc))
+
+    scored: List[tuple[int, str]] = []
+    for path in all_paths:
+        path_lower = path.lower()
+        score = 0
+        # Domain match is the strongest signal
+        if task_domain and task_domain in path_lower:
+            score += 10
+        # Keyword overlap from title + description
+        for word in keywords:
+            if word in path_lower:
+                score += 2
+        # Slight preference for files that look like implementation files
+        if any(path_lower.endswith(ext) for ext in (
+            ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".java",
+            ".cs", ".rb", ".php", ".rs", ".swift", ".kt",
+        )):
+            score += 1
+        if score > 0:
+            scored.append((score, path))
+
+    scored.sort(key=lambda x: -x[0])
+    resolved = [path for _, path in scored[:15]]
+
+    if resolved:
+        task["_predicted_files"] = resolved
+        task["_predicted_files_source"] = "canonical_tree"
+
+    return resolved
+
+
+async def _fetch_peer_branch_files_into_context(
+    container_name: str,
+    agent_id: str,
+    project_token: Optional[str],
+) -> str:
+    """
+    Fix 5: Fetch all peer agent branches into the container (without checking
+    them out) and read key files using git show. Returns a context block
+    containing actual peer code so the current agent can import/extend
+    rather than re-implement.
+    """
+    state = _ensure_project_state(project_token)
+    ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
+
+    peer_entries = [
+        e for e in ledger.values()
+        if e.agent_id != agent_id and e.status == "done" and e.branch_name
+    ]
+    if not peer_entries:
+        return ""
+
+    context_parts: List[str] = []
+    for entry in peer_entries[-5:]:   # cap at 5 most recent peer branches
+        branch = entry.branch_name
+        try:
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "fetch", "origin", branch],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception:
+            continue
+
+        for fpath in entry.files_written[:4]:
+            try:
+                show = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "show", f"origin/{branch}:{fpath}"],
+                    capture_output=True, text=True, timeout=8,
+                )
+                if show.returncode == 0 and show.stdout.strip():
+                    snippet = show.stdout[:1500]
+                    context_parts.append(
+                        f"# Peer branch: {branch} | file: {fpath}\n{snippet}"
+                    )
+            except Exception:
+                pass
+
+    if not context_parts:
+        return ""
+
+    return (
+        "EXISTING CODE FROM PEER AGENTS (read-only reference \u2014 import, do not rewrite):\n\n"
+        + "\n\n---\n\n".join(context_parts)
+    )
+
+
 async def _generate_dynamic_prompt(
     task: Dict[str, Any],
     agent_type: str,
@@ -1556,6 +1746,8 @@ async def _generate_dynamic_prompt(
     kg_context: str = "",
     cross_agent_info: str = "",
     task_messages: str = "",
+    file_ownership_block: str = "",   # Fix 3: injected by caller
+    canonical_files: Optional[List[str]] = None,  # Fix 4: injected by caller
 ) -> str:
     """
     LAYER 3: Dynamic Prompt Writer.
@@ -1566,6 +1758,8 @@ async def _generate_dynamic_prompt(
     - The relevant section of the Technical Spec
     - What the KG says about related modules
     - What other agents are doing / have done
+    - File ownership constraints (Fix 3) — hard DO-NOT-TOUCH list
+    - Canonical file targets (Fix 4) — exact files this agent should create
 
     Falls back to the static prompt if the AI call fails.
     """
@@ -1584,6 +1778,15 @@ async def _generate_dynamic_prompt(
     checklist = task.get("checklist", [])
     checklist_text = "\n".join(f"  - {item.get('title', item) if isinstance(item, dict) else item}" for item in checklist[:10]) if checklist else "None"
 
+    # Fix 4: format canonical file target list for the prompt
+    canonical_files_text = ""
+    if canonical_files:
+        canonical_files_text = (
+            "\nCANONICAL FILE TARGETS FOR THIS TASK (create or modify ONLY these paths):\n"
+            + "\n".join(f"  - {f}" for f in canonical_files[:15])
+            + "\nAll file paths in your script MUST match the above exactly. Do not create files at other paths.\n"
+        )
+
     manager_prompt = f"""You are a Manager Agent. Your job is to write the EXACT system prompt
 that a Coding Agent will receive. This prompt must be highly specific to the task at hand.
 
@@ -1591,7 +1794,7 @@ THE TASK:
 Title: {task_title}
 Description: {task_desc}
 Checklist: {checklist_text}
-
+{canonical_files_text}
 TECHNICAL SPECIFICATION (from Architect Agent):
 {tech_spec[:3000] if tech_spec else "Not available."}
 
@@ -1604,11 +1807,14 @@ OTHER AGENTS' ACTIVITY:
 PRIOR TASK MESSAGES/COMMENTS (HISTORY):
 {task_messages[:2000] if task_messages else "No prior comments found."}
 
+FILE OWNERSHIP CONSTRAINTS — HARD RULES (Fix 3):
+{file_ownership_block if file_ownership_block else "No peer files yet — you are the first agent."}
+
 Write a system prompt for the Coding Agent that:
-1. Tells it EXACTLY what module/files to create for THIS specific task
+1. Tells it EXACTLY what module/files to create for THIS specific task (use the CANONICAL FILE TARGETS above)
 2. References the EXACT field names, API endpoints, and types from the Tech Spec
 3. Tells it what files/symbols already exist (from KG) that it should import/reference
-4. Warns about any files being edited by other agents (avoid conflicts)
+4. EXPLICITLY lists every file in FILE OWNERSHIP CONSTRAINTS as forbidden to overwrite
 5. Specifies the exact naming conventions to follow
 6. **CRITICAL: MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure). DO NOT invent your own file nesting or directories.**
 7. **CRITICAL: If you have ANY doubts about where to put a file, DO NOT guess. You MUST strictly follow the exact structure defined by the Master Agent. Agents cannot decide on their own entirely new architectural structures.**
@@ -4910,6 +5116,117 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
     except Exception as exc:
         _log_git_agent(f"Git merge error for {branch}: {exc}", "error", project_token=project_token)
     # NOTE: Don't destroy the shared container - keep it for subsequent merges
+
+
+async def _wait_for_and_rebase_bootstrap_branch(
+    container_name: str,
+    bootstrap_branch: str,
+    repo_url: str,
+    token: str,
+    agent_id: str,
+    timeout_seconds: int = 1800,
+    poll_interval: int = 15,
+) -> bool:
+    """
+    Block until the bootstrap branch exists on the remote, then rebase the
+    container workspace onto it so every non-bootstrap agent always starts
+    from the same scaffold that the bootstrap agent created.
+
+    Returns True when the rebase succeeds, False on timeout or failure.
+    The caller should proceed regardless — this is best-effort gating.
+    """
+    auth_url = _build_git_auth_url(repo_url, token) if token else repo_url
+    deadline = time.time() + timeout_seconds
+
+    while time.time() < deadline:
+        try:
+            check = subprocess.run(
+                ["git", "ls-remote", "--heads", auth_url,
+                 f"refs/heads/{bootstrap_branch}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if check.returncode == 0 and bootstrap_branch in (check.stdout or ""):
+                # Branch found — fetch it into the container
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "fetch", "origin", bootstrap_branch],
+                    capture_output=True, text=True, timeout=60,
+                )
+                # Try rebase first (preserves local branch tip)
+                rebase = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "rebase", f"origin/{bootstrap_branch}"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if rebase.returncode == 0:
+                    logger.info(
+                        f"[{agent_id}] Rebased onto bootstrap branch: {bootstrap_branch}"
+                    )
+                    return True
+                # Rebase failed — abort and hard-reset instead
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "rebase", "--abort"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "reset", "--hard", f"origin/{bootstrap_branch}"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                logger.info(
+                    f"[{agent_id}] Hard-reset to bootstrap branch: {bootstrap_branch}"
+                )
+                return True
+        except Exception as exc:
+            logger.warning(
+                f"[{agent_id}] Bootstrap branch check error: {exc}"
+            )
+
+        remaining = int(deadline - time.time())
+        logger.info(
+            f"[{agent_id}] Bootstrap branch '{bootstrap_branch}' not yet found. "
+            f"Retrying in {poll_interval}s ({remaining}s remaining)..."
+        )
+        await asyncio.sleep(poll_interval)
+
+    logger.warning(
+        f"[{agent_id}] Timed out waiting for bootstrap branch '{bootstrap_branch}'. "
+        "Proceeding from current clone state."
+    )
+    return False
+
+
+def _scan_live_repo_tree_from_container(
+    container_name: str,
+    agent_id: str,
+) -> str:
+    """
+    Run find . inside the container and return a formatted string of all
+    workspace files. This is the Fix 2 pre-build scan — gives the AI the
+    exact state of disk before it generates any code so it can inject into
+    existing files rather than recreating them.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "find", ".", "-type", "f",
+             "-not", "-path", "*/.git/*",
+             "-not", "-path", "*/node_modules/*",
+             "-not", "-path", "*/__pycache__/*",
+             "-not", "-name", "*.pyc",
+             "-not", "-name", "*.pyo"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines = sorted(
+                p.strip() for p in result.stdout.splitlines() if p.strip()
+            )
+            return "Files currently on disk in /workspace:\n" + "\n".join(lines)
+        return "Workspace is currently empty — create all files from scratch."
+    except Exception as exc:
+        logger.warning(f"[{agent_id}] Pre-build live repo scan failed: {exc}")
+        return ""
 
 
 def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str) -> Dict[str, Any]:
@@ -13247,16 +13564,64 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 branch_name=branch_name or "",
             )
 
+            # ── Bootstrap gate: wait for + rebase onto bootstrap branch ──────
+            # Non-bootstrap agents must start from the scaffold the bootstrap
+            # agent created. Poll git ls-remote until the branch exists, then
+            # rebase. This replaces the silent integration-branch-merge that
+            # used to be skipped when the branch wasn't found yet.
+            if bootstrap_role != "bootstrap" and use_git and git_repo_url:
+                external_tasks_for_bootstrap = await _fetch_external_tasks(project_token)
+                bootstrap_task_rec = next(
+                    (
+                        t for t in external_tasks_for_bootstrap
+                        if (
+                            (t.get("task_id") or t.get("external_task_id") or "").strip().upper() == "TASK-00"
+                            or "project bootstrap" in (t.get("title") or t.get("taskName") or "").strip().lower()
+                        )
+                    ),
+                    None,
+                )
+                if bootstrap_task_rec:
+                    bootstrap_br = f"agent/task-{_branch_name_for_task(bootstrap_task_rec)}"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"⏳ Waiting for bootstrap branch: {bootstrap_br}"
+                    })
+                    rebased = await _wait_for_and_rebase_bootstrap_branch(
+                        container_name=container_name,
+                        bootstrap_branch=bootstrap_br,
+                        repo_url=git_repo_url,
+                        token=git_token or "",
+                        agent_id=agent_id,
+                    )
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": (
+                            f"✅ Rebased onto {bootstrap_br}"
+                            if rebased
+                            else f"⚠️ Bootstrap wait timed out — proceeding from current state"
+                        ),
+                    })
+
             # ── LAYER 1: Retrieve or generate Technical Spec ────────
             tech_spec = ""
-            # 1. Fetch fresh repository documentation & tree for context
-            repo_tree_context = ""
+            # Fix 2 (pre-build): scan the actual container disk for live repo state.
+            # This replaces the stale ctx_mgr in-memory snapshot so the AI sees
+            # exactly what files are on disk before it generates any code.
+            repo_tree_context = _scan_live_repo_tree_from_container(container_name, agent_id)
+            if repo_tree_context:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"📂 Live repo scan complete: {repo_tree_context.count(chr(10))} paths on disk"
+                })
+            # Also update the workspace contract from what is actually on disk
             try:
                 import context_manager as ctx_mgr
                 repo_snapshot = ctx_mgr.get_current_project_tree_snapshot(project_token or "")
                 if isinstance(repo_snapshot, dict):
-                    repo_tree_context = str(repo_snapshot.get("tree") or "").strip()
-                    # If indexed, update the contract as a side effect for the architect
                     repo_file_paths = [str(p).strip() for p in (repo_snapshot.get("all_file_paths") or []) if str(p).strip()]
                     if repo_file_paths and project_token:
                         ctx_mgr.update_workspace_contract_from_file_paths(
@@ -13400,6 +13765,43 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             except Exception as msg_err:
                 logger.warning(f"Failed to fetch task messages for context: {msg_err}")
 
+            # ── Fix 5: Fetch peer branches into container for live code reference ──
+            agent["progress"] = 20
+            agent["progress_message"] = "Fetching peer agent branches for context..."
+            peer_branch_context = ""
+            try:
+                peer_branch_context = await _fetch_peer_branch_files_into_context(
+                    container_name, agent_id, project_token
+                )
+                if peer_branch_context:
+                    jit_context = peer_branch_context + "\n\n---\n\n" + jit_context
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"📥 Peer branch code fetched into context ({len(peer_branch_context)} chars)"
+                    })
+            except Exception as peer_fetch_err:
+                logger.warning(f"[{agent_id}] Peer branch fetch failed: {peer_fetch_err}")
+
+            # ── Fix 3: Build file ownership constraint block ─────────
+            file_ownership_block = _build_file_ownership_block(agent_id, project_token)
+            if file_ownership_block:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"🔒 File ownership constraints built ({file_ownership_block.count('❌')} locked files)"
+                })
+
+            # ── Fix 4: Resolve canonical file targets from master tree ─
+            canonical_master_tree = master_note_result.get("workspace_tree", "") if master_note_result else ""
+            canonical_files = _resolve_canonical_files_for_task(task, canonical_master_tree, project_token)
+            if canonical_files:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"📁 Canonical file targets resolved: {', '.join(canonical_files[:6])}"
+                })
+
             # ── LAYER 3: Generate Dynamic Prompt ────────────────────
             agent["progress"] = 22
             agent["progress_message"] = "Manager Agent writing task-specific prompt..."
@@ -13411,6 +13813,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     tech_spec=tech_spec,
                     kg_context=jit_context,
                     cross_agent_info=cross_agent_info,
+                    file_ownership_block=file_ownership_block,   # Fix 3
+                    canonical_files=canonical_files,             # Fix 4
                 )
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
@@ -13441,19 +13845,28 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "message": "Calling AI model to generate build script..."
             })
 
-            # NEW: build peer context before calling AI
+            # Fix 1: build peer context with actual file signatures from container
             peer_ctx = await _build_peer_context_block(
-                agent_id, task, project_token
+                agent_id, task, project_token, container_name=container_name
             )
 
+            # Fix 4: prepend canonical file targets to the user prompt
+            canonical_files_prefix = ""
+            if canonical_files:
+                canonical_files_prefix = (
+                    "YOUR ASSIGNED FILES (create or modify ONLY these paths — do not invent others):\n"
+                    + "\n".join(f"  - {f}" for f in canonical_files)
+                    + "\n\nAll file paths in your script MUST match the above exactly.\n\n---\n\n"
+                )
+
             generated_code, thought = await _call_ai_for_code(
-                task["description"], agent["type"],
+                canonical_files_prefix + task["description"], agent["type"],
                 code_context=jit_context,
                 system_prompt_override=dynamic_system_prompt,
                 tech_spec=tech_spec,
-                workspace_tree=master_note_result.get("workspace_tree", "") if master_note_result else "",
+                workspace_tree=canonical_master_tree,
                 live_repo_tree=repo_tree_context,
-                peer_context=peer_ctx,   # NEW
+                peer_context=peer_ctx,
             )
             if thought:
                 await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
@@ -13551,6 +13964,9 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 all_generated_code = generated_code
                 all_stdout = result["stdout"]
 
+            # Ensure ground-truth file list is always defined (populated after workspace capture below)
+            touched_files_ground_truth: List[str] = []
+
             build_success = result["exit_code"] == 0
             if build_success:
                 prog_ok = await _post_task_progress(task, 70, "Build completed", task_token=task_token)
@@ -13590,6 +14006,49 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"Captured {workspace_tree.count('FILE:')} files from {capture_root}/"
             })
+
+            # ── Fix 2: Ground-truth file list via docker exec find . ──────────
+            # This replaces parsing the workspace_tree stdout string, which can
+            # mis-parse or miss files. The find output is the authoritative list
+            # used for the ledger, KG update, and peer context for future agents.
+            touched_files_ground_truth: List[str] = []
+            try:
+                find_after_build = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "find", ".", "-type", "f",
+                     "-not", "-path", "*/.git/*",
+                     "-not", "-path", "*/node_modules/*",
+                     "-not", "-path", "*/__pycache__/*",
+                     "-not", "-name", "*.pyc",
+                     "-not", "-name", "*.pyo"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if find_after_build.returncode == 0 and find_after_build.stdout.strip():
+                    touched_files_ground_truth = [
+                        p.strip().lstrip("./")
+                        for p in find_after_build.stdout.splitlines()
+                        if p.strip()
+                    ]
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"📋 Ground-truth file scan: {len(touched_files_ground_truth)} files on disk"
+                    })
+                    # Also sync the workspace contract from real disk state
+                    try:
+                        import context_manager as ctx_mgr
+                        if project_token:
+                            ctx_mgr.update_workspace_contract_from_file_paths(
+                                project_token,
+                                touched_files_ground_truth,
+                                source="container_post_build_scan",
+                                merge_ready=True,
+                                force_refresh=True,
+                            )
+                    except Exception:
+                        pass
+            except Exception as find_err:
+                logger.warning(f"[{agent_id}] Ground-truth file scan failed: {find_err}")
 
             # ═════════════════════════════════════════════════════════
             # CODE QUALITY / LINTING
@@ -14280,8 +14739,12 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 import context_manager as ctx_mgr
                 live_mem = ctx_mgr.get_live_memory(project_token or "")
 
-                # Extract files and symbols from what the agent produced
-                touched_files = ctx_mgr.extract_files_from_workspace_tree(workspace_tree)
+                # Fix 2: Use ground-truth file list from docker exec find . (set above).
+                # Fall back to parsing workspace_tree only if the scan failed.
+                if touched_files_ground_truth:
+                    touched_files = touched_files_ground_truth
+                else:
+                    touched_files = ctx_mgr.extract_files_from_workspace_tree(workspace_tree)
                 symbols = ctx_mgr.extract_symbols_from_code(all_generated_code)
 
                 # Capture file contents for UI display
