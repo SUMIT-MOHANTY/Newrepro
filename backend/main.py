@@ -6004,7 +6004,7 @@ async def run_all_agents(
             provided_repo = provided_repo or (saved_cred.git_repo_url or "").strip() or None
             provided_token = provided_token or (saved_cred.git_token or "").strip() or None
 
-    # Launch all idle agents — each picks tasks from the queue independently
+    # Launch all idle agents — each picks ONE task then stops to allow parallel execution
     task_token = x_task_token or agent_service.get_project_task_token(project_token)
     for agent_id in available_agents:
         asyncio.create_task(
@@ -6012,7 +6012,7 @@ async def run_all_agents(
                 agent_id=agent_id,
                 project_token=project_token,
                 task_token=task_token,
-                continuous=True,
+                continuous=False,  # Each agent does one task then stops
                 git_repo_url=provided_repo or None,
                 git_token=provided_token or None,
             )

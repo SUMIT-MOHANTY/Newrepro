@@ -12307,6 +12307,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
 
         # Get current active sprint from project state (if available)
         current_sprint_id = None
+        project_state = None
         try:
             project_state = _ensure_project_state(project_token)
         except Exception:
@@ -12350,8 +12351,8 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 continue
 
             # ── TASK-00 BOOTSTRAP GATE ──
-            # If TASK-00 exists and is not yet complete, only allow agents to pick TASK-00.
-            # All other tasks must wait until TASK-00 is done (scaffold is ready in the repo).
+            # If TASK-00 exists, check if bootstrap branch has been pushed to the repo.
+            # If the branch exists, bootstrap is complete and all tasks can proceed.
             # Match by task_id "TASK-00" OR by title containing "Project Bootstrap"
             task_id_str = (t.get("task_id") or t.get("external_task_id") or "").strip().upper()
             task_title_str = (t.get("title") or t.get("taskName") or "").strip().lower()
@@ -12360,12 +12361,12 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 or "project bootstrap" in task_title_str
             )
             
-            # If THIS task is the bootstrap task, allow it to proceed (don't check if bootstrap is complete)
+            # If THIS task is the bootstrap task, allow it to proceed
             if is_bootstrap_task:
                 logger.info(f"[{agent_id}] Found bootstrap task {tid}, allowing it to proceed")
                 # Continue to next checks (don't skip, don't check if bootstrap is done)
             elif not is_bootstrap_task:
-                # Check if bootstrap task exists and is incomplete
+                # Check if bootstrap task exists in the task list
                 task00 = next(
                     (ext_t for ext_t in external_tasks
                      if (
@@ -12374,16 +12375,42 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                      )),
                     None
                 )
-                if task00 and not _task_status_is_done(task00.get("status")):
-                    # Also check in-memory bootstrap state — if the scaffold was already pushed
-                    # the gate should open even if the external API hasn't updated yet
-                    _bs = project_state.get("repo_bootstrap", {})
-                    _bootstrap_released = (
-                        _bs.get("status") in ("completed", "not_required", "failed")
-                        or _bs.get("required") is False
-                    )
-                    if not _bootstrap_released:
-                        msg = f"⏸️ Task {tid} waiting for bootstrap (TASK-00) to complete first"
+                if task00:
+                    # Check if bootstrap branch exists in the repo (means bootstrap is complete)
+                    # Generate the bootstrap branch name dynamically
+                    bootstrap_branch_name = f"agent/task-{_branch_name_for_task(task00)}"
+                    bootstrap_complete = False
+                    
+                    # Try to check if the branch exists in the remote repo
+                    try:
+                        # Get git repo URL from agent state
+                        git_repo_url = None
+                        if agent:
+                            git_repo_url = agent.get("git_repo_url")
+                        
+                        if git_repo_url:
+                            import subprocess
+                            # Use git ls-remote to check if branch exists without cloning
+                            result = subprocess.run(
+                                ["git", "ls-remote", "--heads", git_repo_url, f"refs/heads/{bootstrap_branch_name}"],
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
+                            if result.returncode == 0 and bootstrap_branch_name in result.stdout:
+                                bootstrap_complete = True
+                                logger.info(f"[{agent_id}] Bootstrap branch '{bootstrap_branch_name}' found in repo - gate released")
+                        else:
+                            # No git configured - assume bootstrap not needed
+                            bootstrap_complete = True
+                            logger.info(f"[{agent_id}] No git repo configured - skipping bootstrap gate")
+                    except Exception as e:
+                        logger.warning(f"[{agent_id}] Could not check bootstrap branch: {e}")
+                        # On error, assume bootstrap is complete to avoid blocking
+                        bootstrap_complete = True
+                    
+                    if not bootstrap_complete:
+                        msg = f"⏸️ Task {tid} waiting for bootstrap branch to be pushed"
                         logger.info(f"[{agent_id}] {msg}")
                         if agent:
                             agent["output_log"].append({
