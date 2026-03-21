@@ -14756,6 +14756,28 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         })
                         continue
 
+                    # Check if linked task is already completed or assigned to another agent
+                    lt_status = (linked_task.get("taskStatus") or linked_task.get("status") or "").lower()
+                    lt_assigned = linked_task.get("assignedTo") or []
+                    lt_is_done = _task_status_is_done(lt_status)
+                    lt_assigned_elsewhere = lt_assigned and agent_id not in [str(a).lower() for a in lt_assigned]
+                    
+                    if lt_is_done:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"{'  ' * depth}⏭️ Linked task {linked_id} already completed, skipping."
+                        })
+                        continue
+                    
+                    if lt_assigned_elsewhere:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"{'  ' * depth}⏭️ Linked task {linked_id} assigned to another agent, skipping."
+                        })
+                        continue
+
                     lt_title = linked_task.get("title", f"linked-{linked_id}")
                     lt_branch = _branch_name_for_task(linked_task)
                     lt_checklist = linked_task.get("checklist") or []
