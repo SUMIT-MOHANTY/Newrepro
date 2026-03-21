@@ -2056,7 +2056,7 @@ Please suggest improvements or modifications for this element.`;
 
                 {/* Edit Prompt Panel */}
                 {editMode && selectedElement && (
-                  <div className="flex-shrink-0 border-t border-white/10 bg-[#0F0F14] p-4">
+                  <div className="absolute bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-[#0F0F14]/95 backdrop-blur-sm p-4 shadow-2xl">
                     <div className="max-w-4xl mx-auto">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="flex items-center gap-2 text-sm text-gray-400">

@@ -19,10 +19,12 @@ class VersionSupervisor:
         self.config = {
             'project_dir': os.environ.get('PROJECT_DIR', '/project'),
             'socket_path': os.environ.get('SUPERVISOR_SOCKET', '/tmp/supervisor.sock'),
-            'port': os.environ.get('PORT', '8080')
+            'port': os.environ.get('PORT', '8080'),
+            'health_port': os.environ.get('HEALTH_PORT', '9090')
         }
         self.current_process: Optional[subprocess.Popen] = None
         self.current_version: Optional[str] = None
+        self.health_server: Optional[subprocess.Popen] = None
         self.running = True
         
     def log(self, emoji, message):
@@ -204,6 +206,24 @@ class VersionSupervisor:
         """Execution engine for the supervisor"""
         self.log("🛡️", "Supervisor standing guard...")
         
+        # Start health check server first
+        self.log("🏥", f"Starting health check server on port {self.config['health_port']}...")
+        try:
+            self.health_server = subprocess.Popen(
+                ["python3", "/usr/local/bin/health_server.py"],
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                env={
+                    **os.environ,
+                    'PORT': self.config['port'],
+                    'HEALTH_PORT': self.config['health_port'],
+                    'PYTHONUNBUFFERED': '1'
+                }
+            )
+            self.log("✅", f"Health server started (PID: {self.health_server.pid})")
+        except Exception as e:
+            self.log("⚠️", f"Failed to start health server: {e}")
+        
         # Socket setup
         if os.path.exists(self.config['socket_path']):
             os.remove(self.config['socket_path'])
@@ -245,6 +265,13 @@ class VersionSupervisor:
             self.log("🛑", "Manual shutdown requested")
         finally:
             self.stop_current_process()
+            if self.health_server:
+                try:
+                    self.health_server.terminate()
+                    self.health_server.wait(timeout=5)
+                    self.log("🏥", "Health server stopped")
+                except Exception:
+                    pass
             if os.path.exists(self.config['socket_path']):
                 os.remove(self.config['socket_path'])
 

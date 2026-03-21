@@ -1710,6 +1710,9 @@ RULES:
         if not plan:
             return False
 
+        # Log the full plan for debugging
+        self.log("📋", f"AI Plan received: {json.dumps(plan, indent=2)[:500]}")
+
         # Prepare context for AI (define at method level for exception handler access)
         files_content    = self.scan_project_files()
         project_type     = plan.get("project_type", "unknown")
@@ -1731,6 +1734,7 @@ RULES:
 
         if not processes:
             self.log("❌", "AI returned no processes")
+            self.log("💡", "Hint: The AI response must include a 'processes' array with at least one 'primary' type entry")
             return False
 
         # Separate by type — order matters: setup → background → primary
@@ -1740,6 +1744,8 @@ RULES:
 
         if not primary_proc:
             self.log("❌", "AI returned no primary process")
+            self.log("💡", f"Processes found: {[p.get('type') for p in processes]}")
+            self.log("💡", "The AI must return exactly ONE process with type='primary'")
             return False
 
         run_command      = primary_proc.get("command", "")
@@ -1806,28 +1812,43 @@ RULES:
                     self.log("🔧", "Wrapping location blocks in a default server block")
                     nginx_config = "server {\n    listen 80;\n    server_name localhost;\n" + nginx_config + "\n}"
 
+                # Inject health endpoint if not already present
+                if "/health" not in nginx_config:
+                    self.log("🏥", "Injecting /health endpoint into nginx config")
+                    health_location = """
+    # Health check endpoint
+    location /health {
+        proxy_pass http://127.0.0.1:9090/health;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        access_log off;
+    }
+"""
+                    # Insert health location before the last closing brace
+                    nginx_config = nginx_config.rstrip()
+                    if nginx_config.endswith('}'):
+                        nginx_config = nginx_config[:-1] + health_location + "\n}"
+                    else:
+                        nginx_config += health_location
+
                 nginx_config = nginx_config.strip()
 
-                # Write and validate
+                # Write and validate config (but don't start nginx yet - it will be started as primary/background process)
                 nginx_conf_path = Path("/etc/nginx/sites-enabled/default")
                 nginx_conf_path.parent.mkdir(parents=True, exist_ok=True)
                 nginx_conf_path.write_text(nginx_config, encoding="utf-8")
                 
-                # HARD RESTART: stop and kill current nginx to ensure it binds to fresh config
-                self.log("🔄", "Hard restarting Nginx gateway...")
+                # Kill any existing nginx processes to avoid port conflicts
+                self.log("🧹", "Cleaning up any existing nginx processes...")
                 subprocess.run(["nginx", "-s", "stop"], capture_output=True, timeout=5)
                 subprocess.run(["pkill", "-9", "nginx"], capture_output=True, timeout=5)
                 
+                # Validate config only (don't start)
                 test_result = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
                 if test_result.returncode == 0:
-                    start_res = subprocess.run(["nginx"], capture_output=True, timeout=10)
-                    if start_res.returncode == 0:
-                        self.log("🚀", "Nginx gateway active on port 80")
-                    else:
-                        self.log("❌", f"Nginx failed: {start_res.stderr}")
+                    self.log("✅", "Nginx config validated successfully")
                 else:
-                    self.log("⚠️", f"Nginx config invalid: {test_result.stderr}")
-                    # Revert to valid config if possible?
+                    self.log("⚠️", f"Nginx config validation failed: {test_result.stderr}")
             except Exception as e:
                 self.log("⚠️", f"Failed to setup Nginx: {e}")
 

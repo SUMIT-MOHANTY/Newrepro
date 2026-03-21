@@ -792,7 +792,19 @@ async def container_health(project_id: str):
     except Exception:
         return {"healthy": False, "reason": "container_not_found"}
 
-    # Probe the actual app port
+    # First, try the dedicated health endpoint on port 9090
+    try:
+        health_resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+        if health_resp.status_code == 200:
+            health_data = health_resp.json()
+            if health_data.get("status") == "healthy":
+                return {"healthy": True, "docker_status": docker_status, "health_check": "passed"}
+            return {"healthy": False, "reason": "health_check_failed", "docker_status": docker_status}
+    except requests.exceptions.RequestException:
+        # Health endpoint not available, fall back to probing the main app port
+        pass
+
+    # Fallback: Probe the actual app port
     try:
         resp = requests.get(f"http://127.0.0.1:{port}/", timeout=3)
         if resp.status_code < 500:

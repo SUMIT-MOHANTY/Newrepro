@@ -430,7 +430,7 @@ def forgot_password(request: ForgotPasswordRequest) -> dict:
         conn.commit()
         
         # Generate reset URL
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
         reset_url = f"{frontend_url}/vibecoding/reset-password?token={reset_token}"
         
         # Send password reset email with link
