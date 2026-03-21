@@ -32,3 +32,8 @@ vibecoding/frontend/.vite/
 vibecoding/backend/vibecoding_users.db
 vibecoding/frontend/package-lock.json
 vibecoding/backend/.env
+sql_app.db
+backend/sql_app.db-shm
+sql_app.db
+backend/sql_app.db-wal
+sql_app.db

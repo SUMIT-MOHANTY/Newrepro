@@ -37,6 +37,9 @@ export const API_ENDPOINTS = {
     // AI
     AI_CONFIG: `${API_BASE_URL}/ai/config`,
     AI_ANALYZE: `${API_BASE_URL}/ai/analyze`,
+    // New chat endpoint used by the AssistantBot component
+    AI_CHAT: `${API_BASE_URL}/api/agent/assistant`,
+    AI_CHAT_STREAM: `${API_BASE_URL}/api/agent/assistant/stream`,
     HISTORY: `${API_BASE_URL}/history`,
     HISTORY_ITEM: (id) => `${API_BASE_URL}/history/${id}`,
 
@@ -95,6 +98,7 @@ export const API_ENDPOINTS = {
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
     AGENT_TASKS_GENERATE_LOCAL: `${API_BASE_URL}/api/agent/tasks/generate-local/`,
     AGENT_TASKS_LOCAL: `${API_BASE_URL}/api/agent/tasks/local/`,
+    AGENT_TASKS_SYNC: `${API_BASE_URL}/api/agent/tasks/sync/`,
     AGENT_PROJECT_CONFIG: `${API_BASE_URL}/api/agent/project-config/`,
     AGENT_PROJECT_BOOTSTRAP: `${API_BASE_URL}/api/agent/project-bootstrap/`,
     AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,

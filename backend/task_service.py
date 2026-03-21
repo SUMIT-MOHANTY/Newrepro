@@ -52,6 +52,7 @@ class TaskManagementService:
         self._project_info_cache: Dict[str, Any] = {}  # Keys: task_token
         self._sprints_cache: Dict[str, Any] = {}  # Keys: task_token
         self._cache_ttl = 120  # 2 minutes in seconds
+        self._inflight_locks: Dict[str, asyncio.Lock] = {}  # Prevent cache stampede
 
     def _clear_cache(self, task_token: Optional[str] = None):
         """Clear task-related caches."""
@@ -317,19 +318,30 @@ class TaskManagementService:
         """Fetch the list of generated tasks from the external task management API."""
         cache_key = (task_token, page)
         now = time.time()
-        
+
         if cache_key in self._tasks_cache:
             timestamp, data = self._tasks_cache[cache_key]
             if now - timestamp < self._cache_ttl:
                 return data
 
-        endpoint = "/api/agent/tasks-list"
-        if page:
-            endpoint += f"?page={page}"
-        response = await self._make_request("GET", endpoint, task_token=task_token)
-        
-        self._tasks_cache[cache_key] = (now, response)
-        return response
+        # Prevent cache stampede: only one concurrent fetch per (token, page)
+        lock_key = f"tasks:{task_token}:{page}"
+        if lock_key not in self._inflight_locks:
+            self._inflight_locks[lock_key] = asyncio.Lock()
+        async with self._inflight_locks[lock_key]:
+            # Re-check cache after acquiring lock
+            now = time.time()
+            if cache_key in self._tasks_cache:
+                timestamp, data = self._tasks_cache[cache_key]
+                if now - timestamp < self._cache_ttl:
+                    return data
+
+            endpoint = "/api/agent/tasks-list"
+            if page:
+                endpoint += f"?page={page}"
+            response = await self._make_request("GET", endpoint, task_token=task_token)
+            self._tasks_cache[cache_key] = (time.time(), response)
+            return response
 
     async def get_total_tasks(self, page: int = None, task_token: Optional[str] = None) -> dict:
         """Fetch all tasks (unpaginated total list) from the external task management API."""

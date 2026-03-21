@@ -336,12 +336,12 @@ async def analyze_document(
             content = llm_gateway.extract_content_from_response(data)
             reasoning_from_api = llm_gateway.extract_reasoning_from_response(data)
 
-            # Clean up <think> blocks from content if present
-            if "<think>" in content:
-                think_match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
+            # Clean up ქ blocks from content if present
+            if "ქ" in content:
+                think_match = re.search(r"ქ(.*?)ქ", content, re.DOTALL)
                 if think_match and not reasoning_from_api:
                     reasoning_from_api = think_match.group(1).strip()
-                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                content = re.sub(r"ქ.*?ქ", "", content, flags=re.DOTALL).strip()
 
             # Repair architecture block if missing
             if not _has_architecture_block(content):
@@ -889,7 +889,7 @@ def _normalize_task_wallets(tasks: list, project_wallet: int) -> list:
 
 def _parse_llm_task_response(content: str) -> list:
     """Parse the LLM response content into a list of tasks, handling think tags and markdown fences."""
-    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    content = re.sub(r"ქ.*?ქ", "", content, flags=re.DOTALL)
     content = content.replace("```json", "").replace("```", "").strip()
     start_idx = content.find("[")
     end_idx = content.rfind("]")
@@ -1497,3 +1497,82 @@ async def generate_tasks_for_project(
         import traceback
         error_details = traceback.format_exc()
         raise Exception(f"Failed during task generation: {str(e)}\n\nTraceback:\n{error_details}")
+
+
+def build_chat_messages(message: str, context: Optional[dict] = None) -> list:
+    """Build the messages list for the chat LLM call."""
+    system_prompt = """You are a friendly AI assistant built into a project management platform. Your job is to help users understand what each page does and guide them through the platform.
+
+PLATFORM OVERVIEW:
+This platform guides teams through a complete AI-powered project workflow:
+1. Sign up and create your organization
+2. Start a new project and fill in a governance questionnaire
+3. Review and provide prerequisites the AI extracted from your requirements
+4. Let AI generate a full task plan with sprints and milestones
+5. Onboard AI agents to work on your tasks
+6. Monitor progress and manage execution in real time
+
+KEY CAPABILITIES:
+- Uploads and analyzes Business Requirement Documents (BRDs)
+- Scores your project across 6 governance dimensions
+- Automatically identifies what credentials, APIs, and infrastructure you need before dev starts
+- Generates a complete task breakdown with priorities and deadlines
+- Supports multiple working modes (Developer Only, AI Assist, AI-First, etc.)
+- Integrates with GitHub and Azure DevOps
+- Lets you monitor AI agents working on your project in real time
+
+RESPONSE RULES — follow these strictly:
+- Never mention URL paths, route names, or technical identifiers (e.g. do NOT say "/agents", "path: /agents", or "route /dashboard")
+- Speak in plain, friendly language a non-technical user can understand
+- When describing a page, explain what the user can actually DO there, not what the system does internally
+- Keep responses concise and practical — bullet points are fine for lists of actions
+- Do not use jargon like "SSE", "endpoint", "payload", "API route", etc.
+- If the user asks about a page, describe its purpose and key actions in simple terms"""
+
+    if context:
+        current_step = context.get('currentStep', '')
+        current_path = context.get('currentPath', '/')
+        if current_step:
+            system_prompt += f"\n\nCURRENT PAGE: The user is on the \"{current_step}\" page. Describe what this page is for and what they can do here in plain, friendly language. Do not mention the URL or any technical route names."
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message},
+    ]
+
+
+async def chat_with_llm(
+    message: str,
+    context: Optional[dict] = None,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """
+    Context-aware chat function for conversational interactions with the LLM.
+    """
+    if not llm_gateway.check_api_key(api_key):
+        raise Exception("API key not configured.")
+
+    messages = build_chat_messages(message, context)
+
+    try:
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=60.0,
+        )
+        return content.strip()
+
+    except httpx.HTTPStatusError as e:
+        try:
+            error_body = e.response.json()
+        except Exception:
+            error_body = e.response.text
+        raise Exception(
+            f"Chat request failed. HTTP {e.response.status_code}: {error_body}"
+        )
+    except Exception as e:
+        raise Exception(f"Failed during chat: {str(e)}")
