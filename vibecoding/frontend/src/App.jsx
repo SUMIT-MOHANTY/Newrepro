@@ -1816,10 +1816,9 @@ Please suggest improvements or modifications for this element.`;
                 <div className="h-6 w-px bg-white/10" />
 
                 <Button
-                  variant="ghost"
                   size="icon"
                   onClick={handleRefresh}
-                  className="bg-white/5 hover:bg-white/10 text-white"
+                  className="!bg-white/5 hover:!bg-white/10 !text-white !border-0"
                   title="Refresh Preview"
                 >
                   <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />

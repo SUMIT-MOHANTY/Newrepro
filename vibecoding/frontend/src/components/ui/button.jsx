@@ -20,7 +20,13 @@ const Button = React.forwardRef(({ className = '', variant = 'default', size = '
     icon: 'h-9 w-9',
   };
 
-  const cls = [base, variants[variant] || variants.default, sizes[size] || sizes.default, className].join(' ');
+  // Only apply variant styles if className doesn't contain background or text color overrides
+  const hasCustomBg = className.includes('bg-') || className.includes('!bg-');
+  const hasCustomText = className.includes('text-') || className.includes('!text-');
+  const hasCustomHover = className.includes('hover:');
+  
+  const variantClass = (hasCustomBg || hasCustomText || hasCustomHover) ? '' : (variants[variant] || variants.default);
+  const cls = [base, variantClass, sizes[size] || sizes.default, className].join(' ');
 
   return (
     <button ref={ref} className={cls} {...props}>
