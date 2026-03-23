@@ -840,18 +840,30 @@ async def container_health(project_id: str):
 @app.post("/vibecoding/api/projects", response_model=ProjectResponse)
 async def create_project(request: ProjectCreateRequest, user: dict = Depends(get_current_user)):
     try:
-        project_id = request.project_id or project_manager.generate_project_id()
         user_id = user["id"]
         
-        # Check if project already exists
-        project_info = project_manager.get_project_info(project_id)
-        if project_info:
-            # If project exists but has no owner, claim it for this user
-            if project_info.get("owner_id") is None:
-                project_info["owner_id"] = user_id
-                project_manager.update_project_metadata(project_id, project_info)
-            return ProjectResponse(**project_info)
-            
+        # If project_id is provided, check if it exists
+        if request.project_id:
+            project_info = project_manager.get_project_info(request.project_id)
+            if project_info:
+                # Project exists - check ownership
+                if project_info.get("owner_id") is None:
+                    # No owner, claim it for this user
+                    project_info["owner_id"] = user_id
+                    project_manager.update_project_metadata(request.project_id, project_info)
+                    return ProjectResponse(**project_info)
+                elif project_info.get("owner_id") == user_id:
+                    # User owns it, return it
+                    return ProjectResponse(**project_info)
+                else:
+                    # Someone else owns it
+                    raise HTTPException(status_code=403, detail="Access denied")
+            else:
+                # Project doesn't exist with this ID - reject creation with custom ID
+                raise HTTPException(status_code=404, detail="Project not found")
+        
+        # No project_id provided - create new project with generated ID
+        project_id = project_manager.generate_project_id()
         project_manager.create_project_directory(project_id, metadata={
             "name": request.name,
             "description": request.description,
@@ -860,6 +872,8 @@ async def create_project(request: ProjectCreateRequest, user: dict = Depends(get
         
         project_info = project_manager.get_project_info(project_id)
         return ProjectResponse(**project_info)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -74,6 +74,7 @@ function AuthLayout({ children }) {
 function Workspace({ user, logout, isAuthenticated }) {
   // Router hooks must come first
   const { project_id: urlParamId } = useParams();
+  const navigate = useNavigate();
 
   // Refs
   const iframeRef = useRef(null);
@@ -360,21 +361,32 @@ function Workspace({ user, logout, isAuthenticated }) {
 
       if (urlProjectId) {
         try {
-          // Attempt to create/ensure project exists on backend
-          await axios.post(`${API_BASE_URL}/api/projects`, {
-            project_id: urlProjectId,
-            name: projectName || urlProjectId
-          }, {
+          // First, check if the project exists
+          const response = await axios.get(`${API_BASE_URL}/api/projects/${urlProjectId}`, {
             headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
           });
 
+          // Project exists, load it
           setCurrentProjectId(urlProjectId);
           projectIdToLoad = urlProjectId;
 
           // Clear URL params without reloading
           window.history.replaceState({}, '', `/vibecoding/a/${urlProjectId}`);
         } catch (error) {
-          console.error('Failed to initialize project from URL:', error);
+          console.error('Failed to load project from URL:', error);
+          // If project doesn't exist (404) or access denied (403), redirect to last opened project or home
+          if (error.response && (error.response.status === 404 || error.response.status === 403)) {
+            console.warn(`Project ${urlProjectId} not found or access denied`);
+            // Redirect to last opened project if available, otherwise to home
+            if (currentProjectId) {
+              console.log(`Redirecting to last opened project: ${currentProjectId}`);
+              navigate(`/vibecoding/a/${currentProjectId}`);
+            } else {
+              console.log('No last project, redirecting to home');
+              navigate('/vibecoding');
+            }
+            return;
+          }
         }
       }
 
