@@ -8620,23 +8620,76 @@ def get_container_port(project_id: str) -> str:
     print(f"No port found for project_id: {project_id}")
     return None
  
-def proxy_request(target_base: str, request: Request, forward_path: str):
-    """Generic proxy handler"""
+def _rewrite_html_assets(html_bytes: bytes, proxy_prefix: str) -> bytes:
+    """Rewrite absolute asset paths in HTML so they route through the proxy.
+
+    e.g. src="/assets/main.js"  ->  src="/app/{token}/assets/main.js"
+         href="/style.css"       ->  href="/app/{token}/style.css"
+         url(/fonts/x.woff)      ->  url(/app/{token}/fonts/x.woff)
+
+    Only rewrites paths that start with "/" but NOT "//" (protocol-relative),
+    and NOT paths that already start with the proxy_prefix.
+    """
+    import re as _re
+
+    proxy_prefix = proxy_prefix.rstrip("/")
+
+    def _replace_attr(m):
+        attr, quote, path = m.group(1), m.group(2), m.group(3)
+        # skip protocol-relative, data URIs, mailto, hash-only etc.
+        if path.startswith("//") or ":" in path.split("/")[0] or path.startswith("#"):
+            return m.group(0)
+        if path.startswith(proxy_prefix + "/") or path == proxy_prefix:
+            return m.group(0)
+        return f'{attr}={quote}{proxy_prefix}{path}{quote}'
+
+    def _replace_url(m):
+        inner = m.group(1).strip("'\"")
+        if inner.startswith("//") or ":" in inner.split("/")[0] or inner.startswith("#"):
+            return m.group(0)
+        if inner.startswith(proxy_prefix + "/") or inner == proxy_prefix:
+            return m.group(0)
+        return f"url({proxy_prefix}{inner})"
+
+    try:
+        html = html_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        return html_bytes
+
+    # Rewrite src=, href=, action= attributes with absolute paths
+    html = _re.sub(
+        r'(src|href|action)=(["\'])(/[^"\'>\s]*)\2',
+        _replace_attr,
+        html,
+        flags=_re.IGNORECASE,
+    )
+    # Rewrite CSS url(/...) references
+    html = _re.sub(
+        r'url\((["\']?/[^)"\'>\s]*["\']?)\)',
+        _replace_url,
+        html,
+        flags=_re.IGNORECASE,
+    )
+
+    return html.encode("utf-8")
+
+
+def proxy_request(target_base: str, request: Request, forward_path: str, proxy_prefix: str = ""):
+    """Generic proxy handler. If proxy_prefix is given, rewrites HTML asset paths."""
     target_url = target_base + forward_path
-   
+
     # Forward query params
     if request.url.query:
         target_url += "?" + request.url.query
-   
+
     # Forward headers (excluding host)
     headers = {
         key: value
         for key, value in request.headers.items()
         if key.lower() not in ["host", "x-forwarded-for", "x-forwarded-proto"]
     }
-   
+
     try:
-        # For FastAPI, we need to handle the async body differently
         resp = requests.request(
             method=request.method,
             url=target_url,
@@ -8644,22 +8697,29 @@ def proxy_request(target_base: str, request: Request, forward_path: str):
             allow_redirects=False,
             timeout=(5, 30)
         )
-       
+
         excluded_headers = [
             "content-encoding",
             "content-length",
             "transfer-encoding",
             "connection"
         ]
-       
+
         response_headers = {
             name: value
             for name, value in resp.headers.items()
             if name.lower() not in excluded_headers
         }
-       
+
+        body = resp.content
+        content_type = resp.headers.get("content-type", "")
+
+        # Rewrite HTML so absolute asset paths are proxied correctly
+        if proxy_prefix and "text/html" in content_type:
+            body = _rewrite_html_assets(body, proxy_prefix)
+
         return StreamingResponse(
-            iter([resp.content]),
+            iter([body]),
             status_code=resp.status_code,
             headers=response_headers
         )
@@ -8681,4 +8741,5 @@ async def route_proxy(token: str, request: Request, path: str = ""):
    
     target = f"http://127.0.0.1:{port}"
     forward_path = "/" + path if path else "/"
-    return proxy_request(target, request, forward_path)
+    proxy_prefix = f"/app/{token}"
+    return proxy_request(target, request, forward_path, proxy_prefix=proxy_prefix)
