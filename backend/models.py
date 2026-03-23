@@ -370,3 +370,34 @@ class Task(Base):
     
     # Relationships
     owner = relationship("User")
+
+
+class AgentMessage(Base):
+    """Persistent agent-to-agent communication messages"""
+    __tablename__ = "agent_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+
+    # Who sent it and who it's for (None = broadcast to all)
+    from_agent = Column(String, index=True, nullable=False)
+    to_agent = Column(String, index=True, nullable=True)  # None = broadcast
+
+    # Message classification
+    # BLOCKED | OFFERING | READY | HELP_REQUEST | RESPONSE | INFO | RESOLVED
+    msg_type = Column(String, nullable=False, default="INFO")
+
+    message = Column(Text, nullable=False)
+
+    # Optional structured payload (e.g. which file/model is needed)
+    payload = Column(JSON, nullable=True)
+
+    # Which task this message relates to
+    related_task_id = Column(String, nullable=True, index=True)
+
+    # Whether this blocker was resolved
+    resolved = Column(Boolean, default=False)
+    resolved_by = Column(String, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

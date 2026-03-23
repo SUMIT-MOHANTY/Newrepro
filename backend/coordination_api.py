@@ -1,9 +1,15 @@
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
+import asyncio
+import json
 
 from agent_coordination_service import coordination_service
 from coordinated_agent_wrapper import run_coordinated_agents_langgraph
+import agent_communication_service as comm
+from database import get_db
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/coordination", tags=["Agent Coordination"])
 
@@ -462,3 +468,201 @@ async def get_communication_log(project_token: str, limit: int = 50):
         "communication_log": comm_log[-limit:],
         "total_events": len(comm_log)
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AGENT COMMUNICATION ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SendMessageRequest(BaseModel):
+    from_agent: str
+    message: str
+    msg_type: str = "INFO"  # INFO | BLOCKED | OFFERING | READY | HELP_REQUEST | RESPONSE | RESOLVED
+    to_agent: Optional[str] = None
+    related_task_id: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+
+
+class ResolveBlockerRequest(BaseModel):
+    message_id: int
+    resolved_by: str
+
+
+class BlockedRequest(BaseModel):
+    from_agent: str
+    reason: str
+    related_task_id: Optional[str] = None
+    needs: Optional[str] = None  # e.g. "Loan model from banking module"
+
+
+class ReadyRequest(BaseModel):
+    from_agent: str
+    what_is_ready: str
+    related_task_id: Optional[str] = None
+
+
+@router.post("/chat/{project_token}/send")
+async def send_agent_chat_message(
+    project_token: str,
+    req: SendMessageRequest,
+    db: Session = Depends(get_db),
+):
+    """Send a message from one agent to others (or broadcast)."""
+    msg = await comm.send_message(
+        db=db,
+        project_token=project_token,
+        from_agent=req.from_agent,
+        message=req.message,
+        msg_type=req.msg_type,
+        to_agent=req.to_agent,
+        related_task_id=req.related_task_id,
+        payload=req.payload,
+    )
+    return {"status": "sent", "message_id": msg.id}
+
+
+@router.post("/chat/{project_token}/blocked")
+async def agent_blocked(
+    project_token: str,
+    req: BlockedRequest,
+    db: Session = Depends(get_db),
+):
+    """Agent reports it is blocked and broadcasts what it needs."""
+    msg = await comm.broadcast_blocked(
+        db=db,
+        project_token=project_token,
+        from_agent=req.from_agent,
+        reason=req.reason,
+        related_task_id=req.related_task_id,
+        needs=req.needs,
+    )
+    return {"status": "broadcast", "message_id": msg.id}
+
+
+@router.post("/chat/{project_token}/ready")
+async def agent_ready(
+    project_token: str,
+    req: ReadyRequest,
+    db: Session = Depends(get_db),
+):
+    """Agent signals it finished something and auto-resolves waiting blockers."""
+    msg = await comm.broadcast_ready(
+        db=db,
+        project_token=project_token,
+        from_agent=req.from_agent,
+        what_is_ready=req.what_is_ready,
+        related_task_id=req.related_task_id,
+    )
+    resolved = await comm.check_and_auto_resolve(
+        db=db,
+        project_token=project_token,
+        from_agent=req.from_agent,
+        what_was_built=req.what_is_ready,
+    )
+    return {"status": "broadcast", "message_id": msg.id, "auto_resolved_blockers": resolved}
+
+
+@router.post("/chat/{project_token}/resolve/{message_id}")
+async def resolve_blocker(
+    project_token: str,
+    message_id: int,
+    req: ResolveBlockerRequest,
+    db: Session = Depends(get_db),
+):
+    """Mark a BLOCKED message as resolved."""
+    msg = await comm.resolve_blocker(db=db, project_token=project_token, message_id=message_id, resolved_by=req.resolved_by)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return {"status": "resolved", "message_id": msg.id}
+
+
+@router.get("/chat/{project_token}/messages")
+async def get_chat_messages(
+    project_token: str,
+    limit: int = 100,
+    msg_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Get all messages for a project (newest first)."""
+    messages = comm.get_messages(db, project_token, limit=limit, msg_type=msg_type)
+    return {"messages": messages, "count": len(messages)}
+
+
+@router.get("/chat/{project_token}/blockers")
+async def get_active_blockers(
+    project_token: str,
+    db: Session = Depends(get_db),
+):
+    """Get all unresolved BLOCKED messages."""
+    blockers = comm.get_active_blockers(db, project_token)
+    return {"blockers": blockers, "count": len(blockers)}
+
+
+@router.get("/chat/{project_token}/stream")
+async def stream_chat(project_token: str, db: Session = Depends(get_db)):
+    """
+    Server-Sent Events stream — frontend subscribes here to get
+    real-time agent messages without polling.
+    """
+    async def event_generator():
+        q = await comm.subscribe(project_token)
+        try:
+            # Send last 20 messages as initial state
+            history = comm.get_messages(db, project_token, limit=20)
+            for msg in reversed(history):
+                yield f"data: {json.dumps(msg)}\n\n"
+
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except asyncio.TimeoutError:
+                    yield "data: {\"_ping\": true}\n\n"
+        finally:
+            await comm.unsubscribe(project_token, q)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ── Contract Store endpoints ──────────────────────────────────────────────────
+import agent_contract_store as _cs
+
+
+@router.get("/contracts/{project_token}/apis")
+async def get_api_contracts(project_token: str):
+    """Get all published API endpoint contracts for a project."""
+    contracts = await _cs.get_api_contracts(project_token)
+    return {"contracts": contracts, "count": len(contracts)}
+
+
+@router.get("/contracts/{project_token}/models")
+async def get_registered_models(project_token: str):
+    """Get all registered DB models for a project."""
+    models = _cs.get_registered_models(project_token)
+    return {"models": models, "count": len(models)}
+
+
+@router.get("/contracts/{project_token}/locks")
+async def get_active_locks(project_token: str):
+    """Get all active file locks for a project."""
+    locks = _cs.get_active_locks(project_token)
+    return {"locks": locks, "count": len(locks)}
+
+
+@router.get("/contracts/{project_token}/health")
+async def get_agent_health(project_token: str):
+    """Get heartbeat status for all agents in a project."""
+    from agent_contract_store import _heartbeats, HEARTBEAT_TIMEOUT
+    import time
+    beats = _heartbeats.get(project_token, {})
+    now = time.time()
+    health = {
+        aid: {
+            "last_heartbeat": ts,
+            "seconds_ago": round(now - ts, 1),
+            "alive": (now - ts) <= HEARTBEAT_TIMEOUT,
+        }
+        for aid, ts in beats.items()
+    }
+    crashed = _cs.get_crashed_agents(project_token)
+    return {"agents": health, "crashed": crashed}

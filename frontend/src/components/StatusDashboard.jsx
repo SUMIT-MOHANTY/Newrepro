@@ -8,6 +8,7 @@ import 'react-loading-skeleton/dist/skeleton.css';
 
 import { API_ENDPOINTS } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
+import AgentChatPanel from './AgentChatPanel';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
@@ -2481,6 +2482,13 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             </div>
 
                                         </div>
+                                    </div>
+                                )}
+
+                                {/* ── Agent Communication Panel (shows when agents are running) ────────────────────── */}
+                                {!isDeveloperOnlyMode && orderedAgents.some(a => a.status === 'running') && selectedProjectKey && (
+                                    <div className="w-full mt-4 lg:col-span-2 min-w-0">
+                                        <AgentChatPanel projectToken={selectedProjectKey} />
                                     </div>
                                 )}
 

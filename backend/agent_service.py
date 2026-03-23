@@ -1778,6 +1778,7 @@ async def _generate_dynamic_prompt(
     task_messages: str = "",
     file_ownership_block: str = "",   # Fix 3: injected by caller
     canonical_files: Optional[List[str]] = None,  # Fix 4: injected by caller
+    project_token: str = "",  # For contract store lookup
 ) -> str:
     """
     LAYER 3: Dynamic Prompt Writer.
@@ -1817,6 +1818,25 @@ async def _generate_dynamic_prompt(
             + "\nAll file paths in your script MUST match the above exactly. Do not create files at other paths.\n"
         )
 
+    # CONTRACT STORE: inject known API endpoints so agents use correct paths
+    contract_store_text = ""
+    if project_token:
+        try:
+            import agent_contract_store as _cs
+            contracts = await _cs.get_api_contracts(project_token)
+            if contracts:
+                ep_lines = "\n".join(
+                    f"  {v.get('method','GET')} {v.get('path','')}"
+                    for v in list(contracts.values())[:30]
+                )
+                contract_store_text = (
+                    "\nKNOWN API ENDPOINTS (from contract store — use EXACTLY these paths):\n"
+                    + ep_lines
+                    + "\nDo NOT invent new endpoint paths. Use only the paths listed above.\n"
+                )
+        except Exception:
+            pass
+
     manager_prompt = f"""You are a Manager Agent. Your job is to write the EXACT system prompt
 that a Coding Agent will receive. This prompt must be highly specific to the task at hand.
 
@@ -1825,6 +1845,7 @@ Title: {task_title}
 Description: {task_desc}
 Checklist: {checklist_text}
 {canonical_files_text}
+{contract_store_text}
 TECHNICAL SPECIFICATION (from Architect Agent):
 {tech_spec[:3000] if tech_spec else "Not available."}
 
@@ -3199,6 +3220,24 @@ async def _coordinate_repo_bootstrap(
                 "other agents will wait for initial push."
             ),
         })
+        # Broadcast bootstrap start
+        try:
+            from database import SessionLocal
+            import agent_communication_service as _comm
+            _db = SessionLocal()
+            try:
+                await _comm.send_message(
+                    db=_db,
+                    project_token=project_token or "",
+                    from_agent=agent_id,
+                    message="🏗️ I'm the bootstrap agent — creating initial project scaffold. Other agents will wait for me.",
+                    msg_type="OFFERING",
+                    payload={"offering": "Project Bootstrap Scaffold"},
+                )
+            finally:
+                _db.close()
+        except Exception:
+            pass
         return {"role": "bootstrap", "base_branch": None}
 
     wait_start = time.time()
@@ -3210,6 +3249,23 @@ async def _coordinate_repo_bootstrap(
         "type": "info",
         "message": f"Waiting for {bootstrap_agent} to push initial scaffold before starting work.",
     })
+    # Broadcast waiting status
+    try:
+        from database import SessionLocal
+        import agent_communication_service as _comm
+        _db = SessionLocal()
+        try:
+            await _comm.send_message(
+                db=_db,
+                project_token=project_token or "",
+                from_agent=agent_id,
+                message=f"⏳ Waiting for {bootstrap_agent} to create project scaffold before I can start...",
+                msg_type="INFO",
+            )
+        finally:
+            _db.close()
+    except Exception:
+        pass
 
     while not event.is_set():
         await asyncio.sleep(3)
@@ -13700,6 +13756,23 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": "⏳ Bootstrap not yet pushed. Waiting for scaffold before picking task..."
             })
+            # Broadcast waiting status
+            try:
+                from database import SessionLocal
+                import agent_communication_service as _comm
+                _db = SessionLocal()
+                try:
+                    await _comm.send_message(
+                        db=_db,
+                        project_token=project_token or "",
+                        from_agent=agent_id,
+                        message="⏳ Waiting for bootstrap agent to create project scaffold...",
+                        msg_type="INFO",
+                    )
+                finally:
+                    _db.close()
+            except Exception:
+                pass
             # Poll every 15s until bootstrap flag is set (max 30 min)
             for _ in range(120):
                 await asyncio.sleep(15)
@@ -13987,6 +14060,48 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"API: timer log clock_in {'ok' if clock_in_ok else 'failed'}"
             })
+
+            # ── CONTRACT STORE: start heartbeat so peers know we're alive ──
+            _heartbeat_task = None
+            if project_token:
+                try:
+                    import agent_contract_store as _cs
+                    await _cs.heartbeat(project_token, agent_id)
+
+                    async def _heartbeat_loop():
+                        try:
+                            while True:
+                                await asyncio.sleep(30)
+                                await _cs.heartbeat(project_token, agent_id)
+                        except asyncio.CancelledError:
+                            pass
+
+                    _heartbeat_task = asyncio.ensure_future(_heartbeat_loop())
+                except Exception:
+                    pass
+            # ── END HEARTBEAT ──────────────────────────────────────────
+
+            # ── BROADCAST: Task started ────────────────────────────────
+            try:
+                from database import SessionLocal
+                import agent_communication_service as _comm
+                _db = SessionLocal()
+                try:
+                    task_title = task.get("title", task.get("taskName", "task"))
+                    await _comm.send_message(
+                        db=_db,
+                        project_token=project_token or "",
+                        from_agent=agent_id,
+                        message=f"🚀 Starting work on: {task_title}",
+                        msg_type="INFO",
+                        related_task_id=str(task.get("id", "")),
+                    )
+                finally:
+                    _db.close()
+            except Exception:
+                pass
+            # ── END BROADCAST ──────────────────────────────────────────
+
             msg_ok = await _post_task_message(task, f"Started by {started_by_name}.", task_token=task_token)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
@@ -14409,6 +14524,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     cross_agent_info=cross_agent_info,
                     file_ownership_block=file_ownership_block,   # Fix 3
                     canonical_files=canonical_files,             # Fix 4
+                    project_token=project_token or "",           # Contract store
                 )
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
@@ -14438,6 +14554,27 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": "Calling AI model to generate build script..."
             })
+
+            # Broadcast building status
+            try:
+                from database import SessionLocal
+                import agent_communication_service as _comm
+                _db = SessionLocal()
+                try:
+                    task_title = task.get("title", task.get("taskName", "task"))
+                    await _comm.send_message(
+                        db=_db,
+                        project_token=project_token or "",
+                        from_agent=agent_id,
+                        message=f"🔨 Generating code for: {task_title}",
+                        msg_type="OFFERING",
+                        related_task_id=str(task.get("id", "")),
+                        payload={"offering": task_title},
+                    )
+                finally:
+                    _db.close()
+            except Exception:
+                pass
 
             # Get project root from bootstrap state
             bootstrap_state = state.get("repo_bootstrap", {})
@@ -14483,6 +14620,26 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"AI generated {len(generated_code.splitlines())} lines of build script"
             })
+
+            # Broadcast execution status
+            try:
+                from database import SessionLocal
+                import agent_communication_service as _comm
+                _db = SessionLocal()
+                try:
+                    task_title = task.get("title", task.get("taskName", "task"))
+                    await _comm.send_message(
+                        db=_db,
+                        project_token=project_token or "",
+                        from_agent=agent_id,
+                        message=f"⚙️ Executing build script for: {task_title}",
+                        msg_type="INFO",
+                        related_task_id=str(task.get("id", "")),
+                    )
+                finally:
+                    _db.close()
+            except Exception:
+                pass
 
             # ── Execute build script ─────────────────────────────────
             result = await asyncio.to_thread(
@@ -14537,7 +14694,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             try:
                 bulletproof_result = await _bulletproof_self_healing_loop(
                     container_name=container_name,
-                    task=task,
+                    task={**task, "_agent_id": agent_id, "_project_token": project_token or "", "_last_script": generated_code},
                     agent_type=agent["type"],
                     initial_result=result,
                     tech_spec=tech_spec,
@@ -14745,7 +14902,27 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     
                     if not passed_review and not integration_blocked:
                         logger.warning(f"[{agent_id}] Self-review failed: {review_feedback[:100]}")
-                        # Even if failed, it pushes to Git so Master Agent can intervene in next cycle, 
+                        # Broadcast BLOCKED so other agents know and can help
+                        try:
+                            from database import SessionLocal
+                            import agent_communication_service as _comm
+                            _db = SessionLocal()
+                            try:
+                                # Extract what's missing from review feedback
+                                needs_hint = review_feedback[:200] if review_feedback else "unknown issue"
+                                await _comm.broadcast_blocked(
+                                    db=_db,
+                                    project_token=project_token or "",
+                                    from_agent=agent_id,
+                                    reason=f"Self-review failed: {needs_hint}",
+                                    related_task_id=str(task.get("id", "")),
+                                    needs=needs_hint,
+                                )
+                            finally:
+                                _db.close()
+                        except Exception as _comm_err:
+                            logger.debug(f"[{agent_id}] Could not broadcast blocked state: {_comm_err}")
+                        # Even if failed, it pushes to Git so Master Agent can intervene in next cycle,
                         # but agent logs it properly as a warning structural mismatch.
                 except Exception as eval_err:
                     agent["output_log"].append({
@@ -15134,6 +15311,37 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             "type": "info",
                             "message": f"Successfully pushed to branch: {effective_branch}"
                         })
+                        # Broadcast READY so blocked agents know this work is available
+                        try:
+                            from database import SessionLocal
+                            import agent_communication_service as _comm
+                            _db = SessionLocal()
+                            try:
+                                task_title = task.get("title", task.get("taskName", "task"))
+                                await _comm.broadcast_ready(
+                                    db=_db,
+                                    project_token=project_token or "",
+                                    from_agent=agent_id,
+                                    what_is_ready=f"{task_title} (branch: {effective_branch})",
+                                    related_task_id=str(task.get("id", "")),
+                                )
+                                # Auto-resolve any blockers waiting for this work
+                                await _comm.check_and_auto_resolve(
+                                    db=_db,
+                                    project_token=project_token or "",
+                                    from_agent=agent_id,
+                                    what_was_built=task_title,
+                                )
+                            finally:
+                                _db.close()
+                        except Exception as _comm_err:
+                            logger.debug(f"[{agent_id}] Could not broadcast ready state: {_comm_err}")
+                        # Release all file locks held by this agent
+                        try:
+                            import agent_contract_store as _cs
+                            await _cs.release_all_locks(project_token or "", agent_id)
+                        except Exception:
+                            pass
                         if commit_result.get("rebased"):
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
@@ -15309,6 +15517,29 @@ Be extremely specific. Every field name must be exact. This is the single source
                                                     "type": "info",
                                                     "message": f"✅ API contract generated ({len(api_contract)} chars) — all agents will use this"
                                                 })
+                                                # Publish to contract store so all agents can validate paths
+                                                try:
+                                                    import agent_contract_store as _cs
+                                                    import re as _re
+                                                    # Parse endpoints from the contract text
+                                                    ep_matches = _re.findall(
+                                                        r'(GET|POST|PUT|PATCH|DELETE)\s+(/[^\s\n]+)',
+                                                        api_contract, _re.IGNORECASE
+                                                    )
+                                                    endpoints = [{"method": m, "path": p} for m, p in ep_matches]
+                                                    if endpoints:
+                                                        await _cs.publish_api_contract(
+                                                            project_token=project_token,
+                                                            agent_id=agent_id,
+                                                            endpoints=endpoints,
+                                                        )
+                                                        agent["output_log"].append({
+                                                            "time": datetime.utcnow().isoformat(),
+                                                            "type": "info",
+                                                            "message": f"📋 Contract store: published {len(endpoints)} API endpoints"
+                                                        })
+                                                except Exception as _cs_err:
+                                                    logger.debug(f"[{agent_id}] Contract store publish skipped: {_cs_err}")
                                     except Exception as contract_err:
                                         logger.warning(f"[{agent_id}] API contract generation failed: {contract_err}")
                             except Exception as tree_err:
@@ -15436,6 +15667,26 @@ Be extremely specific. Every field name must be exact. This is the single source
                 else:
                     completion_message = f"Completed by {agent_id} in {elapsed}s (with git errors)."
                 msg_ok = await _post_task_message(task, completion_message, task_token=task_token)
+                
+                # Broadcast completion
+                try:
+                    from database import SessionLocal
+                    import agent_communication_service as _comm
+                    _db = SessionLocal()
+                    try:
+                        task_title = task.get("title", task.get("taskName", "task"))
+                        await _comm.send_message(
+                            db=_db,
+                            project_token=project_token or "",
+                            from_agent=agent_id,
+                            message=f"✅ Completed: {task_title} in {elapsed}s",
+                            msg_type="INFO",
+                            related_task_id=str(task.get("id", "")),
+                        )
+                    finally:
+                        _db.close()
+                except Exception:
+                    pass
                 
                 # Note: Progress should be 100% already strictly set by the checklist iterator!
                 # We just confirm `complete` physically inside NxDune
@@ -15680,6 +15931,15 @@ Be extremely specific. Every field name must be exact. This is the single source
 
         # ── END OF WHILE LOOP ────────────────────────────────────────
 
+        # Stop heartbeat and release all file locks
+        try:
+            if _heartbeat_task is not None:
+                _heartbeat_task.cancel()
+            import agent_contract_store as _cs
+            await _cs.release_all_locks(project_token or "", agent_id)
+        except Exception:
+            pass
+
         # Destroy container after all tasks are done
         if container_created:
             await asyncio.to_thread(_destroy_container, container_name)
@@ -15759,6 +16019,15 @@ Be extremely specific. Every field name must be exact. This is the single source
         })
         agent["last_run"] = datetime.utcnow().isoformat()
         agent["current_task"] = None
+
+        # Stop heartbeat and release all file locks on crash
+        try:
+            if '_heartbeat_task' in dir() and _heartbeat_task is not None:
+                _heartbeat_task.cancel()
+            import agent_contract_store as _cs
+            await _cs.release_all_locks(project_token or "", agent_id)
+        except Exception:
+            pass
 
         try:
             import context_manager as ctx_mgr
@@ -19004,6 +19273,113 @@ echo "Emergency fix completed"
         
         return fallback_fix, "Emergency fallback fix applied due to AI generation failure"
 
+
+# ── Peer-wait: detect cross-agent import errors and wait for peer to finish ──
+
+_CROSS_AGENT_IMPORT_PATTERNS = [
+    r"cannot import name ['\"](\w+)['\"]",
+    r"No name ['\"](\w+)['\"] in module",
+    r"ImportError.*['\"](\w+)['\"]",
+    r"E0611.*No name ['\"](\w+)['\"]",
+    r"NameError: name ['\"](\w+)['\"] is not defined",
+]
+
+def _extract_missing_symbols(output: str) -> list:
+    """Extract symbol names missing due to cross-agent dependency."""
+    import re as _re_sym
+    symbols = []
+    for pat in _CROSS_AGENT_IMPORT_PATTERNS:
+        symbols.extend(_re_sym.findall(pat, output))
+    # Filter out common builtins that are never cross-agent
+    builtins = {"True", "False", "None", "self", "cls", "str", "int", "list", "dict", "set"}
+    return [s for s in dict.fromkeys(symbols) if s not in builtins]
+
+
+async def _wait_for_peer_and_pull(
+    container_name: str,
+    project_token: str,
+    agent_id: str,
+    task: dict,
+    missing_symbols: list,
+    timeout_seconds: int = 600,
+) -> bool:
+    """
+    Human-like peer-wait with deadlock detection + crash detection:
+    1. Broadcast BLOCKED with what's needed
+    2. Subscribe to message bus
+    3. Use contract store wait_for_agent_or_crash() — detects deadlock (A→B→A) and peer crash
+    4. git pull so peer's code lands in the container
+    5. Return True if resolved, False if timed out/crashed/deadlocked
+    """
+    try:
+        from database import SessionLocal
+        import agent_communication_service as _comm
+        import agent_contract_store as _cs
+
+        needs_str = ", ".join(missing_symbols)
+        task_id = str(task.get("id", task.get("task_id", "")))
+
+        _db = SessionLocal()
+        try:
+            await _comm.broadcast_blocked(
+                db=_db,
+                project_token=project_token,
+                from_agent=agent_id,
+                reason=f"Missing symbols from peer task: {needs_str}",
+                related_task_id=task_id,
+                needs=needs_str,
+            )
+            q = await _comm.subscribe(project_token)
+        finally:
+            _db.close()
+
+        logger.info(f"[{agent_id}] ⏸️ Peer-wait: need {needs_str} — listening for READY signal")
+
+        # Determine which peer agent likely owns the missing symbols
+        # (best-effort: look at active agents; fall back to "unknown_peer")
+        target_agent = task.get("_peer_agent_id", "unknown_peer")
+
+        # Use contract store: handles deadlock detection + crash detection
+        outcome = await _cs.wait_for_agent_or_crash(
+            project_token=project_token,
+            waiter_id=agent_id,
+            target_agent_id=target_agent,
+            q=q,
+            missing_symbols=missing_symbols,
+            timeout_seconds=timeout_seconds,
+        )
+
+        await _comm.unsubscribe(project_token, q)
+
+        if outcome == "deadlock":
+            logger.warning(f"[{agent_id}] Deadlock detected waiting for {target_agent} — proceeding without peer")
+            return False
+        if outcome == "crashed":
+            logger.warning(f"[{agent_id}] Peer agent {target_agent} appears crashed — proceeding without peer")
+            return False
+        if outcome == "timeout":
+            logger.warning(f"[{agent_id}] Peer-wait timed out after {timeout_seconds}s for: {needs_str}")
+            return False
+
+        # outcome == "resolved" — pull peer's code into the container
+        try:
+            pull_cmd = "cd /workspace && git fetch --all && git pull --rebase origin HEAD 2>&1 || true"
+            await asyncio.to_thread(
+                subprocess.run,
+                ["docker", "exec", container_name, "sh", "-c", pull_cmd],
+                capture_output=True, text=True, timeout=60,
+            )
+            logger.info(f"[{agent_id}] Git pull complete — peer code now available")
+        except Exception as pull_err:
+            logger.warning(f"[{agent_id}] Git pull after peer-wait failed: {pull_err}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"[{agent_id}] _wait_for_peer_and_pull error: {e}")
+        return False
+
+
 async def _bulletproof_self_healing_loop(
     container_name: str,
     task: Dict[str, Any],
@@ -19024,6 +19400,10 @@ async def _bulletproof_self_healing_loop(
     all_generated_code = ""
     all_stdout = result.get("stdout", "")
     
+    # Extract agent_id and project_token from task for peer-wait
+    _agent_id = task.get("_agent_id", "unknown_agent")
+    _project_token = task.get("_project_token", "")
+
     for iteration in range(1, max_iterations + 1):
         # Use bulletproof issue detection
         issue_report = _bulletproof_detect_issues_from_output(
@@ -19039,6 +19419,37 @@ async def _bulletproof_self_healing_loop(
         if iteration > max_iterations:
             logger.warning(f"Bulletproof self-healing exhausted {max_iterations} iterations")
             break
+
+        # ── PEER-WAIT: detect cross-agent import errors ──────────────
+        # If the error is a missing symbol from another agent's task,
+        # wait for that agent to finish instead of trying to fix it ourselves.
+        combined_output = result.get("stdout", "") + "\n" + result.get("stderr", "")
+        missing_symbols = _extract_missing_symbols(combined_output)
+        if missing_symbols and _project_token:
+            logger.info(f"[{_agent_id}] Cross-agent dependency detected: {missing_symbols}")
+            peer_resolved = await _wait_for_peer_and_pull(
+                container_name=container_name,
+                project_token=_project_token,
+                agent_id=_agent_id,
+                task=task,
+                missing_symbols=missing_symbols,
+                timeout_seconds=600,
+            )
+            if peer_resolved:
+                # Re-run the original build script now that peer code is available
+                logger.info(f"[{_agent_id}] Peer resolved — re-running build after pull")
+                try:
+                    result = await asyncio.to_thread(
+                        _exec_script_in_container,
+                        container_name,
+                        all_generated_code or task.get("_last_script", "echo 'no script'"),
+                        f"peer_resume_{iteration}",
+                    )
+                    all_stdout += f"\n\n--- PEER RESUME {iteration} ---\n" + result.get("stdout", "")
+                    continue  # Re-check issues with fresh result
+                except Exception as resume_err:
+                    logger.warning(f"[{_agent_id}] Re-run after peer-wait failed: {resume_err}")
+        # ── END PEER-WAIT ─────────────────────────────────────────────
         
         logger.info(f"Bulletproof self-healing iteration {iteration}/{max_iterations}")
         logger.info(f"Issues detected: {issue_report['issue_count']} (priority: {issue_report['priority']})")
