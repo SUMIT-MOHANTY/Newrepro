@@ -116,6 +116,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [activeView, setActiveView] = useState('preview');
   const [copied, setCopied] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileTree, setFileTree] = useState([]);
   const [expandedFolders, setExpandedFolders] = useState(new Set());
@@ -1029,7 +1030,9 @@ function Workspace({ user, logout, isAuthenticated }) {
   };
 
   const handleRefresh = () => {
+    setIsRefreshing(true);
     setIframeKey(prev => prev + 1);
+    setTimeout(() => setIsRefreshing(false), 600);
   };
 
   const handleDownload = () => {
@@ -1819,7 +1822,7 @@ Please suggest improvements or modifications for this element.`;
                   className="bg-white/5 hover:bg-white/10 text-white"
                   title="Refresh Preview"
                 >
-                  <RefreshCw className="w-4 h-4" />
+                  <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                 </Button>
                 {/* <Button
                   variant="ghost"
