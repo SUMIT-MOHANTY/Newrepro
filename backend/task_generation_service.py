@@ -37,6 +37,69 @@ INTELLIGENT_TASK_GENERATION_PROMPT = """You are an EXPERT Project Architect and 
 7. All infrastructure included
 8. Production-ready when BRD requires it
 
+🧠 **CRITICAL ARCHITECTURAL UNDERSTANDING - READ THIS FIRST:**
+
+**WHY TASKS FAIL (Common mistakes you MUST avoid):**
+❌ Bootstrap structure doesn't match actual tasks
+❌ Creating components/ but forgetting pages/
+❌ Creating pages/ folder but never putting files in it
+❌ Missing routing configuration
+❌ Services defined but components don't use them
+❌ Components created but no pages to render them
+
+**FULL-STACK APPLICATION ARCHITECTURE (You MUST follow this):**
+
+**BACKEND FLOW:**
+Database Model → Serializer/DTO → API Endpoint → Business Logic → Validation
+
+**FRONTEND FLOW (3-LAYER ARCHITECTURE - CRITICAL):**
+Route → **Page** → **Component** → **Service** → API Call
+
+**EXAMPLE - User Management:**
+```
+Backend:
+  models/User.py → serializers/UserSerializer.py → views/UserViewSet.py → urls.py
+
+Frontend:
+  Route: /users
+    ↓
+  pages/Users.js (imports UserList component)
+    ↓
+  components/users/UserList.js (imports userService)
+    ↓
+  services/userService.js (calls API)
+    ↓
+  API: GET /api/users
+```
+
+**CRITICAL RULES:**
+
+1. **BOOTSTRAP STRUCTURE = TASK STRUCTURE**
+   - If bootstrap shows pages/, tasks MUST create page files
+   - If bootstrap shows services/, tasks MUST create service files
+   - Every folder in bootstrap MUST be populated by tasks
+
+2. **PAGES ARE MANDATORY (NOT OPTIONAL)**
+   - React/Vue apps need pages/ for routing
+   - Components alone are NOT enough
+   - Pages connect routes to components
+   - Example: pages/Login.js uses components/auth/LoginForm.js
+
+3. **COMPLETE ENTITY COVERAGE**
+   For EACH entity (User, Book, Order, etc.), create:
+   - Backend: Model + 5 CRUD APIs + Validation
+   - Frontend Service: API call functions
+   - Frontend Components: List, Detail, Form components
+   - Frontend Pages: List page, Detail page
+   - Routing: Add to App.js
+
+4. **VERIFICATION**
+   Before outputting, ask yourself:
+   - Can a developer build a working app from these tasks?
+   - Are all folders in bootstrap actually used?
+   - Is routing complete?
+   - Are pages connected to components?
+
 ===================================================================
 STEP 1: ANALYZE BRD COMPLETELY
 ===================================================================
@@ -102,6 +165,17 @@ For EVERY entity mentioned in BRD, you MUST create tasks for:
    8. Empty states
    9. Error handling and toast notifications
    10. Component tests
+   11. **Page Component (route-level page that uses the above components)**
+
+✅ **FRONTEND PAGES (CRITICAL - ALWAYS INCLUDE):**
+   1. Login Page (pages/Login.js) - uses auth components
+   2. Register Page (pages/Register.js) - uses auth components
+   3. Dashboard Page (pages/Dashboard.js) - role-based dashboard
+   4. Entity List Pages (e.g., pages/Books.js, pages/Users.js) - uses list components
+   5. Entity Detail Pages (e.g., pages/BookDetail.js) - uses detail components
+   6. 404 Not Found Page (pages/NotFound.js)
+   7. **CRITICAL: Each page should import and use corresponding components from components/ folder**
+   8. **CRITICAL: Configure routing in App.js using React Router for all pages**
 
 ✅ **AUTHENTICATION & SECURITY (Include if BRD mentions users/login/accounts OR multi-user system):**
    1. User authentication setup (JWT/Session)
@@ -771,11 +845,16 @@ Example structure (note: use simple ASCII for directory tree):
     "task_wallet": 1,
     "description": "Set up the initial project structure for {project_name} using {tech_stack}.===BEGIN_DIRECTORY_STRUCTURE===\nproject-name/\n |---- backend/\n |     |---- app.py\n |     |---- models/\n |     |     `---- __init__.py\n |     `---- routes/\n |           `---- __init__.py\n |---- frontend/\n |     |---- src/\n |     |     |---- components/\n |     |     |---- App.js\n |     |     `---- index.js\n |     `---- package.json\n |---- .env.example\n `---- README.md\n===END_DIRECTORY_STRUCTURE===\nBULLETPROOF REQUIREMENTS:\n- Include error handling for edge cases.",
     "linked_tasks": [],
-    "checklist": [{"text": "Create directory structure"}, {"text": "Initialize config files"}]
-  },
-  {
-    "task_id": "EPIC-01",
-    ...
+    "checklist": [
+      {"text": "Create root directory: mkdir library-system"},
+      {"text": "Create backend structure: mkdir -p library-system/backend/app/{models,routes,schemas}"},
+      {"text": "Create frontend structure: mkdir -p library-system/frontend/src/{components,pages,services}"},
+      {"text": "Initialize Django: cd library-system/backend && django-admin startproject app ."},
+      {"text": "Initialize React: cd library-system/frontend && npx create-react-app ."},
+      {"text": "Create library-system/docker-compose.yml"},
+      {"text": "Create library-system/README.md"},
+      {"text": "VERIFY: Run 'ls -R library-system' to confirm all directories exist"}
+    ]
   },
   ...
 ]
@@ -809,19 +888,31 @@ EXECUTION STEPS - 100% PRODUCTION-READY GENERATION
    - CRUD API tasks (all 5: Create, Read, Update, Delete, List) with pagination
    - Input validation task
    - Unit tests for model and APIs
-   - List UI task with pagination and loading states
-   - Detail UI task with loading states
-   - Create form UI task with validation
-   - Edit form UI task with validation
+   - List UI component task with pagination and loading states
+   - Detail UI component task with loading states
+   - Create form UI component task with validation
+   - Edit form UI component task with validation
+   - **Page task (e.g., pages/Books.js that imports and uses the above components)**
    - Empty states and error handling
    - Component tests
 
-10. **For EACH operation**, create:
+10. **Create FRONTEND PAGES task (CRITICAL - ALWAYS INCLUDE):**
+    - Create pages/Login.js (imports components/auth/Login.js)
+    - Create pages/Register.js (imports components/auth/Register.js)
+    - Create pages/Dashboard.js (role-based, imports dashboard components)
+    - Create pages/Home.js (landing page)
+    - Create pages for each entity (e.g., pages/Books.js, pages/BookDetail.js)
+    - Create pages/NotFound.js (404 page)
+    - Configure routing in App.js with React Router
+    - Add route protection using AuthContext
+    - **CRITICAL: This task ensures the pages/ folder is not empty and routing is complete**
+
+11. **For EACH operation**, create:
     - API endpoint task with validation
     - UI component task with error handling
     - Tests for operation
 
-11. **For EACH integration**, create:
+12. **For EACH integration**, create:
     - Setup task
     - Error handling task
     - Integration tests
