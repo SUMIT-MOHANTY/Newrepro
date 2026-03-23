@@ -2430,6 +2430,7 @@ async def _call_ai_for_code(
     workspace_tree: str = "",
     live_repo_tree: str = "",
     peer_context: str = "",   # NEW: summary of what other agents have built
+    project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
 ) -> tuple[str, str]:
     """Call AI model to generate a project-building shell script.
     
@@ -2441,6 +2442,7 @@ async def _call_ai_for_code(
         tech_spec: Canonical Technical Spec from Architect Agent (Layer 1)
         workspace_tree: The Master Agent's Canonical Project Tree
         live_repo_tree: The actual current file structure from the git repository
+        project_root: The bootstrap-defined project root (e.g., /workspace/my-todo-app)
     """
     url = llm_gateway.resolve_url()
     key = llm_gateway.resolve_key()
@@ -2454,6 +2456,21 @@ async def _call_ai_for_code(
 
     # Build user prompt with context layers
     user_parts = []
+    
+    # Layer 0: PROJECT ROOT (Bootstrap-defined working directory)
+    if project_root and project_root != "/workspace":
+        project_name = project_root.split("/")[-1]
+        user_parts.append(
+            f"🎯 PROJECT ROOT DIRECTORY (Bootstrap-defined):\n"
+            f"ALL files MUST be created inside: {project_root}/\n"
+            f"Project name: {project_name}\n\n"
+            f"⚠️ CRITICAL RULES:\n"
+            f"1. ALL paths must start with 'cd {project_root}' or be relative to {project_root}/\n"
+            f"2. NEVER create files in /workspace/ root - use {project_root}/ instead\n"
+            f"3. Structure: {project_root}/backend/, {project_root}/frontend/, etc.\n"
+            f"4. This root was established by the bootstrap task - you MUST respect it\n\n"
+            f"---\n\n"
+        )
 
     # Layer 1: Tech Spec (canonical architecture reference)
     if tech_spec:
@@ -2559,6 +2576,7 @@ async def _call_ai_for_fix(
     tech_spec: str = "",
     workspace_tree: str = "",
     live_repo_tree: str = "",
+    project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
 ) -> tuple[str, str]:
     """
     Call AI to generate a fix script. Enhanced with:
@@ -2566,6 +2584,7 @@ async def _call_ai_for_fix(
     - Tech spec: canonical architecture reference to stay consistent
     - Workspace tree: the target canonical structure
     - Live repo tree: the actual current state on disk to help compare
+    - Project root: Bootstrap-defined working directory
     If builder_crashed=True, the previous build script failed before producing files
     and /workspace/ is empty, so we regenerate from scratch.
     """
@@ -2581,6 +2600,16 @@ async def _call_ai_for_fix(
     issues_text = "\n".join(f"  - {issue}" for issue in issues)
 
     # Build supplementary context from KG and tech spec
+    supplementary_context = ""
+    
+    # Add project root context if not default
+    if project_root and project_root != "/workspace":
+        project_name = project_root.split("/")[-1]
+        supplementary_context += (
+            f"\n🎯 PROJECT ROOT (Bootstrap-defined): {project_root}/\n"
+            f"ALL file operations must be inside {project_root}/ - NEVER in /workspace/ root\n"
+            f"Use: cd {project_root} && <your commands>\n\n"
+        )
     supplementary_context = ""
     if tech_spec:
         supplementary_context += f"\nTECHNICAL SPECIFICATION (follow exact naming and conventions):\n{tech_spec[:2000]}\n"
@@ -14384,6 +14413,16 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "message": "Calling AI model to generate build script..."
             })
 
+            # Get project root from bootstrap state
+            bootstrap_state = state.get("repo_bootstrap", {})
+            project_root = bootstrap_state.get("project_root", "/workspace")
+            if project_root != "/workspace":
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"📁 Using bootstrap project root: {project_root}"
+                })
+
             # Fix 1: build peer context with actual file signatures from container
             peer_ctx = await _build_peer_context_block(
                 agent_id, task, project_token, container_name=container_name
@@ -14406,6 +14445,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 workspace_tree=canonical_master_tree,
                 live_repo_tree=repo_tree_context,
                 peer_context=peer_ctx,
+                project_root=project_root,  # Pass bootstrap project root
             )
             if thought:
                 await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
@@ -14477,7 +14517,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     tech_spec=tech_spec,
                     workspace_tree=master_note_result.get("workspace_tree", "") if master_note_result else "",
                     live_repo_tree=repo_tree_context,
-                    max_iterations=MAX_FIX_ITERATIONS
+                    max_iterations=MAX_FIX_ITERATIONS,
+                    project_root=project_root,  # Pass bootstrap project root
                 )
                 
                 # Update result with bulletproof outcome
@@ -18708,7 +18749,8 @@ async def _bulletproof_call_ai_for_fix(
     workspace_tree: str = "",
     live_repo_tree: str = "",
     issue_categories: Dict[str, List[str]] = None,
-    confidence_score: float = 0.9
+    confidence_score: float = 0.9,
+    project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
 ) -> tuple[str, str]:
     """
     BULLETPROOF AI fix generation with 90%+ success guarantee.
@@ -18736,6 +18778,16 @@ async def _bulletproof_call_ai_for_fix(
         fix_strategy = "database_setup"
     elif issue_categories.get("configuration"):
         fix_strategy = "configuration_fix"
+    
+    # Add project root context
+    project_root_context = ""
+    if project_root and project_root != "/workspace":
+        project_name = project_root.split("/")[-1]
+        project_root_context = (
+            f"\n🎯 PROJECT ROOT (Bootstrap-defined): {project_root}/\n"
+            f"ALL commands must run inside {project_root}/ - use: cd {project_root} && <commands>\n"
+            f"NEVER create files in /workspace/ root - only in {project_root}/\n\n"
+        )
     
     # Build bulletproof fix prompt based on strategy
     if fix_strategy == "shell_compatibility":
@@ -18934,7 +18986,8 @@ async def _bulletproof_self_healing_loop(
     tech_spec: str = "",
     workspace_tree: str = "",
     live_repo_tree: str = "",
-    max_iterations: int = 3
+    max_iterations: int = 3,
+    project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
 ) -> Dict[str, Any]:
     """
     BULLETPROOF self-healing loop with guaranteed 90%+ success rate.
@@ -18978,7 +19031,8 @@ async def _bulletproof_self_healing_loop(
                 workspace_tree=workspace_tree,
                 live_repo_tree=live_repo_tree,
                 issue_categories=issue_report["categories"],
-                confidence_score=issue_report["confidence_score"]
+                confidence_score=issue_report["confidence_score"],
+                project_root=project_root,  # Pass bootstrap project root
             )
             
             logger.info(f"Generated bulletproof fix: {len(fix_code)} chars")

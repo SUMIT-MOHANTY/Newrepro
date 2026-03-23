@@ -7513,6 +7513,22 @@ async def generate_tasks_locally(
             # Use project_token + task_id as unique DB key, but store clean task_id separately
             clean_task_id = task_data["task_id"]
             db_unique_id = f"{request.project_token}_{clean_task_id}"
+            
+            # Convert list/dict fields to JSON strings for SQLite storage
+            assigned_to = task_data.get("assignedTo", [])
+            if isinstance(assigned_to, list):
+                assigned_to = json.dumps(assigned_to)
+            
+            linked_tasks = task_data.get("linked_tasks", [])
+            if isinstance(linked_tasks, list):
+                linked_tasks = json.dumps(linked_tasks)
+            
+            checklist = task_data.get("checklist", [])
+            if isinstance(checklist, list):
+                checklist = json.dumps(checklist)
+            elif not isinstance(checklist, str):
+                checklist = json.dumps([])
+            
             task = models.Task(
                 task_id=db_unique_id,
                 project_token=request.project_token,
@@ -7525,12 +7541,12 @@ async def generate_tasks_locally(
                 startdate=task_data.get("startdate"),
                 planned_start=task_data.get("planned_start"),
                 deadline=task_data.get("deadline"),
-                assigned_to=task_data.get("assignedTo", []),
+                assigned_to=assigned_to,
                 reported_by=task_data.get("reported_by", "system"),
                 sprint=task_data.get("sprint", "new"),
                 milestone=task_data.get("milestone", "main"),
-                linked_tasks=task_data.get("linked_tasks", []),
-                checklist=task_data.get("checklist", ""),
+                linked_tasks=linked_tasks,
+                checklist=checklist,
                 synced_to_nxdune=False
             )
             db.add(task)
