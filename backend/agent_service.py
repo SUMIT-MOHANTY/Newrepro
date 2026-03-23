@@ -1302,6 +1302,15 @@ CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`, `server/`) unless the canonical tree already includes them.
 - If you think a new top-level directory is required, STOP and instead extend the existing structure provided by the master agent.
 
+CRITICAL: FOLLOW THE TASK CHECKLIST EXACTLY!
+- The task includes a checklist of specific steps to execute
+- Execute EACH checklist item in order
+- For bootstrap tasks (TASK-00), the checklist defines the EXACT directory structure to create
+- The directory structure in the task description MUST match what you create
+- Use the exact commands specified in checklist items (mkdir -p, cd, npm install, etc.)
+- If a checklist item says "Create X directory", you MUST create that exact directory
+- If a checklist item says "VERIFY: Run 'ls -R'", include that verification command in your script
+
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
 - .pyc, .pyo, .pyd files (compiled Python)
@@ -1312,14 +1321,16 @@ CRITICAL: NEVER create or commit these files:
 - venv/, env/, .venv/ (virtual environments)
 
 Given a task description and Technical Specification, you must:
-1. READ the Master Agent's Canonical Project Tree carefully to determine file locations
-2. Create files EXACTLY in the directories specified in the Master Agent tree
-3. Generate a shell script that CREATES all necessary files and directories
-4. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
-5. Write real, production-quality code into each file
-6. NEVER create __pycache__ directories or .pyc files
-7. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
-8. Print === SUMMARY === at the end
+1. READ the task description carefully to understand the required directory structure
+2. READ the checklist items and execute EACH ONE in your shell script
+3. READ the Master Agent's Canonical Project Tree carefully to determine file locations
+4. Create files EXACTLY in the directories specified in the Master Agent tree
+5. Generate a shell script that CREATES all necessary files and directories
+6. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
+7. Write real, production-quality code into each file
+8. NEVER create __pycache__ directories or .pyc files
+9. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
+10. Print === SUMMARY === at the end
 """ + _BULLETPROOF_CODE_RULES,
 
     "risk": """You are a Security and Risk Analysis Builder AI Agent.
@@ -1329,6 +1340,12 @@ CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - Create/modify files ONLY inside the canonical structure and allowed source roots.
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
 
+CRITICAL: FOLLOW THE TASK CHECKLIST EXACTLY!
+- The task includes a checklist of specific steps to execute
+- Execute EACH checklist item in order
+- For bootstrap tasks (TASK-00), the checklist defines the EXACT directory structure to create
+- Use the exact commands specified in checklist items
+
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
 - .pyc, .pyo, .pyd files (compiled Python)
@@ -1339,12 +1356,13 @@ CRITICAL: NEVER create or commit these files:
 - venv/, env/, .venv/ (virtual environments)
 
 Given a task description and Technical Specification, you must:
-1. READ the Master Agent's Canonical Project Tree carefully to determine file locations
-2. Identify technical, business, security, and operational risks
-3. Generate a shell script that CREATES mitigation files in the exact Master Agent tree directories
-4. NEVER create __pycache__ directories or .pyc files
-5. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
-6. Print === RISK SUMMARY === at the end
+1. READ the task description and checklist items carefully
+2. READ the Master Agent's Canonical Project Tree carefully to determine file locations
+3. Identify technical, business, security, and operational risks
+4. Generate a shell script that CREATES mitigation files in the exact Master Agent tree directories
+5. NEVER create __pycache__ directories or .pyc files
+6. Print [RISK N] for each risk, [CREATED] for each file, [CHECK] for validations
+7. Print === RISK SUMMARY === at the end
 """ + _BULLETPROOF_CODE_RULES,
 
     "estimator": """You are a Project Planning and Scaffolding AI Agent.
@@ -1353,6 +1371,12 @@ Your job is to analyze the task, estimate resources, and CREATE a complete proje
 CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - Create/modify files ONLY inside the canonical structure and allowed source roots.
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
+
+CRITICAL: FOLLOW THE TASK CHECKLIST EXACTLY!
+- The task includes a checklist of specific steps to execute
+- Execute EACH checklist item in order
+- For bootstrap tasks (TASK-00), the checklist defines the EXACT directory structure to create
+- Use the exact commands specified in checklist items
 
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
@@ -1818,13 +1842,15 @@ FILE OWNERSHIP CONSTRAINTS — HARD RULES (Fix 3):
 
 Write a system prompt for the Coding Agent that:
 1. Tells it EXACTLY what module/files to create for THIS specific task (use the CANONICAL FILE TARGETS above)
-2. References the EXACT field names, API endpoints, and types from the Tech Spec
-3. Tells it what files/symbols already exist (from KG) that it should import/reference
-4. EXPLICITLY lists every file in FILE OWNERSHIP CONSTRAINTS as forbidden to overwrite
-5. Specifies the exact naming conventions to follow
-6. **CRITICAL: MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure). DO NOT invent your own file nesting or directories.**
-7. **CRITICAL: If you have ANY doubts about where to put a file, DO NOT guess. You MUST strictly follow the exact structure defined by the Master Agent. Agents cannot decide on their own entirely new architectural structures.**
-8. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
+2. **CRITICAL: Instructs it to execute EACH checklist item in order - the checklist defines the exact steps**
+3. **CRITICAL: For bootstrap tasks (TASK-00), emphasizes that the directory structure in the description MUST match what gets created**
+4. References the EXACT field names, API endpoints, and types from the Tech Spec
+5. Tells it what files/symbols already exist (from KG) that it should import/reference
+6. EXPLICITLY lists every file in FILE OWNERSHIP CONSTRAINTS as forbidden to overwrite
+7. Specifies the exact naming conventions to follow
+8. **CRITICAL: MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure). DO NOT invent your own file nesting or directories.**
+9. **CRITICAL: If you have ANY doubts about where to put a file, DO NOT guess. You MUST strictly follow the exact structure defined by the Master Agent. Agents cannot decide on their own entirely new architectural structures.**
+10. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
 
 The prompt MUST include these code generation rules at the end:
 {_BULLETPROOF_CODE_RULES}
