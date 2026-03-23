@@ -215,7 +215,14 @@ _AGENT_NAMES = ["Requirements Validator", "Risk Assessment", "Resource Estimatio
 
 # Global lock dict for agent creation serialization (keyed by project_token)
 _agent_creation_locks: Dict[str, asyncio.Lock] = {}
-_agent_creation_locks_lock = asyncio.Lock()
+_agent_creation_locks_lock: Optional[asyncio.Lock] = None
+
+
+def _get_agent_creation_locks_lock() -> asyncio.Lock:
+    global _agent_creation_locks_lock
+    if _agent_creation_locks_lock is None:
+        _agent_creation_locks_lock = asyncio.Lock()
+    return _agent_creation_locks_lock
 
 GIT_MANAGER_AGENT_ID = "G_agent_01"
 MASTER_AGENT_ID = "M_agent_01"
@@ -449,6 +456,27 @@ def _project_key(project_token: Optional[str]) -> str:
     token = (project_token or "").strip()
     return token or DEFAULT_PROJECT_TOKEN
 
+def _make_asyncio_lock() -> asyncio.Lock:
+    """Create an asyncio.Lock safely, always bound to the running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop — create a new one temporarily so the Lock is valid
+        # when the event loop starts. In practice this path should not be hit
+        # during normal async execution.
+        pass
+    return asyncio.Lock()
+
+
+def _make_asyncio_event() -> asyncio.Event:
+    """Create an asyncio.Event safely."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    return asyncio.Event()
+
+
 def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
     key = _project_key(project_token)
     state = _project_states.get(key)
@@ -456,9 +484,9 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state = {
             "agent_states": {},
             "claimed_task_ids": set(),
-            "task_ledger": {},          # NEW: task_id → TaskLedgerEntry
-            "event_bus": AgentEventBus(),   # NEW
-            "task_claim_lock": asyncio.Lock(),
+            "task_ledger": {},
+            "event_bus": AgentEventBus(),
+            "task_claim_lock": _make_asyncio_lock(),
             "task_progress_state": {},
             "timer_log_state": {},
             "completed_tasks": [],
@@ -466,21 +494,21 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "master_task_context": [],
             "brd_analysis": {},
             "master_note_cache": {},
-            "master_note_lock": asyncio.Lock(),
+            "master_note_lock": _make_asyncio_lock(),
             "task_token": None,
             "git_merge_queue": [],
             "git_merge_running": False,
-            "git_merge_lock": asyncio.Lock(),
+            "git_merge_lock": _make_asyncio_lock(),
             "git_merge_inflight": set(),
             "merged_branches": [],
-            "task_dag": {},    # NEW: task_id → set of dependency task_ids
+            "task_dag": {},
             "repo_bootstrap": _new_repo_bootstrap_state(),
-            "repo_bootstrap_lock": asyncio.Lock(),
-            "repo_bootstrap_event": asyncio.Event(),
+            "repo_bootstrap_lock": _make_asyncio_lock(),
+            "repo_bootstrap_event": _make_asyncio_event(),
             "completed_milestones_synced": set(),
             "completed_sprints_synced": set(),
             "project_status_synced": None,
-            "status_sync_lock": asyncio.Lock(),
+            "status_sync_lock": _make_asyncio_lock(),
             "note_title_cache": {},
             "note_payload_cache": {},
             "persisted_assignment_restore": {},
@@ -491,7 +519,8 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state.setdefault("completed_milestones_synced", set())
         state.setdefault("completed_sprints_synced", set())
         state.setdefault("project_status_synced", None)
-        state.setdefault("status_sync_lock", asyncio.Lock())
+        if "status_sync_lock" not in state:
+            state["status_sync_lock"] = _make_asyncio_lock()
         state.setdefault("note_title_cache", {})
         state.setdefault("note_payload_cache", {})
         state.setdefault("persisted_assignment_restore", {})
@@ -500,8 +529,10 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
         state.setdefault("master_task_context", [])
         state.setdefault("brd_analysis", {})
         state.setdefault("master_note_cache", {})
-        state.setdefault("master_note_lock", asyncio.Lock())
-        state.setdefault("task_claim_lock", asyncio.Lock())
+        if "master_note_lock" not in state:
+            state["master_note_lock"] = _make_asyncio_lock()
+        if "task_claim_lock" not in state:
+            state["task_claim_lock"] = _make_asyncio_lock()
         state.setdefault("task_ledger", {})
         state.setdefault("task_dag", {})
         if "event_bus" not in state:
@@ -516,7 +547,7 @@ def get_project_agent_creation_lock(project_token: Optional[str]) -> asyncio.Loc
     """Get the agent creation lock for a project to serialize add_agent calls."""
     key = _project_key(project_token)
     if key not in _agent_creation_locks:
-        _agent_creation_locks[key] = asyncio.Lock()
+        _agent_creation_locks[key] = _make_asyncio_lock()
     return _agent_creation_locks[key]
 
 
@@ -955,7 +986,7 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
     state["completed_sprints_synced"].clear()
     state["project_status_synced"] = None
     state["repo_bootstrap"] = _new_repo_bootstrap_state()
-    state["repo_bootstrap_event"] = asyncio.Event()
+    state["repo_bootstrap_event"] = _make_asyncio_event()
     state["note_payload_cache"].clear()
     state["persisted_assignment_restore"] = {}
     state["workspace_contract_probe"] = {}
@@ -3133,7 +3164,7 @@ async def _coordinate_repo_bootstrap(
         if repo_url and bootstrap.get("repo_url") and bootstrap.get("repo_url") != repo_url:
             state["repo_bootstrap"] = _new_repo_bootstrap_state()
             bootstrap = state["repo_bootstrap"]
-            state["repo_bootstrap_event"] = asyncio.Event()
+            state["repo_bootstrap_event"] = _make_asyncio_event()
             event = state["repo_bootstrap_event"]
 
         if repo_url and not bootstrap.get("repo_url"):
@@ -9071,6 +9102,30 @@ def _infer_project_stack(
 
 
 def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
+    # Check if this is a bootstrap-extracted tree (simplified note)
+    validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    is_bootstrap = validation.get("mode") == "bootstrap_task"
+    
+    if is_bootstrap:
+        # Simplified note: just show the tree from bootstrap task
+        workspace_tree = str(payload.get("workspace_tree") or "").rstrip()
+        
+        lines = ["# Project Structure (from Bootstrap Task)"]
+        lines.append("")
+        lines.append("This is the canonical directory structure defined in the Project Bootstrap task.")
+        lines.append("All agents must follow this structure when creating files.")
+        lines.append("")
+        
+        # Show ASCII tree
+        if workspace_tree:
+            lines.append("## Directory Tree")
+            lines.append("```")
+            lines.append(workspace_tree)
+            lines.append("```")
+        
+        return "\n".join(lines).strip()
+    
+    # Full detailed note for AI-generated trees
     title = "Canonical Project Tree and Task Plan"
     project_token = str(payload.get("project_token") or "").strip()
     author_agent_id = str(payload.get("author_agent_id") or "").strip()
@@ -9082,7 +9137,6 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
     workspace_tree_json = str(payload.get("workspace_tree_json") or "").strip()
     architecture_overview = str(payload.get("architecture_overview") or "").strip()
     dependencies = str(payload.get("dependencies") or "").strip()
-    validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
     instructions = payload.get("instructions") if isinstance(payload.get("instructions"), list) else []
     tasks_considered = payload.get("tasks_considered") if isinstance(payload.get("tasks_considered"), list) else []
     workspace_contract = payload.get("workspace_contract") if isinstance(payload.get("workspace_contract"), dict) else {}
@@ -9164,7 +9218,7 @@ def _render_master_note_markdown(payload: Dict[str, Any]) -> str:
 
     canonical_tree_json = workspace_tree_json or _ensure_workspace_tree_json(
         workspace_tree,
-        fallback_root_label=(project_token or "project"),
+        fallback_root_label="project",
     )
     if canonical_tree_json:
         lines.append("")
@@ -10997,7 +11051,7 @@ async def _load_persisted_master_note(
         return {}
     normalized_persisted_tree = _ensure_workspace_tree_json(
         workspace_tree,
-        fallback_root_label=(project_token or "project"),
+        fallback_root_label="project",
     )
     if not normalized_persisted_tree:
         # Persisted note contains malformed/non-canonical tree; force regeneration.
@@ -11391,44 +11445,111 @@ async def ensure_master_workspace_note(
             workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
         )
 
-        workspace_tree = _strip_markdown_fences(
-            _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
+        # Initialize workspace_tree_json and workspace_tree_ascii variables
+        workspace_tree_json = None
+        workspace_tree_ascii = None
+        
+        # Extract directory structure from Project Bootstrap task if it exists
+        bootstrap_task = next(
+            (t for t in tasks if (
+                str(t.get("task_id") or t.get("external_id") or "").upper() == "TASK-00"
+                or "project bootstrap" in str(t.get("title") or t.get("taskName") or "").lower()
+            )),
+            None
         )
-        workspace_tree_source = "tech_spec" if workspace_tree else "none"
-
-        # Dynamically verify if `tech_spec` output is valid JSON or flat markdown.
-        # If it's a flat markdown list (which ruins our hierarchy), override it dynamically.
-        import json
-        tree_is_valid_json = False
-        try:
-            parsed = json.loads(workspace_tree)
-            if isinstance(parsed, dict) and "children" in parsed:
-                tree_is_valid_json = True
-        except Exception:
-            pass
-
-        if not tree_is_valid_json or _count_tree_file_lines(workspace_tree) < 6:
-            # First fetch the fully dynamic structured tree logic as base
-            dynamic_tree = _generate_minimal_working_tree(stack_profile, tasks)
+        
+        bootstrap_tree_extracted = False
+        if bootstrap_task:
+            bootstrap_desc = str(bootstrap_task.get("description") or "")
+            _log_master_agent(
+                f"📋 Found Project Bootstrap task, extracting directory structure...",
+                project_token=project_token,
+            )
             
-            # If valid structure generated, use it as baseline
-            if _count_tree_file_lines(dynamic_tree) > 5:
-                workspace_tree = dynamic_tree
-                workspace_tree_source = "dynamic_structure"
-            else:
-                # Fallback to AI detailed JSON generator
-                generated_tree = await _generate_detailed_project_tree_plan(
-                    tasks=tasks,
-                    brd_summary=brd_summary,
-                    kg_context=kg_context,
-                    tech_spec=tech_spec,
-                    stack_profile=stack_profile,
-                    workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
-                    repo_tree_context=current_repo_tree,
+            # Extract content between the markers - use it exactly as-is
+            import re
+            marker_match = re.search(
+                r'===BEGIN_DIRECTORY_STRUCTURE===\s*(.+?)\s*===END_DIRECTORY_STRUCTURE===',
+                bootstrap_desc,
+                re.DOTALL
+            )
+            
+            if marker_match:
+                # Get the exact tree structure as-is
+                extracted_tree = marker_match.group(1).strip()
+                
+                # Handle literal \n if present (from JSON encoding)
+                if '\\n' in extracted_tree:
+                    extracted_tree = extracted_tree.replace('\\n', '\n')
+                
+                _log_master_agent(
+                    f"✓ Extracted directory structure from bootstrap task ({len(extracted_tree)} chars, {len(extracted_tree.split(chr(10)))} lines)",
+                    project_token=project_token,
                 )
-                if _count_tree_file_lines(generated_tree) >= _count_tree_file_lines(workspace_tree):
-                    workspace_tree = generated_tree
-                    workspace_tree_source = "ai_tree_plan"
+                
+                # Use the extracted tree directly - no parsing, no modification
+                workspace_tree_ascii = extracted_tree
+                workspace_tree = extracted_tree
+                workspace_tree_source = "bootstrap_task"
+                bootstrap_tree_extracted = True
+                
+                # Mark as approved since it comes from the bootstrap task
+                validation = {
+                    "approved": True,
+                    "confidence": 1.0,
+                    "mode": "bootstrap_task",
+                    "issues_missing_files": [],
+                    "issues_conflicts": [],
+                    "recommendations": ["Using directory structure from Project Bootstrap task"],
+                    "validator_agent_id": "bootstrap_task_extractor"
+                }
+            else:
+                _log_master_agent(
+                    f"⚠️ Could not find directory structure markers (===BEGIN_DIRECTORY_STRUCTURE=== / ===END_DIRECTORY_STRUCTURE===)",
+                    level="warning",
+                    project_token=project_token,
+                )
+
+        # Only generate AI tree if bootstrap extraction failed
+        if not bootstrap_tree_extracted:
+            workspace_tree = _strip_markdown_fences(
+                _extract_markdown_section(tech_spec, r"4\.\s*FILE STRUCTURE")
+            )
+            workspace_tree_source = "tech_spec" if workspace_tree else "none"
+
+            # Dynamically verify if `tech_spec` output is valid JSON or flat markdown.
+            # If it's a flat markdown list (which ruins our hierarchy), override it dynamically.
+            import json
+            tree_is_valid_json = False
+            try:
+                parsed = json.loads(workspace_tree)
+                if isinstance(parsed, dict) and "children" in parsed:
+                    tree_is_valid_json = True
+            except Exception:
+                pass
+
+            if not tree_is_valid_json or _count_tree_file_lines(workspace_tree) < 6:
+                # First fetch the fully dynamic structured tree logic as base
+                dynamic_tree = _generate_minimal_working_tree(stack_profile, tasks)
+                
+                # If valid structure generated, use it as baseline
+                if _count_tree_file_lines(dynamic_tree) > 5:
+                    workspace_tree = dynamic_tree
+                    workspace_tree_source = "dynamic_structure"
+                else:
+                    # Fallback to AI detailed JSON generator
+                    generated_tree = await _generate_detailed_project_tree_plan(
+                        tasks=tasks,
+                        brd_summary=brd_summary,
+                        kg_context=kg_context,
+                        tech_spec=tech_spec,
+                        stack_profile=stack_profile,
+                        workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                        repo_tree_context=current_repo_tree,
+                    )
+                    if _count_tree_file_lines(generated_tree) >= _count_tree_file_lines(workspace_tree):
+                        workspace_tree = generated_tree
+                        workspace_tree_source = "ai_tree_plan"
 
         if not workspace_tree and isinstance(workspace_contract, dict):
             roots = list(workspace_contract.get("allowed_source_roots") or [])
@@ -11478,61 +11599,61 @@ async def ensure_master_workspace_note(
                 project_token=project_token,
             )
             # We track recommendations silently internally to assist idle assignment later.
-        # Only use deterministic tree as a last resort fallback AFTER validation fails,
-        # never overwrite the clean domain-driven tree preemptively.
-
-        validation = await _validate_master_project_tree_plan(
-            tasks=tasks,
-            workspace_tree=workspace_tree,
-            brd_summary=brd_summary,
-            tech_spec=tech_spec,
-            workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
-            stack_profile=stack_profile,
-            repo_tree_context=current_repo_tree,
-        )
-        corrected_tree = _strip_markdown_fences(str(validation.get("corrected_tree") or ""))
-        if not validation.get("approved") and corrected_tree and len(corrected_tree) > 50:
-            revised_validation = await _validate_master_project_tree_plan(
+        
+        # Only validate if NOT from bootstrap task (bootstrap is already validated)
+        if not bootstrap_tree_extracted:
+            validation = await _validate_master_project_tree_plan(
                 tasks=tasks,
-                workspace_tree=corrected_tree,
+                workspace_tree=workspace_tree,
                 brd_summary=brd_summary,
                 tech_spec=tech_spec,
                 workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
                 stack_profile=stack_profile,
                 repo_tree_context=current_repo_tree,
             )
-            # Accept the corrected tree if approved, OR if it's statistically richer than the original
-            if revised_validation.get("approved") or _count_tree_file_lines(corrected_tree) > _count_tree_file_lines(workspace_tree):
-                workspace_tree = corrected_tree
-                validation = revised_validation
-                validation["approved"] = True  # Force approval to prevent heuristic fallback shredding it
-                workspace_tree_source = "validator_corrected_tree"
-
-        if not validation.get("approved"):
-            deterministic_tree = _build_deterministic_master_tree(
-                workspace_tree=workspace_tree,
-                tech_spec=tech_spec,
-                task_plan=task_plan,
-                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
-                validation=validation,
-                stack_profile=stack_profile,
-                fallback_root_label=effective_project or "project",
-                repo_file_paths=current_repo_file_paths,
-            )
-            if deterministic_tree and deterministic_tree != workspace_tree:
+            corrected_tree = _strip_markdown_fences(str(validation.get("corrected_tree") or ""))
+            if not validation.get("approved") and corrected_tree and len(corrected_tree) > 50:
                 revised_validation = await _validate_master_project_tree_plan(
                     tasks=tasks,
-                    workspace_tree=deterministic_tree,
+                    workspace_tree=corrected_tree,
                     brd_summary=brd_summary,
                     tech_spec=tech_spec,
                     workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
                     stack_profile=stack_profile,
                     repo_tree_context=current_repo_tree,
                 )
-                if revised_validation.get("approved") or _count_tree_file_lines(deterministic_tree) > _count_tree_file_lines(workspace_tree):
-                    workspace_tree = deterministic_tree
+                # Accept the corrected tree if approved, OR if it's statistically richer than the original
+                if revised_validation.get("approved") or _count_tree_file_lines(corrected_tree) > _count_tree_file_lines(workspace_tree):
+                    workspace_tree = corrected_tree
                     validation = revised_validation
-                    workspace_tree_source = "deterministic_spec_merge"
+                    validation["approved"] = True  # Force approval to prevent heuristic fallback shredding it
+                    workspace_tree_source = "validator_corrected_tree"
+
+            if not validation.get("approved"):
+                deterministic_tree = _build_deterministic_master_tree(
+                    workspace_tree=workspace_tree,
+                    tech_spec=tech_spec,
+                    task_plan=task_plan,
+                    workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                    validation=validation,
+                    stack_profile=stack_profile,
+                    fallback_root_label="project",
+                    repo_file_paths=current_repo_file_paths,
+                )
+                if deterministic_tree and deterministic_tree != workspace_tree:
+                    revised_validation = await _validate_master_project_tree_plan(
+                        tasks=tasks,
+                        workspace_tree=deterministic_tree,
+                        brd_summary=brd_summary,
+                        tech_spec=tech_spec,
+                        workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                        stack_profile=stack_profile,
+                        repo_tree_context=current_repo_tree,
+                    )
+                    if revised_validation.get("approved") or _count_tree_file_lines(deterministic_tree) > _count_tree_file_lines(workspace_tree):
+                        workspace_tree = deterministic_tree
+                        validation = revised_validation
+                        workspace_tree_source = "deterministic_spec_merge"
 
         # DISABLED: Retry loop causes infinite validation attempts
         # Instead, we'll use the fallback approach below for failed validations
@@ -11543,71 +11664,68 @@ async def ensure_master_workspace_note(
         
         # Skip directly to fallback validation handling
 
-        # IMPROVED VALIDATION BYPASS: Use heuristic fallback when AI validation fails
-        if not validation.get("approved"):
-            validation_summary = _summarize_master_tree_validation(validation)
-            _log_master_agent(
-                f"⚠️ AI validation failed, using heuristic fallback approach.\n"
-                f"AI issues: {validation_summary}\n"
-                f"� Generating deterministic project tree based on detected stack and tasks.",
-                level="warning",
-                project_token=project_token,
-            )
-            
-            # Use deterministic tree generation as fallback
-            fallback_tree = _build_deterministic_master_tree(
-                workspace_tree=workspace_tree,
-                tech_spec=tech_spec,
-                task_plan=task_plan,
-                workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
-                validation=validation,
-                stack_profile=stack_profile,
-                fallback_root_label=effective_project or "project",
-                repo_file_paths=current_repo_file_paths,
-            )
-            
-            if fallback_tree and _count_tree_file_lines(fallback_tree) > 5:
-                workspace_tree = fallback_tree
-                workspace_tree_source = "deterministic_fallback"
-                
-                # Mark as approved with fallback reason
-                validation = {
-                    "approved": True,
-                    "confidence": 0.7,
-                    "mode": "heuristic_fallback",
-                    "fallback_reason": f"AI validation failed: {validation_summary}",
-                    "issues_missing_files": [],
-                    "issues_conflicts": [],
-                    "recommendations": ["Using deterministic project structure based on stack profile"],
-                    "validator_agent_id": "heuristic_fallback"
-                }
-                
+            # IMPROVED VALIDATION BYPASS: Use heuristic fallback when AI validation fails
+            if not validation.get("approved"):
+                validation_summary = _summarize_master_tree_validation(validation)
                 _log_master_agent(
+                    f"⚠️ AI validation failed, using heuristic fallback approach.\n"
+                    f"AI issues: {validation_summary}\n"
+                    f"� Generating deterministic project tree based on detected stack and tasks.",
+                    level="warning",
+                    project_token=project_token,
+                )
+                
+                # Use deterministic tree generation as fallback
+                fallback_tree = _build_deterministic_master_tree(
+                    workspace_tree=workspace_tree,
+                    tech_spec=tech_spec,
+                    task_plan=task_plan,
+                    workspace_contract=workspace_contract if isinstance(workspace_contract, dict) else {},
+                    validation=validation,
+                    stack_profile=stack_profile,
+                    fallback_root_label="project",
+                    repo_file_paths=current_repo_file_paths,
+                )
+                
+                if fallback_tree and _count_tree_file_lines(fallback_tree) > 5:
+                    workspace_tree = fallback_tree
+                    workspace_tree_source = "deterministic_fallback"
+                    
+                    # Mark as approved with fallback reason
+                    validation = {
+                        "approved": True,
+                        "confidence": 0.7,
+                        "mode": "heuristic_fallback",
+                        "fallback_reason": f"AI validation failed: {validation_summary}",
+                        "issues_missing_files": [],
+                        "issues_conflicts": [],
+                        "recommendations": ["Using deterministic project structure based on stack profile"],
+                        "validator_agent_id": "heuristic_fallback"
+                    }
+                    
+                    _log_master_agent(
                     f"✅ Using deterministic fallback tree with {_count_tree_file_lines(fallback_tree)} files.",
                     project_token=project_token,
                 )
             else:
-                # Last resort: use minimal working tree
-                minimal_tree = _generate_minimal_working_tree(stack_profile, tasks)
-                workspace_tree = minimal_tree
-                workspace_tree_source = "minimal_fallback"
-                
-                validation = {
-                    "approved": True,
-                    "confidence": 0.5,
-                    "mode": "minimal_fallback", 
-                    "fallback_reason": "Both AI and deterministic validation failed, using minimal structure",
-                    "issues_missing_files": [],
-                    "issues_conflicts": [],
-                    "recommendations": ["Using minimal project structure to unblock agents"],
-                    "validator_agent_id": "minimal_fallback"
-                }
-                
+                # Last resort: Accept the AI-generated tree even if validation failed
+                # This prevents falling back to generic boilerplate that doesn't match tasks
                 _log_master_agent(
-                    f"✅ Using minimal fallback tree to unblock agent execution.",
+                    f"⚠️ Deterministic fallback failed, accepting AI-generated tree despite validation issues.",
                     level="warning",
                     project_token=project_token,
                 )
+                
+                validation = {
+                    "approved": True,
+                    "confidence": 0.6,
+                    "mode": "ai_tree_accepted", 
+                    "fallback_reason": "Deterministic fallback failed, using AI-generated tree",
+                    "issues_missing_files": [],
+                    "issues_conflicts": [],
+                    "recommendations": ["Using AI-generated tree despite validation warnings"],
+                    "validator_agent_id": "ai_tree_accepted"
+                }
 
         dynamic_architecture = _derive_dynamic_architecture_overview(
             stack_profile=stack_profile,
@@ -11625,10 +11743,14 @@ async def ensure_master_workspace_note(
         if dynamic_dependencies:
             dependencies = dynamic_dependencies
 
-        normalized_tree_json = _ensure_workspace_tree_json(
-            workspace_tree,
-            fallback_root_label=(effective_project or "project"),
-        )
+        # Use workspace_tree_json from bootstrap if available, otherwise generate it
+        if workspace_tree_json:
+            normalized_tree_json = workspace_tree_json
+        else:
+            normalized_tree_json = _ensure_workspace_tree_json(
+                workspace_tree,
+                fallback_root_label="project",
+            )
         if normalized_tree_json:
             workspace_tree = normalized_tree_json
 
@@ -11666,7 +11788,7 @@ async def ensure_master_workspace_note(
             "brd_analysis_context": brd_summary[:4000],
             "current_repo_tree": current_repo_tree,
             "current_repo_tree_source": current_repo_tree_source,
-            "workspace_tree": workspace_tree,
+            "workspace_tree": workspace_tree_ascii or workspace_tree,  # Use ASCII for display if available
             "workspace_tree_json": normalized_tree_json or workspace_tree,
             "workspace_tree_source": workspace_tree_source,
             "architecture_overview": architecture_overview[:3000],
@@ -13616,9 +13738,28 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         agent["git_token"] = git_token.strip()
 
     use_git = bool(agent.get("git_repo_url"))
-    # MASTER NOTE DISABLED - Agents don't need to wait for master tree
-    # They can start working immediately on their assigned tasks
+    # Master note: only the master agent creates/refreshes the plan note.
+    # Dev agents read from the cached result without blocking.
     master_note_result = {"success": True, "approved": True, "skipped": True}
+    if agent_id == MASTER_AGENT_ID and task_token:
+        try:
+            _log_master_agent(
+                "Creating canonical project tree note from the full task plan.",
+                project_token=project_token,
+            )
+            master_note_result = await ensure_master_workspace_note(
+                project_token=project_token,
+                task_token=task_token,
+            )
+        except Exception as _mn_err:
+            logger.warning("[Master Agent] Failed to create master workspace note: %s", _mn_err)
+            master_note_result = {"success": False, "error": str(_mn_err)}
+    else:
+        # Dev agents: use whatever is already cached (non-blocking)
+        state_ref = _ensure_project_state(project_token)
+        cached = state_ref.get("master_note_cache")
+        if isinstance(cached, dict) and cached.get("success"):
+            master_note_result = cached
 
     # 1. Get the first task
     resumed_existing_task = False
@@ -18004,6 +18145,35 @@ async def _master_supervisor_loop(
         f"🔄 Master Supervisor Loop started (check_interval={check_interval}s)",
         project_token=project_token,
     )
+
+    # Create the master plan note on first run
+    if task_token:
+        try:
+            _log_master_agent(
+                "📋 Creating canonical project tree note...",
+                project_token=project_token,
+            )
+            note_result = await ensure_master_workspace_note(
+                project_token=project_token,
+                task_token=task_token,
+            )
+            if note_result.get("success"):
+                _log_master_agent(
+                    f"✅ Master plan note published: {note_result.get('title')}",
+                    project_token=project_token,
+                )
+            else:
+                _log_master_agent(
+                    f"⚠️ Master plan note failed: {note_result.get('error') or note_result.get('reason')}",
+                    level="warning",
+                    project_token=project_token,
+                )
+        except Exception as _note_err:
+            _log_master_agent(
+                f"⚠️ Master plan note error: {str(_note_err)[:120]}",
+                level="warning",
+                project_token=project_token,
+            )
     
     try:
         while max_iterations is None or iteration < max_iterations:

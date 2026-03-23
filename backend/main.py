@@ -446,8 +446,8 @@ async def analyze_document_with_ai(
 class AssistantRequest(BaseModel):
     """Payload for the AI chat endpoint."""
     message: str = Field(..., description="User message sent to the assistant")
-    context: dict | None = Field(default=None, description="Current route context")
-    conversation_history: list | None = Field(default=None, description="Prior conversation messages")
+    context: Optional[dict] = Field(default=None, description="Current route context")
+    conversation_history: Optional[list] = Field(default=None, description="Prior conversation messages")
 
 
 @app.post("/api/agent/assistant")
@@ -3484,6 +3484,17 @@ async def get_project_roadmap_step(
             _doc_has_completed_analysis(doc) for doc in linked_docs
         )
 
+    # Define roadmap step indices (used throughout the function)
+    PROJECT_INIT_IDX = 0
+    REQUIREMENT_SCREENING_IDX = 1
+    GOVERNANCE_IDX = 2
+    AGENT_ANALYSIS_IDX = 3
+    PREREQ_IDX = 4
+    TASK_CREATION_IDX = 5
+    RESOURCE_ONBOARDING_IDX = 6
+    ON_FLIGHT_IDX = 7
+    COMPLETE_IDX = 8
+
     # 3. Check external task management for task creation & completion
     prerequisites_done = governance.prerequisites_completed_at is not None
     has_tasks = False
@@ -3579,15 +3590,6 @@ async def get_project_roadmap_step(
     # Project Initiation -> Requirement Screening -> Governance -> Agent Analysis ->
     # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
     # On Flight -> Complete
-    PROJECT_INIT_IDX = 0
-    REQUIREMENT_SCREENING_IDX = 1
-    GOVERNANCE_IDX = 2
-    AGENT_ANALYSIS_IDX = 3
-    PREREQ_IDX = 4
-    TASK_CREATION_IDX = 5
-    RESOURCE_ONBOARDING_IDX = 6
-    ON_FLIGHT_IDX = 7
-    COMPLETE_IDX = 8
 
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[PROJECT_INIT_IDX] = "completed"
@@ -6004,27 +6006,57 @@ async def run_all_agents(
             provided_repo = provided_repo or (saved_cred.git_repo_url or "").strip() or None
             provided_token = provided_token or (saved_cred.git_token or "").strip() or None
 
-    # Launch all idle agents — each picks ONE task then stops to allow parallel execution
+    # Launch all idle agents using the coordinated workflow with master agent supervision
     task_token = x_task_token or agent_service.get_project_task_token(project_token)
+    
+    # Build agents_config for the workflow
+    workflow_agents_config = {}
     for agent_id in available_agents:
-        asyncio.create_task(
-            agent_service.run_agent(
-                agent_id=agent_id,
-                project_token=project_token,
-                task_token=task_token,
-                continuous=True,  # Agents keep picking tasks until all are done
-                git_repo_url=provided_repo or None,
-                git_token=provided_token or None,
-            )
+        workflow_agents_config[agent_id] = {
+            "git_repo_url": provided_repo or "",
+            "git_token": provided_token or "",
+        }
+    
+    # Use the coordinated workflow which includes master agent planning
+    try:
+        result = await agent_service.run_all_agents(
+            agents_config=workflow_agents_config,
+            project_token=project_token,
+            task_token=task_token,
+            enable_supervisor=True,
         )
-        logger.info(f"🚀 Launched {agent_id} for project {project_token}")
-
-    return {
-        "started": True,
-        "agents": available_agents,
-        "total_tasks": len(project_tasks),
-        "message": f"Launched {len(available_agents)} agent(s) on {len(project_tasks)} pending task(s).",
-    }
+        logger.info(f"🚀 Coordinated workflow completed for project {project_token}")
+        
+        return {
+            "started": True,
+            "agents": available_agents,
+            "total_tasks": len(project_tasks),
+            "workflow_result": result,
+            "message": f"Launched {len(available_agents)} agent(s) with master supervision on {len(project_tasks)} pending task(s).",
+        }
+    except Exception as workflow_err:
+        logger.error(f"Coordinated workflow failed: {workflow_err}")
+        # Fallback to individual agent launches
+        for agent_id in available_agents:
+            asyncio.create_task(
+                agent_service.run_agent(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    task_token=task_token,
+                    continuous=True,
+                    git_repo_url=provided_repo or None,
+                    git_token=provided_token or None,
+                )
+            )
+            logger.info(f"🚀 Launched {agent_id} (fallback mode) for project {project_token}")
+        
+        return {
+            "started": True,
+            "agents": available_agents,
+            "total_tasks": len(project_tasks),
+            "message": f"Launched {len(available_agents)} agent(s) in fallback mode on {len(project_tasks)} pending task(s).",
+            "warning": "Coordinated workflow unavailable, using fallback mode",
+        }
 
 
 class AddAgentRequest(BaseModel):

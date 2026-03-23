@@ -28,6 +28,12 @@ _CHECKPOINTER = InMemorySaver()
 async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str, Any]:
     import agent_service
 
+    logger.info("[LangGraph] Publishing master workspace note...")
+    agent_service._log_master_agent(
+        "📋 Creating canonical project tree note...",
+        project_token=state.get("project_token"),
+    )
+    
     agent_service.prime_project_git_credentials(
         state.get("agents_config"),
         project_token=state.get("project_token"),
@@ -36,16 +42,28 @@ async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str,
         project_token=state.get("project_token"),
         task_token=state.get("task_token"),
     )
+    
+    logger.info(f"[LangGraph] Master note result: success={result.get('success')}, title={result.get('title')}")
+    
     errors = list(state.get("errors") or [])
     if not result.get("success") and not result.get("skipped"):
         reason = result.get("error") or result.get("reason") or "unknown error"
         errors.append(f"master note: {reason}")
+        agent_service._log_master_agent(
+            f"⚠️ Master plan note failed: {reason}",
+            level="warning",
+            project_token=state.get("project_token"),
+        )
         agent_service.complete_run_all_waiting_state(
             state.get("project_token"),
             success=False,
             error_message=str(reason),
         )
     else:
+        agent_service._log_master_agent(
+            f"✅ Master plan note published: {result.get('title')}",
+            project_token=state.get("project_token"),
+        )
         agent_service.complete_run_all_waiting_state(
             state.get("project_token"),
             success=True,
