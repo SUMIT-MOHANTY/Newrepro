@@ -21,12 +21,18 @@ INTELLIGENT_TASK_GENERATION_PROMPT = """You are an EXPERT Project Architect and 
 - ZERO missing infrastructure
 - 100% tech stack accuracy
 
+⚠️ **CRITICAL PATH REQUIREMENT:**
+- TASK-00 defines the CANONICAL directory structure
+- ALL subsequent tasks MUST use EXACT paths from TASK-00
+- Use FULL paths including project root
+- Path consistency is MANDATORY for agent coordination
+
 ✅ **CORE GUARANTEES (ALWAYS MAINTAINED):**
 1. Works for ANY tech stack (Django, Node.js, React, Vue, etc.)
 2. No hardcoded assumptions or templates
 3. Follows framework conventions automatically
 4. 100% BRD coverage for mentioned features
-5. Correct file paths with project root
+5. **Correct file paths matching TASK-00 structure exactly**
 6. Complete CRUD for all entities
 7. All infrastructure included
 8. Production-ready when BRD requires it
@@ -586,9 +592,15 @@ TASK STRUCTURE RULES
 
 **TASK DESCRIPTIONS MUST INCLUDE:**
 1. What to implement
-2. **EXACT file paths with project root**
+2. **EXACT file paths matching the directory structure from TASK-00**
 3. Specific changes to make
 4. Technologies to use (matching BRD tech stack)
+
+**CRITICAL: File Paths Must Match TASK-00 Structure**
+- Every task MUST reference the EXACT directory structure defined in TASK-00
+- Use the full path from the project root as shown in TASK-00
+- The paths in task descriptions and checklists MUST be consistent with TASK-00's directory tree
+- Do not reference files that don't exist in TASK-00's structure
 
 **EXAMPLE TASK:**
 ```json
@@ -756,9 +768,13 @@ Before outputting tasks, verify ALL of these:
     - [ ] Docker configuration task exists?
 
 16. **FILE PATH ACCURACY - ALWAYS REQUIRED:**
-    - [ ] ALL file paths include project root?
-    - [ ] ALL checklist items include project root?
+    - [ ] TASK-00 includes ALL files that will be created in subsequent tasks?
+    - [ ] ALL file paths in tasks match the directory structure defined in TASK-00?
+    - [ ] ALL paths use the EXACT format from TASK-00 (including project root)?
+    - [ ] ALL checklist items use full paths from TASK-00?
+    - [ ] NO relative paths or shortened paths used?
     - [ ] NO paths start with /workspace/?
+    - [ ] NO tasks reference files not listed in TASK-00?
 
 17. **DEPENDENCY ACCURACY - ALWAYS REQUIRED:**
     - [ ] ALL tasks (except TASK-00) depend on TASK-00?
@@ -771,8 +787,11 @@ Before outputting tasks, verify ALL of these:
 - If BRD is vague → Include Auth + Basic Testing + Basic Error Handling as defaults
 
 6. **FILE PATH ACCURACY:**
-   - [ ] ALL file paths include project root?
-   - [ ] ALL checklist items include project root?
+   - [ ] TASK-00 includes ALL files that will be created in subsequent tasks?
+   - [ ] ALL file paths match the directory structure defined in TASK-00?
+   - [ ] ALL paths use the EXACT format from TASK-00 (including project root)?
+   - [ ] ALL checklist items use full paths from TASK-00?
+   - [ ] NO relative paths or shortened paths used?
    - [ ] NO paths start with /workspace/?
 
 7. **DEPENDENCY ACCURACY:**
@@ -805,25 +824,26 @@ TASK-00 MUST be first and include:
 - Project name detection
 - Full directory tree (use simple ASCII format, NOT Unicode box-drawing)
 - All config files
-- CRITICAL: Checklist must create EXACT structure shown in description
 
-**TASK-00 CHECKLIST REQUIREMENTS:**
-The checklist for TASK-00 MUST include these steps IN ORDER:
-1. Create root project directory
-2. Create ALL subdirectories shown in the directory tree (one command or multiple)
-3. Initialize backend (package manager, dependencies)
-4. Initialize frontend (package manager, dependencies)
-5. Create all config files (.env.example, docker-compose.yml, README.md, etc.)
-6. VERIFY structure matches description (use 'ls -R' or 'tree' command to validate)
+**CRITICAL: TASK-00 Directory Structure Format**
+The description MUST include the directory structure wrapped in clear markers:
+- Start marker: "===BEGIN_DIRECTORY_STRUCTURE==="
+- End marker: "===END_DIRECTORY_STRUCTURE==="
 
-Example TASK-00 with proper checklist:
+**TASK-00 MUST include ALL files that will be created in subsequent tasks:**
+- List EVERY file that ANY task will create or modify
+- Include ALL component files, style files, test files, config files
+- The structure should be COMPLETE and COMPREHENSIVE
+- Think ahead: if later tasks will create files, those files must be in TASK-00
+
+Example structure (note: use simple ASCII for directory tree):
 [
   {
     "task_id": "TASK-00",
     "taskName": "TASK: Project Bootstrap",
     "task_type": "TASK",
     "task_wallet": 1,
-    "description": "<p>Create complete project scaffold for library-system using Django + React.</p><p>Directory structure:</p><ul><li>library-system/backend/app/models/</li><li>library-system/backend/app/routes/</li><li>library-system/frontend/src/components/</li><li>library-system/frontend/src/pages/</li></ul>",
+    "description": "Set up the initial project structure for {project_name} using {tech_stack}.===BEGIN_DIRECTORY_STRUCTURE===\nproject-name/\n |---- backend/\n |     |---- app.py\n |     |---- models/\n |     |     `---- __init__.py\n |     `---- routes/\n |           `---- __init__.py\n |---- frontend/\n |     |---- src/\n |     |     |---- components/\n |     |     |---- App.js\n |     |     `---- index.js\n |     `---- package.json\n |---- .env.example\n `---- README.md\n===END_DIRECTORY_STRUCTURE===\nBULLETPROOF REQUIREMENTS:\n- Include error handling for edge cases.",
     "linked_tasks": [],
     "checklist": [
       {"text": "Create root directory: mkdir library-system"},
@@ -852,16 +872,18 @@ EXECUTION STEPS - 100% PRODUCTION-READY GENERATION
 7. **List all UI pages** (Dashboard, Profile, Checkout, etc.)
 
 8. **Create TASK-00** with dynamically generated structure for detected tech stack
-   
-   **CRITICAL TASK-00 REQUIREMENTS:**
-   - Description MUST show complete directory tree
-   - Checklist MUST create EXACT structure shown in description
-   - Checklist MUST include verification step at the end (ls -R or tree command)
-   - Use mkdir -p for nested directories
-   - Include all config files (package.json, requirements.txt, .env.example, docker-compose.yml, README.md)
-   - Last checklist item MUST be: "VERIFY: Run 'ls -R {project-name}' to confirm all directories exist"
+   - This defines the CANONICAL directory structure
+   - **MUST include EVERY file that will be created in ALL subsequent tasks**
+   - Review all planned tasks and ensure their files are in TASK-00
+   - ALL subsequent tasks MUST reference paths from this structure
 
-9. **For EACH entity**, create:
+9. **For EACH subsequent task (TASK-01, TASK-02, etc.)**:
+   - Reference ONLY files that exist in TASK-00's directory structure
+   - Use FULL paths exactly as shown in TASK-00
+   - DO NOT use relative paths or shortened paths
+   - DO NOT reference files not listed in TASK-00
+
+10. **For EACH entity**, create:
    - Model task with indexes and relationships
    - CRUD API tasks (all 5: Create, Read, Update, Delete, List) with pagination
    - Input validation task

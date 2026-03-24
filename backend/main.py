@@ -446,8 +446,8 @@ async def analyze_document_with_ai(
 class AssistantRequest(BaseModel):
     """Payload for the AI chat endpoint."""
     message: str = Field(..., description="User message sent to the assistant")
-    context: dict | None = Field(default=None, description="Current route context")
-    conversation_history: list | None = Field(default=None, description="Prior conversation messages")
+    context: Optional[dict] = Field(default=None, description="Current route context")
+    conversation_history: Optional[list] = Field(default=None, description="Prior conversation messages")
 
 
 @app.post("/api/agent/assistant")
@@ -3484,6 +3484,17 @@ async def get_project_roadmap_step(
             _doc_has_completed_analysis(doc) for doc in linked_docs
         )
 
+    # Define roadmap step indices (used throughout the function)
+    PROJECT_INIT_IDX = 0
+    REQUIREMENT_SCREENING_IDX = 1
+    GOVERNANCE_IDX = 2
+    AGENT_ANALYSIS_IDX = 3
+    PREREQ_IDX = 4
+    TASK_CREATION_IDX = 5
+    RESOURCE_ONBOARDING_IDX = 6
+    ON_FLIGHT_IDX = 7
+    COMPLETE_IDX = 8
+
     # 3. Check external task management for task creation & completion
     prerequisites_done = governance.prerequisites_completed_at is not None
     has_tasks = False
@@ -3579,15 +3590,6 @@ async def get_project_roadmap_step(
     # Project Initiation -> Requirement Screening -> Governance -> Agent Analysis ->
     # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
     # On Flight -> Complete
-    PROJECT_INIT_IDX = 0
-    REQUIREMENT_SCREENING_IDX = 1
-    GOVERNANCE_IDX = 2
-    AGENT_ANALYSIS_IDX = 3
-    PREREQ_IDX = 4
-    TASK_CREATION_IDX = 5
-    RESOURCE_ONBOARDING_IDX = 6
-    ON_FLIGHT_IDX = 7
-    COMPLETE_IDX = 8
 
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[PROJECT_INIT_IDX] = "completed"
@@ -6004,27 +6006,57 @@ async def run_all_agents(
             provided_repo = provided_repo or (saved_cred.git_repo_url or "").strip() or None
             provided_token = provided_token or (saved_cred.git_token or "").strip() or None
 
-    # Launch all idle agents — each picks ONE task then stops to allow parallel execution
+    # Launch all idle agents using the coordinated workflow with master agent supervision
     task_token = x_task_token or agent_service.get_project_task_token(project_token)
+    
+    # Build agents_config for the workflow
+    workflow_agents_config = {}
     for agent_id in available_agents:
-        asyncio.create_task(
-            agent_service.run_agent(
-                agent_id=agent_id,
-                project_token=project_token,
-                task_token=task_token,
-                continuous=True,  # Agents keep picking tasks until all are done
-                git_repo_url=provided_repo or None,
-                git_token=provided_token or None,
-            )
+        workflow_agents_config[agent_id] = {
+            "git_repo_url": provided_repo or "",
+            "git_token": provided_token or "",
+        }
+    
+    # Use the coordinated workflow which includes master agent planning
+    try:
+        result = await agent_service.run_all_agents(
+            agents_config=workflow_agents_config,
+            project_token=project_token,
+            task_token=task_token,
+            enable_supervisor=True,
         )
-        logger.info(f"🚀 Launched {agent_id} for project {project_token}")
-
-    return {
-        "started": True,
-        "agents": available_agents,
-        "total_tasks": len(project_tasks),
-        "message": f"Launched {len(available_agents)} agent(s) on {len(project_tasks)} pending task(s).",
-    }
+        logger.info(f"🚀 Coordinated workflow completed for project {project_token}")
+        
+        return {
+            "started": True,
+            "agents": available_agents,
+            "total_tasks": len(project_tasks),
+            "workflow_result": result,
+            "message": f"Launched {len(available_agents)} agent(s) with master supervision on {len(project_tasks)} pending task(s).",
+        }
+    except Exception as workflow_err:
+        logger.error(f"Coordinated workflow failed: {workflow_err}")
+        # Fallback to individual agent launches
+        for agent_id in available_agents:
+            asyncio.create_task(
+                agent_service.run_agent(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    task_token=task_token,
+                    continuous=True,
+                    git_repo_url=provided_repo or None,
+                    git_token=provided_token or None,
+                )
+            )
+            logger.info(f"🚀 Launched {agent_id} (fallback mode) for project {project_token}")
+        
+        return {
+            "started": True,
+            "agents": available_agents,
+            "total_tasks": len(project_tasks),
+            "message": f"Launched {len(available_agents)} agent(s) in fallback mode on {len(project_tasks)} pending task(s).",
+            "warning": "Coordinated workflow unavailable, using fallback mode",
+        }
 
 
 class AddAgentRequest(BaseModel):
@@ -8620,23 +8652,76 @@ def get_container_port(project_id: str) -> str:
     print(f"No port found for project_id: {project_id}")
     return None
  
-def proxy_request(target_base: str, request: Request, forward_path: str):
-    """Generic proxy handler"""
+def _rewrite_html_assets(html_bytes: bytes, proxy_prefix: str) -> bytes:
+    """Rewrite absolute asset paths in HTML so they route through the proxy.
+
+    e.g. src="/assets/main.js"  ->  src="/app/{token}/assets/main.js"
+         href="/style.css"       ->  href="/app/{token}/style.css"
+         url(/fonts/x.woff)      ->  url(/app/{token}/fonts/x.woff)
+
+    Only rewrites paths that start with "/" but NOT "//" (protocol-relative),
+    and NOT paths that already start with the proxy_prefix.
+    """
+    import re as _re
+
+    proxy_prefix = proxy_prefix.rstrip("/")
+
+    def _replace_attr(m):
+        attr, quote, path = m.group(1), m.group(2), m.group(3)
+        # skip protocol-relative, data URIs, mailto, hash-only etc.
+        if path.startswith("//") or ":" in path.split("/")[0] or path.startswith("#"):
+            return m.group(0)
+        if path.startswith(proxy_prefix + "/") or path == proxy_prefix:
+            return m.group(0)
+        return f'{attr}={quote}{proxy_prefix}{path}{quote}'
+
+    def _replace_url(m):
+        inner = m.group(1).strip("'\"")
+        if inner.startswith("//") or ":" in inner.split("/")[0] or inner.startswith("#"):
+            return m.group(0)
+        if inner.startswith(proxy_prefix + "/") or inner == proxy_prefix:
+            return m.group(0)
+        return f"url({proxy_prefix}{inner})"
+
+    try:
+        html = html_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        return html_bytes
+
+    # Rewrite src=, href=, action= attributes with absolute paths
+    html = _re.sub(
+        r'(src|href|action)=(["\'])(/[^"\'>\s]*)\2',
+        _replace_attr,
+        html,
+        flags=_re.IGNORECASE,
+    )
+    # Rewrite CSS url(/...) references
+    html = _re.sub(
+        r'url\((["\']?/[^)"\'>\s]*["\']?)\)',
+        _replace_url,
+        html,
+        flags=_re.IGNORECASE,
+    )
+
+    return html.encode("utf-8")
+
+
+def proxy_request(target_base: str, request: Request, forward_path: str, proxy_prefix: str = ""):
+    """Generic proxy handler. If proxy_prefix is given, rewrites HTML asset paths."""
     target_url = target_base + forward_path
-   
+
     # Forward query params
     if request.url.query:
         target_url += "?" + request.url.query
-   
+
     # Forward headers (excluding host)
     headers = {
         key: value
         for key, value in request.headers.items()
         if key.lower() not in ["host", "x-forwarded-for", "x-forwarded-proto"]
     }
-   
+
     try:
-        # For FastAPI, we need to handle the async body differently
         resp = requests.request(
             method=request.method,
             url=target_url,
@@ -8644,22 +8729,29 @@ def proxy_request(target_base: str, request: Request, forward_path: str):
             allow_redirects=False,
             timeout=(5, 30)
         )
-       
+
         excluded_headers = [
             "content-encoding",
             "content-length",
             "transfer-encoding",
             "connection"
         ]
-       
+
         response_headers = {
             name: value
             for name, value in resp.headers.items()
             if name.lower() not in excluded_headers
         }
-       
+
+        body = resp.content
+        content_type = resp.headers.get("content-type", "")
+
+        # Rewrite HTML so absolute asset paths are proxied correctly
+        if proxy_prefix and "text/html" in content_type:
+            body = _rewrite_html_assets(body, proxy_prefix)
+
         return StreamingResponse(
-            iter([resp.content]),
+            iter([body]),
             status_code=resp.status_code,
             headers=response_headers
         )
@@ -8681,4 +8773,5 @@ async def route_proxy(token: str, request: Request, path: str = ""):
    
     target = f"http://127.0.0.1:{port}"
     forward_path = "/" + path if path else "/"
-    return proxy_request(target, request, forward_path)
+    proxy_prefix = f"/app/{token}"
+    return proxy_request(target, request, forward_path, proxy_prefix=proxy_prefix)
