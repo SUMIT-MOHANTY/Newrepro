@@ -2485,8 +2485,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     </div>
                                 )}
 
-                                {/* ── Agent Communication Panel (shows when agents are running) ────────────────────── */}
-                                {!isDeveloperOnlyMode && selectedProjectKey && (
+                                {/* ── Agent Communication Panel (hidden) ────────────────────── */}
+                                {false && !isDeveloperOnlyMode && selectedProjectKey && (
                                     <div className="w-full mt-4 lg:col-span-2 min-w-0">
                                         <AgentChatPanel projectToken={selectedProjectKey} />
                                     </div>

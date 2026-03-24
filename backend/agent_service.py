@@ -2747,27 +2747,27 @@ async def _call_ai_for_code(
         {"role": "user", "content": user_content},
     ]
 
-    # LOG THE PROMPT BEING SENT
-    if agent_id and agent_output_log is not None:
-        from prompt_logger import log_prompt_to_agent, extract_context_summary
-        
-        context_summary = extract_context_summary(
-            tech_spec=tech_spec,
-            workspace_tree=workspace_tree,
-            live_repo_tree=live_repo_tree,
-            code_context=code_context,
-            peer_context=peer_context,
-            project_root=project_root
-        )
-        
-        log_prompt_to_agent(
-            agent_id=agent_id,
-            agent_output_log=agent_output_log,
-            prompt_type="CODE_GENERATION",
-            system_prompt=system_prompt,
-            user_prompt=user_content,
-            context_summary=context_summary
-        )
+    # LOG THE PROMPT BEING SENT - DISABLED
+    # if agent_id and agent_output_log is not None:
+    #     from prompt_logger import log_prompt_to_agent, extract_context_summary
+    #     
+    #     context_summary = extract_context_summary(
+    #         tech_spec=tech_spec,
+    #         workspace_tree=workspace_tree,
+    #         live_repo_tree=live_repo_tree,
+    #         code_context=code_context,
+    #         peer_context=peer_context,
+    #         project_root=project_root
+    #     )
+    #     
+    #     log_prompt_to_agent(
+    #         agent_id=agent_id,
+    #         agent_output_log=agent_output_log,
+    #         prompt_type="CODE_GENERATION",
+    #         system_prompt=system_prompt,
+    #         user_prompt=user_content,
+    #         context_summary=context_summary
+    #     )
 
     last_err = None
     content = ""
@@ -2791,17 +2791,17 @@ async def _call_ai_for_code(
     if last_err:
         raise last_err
 
-    # LOG THE AI RESPONSE
-    if agent_id and agent_output_log is not None and content:
-        from prompt_logger import log_ai_response
-        
-        log_ai_response(
-            agent_id=agent_id,
-            agent_output_log=agent_output_log,
-            response_type="CODE_GENERATION",
-            response_content=content,
-            metadata={"model": model_name, "attempts": attempt + 1}
-        )
+    # LOG THE AI RESPONSE - DISABLED
+    # if agent_id and agent_output_log is not None and content:
+    #     from prompt_logger import log_ai_response
+    #     
+    #     log_ai_response(
+    #         agent_id=agent_id,
+    #         agent_output_log=agent_output_log,
+    #         response_type="CODE_GENERATION",
+    #         response_content=content,
+    #         metadata={"model": model_name, "attempts": attempt + 1}
+    #     )
 
     if content:
         return _clean_ai_code_response(content)
