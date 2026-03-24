@@ -408,22 +408,27 @@ const GovernanceForm = ({
     }
 
     if (result) {
-        return <GovernanceResult result={result} onBack={() => {
-            setResult(null);
-            // Clear stored result so it doesn't get restored by useEffect
-            sessionStorage.removeItem('governanceResult');
-            localStorage.removeItem('governanceResult');
-            // Set flag to indicate user wants to edit (prevents result restoration)
-            sessionStorage.setItem('governanceEditMode', 'true');
-            // Also clear governanceContext result_id to allow re-editing
-            const savedContext = getStoredJson('governanceContext');
-            if (savedContext && savedContext.result_id) {
-                const updatedContext = { ...savedContext };
-                delete updatedContext.result_id;
-                sessionStorage.setItem('governanceContext', JSON.stringify(updatedContext));
-                localStorage.setItem('governanceContext', JSON.stringify(updatedContext));
-            }
-        }} />;
+        return <GovernanceResult 
+            result={result} 
+            fetchRoadmapData={fetchRoadmapData}
+            navigate={navigate}
+            onBack={() => {
+                setResult(null);
+                // Clear stored result so it doesn't get restored by useEffect
+                sessionStorage.removeItem('governanceResult');
+                localStorage.removeItem('governanceResult');
+                // Set flag to indicate user wants to edit (prevents result restoration)
+                sessionStorage.setItem('governanceEditMode', 'true');
+                // Also clear governanceContext result_id to allow re-editing
+                const savedContext = getStoredJson('governanceContext');
+                if (savedContext && savedContext.result_id) {
+                    const updatedContext = { ...savedContext };
+                    delete updatedContext.result_id;
+                    sessionStorage.setItem('governanceContext', JSON.stringify(updatedContext));
+                    localStorage.setItem('governanceContext', JSON.stringify(updatedContext));
+                }
+            }} 
+        />;
     }
 
     /* ── build dimension list ── */
@@ -946,7 +951,7 @@ const ScoreRing = ({ score, max = 10, size = 120, stroke = 10 }) => {
     );
 };
 
-const GovernanceResult = ({ result, onBack }) => {
+const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
     if (!result) {
         return <div className="text-app-status-error p-6">Error: No result data available.</div>;
     }
@@ -1171,16 +1176,17 @@ const GovernanceResult = ({ result, onBack }) => {
                     </button>
                     {(classification !== 'ENTERPRISE' || !isSkipFollowUpCase) && (
                         <button
-                            onClick={() => {
+                            onClick={async () => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
                                 sessionStorage.setItem('shouldStartAnalysis', 'true');
                                 
                                 // Refresh roadmap data before navigation so AppLayout knows the current step
                                 if (fetchRoadmapData && result.project_token) {
-                                    fetchRoadmapData(result.project_token);
+                                    await fetchRoadmapData(result.project_token);
                                 }
                                 
-                                window.location.href = `/a/${result.project_token}`;
+                                // Navigate to Agent Analysis page
+                                navigate('/agent-analysis');
                             }}
                             className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
                         >
