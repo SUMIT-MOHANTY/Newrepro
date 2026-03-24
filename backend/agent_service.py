@@ -21,6 +21,8 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from config import settings
 import httpx
+from bootstrap_persistence import is_bootstrap_pushed, set_bootstrap_success
+from agent_communication_hooks import broadcast_task_started, broadcast_task_completed, broadcast_task_failed, broadcast_bootstrap_waiting
 import logging
 import llm_gateway
 
@@ -58,6 +60,9 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
     Returns (script_string, thought_string).
     Handles: <comment> blocks, markdown fences, narrative preamble,
     and Unicode punctuation that can break shell parsing.
+    
+    SPECIAL CASE: If AI returns markdown file blocks instead of a script,
+    convert them to a bash script automatically.
     """
     content = content.strip()
     
@@ -74,7 +79,75 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
     content = _re.sub(r'<comment>.*?</comment>', '', content, flags=_re.DOTALL).strip()
     content = _re.sub(r'<comment>.*', '', content, flags=_re.DOTALL).strip()
 
-    # 2. Extract script from markdown fences
+    # 2. Check if AI returned markdown file blocks instead of a script
+    # Pattern 1: ## N. filename\n```language\ncontent\n```
+    # Pattern 2: ### `filename`\n```language\ncontent\n```
+    # Pattern 3: # filename\n```language\ncontent\n```
+    
+    # Try multiple patterns
+    markdown_patterns = [
+        _re.compile(r'##\s+\d+\.\s+([^\n]+)\s*\n```(\w+)?\s*\n(.*?)```', flags=_re.DOTALL),  # ## 1. filename
+        _re.compile(r'###\s+`([^`]+)`\s*\n```(\w+)?\s*\n(.*?)```', flags=_re.DOTALL),  # ### `filename`
+        _re.compile(r'##\s+([^\n]+)\s*\n```(\w+)?\s*\n(.*?)```', flags=_re.DOTALL),  # ## filename
+        _re.compile(r'#\s+([^\n]+)\s*\n```(\w+)?\s*\n(.*?)```', flags=_re.DOTALL),  # # filename
+    ]
+    
+    markdown_matches = []
+    for pattern in markdown_patterns:
+        matches = pattern.findall(content)
+        if matches and len(matches) >= 2:  # At least 2 files to be considered markdown format
+            markdown_matches = matches
+            break
+    
+    if markdown_matches and len(markdown_matches) >= 2:
+        # AI returned markdown file blocks - convert to bash script
+        logger.warning(f"AI returned {len(markdown_matches)} markdown file blocks instead of bash script - converting...")
+        script_lines = ["#!/usr/bin/env bash", "set -e", ""]
+        
+        files_created = 0
+        for filepath, lang, file_content in markdown_matches:
+            filepath = filepath.strip()
+            # Clean up filepath - remove backticks, quotes, etc.
+            filepath = filepath.replace('`', '').replace('"', '').replace("'", '').strip()
+            file_content = file_content.strip()
+            
+            # Skip if filepath looks like a heading, not a file
+            # Valid files must have either a / (path) or . (extension)
+            if not filepath or ('/' not in filepath and '.' not in filepath):
+                logger.debug(f"Skipping invalid filepath: {filepath}")
+                continue
+            
+            # Skip if filepath contains spaces (likely a heading)
+            if ' ' in filepath:
+                logger.debug(f"Skipping filepath with spaces: {filepath}")
+                continue
+            
+            # Determine directory from filepath
+            if '/' in filepath:
+                directory = '/'.join(filepath.split('/')[:-1])
+                script_lines.append(f"mkdir -p {directory}")
+            
+            # Write file using heredoc
+            script_lines.append(f"cat <<'EOF' > {filepath}")
+            script_lines.append(file_content)
+            script_lines.append("EOF")
+            script_lines.append(f"echo '[CREATED] {filepath}'")
+            script_lines.append("")
+            files_created += 1
+        
+        if files_created == 0:
+            # No valid files found - don't convert, let normal processing handle it
+            logger.warning("No valid files found in markdown blocks - skipping conversion")
+        else:
+            script_lines.append("echo '=== SUMMARY ==='")
+            script_lines.append(f"echo 'Created {files_created} files'")
+            script_lines.append("ls -la")
+            
+            converted_script = '\n'.join(script_lines)
+            logger.info(f"Converted {len(markdown_matches)} markdown blocks to {len(script_lines)} line bash script ({files_created} valid files)")
+            return converted_script, thought_text
+
+    # 3. Extract script from markdown fences (normal case)
     fence_match = _re.search(r'```(?:bash|sh|shell|python)?\s*\n(.*?)```', content, flags=_re.DOTALL)
     if not fence_match:
         fence_match = _re.search(r'```\s*\n(.*?)```', content, flags=_re.DOTALL)
@@ -88,9 +161,9 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
         if content.startswith('```'):
             content = content[3:].strip()
         if content.endswith('```'):
-            content = content[:-3].strip()
+            content = content[:-3:].strip()
 
-    # 3. Strip narrative preamble before the first command line
+    # 4. Strip narrative preamble before the first command line
     lines = content.split('\n')
     first_code_line = 0
     for i, line in enumerate(lines):
@@ -115,7 +188,7 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
             narrative = preamble
             content = '\n'.join(lines[first_code_line:])
 
-    # 4. Replace Unicode with ASCII-friendly equivalents
+    # 5. Replace Unicode with ASCII-friendly equivalents
     content = content.replace('\u2018', "'").replace('\u2019', "'")
     content = content.replace('\u201c', '"').replace('\u201d', '"')
     content = content.replace('\u2013', '-').replace('\u2014', '--')
@@ -437,7 +510,7 @@ _project_states: Dict[str, Dict[str, Any]] = {}
 # Bootstrap agent sets this to True when it successfully pushes.
 # All other agents check this before picking tasks.
 # Keyed by project_token so multiple projects work independently.
-_bootstrap_pushed: Dict[str, bool] = {}
+# _bootstrap_pushed replaced with persistent bootstrap_persistence module
 
 
 def _new_repo_bootstrap_state() -> Dict[str, Any]:
@@ -1253,6 +1326,13 @@ CRITICAL STRUCTURAL RULES (NO EXCEPTIONS):
 - If you have doubts about where a file belongs, or if you think a new folder is needed, DO NOT guess and DO NOT auto-create it. You must stick to the existing master structure.
 - If you believe the Master Agent's structure is missing something critical, write your code within the closest existing canonical directory and leave a comment explaining your doubt so the Master Agent can refine it later.
 
+CRITICAL ROOT DIRECTORY RULE:
+- The workspace root is /workspace/ - this is your project root
+- If task description shows a root folder name (e.g., "my-project/" or "genai-landing-page/"), this is DOCUMENTATION ONLY
+- DO NOT create this root folder as a subdirectory - files go directly under /workspace/
+- Example: If task shows "my-project/backend/app.py", create "/workspace/backend/app.py" (NOT /workspace/my-project/backend/app.py)
+- The root folder name in documentation is just a label for the project, not an actual directory to create
+
 BULLETPROOF VALIDATION REQUIREMENTS:
 - ALWAYS validate inputs before processing
 - ALWAYS include error handling for network requests
@@ -1308,6 +1388,12 @@ CRITICAL STRUCTURAL RULES (NO EXCEPTIONS):
 - You do NOT have the authority to decide where files should go if it contradicts the canonical tree.
 - If you have doubts about where a file belongs, or if you think a new folder is needed, DO NOT guess and DO NOT auto-create it.
 
+CRITICAL ROOT DIRECTORY RULE:
+- The workspace root is /workspace/ - this is your project root
+- If task description shows a root folder name (e.g., "my-project/" or "genai-landing-page/"), this is DOCUMENTATION ONLY
+- DO NOT create this root folder as a subdirectory - files go directly under /workspace/
+- Example: If task shows "my-project/backend/app.py", create "/workspace/backend/app.py" (NOT /workspace/my-project/backend/app.py)
+
 Example of the CORRECT compatible pattern:
 #!/usr/bin/env bash
 set -e
@@ -1326,6 +1412,48 @@ Do NOT use Python helpers like open(), pathlib, or os.makedirs() for file creati
 AGENT_SYSTEM_PROMPTS = {
     "validator": """You are a Project Builder AI Agent.
 Your job is to analyze the given task and CREATE a complete, working project implementation.
+
+⚠️ CRITICAL OUTPUT FORMAT REQUIREMENT:
+YOU MUST return a BASH SHELL SCRIPT that creates files using shell commands.
+DO NOT return markdown-formatted file contents.
+DO NOT return individual file contents in separate code blocks.
+RETURN A SINGLE BASH SCRIPT that uses 'cat <<EOF > filename' to create all files.
+
+Example of CORRECT format:
+```bash
+#!/usr/bin/env bash
+set -e
+
+mkdir -p frontend/src
+cat <<'EOF' > frontend/src/App.tsx
+import React from 'react';
+export default function App() {
+  return <div>Hello</div>;
+}
+EOF
+
+mkdir -p backend
+cat <<'EOF' > backend/app.py
+from flask import Flask
+app = Flask(__name__)
+EOF
+
+echo '[CREATED] frontend/src/App.tsx'
+echo '[CREATED] backend/app.py'
+echo '=== SUMMARY ==='
+echo 'Created 2 files'
+```
+
+Example of WRONG format (DO NOT DO THIS):
+## 1. App.tsx
+```typescript
+import React from 'react';
+```
+
+## 2. app.py
+```python
+from flask import Flask
+```
 
 CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - The Master Agent publishes a canonical project tree and workspace contract for this project.
@@ -1356,7 +1484,7 @@ Given a task description and Technical Specification, you must:
 2. READ the checklist items and execute EACH ONE in your shell script
 3. READ the Master Agent's Canonical Project Tree carefully to determine file locations
 4. Create files EXACTLY in the directories specified in the Master Agent tree
-5. Generate a shell script that CREATES all necessary files and directories
+5. Generate a BASH SHELL SCRIPT that CREATES all necessary files and directories using 'cat <<EOF'
 6. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
 7. Write real, production-quality code into each file
 8. NEVER create __pycache__ directories or .pyc files
@@ -2509,6 +2637,8 @@ async def _call_ai_for_code(
     live_repo_tree: str = "",
     peer_context: str = "",   # NEW: summary of what other agents have built
     project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
+    agent_id: str = "",  # NEW: For logging
+    agent_output_log: list = None,  # NEW: For logging
 ) -> tuple[str, str]:
     """Call AI model to generate a project-building shell script.
     
@@ -2521,6 +2651,8 @@ async def _call_ai_for_code(
         workspace_tree: The Master Agent's Canonical Project Tree
         live_repo_tree: The actual current file structure from the git repository
         project_root: The bootstrap-defined project root (e.g., /workspace/my-todo-app)
+        agent_id: Agent ID for logging
+        agent_output_log: Agent's output log for prompt logging
     """
     url = llm_gateway.resolve_url()
     key = llm_gateway.resolve_key()
@@ -2615,6 +2747,28 @@ async def _call_ai_for_code(
         {"role": "user", "content": user_content},
     ]
 
+    # LOG THE PROMPT BEING SENT
+    if agent_id and agent_output_log is not None:
+        from prompt_logger import log_prompt_to_agent, extract_context_summary
+        
+        context_summary = extract_context_summary(
+            tech_spec=tech_spec,
+            workspace_tree=workspace_tree,
+            live_repo_tree=live_repo_tree,
+            code_context=code_context,
+            peer_context=peer_context,
+            project_root=project_root
+        )
+        
+        log_prompt_to_agent(
+            agent_id=agent_id,
+            agent_output_log=agent_output_log,
+            prompt_type="CODE_GENERATION",
+            system_prompt=system_prompt,
+            user_prompt=user_content,
+            context_summary=context_summary
+        )
+
     last_err = None
     content = ""
     for attempt in range(3):
@@ -2636,6 +2790,18 @@ async def _call_ai_for_code(
                 raise
     if last_err:
         raise last_err
+
+    # LOG THE AI RESPONSE
+    if agent_id and agent_output_log is not None and content:
+        from prompt_logger import log_ai_response
+        
+        log_ai_response(
+            agent_id=agent_id,
+            agent_output_log=agent_output_log,
+            response_type="CODE_GENERATION",
+            response_content=content,
+            metadata={"model": model_name, "attempts": attempt + 1}
+        )
 
     if content:
         return _clean_ai_code_response(content)
@@ -2813,6 +2979,38 @@ async def _call_ai_for_self_review(
     if not llm_gateway.check_api_key():
         raise ValueError("AI API key not configured")
 
+    # CRITICAL: Limit workspace tree size to prevent API overload
+    # If workspace tree is too large (>500KB), truncate it intelligently
+    MAX_WORKSPACE_SIZE = 500_000  # 500KB limit
+    if len(workspace_tree) > MAX_WORKSPACE_SIZE:
+        logger.warning(f"Workspace tree too large ({len(workspace_tree)} chars), truncating to {MAX_WORKSPACE_SIZE} chars for self-review")
+        
+        # Keep the file tree summary (first part) and truncate file contents
+        tree_parts = workspace_tree.split("FILE:")
+        if len(tree_parts) > 1:
+            # Keep header and file tree, limit file contents
+            header = tree_parts[0]
+            file_sections = tree_parts[1:]
+            
+            # Calculate how much space we have for file contents
+            remaining_space = MAX_WORKSPACE_SIZE - len(header)
+            
+            # Include as many complete file sections as possible
+            truncated_sections = []
+            current_size = 0
+            for section in file_sections:
+                if current_size + len(section) < remaining_space:
+                    truncated_sections.append(section)
+                    current_size += len(section)
+                else:
+                    break
+            
+            workspace_tree = header + "FILE:" + "FILE:".join(truncated_sections)
+            workspace_tree += f"\n\n... [Truncated: {len(file_sections) - len(truncated_sections)} files omitted due to size limit]"
+        else:
+            # Simple truncation if no FILE: markers found
+            workspace_tree = workspace_tree[:MAX_WORKSPACE_SIZE] + "\n\n... [Truncated due to size limit]"
+
     system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
     
     review_prompt = f"""SELF-REVIEW TASK:
@@ -2828,9 +3026,21 @@ ORIGINAL TASK:
     review_prompt += f"""GENERATED WORKSPACE TREE:
 {workspace_tree}
 
-Are the core requirements structurally met? Are there any glaring missing folders/files based on the specs?
+IMPORTANT NOTES FOR VALIDATION:
+1. The workspace root is /workspace/ - this is the project root directory
+2. If the task description shows a root folder name (e.g., "my-project/"), this is just documentation
+3. Files should be created directly under /workspace/, NOT under /workspace/my-project/
+4. Example: If task shows "my-project/backend/app.py", create "/workspace/backend/app.py"
+5. Focus on validating the STRUCTURE (folders and files), not the root directory name
+
+VALIDATION CRITERIA:
+- Are all required directories present? (backend/, frontend/, etc.)
+- Are all required files present in the correct locations?
+- Does the structure match the task requirements (ignoring root folder name)?
+- Are there any missing critical files or folders?
+
 Reply EXACTLY on the very first line with either 'PASS' or 'FAIL'.
-On the following lines, provide a short 1-3 sentence justification."""
+On the following lines, provide a short 1-3 sentence justification explaining what's correct or what's missing."""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -2841,25 +3051,56 @@ On the following lines, provide a short 1-3 sentence justification."""
     content = ""
     for attempt in range(3):
         try:
+            # Add exponential backoff for server errors
+            if attempt > 0:
+                import asyncio
+                backoff_seconds = 2 ** attempt  # 2s, 4s, 8s
+                logger.info(f"Self-review retry {attempt + 1}/3 after {backoff_seconds}s backoff...")
+                await asyncio.sleep(backoff_seconds)
+            
             content = await llm_gateway.call_llm_and_extract(
                 messages=messages,
                 api_url=url,
                 api_key=key,
                 model=model_name,
-                timeout=60.0,
+                timeout=90.0,  # Increased timeout from 60s to 90s
                 temperature=0.2
             )
             last_err = None
             break
         except Exception as e:
             last_err = e
+            error_type = type(e).__name__
+            error_msg = str(e)[:200]
+            
+            # Check if it's a server error (500) - these are retryable
+            if "500" in error_msg or "INTERNAL SERVER ERROR" in error_msg:
+                logger.warning(f"Self-review API server error (attempt {attempt + 1}/3): {error_type}: {error_msg}")
+            # Check if it's a timeout - also retryable
+            elif "timeout" in error_msg.lower() or "ReadTimeout" in error_type:
+                logger.warning(f"Self-review API timeout (attempt {attempt + 1}/3): {error_type}")
+            else:
+                logger.warning(f"Self-review API attempt {attempt + 1}/3 failed: {error_type}: {error_msg}")
+    
+    # CRITICAL: If self-review API fails, default to FAIL (not PASS)
+    # This ensures broken code is never pushed when self-review can't run
     if last_err:
-        return True, f"Self-review API failed: {last_err}. Passing by default."
+        error_msg = f"{type(last_err).__name__}: {str(last_err)}" if str(last_err) else f"{type(last_err).__name__} (no error message)"
+        logger.error(f"Self-review API failed after 3 attempts: {error_msg}")
+        
+        # If it's a server error, provide more helpful message
+        if "500" in str(last_err) or "INTERNAL SERVER ERROR" in str(last_err):
+            return False, f"Self-review API server error (BournAI API unavailable). FAILING by default to prevent pushing broken code. Please retry or check API status."
+        
+        return False, f"Self-review API failed: {error_msg}. FAILING by default to prevent pushing broken code."
 
     if content:
         passed = content.upper().startswith("PASS")
         return passed, content
-    return True, "No response from AI model for self-review. Passing by default."
+    
+    # CRITICAL: If no response, default to FAIL (not PASS)
+    logger.warning("No response from AI model for self-review")
+    return False, "No response from AI model for self-review. FAILING by default to prevent pushing broken code."
 
 
 # ── Docker Configuration ────────────────────────────────────────────────────
@@ -3186,7 +3427,7 @@ async def _mark_repo_bootstrap_result(
         )
     state["repo_bootstrap_event"].set()
     # Signal all waiting agents via the simple module-level flag
-    _bootstrap_pushed[_project_key(project_token)] = True
+    set_bootstrap_success(project_token)  # Persistent bootstrap state
     logger.info(f"[{source_agent}] Bootstrap flag set for project {project_token}")
 
 
@@ -6507,11 +6748,19 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
     Returns a formatted string showing the project structure and code.
     """
     try:
-        # Get file listing from project root
+        # Get file listing from project root (exclude large directories)
         find_result = subprocess.run(
             ["docker", "exec", container_name, "find", project_root, "-type", "f",
-             "-not", "-path", "*/\\.git/*", "-not", "-path", "*/__pycache__/*",
-             "-not", "-name", "*.pyc"],
+             "-not", "-path", "*/\\.git/*", 
+             "-not", "-path", "*/__pycache__/*",
+             "-not", "-path", "*/node_modules/*",
+             "-not", "-path", "*/venv/*",
+             "-not", "-path", "*/dist/*",
+             "-not", "-path", "*/build/*",
+             "-not", "-path", "*/.venv/*",
+             "-not", "-name", "*.pyc",
+             "-not", "-name", "*.map",
+             "-not", "-name", "package-lock.json"],
             capture_output=True, text=True, timeout=15,
         )
 
@@ -6552,13 +6801,13 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
             )
 
             if cat_result.returncode == 0:
-                content = cat_result.stdout
+                content = cat_result.stdout or ""
                 # Truncate very large files
                 if len(content) > 5000:
-                    content = content[:5000] + f"\n\n... [truncated, {len(cat_result.stdout)} chars total]"
+                    content = content[:5000] + f"\n\n... [truncated, {len(content)} chars total]"
                 output_parts.append(content)
             else:
-                output_parts.append(f"[Could not read file: {cat_result.stderr}]")
+                output_parts.append(f"[Could not read file: {cat_result.stderr or 'unknown error'}]")
 
             output_parts.append("")
 
@@ -13380,7 +13629,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 )
                 if task00:
                     _proj_key = _project_key(project_token)
-                    if not _bootstrap_pushed.get(_proj_key, False):
+                    if not is_bootstrap_pushed(project_token):
                         msg = f"⏸️ Task {tid} waiting for bootstrap to push scaffold"
                         logger.info(f"[{agent_id}] {msg}")
                         if agent:
@@ -13417,7 +13666,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 # so dependency checks pass for tasks that depend on it.
                 # Also clear any stale file locks from previous runs.
                 _proj_key = _project_key(project_token)
-                if _bootstrap_pushed.get(_proj_key, False):
+                if is_bootstrap_pushed(project_token):
                     for ext_t in external_tasks:
                         _is_bt = (
                             (ext_t.get("task_id") or ext_t.get("external_task_id") or "").strip().upper() == "TASK-00"
@@ -13437,7 +13686,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 if not is_bootstrap_task:
                     # If bootstrap is pushed, skip all dependency checks — scaffold is ready
                     _proj_key = _project_key(project_token)
-                    if not _bootstrap_pushed.get(_proj_key, False):
+                    if not is_bootstrap_pushed(project_token):
                         task_deps = t.get("dependencies", [])
                         if not task_deps:
                             linked = t.get("linked_tasks", [])
@@ -13461,7 +13710,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                             continue
 
                     # Skip conflict checks too if bootstrap just pushed and no tasks completed yet
-                    if not _bootstrap_pushed.get(_proj_key, False) or live_mem.completed_history:
+                    if not is_bootstrap_pushed(project_token) or live_mem.completed_history:
                         blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
                         if blocked:
                             logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
@@ -13891,7 +14140,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
             for ext_t in (await _fetch_external_tasks(project_token) or [])
         )
-        if _has_bootstrap and not _bootstrap_pushed.get(_proj_key, False):
+        if _has_bootstrap and not is_bootstrap_pushed(project_token):
             agent["output_log"].append({
                 "time": now,
                 "type": "info",
@@ -13917,7 +14166,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # Poll every 15s until bootstrap flag is set (max 30 min)
             for _ in range(120):
                 await asyncio.sleep(15)
-                if _bootstrap_pushed.get(_proj_key, False):
+                if is_bootstrap_pushed(project_token):
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
@@ -13982,7 +14231,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
             for ext_t in (await _fetch_external_tasks(project_token) or [])
         )
-        if _has_bootstrap and not _bootstrap_pushed.get(_proj_key, False):
+        if _has_bootstrap and not is_bootstrap_pushed(project_token):
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
@@ -13991,7 +14240,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # Poll every 15s until bootstrap flag is set (max 30 min)
             for _ in range(120):
                 await asyncio.sleep(15)
-                if _bootstrap_pushed.get(_proj_key, False):
+                if is_bootstrap_pushed(project_token):
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
@@ -14750,6 +14999,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 live_repo_tree=repo_tree_context,
                 peer_context=peer_ctx,
                 project_root=project_root,  # Pass bootstrap project root
+                agent_id=agent_id,  # For prompt logging
+                agent_output_log=agent["output_log"],  # For prompt logging
             )
             if thought:
                 await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
@@ -14913,11 +15164,22 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             workspace_tree = await asyncio.to_thread(_capture_workspace_tree, container_name, capture_root)
             if workspace_tree is None:
                 workspace_tree = ""
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"Captured {workspace_tree.count('FILE:')} files from {capture_root}/"
-            })
+            
+            # Check if workspace capture failed (returns error string starting with #)
+            if workspace_tree.startswith("# Error capturing workspace:") or workspace_tree.startswith("# No files found"):
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": f"⚠️ Workspace capture issue: {workspace_tree[:200]}"
+                })
+                # Set to empty so self-review is skipped
+                workspace_tree = ""
+            else:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"📂 Captured {workspace_tree.count('FILE:')} files from {capture_root}/"
+                })
 
             # ── Fix 2: Ground-truth file list via docker exec find . ──────────
             # This replaces parsing the workspace_tree stdout string, which can
@@ -15017,60 +15279,175 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "type": "info",
                     "message": "Initiating AI self-review before committing..."
                 })
-                try:
-                    passed_review, review_feedback = await _call_ai_for_self_review(
-                        task_description=task.get("description", task.get("title")),
-                        agent_type=agent["type"],
-                        workspace_tree=workspace_tree,
-                        tech_spec=task.get("_tech_spec", "")
-                    )
-                    log_type = "info" if passed_review else "warning"
-                    pass_str = "PASSED" if passed_review else "FAILED"
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": log_type,
-                        "message": f"🤖 Self-Review {pass_str}:\n{review_feedback[:300]}"
-                    })
-                    
-                    # Check integration status for self-review decisions
-                    integration_blocked = False
+                
+                max_fix_attempts = 3
+                fix_attempt = 0
+                passed_review = False
+                review_feedback = ""
+                
+                while fix_attempt < max_fix_attempts and not passed_review:
                     try:
-                        import context_manager as ctx_mgr
-                        live_mem = ctx_mgr.get_live_memory(project_token or "")
-                        integration_blocked = live_mem.is_integration_blocked()
-                    except Exception:
-                        integration_blocked = False
-                    
-                    if not passed_review and not integration_blocked:
-                        logger.warning(f"[{agent_id}] Self-review failed: {review_feedback[:100]}")
-                        # Broadcast BLOCKED so other agents know and can help
-                        try:
-                            from database import SessionLocal
-                            import agent_communication_service as _comm
-                            _db = SessionLocal()
-                            try:
-                                # Extract what's missing from review feedback
-                                needs_hint = review_feedback[:200] if review_feedback else "unknown issue"
-                                await _comm.broadcast_blocked(
-                                    db=_db,
-                                    project_token=project_token or "",
-                                    from_agent=agent_id,
-                                    reason=f"Self-review failed: {needs_hint}",
-                                    related_task_id=str(task.get("id", "")),
-                                    needs=needs_hint,
+                        passed_review, review_feedback = await _call_ai_for_self_review(
+                            task_description=task.get("description", task.get("title")),
+                            agent_type=agent["type"],
+                            workspace_tree=workspace_tree,
+                            tech_spec=task.get("_tech_spec", "")
+                        )
+                        log_type = "info" if passed_review else "warning"
+                        pass_str = "PASSED" if passed_review else "FAILED"
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": log_type,
+                            "message": f"🤖 Self-Review {pass_str} (Attempt {fix_attempt + 1}/{max_fix_attempts}):\n{review_feedback[:300]}"
+                        })
+                        
+                        if not passed_review:
+                            fix_attempt += 1
+                            
+                            if fix_attempt < max_fix_attempts:
+                                # Self-review failed - FIX IT before pushing
+                                logger.warning(f"[{agent_id}] Self-review failed (attempt {fix_attempt}), generating fix...")
+                                
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "warning",
+                                    "message": f"🔧 Self-review failed. Generating fix for missing/incorrect files..."
+                                })
+                                
+                                # Generate fix code
+                                fix_prompt = f"""
+SELF-REVIEW FAILED. You must fix the following issues:
+
+{review_feedback}
+
+Original Task:
+{task.get("description", task.get("title"))}
+
+Generate a bash script that FIXES these issues. Create missing files, correct wrong structures, etc.
+The script should fix ONLY what's wrong, not recreate everything.
+"""
+                                
+                                fix_code, fix_thought = await _call_ai_for_code(
+                                    fix_prompt,
+                                    agent["type"],
+                                    tech_spec=task.get("_tech_spec", ""),
+                                    workspace_tree=workspace_tree,
+                                    agent_id=agent_id,
+                                    agent_output_log=agent["output_log"],
                                 )
-                            finally:
-                                _db.close()
-                        except Exception as _comm_err:
-                            logger.debug(f"[{agent_id}] Could not broadcast blocked state: {_comm_err}")
-                        # Even if failed, it pushes to Git so Master Agent can intervene in next cycle,
-                        # but agent logs it properly as a warning structural mismatch.
-                except Exception as eval_err:
+                                
+                                if fix_thought:
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": f"🤔 Fix strategy: {fix_thought[:200]}"
+                                    })
+                                
+                                # Execute fix
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"Executing fix script ({len(fix_code.splitlines())} lines)..."
+                                })
+                                
+                                fix_result = await asyncio.to_thread(
+                                    _exec_script_in_container,
+                                    container_name,
+                                    fix_code,
+                                    f"self_review_fix_{fix_attempt}",
+                                    project_token
+                                )
+                                
+                                if fix_result.get("exit_code") == 0:
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": f"✅ Fix applied successfully. Re-running self-review..."
+                                    })
+                                    
+                                    # Recapture workspace after fix
+                                    workspace_tree = _capture_workspace_tree(container_name, project_root)
+                                    
+                                    # Loop will retry self-review
+                                else:
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "error",
+                                        "message": f"❌ Fix script failed: {fix_result.get('stderr', '')[:200]}"
+                                    })
+                                    break  # Can't fix, exit loop
+                            else:
+                                # Max attempts reached
+                                logger.error(f"[{agent_id}] Self-review failed after {max_fix_attempts} attempts")
+                                
+                                # Broadcast BLOCKED - couldn't fix it
+                                try:
+                                    from database import SessionLocal
+                                    import agent_communication_service as _comm
+                                    _db = SessionLocal()
+                                    try:
+                                        needs_hint = review_feedback[:200] if review_feedback else "unknown issue"
+                                        await _comm.send_message(
+                                            db=_db,
+                                            project_token=project_token or "",
+                                            from_agent=agent_id,
+                                            message=f"🚫 BLOCKED: Self-review failed after {max_fix_attempts} attempts. Issues: {needs_hint}",
+                                            msg_type="BLOCKED",
+                                            related_task_id=str(task.get("id", "")),
+                                            payload={"self_review_failed": True, "issues": review_feedback, "attempts": max_fix_attempts}
+                                        )
+                                    finally:
+                                        _db.close()
+                                except Exception as _comm_err:
+                                    logger.debug(f"[{agent_id}] Could not broadcast blocked state: {_comm_err}")
+                                
+                                # DO NOT PUSH - self-review failed
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "error",
+                                    "message": f"❌ ABORTING: Self-review failed after {max_fix_attempts} fix attempts. NOT pushing broken code."
+                                })
+                                
+                                # Mark task as failed
+                                agent["status"] = "idle"
+                                agent["progress"] = 0
+                                agent["current_task"] = None
+                                
+                                return {
+                                    "success": False,
+                                    "agent_id": agent_id,
+                                    "error": f"Self-review failed after {max_fix_attempts} attempts: {review_feedback[:200]}",
+                                    "tasks_completed": 0,
+                                    "duration": time.time() - start_time,
+                                }
+                        
+                    except Exception as eval_err:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "warning",
+                            "message": f"Self-review failed to execute: {eval_err}"
+                        })
+                        break  # Exit loop on exception
+                
+                # Only proceed to push if self-review PASSED
+                if not passed_review:
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
-                        "type": "warning",
-                        "message": f"Self-review failed to execute: {eval_err}"
+                        "type": "error",
+                        "message": "❌ Cannot push code - self-review did not pass"
                     })
+                    # Task failed, return error
+                    agent["status"] = "idle"
+                    agent["progress"] = 0
+                    agent["current_task"] = None
+                    
+                    return {
+                        "success": False,
+                        "agent_id": agent_id,
+                        "error": f"Self-review failed: {review_feedback[:200]}",
+                        "tasks_completed": 0,
+                        "duration": time.time() - start_time,
+                    }
 
             # ═════════════════════════════════════════════════════════
             # MARK CHECKLIST ITEMS COMPLETE
@@ -15247,7 +15624,13 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         pass
 
                     # Generate and execute code
-                    lt_code, thought = await _call_ai_for_code(linked_task.get("description", lt_title), agent["type"], code_context=lt_jit_context)
+                    lt_code, thought = await _call_ai_for_code(
+                        linked_task.get("description", lt_title), 
+                        agent["type"], 
+                        code_context=lt_jit_context,
+                        agent_id=agent_id,  # For prompt logging
+                        agent_output_log=agent["output_log"],  # For prompt logging
+                    )
                     if thought:
                         await _post_task_message(linked_task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
                     lt_result = await asyncio.to_thread(

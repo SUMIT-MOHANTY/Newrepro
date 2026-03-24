@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ModalProvider } from './contexts/ModalContext';
+import SessionMonitor from './components/SessionMonitor';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
@@ -27,6 +28,7 @@ function App() {
   return (
     <ModalProvider>
       <Router>
+        <SessionMonitor />
         <Routes>
         {/* Public routes — no sidebar/navbar */}
         <Route path="/login" element={<Login />} />

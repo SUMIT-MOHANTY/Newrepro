@@ -376,11 +376,9 @@ const GovernanceForm = ({
                     setIsNewProjectMode?.(false);
                     fetchHistory?.();
 
-                    // Auto-refresh roadmap stepper after governance submission
-                    if (fetchRoadmapData) {
-                        const tokenToUse = resultData.project_token || selectedProjectKey;
-                        if (tokenToUse) fetchRoadmapData(tokenToUse);
-                    }
+                    // DO NOT auto-refresh roadmap here - it causes AppLayout to navigate away before user sees result
+                    // Roadmap will be refreshed when user clicks "Proceed to Agent Analysis" button
+                    // This ensures the GovernanceResult component renders and user can review their score
 
                     // If all questions were skipped (score 5), do NOT navigate - user should see the sandbox score
                     // Navigation is blocked in AppLayout.jsx for this case
@@ -1176,6 +1174,12 @@ const GovernanceResult = ({ result, onBack }) => {
                             onClick={() => {
                                 sessionStorage.setItem('governanceResult', JSON.stringify(result));
                                 sessionStorage.setItem('shouldStartAnalysis', 'true');
+                                
+                                // Refresh roadmap data before navigation so AppLayout knows the current step
+                                if (fetchRoadmapData && result.project_token) {
+                                    fetchRoadmapData(result.project_token);
+                                }
+                                
                                 window.location.href = `/a/${result.project_token}`;
                             }}
                             className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"

@@ -1,4 +1,5 @@
 import asyncio
+from coordination_monitor import start_coordination_monitor, stop_coordination_monitor
 import logging
 import uuid
 from typing import Any, Dict, List, Optional, TypedDict
@@ -27,6 +28,9 @@ _CHECKPOINTER = InMemorySaver()
 
 async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str, Any]:
     import agent_service
+    import agent_communication_service as comm
+    from database import SessionLocal
+    from bootstrap_persistence import set_bootstrap_success, set_bootstrap_failed
 
     logger.info("[LangGraph] Publishing master workspace note...")
     agent_service._log_master_agent(
@@ -46,28 +50,69 @@ async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str,
     logger.info(f"[LangGraph] Master note result: success={result.get('success')}, title={result.get('title')}")
     
     errors = list(state.get("errors") or [])
+    project_token = state.get("project_token")
+    
     if not result.get("success") and not result.get("skipped"):
         reason = result.get("error") or result.get("reason") or "unknown error"
         errors.append(f"master note: {reason}")
+        
+        # Persist failure to database
+        set_bootstrap_failed(project_token, str(reason))
+        
+        # Broadcast failure - coordination monitor will create fix task
+        db = SessionLocal()
+        try:
+            await comm.send_message(
+                db=db,
+                project_token=project_token or "",
+                from_agent="MASTER_AGENT",
+                message=f"🚫 Bootstrap failed: {reason}. Coordination monitor will create fix task.",
+                msg_type="BLOCKED",
+                payload={"bootstrap_failure": True, "error": str(reason)}
+            )
+        finally:
+            db.close()
+        
         agent_service._log_master_agent(
-            f"⚠️ Master plan note failed: {reason}",
+            f"⚠️ Master plan note failed: {reason} - Coordination monitor will handle recovery",
             level="warning",
-            project_token=state.get("project_token"),
+            project_token=project_token,
         )
-        agent_service.complete_run_all_waiting_state(
-            state.get("project_token"),
-            success=False,
-            error_message=str(reason),
-        )
+        
+        # Don't set agents to failed - let coordination monitor create fix task
+        # Agents will pick up the bootstrap fix task automatically
+        
     else:
+        # Success - persist to database
+        set_bootstrap_success(
+            project_token,
+            master_note_id=result.get("note_id"),
+            workspace_tree=result.get("workspace_tree")
+        )
+        
+        # Broadcast success
+        db = SessionLocal()
+        try:
+            await comm.send_message(
+                db=db,
+                project_token=project_token or "",
+                from_agent="MASTER_AGENT",
+                message=f"✅ Bootstrap complete! Project structure ready.",
+                msg_type="READY",
+                payload={"bootstrap_success": True}
+            )
+        finally:
+            db.close()
+        
         agent_service._log_master_agent(
             f"✅ Master plan note published: {result.get('title')}",
-            project_token=state.get("project_token"),
+            project_token=project_token,
         )
         agent_service.complete_run_all_waiting_state(
-            state.get("project_token"),
+            project_token,
             success=True,
         )
+    
     return {
         "master_note": result,
         "errors": errors,
@@ -76,9 +121,10 @@ async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str,
 
 def _route_after_master_note(state: AgentWorkflowState) -> str:
     master_note = state.get("master_note") or {}
-    if master_note.get("success"):
-        return "plan_assignments"
-    return "finalize"
+    # Even if bootstrap fails, proceed to planning
+    # Coordination monitor will create fix task automatically
+    # Don't pause workflow - let agents handle it
+    return "plan_assignments"
 
 
 async def _plan_assignments(state: AgentWorkflowState) -> Dict[str, Any]:
@@ -115,80 +161,92 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
     import agent_service
     from coordinated_agent_wrapper import run_coordinated_agent
     from agent_coordination_service import initialize_project_coordination
+    from coordination_monitor import start_coordination_monitor, stop_coordination_monitor
 
     assignments = state.get("assignments") or []
-    if not assignments:
-        return {"results": [], "launched_agents": [], "errors": []}
-
-    # Initialize coordination for this project
     project_token = state.get("project_token")
-    agents_config = state.get("agents_config", {})
-    master_note = state.get("master_note", {})
     
-    # Initialize coordination state
+    # START COORDINATION MONITOR - handles all self-healing
+    monitor = await start_coordination_monitor(project_token)
+    logger.info(f"[LangGraph] Coordination monitor started for {project_token}")
+    
     try:
-        await initialize_project_coordination(
-            project_token,
-            agents_config,
-            master_note
-        )
-        logger.info(f"Coordination initialized for project {project_token} with {len(agents_config)} agents")
-    except Exception as coord_err:
-        logger.warning(f"Coordination initialization failed: {coord_err}")
+        if not assignments:
+            return {"results": [], "launched_agents": [], "errors": []}
 
-    launched_agents: List[str] = []
-    for entry in assignments:
-        agent_id = str(entry.get("agent_id") or "").strip()
-        if agent_id and agent_id not in launched_agents:
-            launched_agents.append(agent_id)
-
-    async def _run_coordinated_agent(agent_id: str, assigned_task: dict = None) -> Dict[str, Any]:
+        # Initialize coordination for this project
+        agents_config = state.get("agents_config", {})
+        master_note = state.get("master_note", {})
+        
+        # Initialize coordination state
         try:
-            # Pull per-agent git credentials from agents_config
-            agent_cfg = agents_config.get(agent_id) or {}
-            git_repo_url = agent_cfg.get("git_repo_url") or None
-            git_token = agent_cfg.get("git_token") or None
-
-            # Use coordinated agent wrapper instead of direct agent call
-            result = await run_coordinated_agent(
-                agent_id=agent_id,
-                project_token=project_token,
-                original_run_agent_func=agent_service.run_agent,
-                assigned_task=assigned_task,
-                continuous=True,
-                ignore_running_check=True,
-                task_token=state.get("task_token"),
-                git_repo_url=git_repo_url,
-                git_token=git_token,
+            await initialize_project_coordination(
+                project_token,
+                agents_config,
+                master_note
             )
-            if isinstance(result, dict):
-                result.setdefault("agent_id", agent_id)
-            return result
-        except Exception as exc:
-            logger.exception("Coordinated LangGraph workflow failed for %s", agent_id)
-            return {
-                "success": False,
-                "agent_id": agent_id,
-                "error": str(exc),
-                "tasks_completed": 0,
-            }
+            logger.info(f"Coordination initialized for project {project_token} with {len(agents_config)} agents")
+        except Exception as coord_err:
+            logger.warning(f"Coordination initialization failed: {coord_err}")
 
-    # Run agents with coordination
-    results = await asyncio.gather(
-        *(_run_coordinated_agent(entry.get("agent_id"), entry.get("assigned_task")) for entry in assignments)
-    )
+        launched_agents: List[str] = []
+        for entry in assignments:
+            agent_id = str(entry.get("agent_id") or "").strip()
+            if agent_id and agent_id not in launched_agents:
+                launched_agents.append(agent_id)
+
+        async def _run_coordinated_agent(agent_id: str, assigned_task: dict = None) -> Dict[str, Any]:
+            try:
+                # Pull per-agent git credentials from agents_config
+                agent_cfg = agents_config.get(agent_id) or {}
+                git_repo_url = agent_cfg.get("git_repo_url") or None
+                git_token = agent_cfg.get("git_token") or None
+
+                # Use coordinated agent wrapper instead of direct agent call
+                result = await run_coordinated_agent(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    original_run_agent_func=agent_service.run_agent,
+                    assigned_task=assigned_task,
+                    continuous=True,
+                    ignore_running_check=True,
+                    task_token=state.get("task_token"),
+                    git_repo_url=git_repo_url,
+                    git_token=git_token,
+                )
+                if isinstance(result, dict):
+                    result.setdefault("agent_id", agent_id)
+                return result
+            except Exception as exc:
+                logger.exception("Coordinated LangGraph workflow failed for %s", agent_id)
+                return {
+                    "success": False,
+                    "agent_id": agent_id,
+                    "error": str(exc),
+                    "tasks_completed": 0,
+                }
+
+        # Run agents with coordination
+        results = await asyncio.gather(
+            *(_run_coordinated_agent(entry.get("agent_id"), entry.get("assigned_task")) for entry in assignments)
+        )
+        
+        errors = [
+            f"{item.get('agent_id')}: {item.get('error')}"
+            for item in results
+            if isinstance(item, dict) and item.get("error")
+        ]
+
+        return {
+            "results": results,
+            "launched_agents": launched_agents,
+            "errors": errors,
+        }
     
-    errors = [
-        f"{item.get('agent_id')}: {item.get('error')}"
-        for item in results
-        if isinstance(item, dict) and item.get("error")
-    ]
-
-    return {
-        "results": results,
-        "launched_agents": launched_agents,
-        "errors": errors,
-    }
+    finally:
+        # STOP COORDINATION MONITOR when agents complete
+        stop_coordination_monitor(project_token)
+        logger.info(f"[LangGraph] Coordination monitor stopped for {project_token}")
 
 
 async def _await_merge_completion(state: AgentWorkflowState) -> Dict[str, Any]:
