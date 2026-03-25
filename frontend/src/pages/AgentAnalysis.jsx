@@ -1625,6 +1625,79 @@ export default function AgentAnalysis({
                                                 const explicitHtml = result.analysis?.html;
                                                 const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
 
+                                                // Simple function to hide technical sections
+                                                const hideTechnicalSections = (content) => {
+                                                    if (!content) return '';
+                                                    
+                                                    // Technical section headers to hide (case-insensitive)
+                                                    const technicalHeaders = [
+                                                        'technical architecture',
+                                                        'system architecture',
+                                                        'architecture overview',
+                                                        'technical implementation',
+                                                        'implementation details',
+                                                        'api design',
+                                                        'api endpoints',
+                                                        'database schema',
+                                                        'database design',
+                                                        'data model',
+                                                        'technology stack',
+                                                        'tech stack',
+                                                        'development approach',
+                                                        'technical requirements',
+                                                        'technical specifications',
+                                                        'infrastructure',
+                                                        'deployment',
+                                                        'security implementation',
+                                                        'authentication flow',
+                                                        'code structure',
+                                                        'technical details',
+                                                        'technical considerations'
+                                                    ];
+
+                                                    const lines = content.split('\n');
+                                                    const result = [];
+                                                    let skipSection = false;
+
+                                                    for (const line of lines) {
+                                                        const trimmed = line.trim();
+                                                        const lower = trimmed.toLowerCase();
+
+                                                        // Check if this is a header
+                                                        const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
+                                                        
+                                                        if (headerMatch) {
+                                                            const headerText = headerMatch[2].toLowerCase();
+                                                            
+                                                            // Check if this is a technical header
+                                                            const isTechnical = technicalHeaders.some(tech => 
+                                                                headerText.includes(tech) || tech.includes(headerText)
+                                                            );
+                                                            
+                                                            if (isTechnical) {
+                                                                skipSection = true;
+                                                                continue; // Skip this header
+                                                            } else {
+                                                                // New non-technical section
+                                                                skipSection = false;
+                                                            }
+                                                        }
+
+                                                        // Skip code blocks
+                                                        if (trimmed.startsWith('```')) {
+                                                            skipSection = true;
+                                                            continue;
+                                                        }
+
+                                                        // Add line if not in skipped section
+                                                        if (!skipSection) {
+                                                            result.push(line);
+                                                        }
+                                                    }
+
+                                                    return result.join('\n');
+                                                };
+
                                                 if (htmlToRender) {
                                                     return (
                                                         <div
@@ -1641,6 +1714,9 @@ export default function AgentAnalysis({
                                                         </div>
                                                     );
                                                 }
+
+                                                // Filter out technical sections
+                                                const filteredContent = hideTechnicalSections(analysisContent);
 
                                                 return (
                                                     <ReactMarkdown 
@@ -1663,29 +1739,19 @@ export default function AgentAnalysis({
                                                             th: ({node, ...props}) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
                                                             td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
                                                             code: ({node, inline, className, children, ...props}) => {
-                                                                const match = /language-(\w+)/.exec(className || '');
-                                                                const lang = match ? match[1] : '';
-                                                                if (!inline && lang === 'mermaid') {
-                                                                    return <MermaidDiagram code={String(children).replace(/\n$/, '')} />;
-                                                                }
-                                                                return inline 
-                                                                    ? <code className="px-1.5 py-0.5 bg-gray-100 text-pink-600 rounded text-sm font-mono" {...props}>{children}</code>
-                                                                    : <code className={`block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono my-4 ${className || ''}`} {...props}>{children}</code>;
+                                                                // Hide all code blocks (technical)
+                                                                return null;
                                                             },
                                                             pre: ({node, children, ...props}) => {
-                                                                // If the child is a mermaid diagram, don't wrap in pre
-                                                                const child = Array.isArray(children) ? children[0] : children;
-                                                                if (child?.props?.className && /language-mermaid/.test(child.props.className)) {
-                                                                    return <>{children}</>;
-                                                                }
-                                                                return <pre className="bg-gray-900 rounded-lg overflow-hidden my-4" {...props}>{children}</pre>;
+                                                                // Hide all pre blocks (technical)
+                                                                return null;
                                                             },
                                                             blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
                                                             a: ({node, ...props}) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
                                                             strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
                                                         }}
                                                     >
-                                                        {analysisContent}
+                                                        {filteredContent}
                                                     </ReactMarkdown>
                                                 );
                                             })()}
