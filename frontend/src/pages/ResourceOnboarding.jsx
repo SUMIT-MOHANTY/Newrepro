@@ -328,154 +328,128 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
           </div>
 
           {/* Capacity selection – grouped by Dev vs Test, each showing Shared & Dedicated */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Dev Agents card */}
-            <div className="w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-4 transition-all border-app-border-light bg-app-bg-muted">
-              <div className="flex items-center gap-2">
-                <Users className="w-5 h-5 text-app-status-success" />
-                <p className="font-semibold text-app-text-main">Dev Agents</p>
-                <div className="ml-auto flex gap-1">
-                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Shared Avail: {quotaLoading ? '…' : Math.max(0, (quota?.shared_dev_quota ?? 0) - existingSharedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
-                  </span>
-                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Dedicated Avail: {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_dev_quota ?? 0) - existingDedicatedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                {/* Shared Dev Counter */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Shared Dev Agents</span>
+            <div className="relative overflow-hidden rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white shadow-sm hover:shadow-md transition-all">
+              <div className="absolute top-0 right-0 w-20 h-20 bg-emerald-100 rounded-full -mr-10 -mt-10 opacity-40"></div>
+              <div className="relative p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-emerald-500 rounded-lg shadow-sm">
+                    <Users className="w-4 h-4 text-white" />
                   </div>
-                  <div className="inline-flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSharedDevRequested(v => clampCount(v - 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Minus className="w-4 h-4" />
-                    </button>
-                    <input
-                      value={sharedDevRequested}
-                      onChange={e => setSharedDevRequested(clampCount(e.target.value))}
-                      className="w-12 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setSharedDevRequested(v => clampCount(v + 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
+                  <span className="text-sm font-bold text-gray-900">Dev Agents</span>
+                  <div className="ml-auto flex gap-1.5">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-emerald-200 rounded-full text-[10px] font-semibold text-gray-600">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
+                      {quotaLoading ? '…' : Math.max(0, (quota?.shared_dev_quota ?? 0) - existingSharedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)} shared
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-cyan-200 rounded-full text-[10px] font-semibold text-gray-600">
+                      <div className="w-1.5 h-1.5 rounded-full bg-cyan-500"></div>
+                      {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_dev_quota ?? 0) - existingDedicatedAgents.filter(a => !a.sub_type || a.sub_type === 'dev').length)} dedicated
+                    </span>
                   </div>
                 </div>
 
-                {/* Dedicated Dev Counter */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-cyan-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Dedicated Dev Agents</span>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-emerald-100">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                      <span className="text-xs font-medium text-gray-700">Shared Dev</span>
+                    </div>
+                    <div className="inline-flex items-center gap-1">
+                      <button type="button" onClick={() => setSharedDevRequested(v => clampCount(v - 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-emerald-300 hover:bg-emerald-50 transition-all text-gray-600">
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <input value={sharedDevRequested} onChange={e => setSharedDevRequested(clampCount(e.target.value))}
+                        className="w-10 h-6 text-center rounded border border-emerald-200 bg-white text-xs font-bold text-gray-900 focus:ring-1 focus:ring-emerald-400" />
+                      <button type="button" onClick={() => setSharedDevRequested(v => clampCount(v + 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-emerald-300 hover:bg-emerald-50 transition-all text-gray-600">
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="inline-flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setDedicatedDevRequested(v => clampCount(v - 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Minus className="w-4 h-4" />
-                    </button>
-                    <input
-                      value={dedicatedDevRequested}
-                      onChange={e => setDedicatedDevRequested(clampCount(e.target.value))}
-                      className="w-12 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setDedicatedDevRequested(v => clampCount(v + 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
+
+                  <div className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-cyan-100">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-cyan-500"></div>
+                      <span className="text-xs font-medium text-gray-700">Dedicated Dev</span>
+                    </div>
+                    <div className="inline-flex items-center gap-1">
+                      <button type="button" onClick={() => setDedicatedDevRequested(v => clampCount(v - 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-cyan-300 hover:bg-cyan-50 transition-all text-gray-600">
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <input value={dedicatedDevRequested} onChange={e => setDedicatedDevRequested(clampCount(e.target.value))}
+                        className="w-10 h-6 text-center rounded border border-cyan-200 bg-white text-xs font-bold text-gray-900 focus:ring-1 focus:ring-cyan-400" />
+                      <button type="button" onClick={() => setDedicatedDevRequested(v => clampCount(v + 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-cyan-300 hover:bg-cyan-50 transition-all text-gray-600">
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
             {/* Test Agents card */}
-            <div className="w-full text-left rounded-xl border px-4 py-4 flex flex-col gap-4 transition-all border-app-border-light bg-app-bg-muted">
-              <div className="flex items-center gap-2">
-                <Bot className="w-5 h-5 text-app-status-success" />
-                <p className="font-semibold text-app-text-main">Test Agents</p>
-                <div className="ml-auto flex gap-1">
-                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Shared Avail: {quotaLoading ? '…' : Math.max(0, (quota?.shared_test_quota ?? 0) - existingSharedAgents.filter(a => a.sub_type === 'test').length)}
-                  </span>
-                  <span className="text-[10px] bg-app-bg-card border border-app-border-light px-2 py-0.5 rounded-full text-app-text-muted">
-                    Dedicated Avail: {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_test_quota ?? 0) - existingDedicatedAgents.filter(a => a.sub_type === 'test').length)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                {/* Shared Test Counter */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Shared Test Agents</span>
+            <div className="relative overflow-hidden rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-white shadow-sm hover:shadow-md transition-all">
+              <div className="absolute top-0 right-0 w-20 h-20 bg-blue-100 rounded-full -mr-10 -mt-10 opacity-40"></div>
+              <div className="relative p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-blue-500 rounded-lg shadow-sm">
+                    <Bot className="w-4 h-4 text-white" />
                   </div>
-                  <div className="inline-flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSharedTestRequested(v => clampCount(v - 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Minus className="w-4 h-4" />
-                    </button>
-                    <input
-                      value={sharedTestRequested}
-                      onChange={e => setSharedTestRequested(clampCount(e.target.value))}
-                      className="w-12 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setSharedTestRequested(v => clampCount(v + 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
+                  <span className="text-sm font-bold text-gray-900">Test Agents</span>
+                  <div className="ml-auto flex gap-1.5">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-emerald-200 rounded-full text-[10px] font-semibold text-gray-600">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
+                      {quotaLoading ? '…' : Math.max(0, (quota?.shared_test_quota ?? 0) - existingSharedAgents.filter(a => a.sub_type === 'test').length)} shared
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-cyan-200 rounded-full text-[10px] font-semibold text-gray-600">
+                      <div className="w-1.5 h-1.5 rounded-full bg-cyan-500"></div>
+                      {quotaLoading ? '…' : Math.max(0, (quota?.dedicated_test_quota ?? 0) - existingDedicatedAgents.filter(a => a.sub_type === 'test').length)} dedicated
+                    </span>
                   </div>
                 </div>
 
-                {/* Dedicated Test Counter */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-cyan-500"></div>
-                    <span className="text-xs font-medium text-app-text-main">Dedicated Test Agents</span>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-emerald-100">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                      <span className="text-xs font-medium text-gray-700">Shared Test</span>
+                    </div>
+                    <div className="inline-flex items-center gap-1">
+                      <button type="button" onClick={() => setSharedTestRequested(v => clampCount(v - 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-emerald-300 hover:bg-emerald-50 transition-all text-gray-600">
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <input value={sharedTestRequested} onChange={e => setSharedTestRequested(clampCount(e.target.value))}
+                        className="w-10 h-6 text-center rounded border border-emerald-200 bg-white text-xs font-bold text-gray-900 focus:ring-1 focus:ring-emerald-400" />
+                      <button type="button" onClick={() => setSharedTestRequested(v => clampCount(v + 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-emerald-300 hover:bg-emerald-50 transition-all text-gray-600">
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="inline-flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setDedicatedTestRequested(v => clampCount(v - 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Minus className="w-4 h-4" />
-                    </button>
-                    <input
-                      value={dedicatedTestRequested}
-                      onChange={e => setDedicatedTestRequested(clampCount(e.target.value))}
-                      className="w-12 h-8 text-center rounded-lg border border-app-border-light bg-app-bg-card text-sm font-bold"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setDedicatedTestRequested(v => clampCount(v + 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-app-border-light bg-app-bg-card hover:bg-app-bg-hover transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
+
+                  <div className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-cyan-100">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-cyan-500"></div>
+                      <span className="text-xs font-medium text-gray-700">Dedicated Test</span>
+                    </div>
+                    <div className="inline-flex items-center gap-1">
+                      <button type="button" onClick={() => setDedicatedTestRequested(v => clampCount(v - 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-cyan-300 hover:bg-cyan-50 transition-all text-gray-600">
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <input value={dedicatedTestRequested} onChange={e => setDedicatedTestRequested(clampCount(e.target.value))}
+                        className="w-10 h-6 text-center rounded border border-cyan-200 bg-white text-xs font-bold text-gray-900 focus:ring-1 focus:ring-cyan-400" />
+                      <button type="button" onClick={() => setDedicatedTestRequested(v => clampCount(v + 1))}
+                        className="w-6 h-6 flex items-center justify-center rounded border border-gray-200 bg-gray-50 hover:border-cyan-300 hover:bg-cyan-50 transition-all text-gray-600">
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

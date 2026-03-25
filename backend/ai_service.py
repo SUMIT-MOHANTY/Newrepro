@@ -172,11 +172,29 @@ Full table:
 Cover: Frontend, UI Library, Charting, Backend, Language, ORM, Database, Caching/Queue, Auth, API Docs, Containerization, Runtime.
 
 ### 0.3.2 Architecture Pattern
-- State the Overall Pattern
-- Justify why it fits THIS product
-- Include a Mermaid flowchart of the full system architecture (Client Layer → Frontend → API Gateway → Domain Modules → Data Layer)
-- Describe Component Interaction Model (write path, read path, job path)
-- Describe Security Architecture (auth flow, RBAC, input validation, rate limiting)
+- State the Overall Pattern (e.g., Modular Monolith, Microservices, Layered Architecture)
+- Justify why it fits THIS specific product and its requirements
+- **CRITICAL: Include a detailed Mermaid flowchart showing the COMPLETE system architecture with ALL layers and components**
+
+**Mermaid Flowchart Requirements:**
+1. Use `flowchart TB` (top-to-bottom) or `flowchart LR` (left-to-right) format
+2. Include ALL major layers: Client Layer, Frontend Layer, API Gateway/Backend, Service Layer, Data Layer
+3. Show ALL key components within each layer
+4. Use subgraphs to group related components by layer
+5. Show clear data flow with arrows between all components
+6. Label each component descriptively 
+7. Include specific technology names where relevant 
+
+- Describe Component Interaction Model in detail:
+  * Write path: How data flows from user input to database
+  * Read path: How data is retrieved and displayed
+  * Background job path (if applicable): Async operations, scheduled tasks
+- Describe Security Architecture comprehensively:
+  * Authentication flow (login, token management, session handling)
+  * Authorization (RBAC, permissions, access control)
+  * Input validation and sanitization
+  * Rate limiting and DDoS protection
+  * Data encryption (at rest and in transit)
 
 ### 0.3.3 Integration Points
 - Internal API contracts

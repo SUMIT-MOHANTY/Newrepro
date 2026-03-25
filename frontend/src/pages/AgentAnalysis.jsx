@@ -1402,25 +1402,45 @@ export default function AgentAnalysis({
                                     </button>
                                 </div>
 
-                                {rfNodes.length > 0 ? (
-                                    <div className="h-80 w-full rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
-                                        <ReactFlow
-                                            nodes={rfNodes}
-                                            edges={rfEdges}
-                                            fitView
-                                            nodesDraggable={false}
-                                            nodesConnectable={false}
-                                            elementsSelectable={false}
-                                        >
-                                            <Background gap={16} size={1} />
-                                            <Controls showInteractive={false} />
-                                        </ReactFlow>
-                                    </div>
-                                ) : (
-                                    <p className="text-sm text-gray-500 italic">
-                                        Architecture details are not available.
-                                    </p>
-                                )}
+                                {(() => {
+                                    // Extract mermaid diagram from analysis content
+                                    const analysisContent = result.analysis?.analysis || '';
+                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
+                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
+
+                                    if (mermaidCode) {
+                                        return (
+                                            <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+                                                <MermaidDiagram code={mermaidCode} />
+                                            </div>
+                                        );
+                                    }
+
+                                    // Fallback to ReactFlow if no mermaid found
+                                    if (rfNodes.length > 0) {
+                                        return (
+                                            <div className="h-80 w-full rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+                                                <ReactFlow
+                                                    nodes={rfNodes}
+                                                    edges={rfEdges}
+                                                    fitView
+                                                    nodesDraggable={false}
+                                                    nodesConnectable={false}
+                                                    elementsSelectable={false}
+                                                >
+                                                    <Background gap={16} size={1} />
+                                                    <Controls showInteractive={false} />
+                                                </ReactFlow>
+                                            </div>
+                                        );
+                                    }
+
+                                    return (
+                                        <p className="text-sm text-gray-500 italic">
+                                            Architecture details are not available.
+                                        </p>
+                                    );
+                                })()}
                             </div>
                         );
                     })()}
@@ -1489,7 +1509,7 @@ export default function AgentAnalysis({
 
             {/* Main Content Container */}
             <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[480px]' : 'mr-0'}`}>
-                <div className="max-w-[1400px] mx-auto px-6 py-6 space-y-6">
+                <div className="max-w-[1100px] mx-auto px-12 py-6 space-y-6">
                 {result && (
                     <div className="space-y-6 animate-fade-in-up">
                         {/* Result Header */}
@@ -1615,8 +1635,8 @@ export default function AgentAnalysis({
                             <div className="relative">
                                 {/* Main Content Area - Add right margin when sidebar is open */}
                                 <div>
-                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-6 sm:p-8">
-                                        <h3 className="text-2xl font-bold text-app-text-main mb-6 pb-3 border-b-2 border-app-border-light">
+                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
+                                        <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
                                             Executive Summary & Agent Analysis
                                         </h3>
                                         <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
@@ -1625,69 +1645,94 @@ export default function AgentAnalysis({
                                                 const explicitHtml = result.analysis?.html;
                                                 const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
 
-                                                // Simple function to hide technical sections
+                                                // Configuration: Set to false to show that type of content
+                                                const hideConfig = {
+                                                    codeBlocks: true,  // Set to false to show code blocks
+                                                    technicalSections: true // Set to false to show all technical sections
+                                                };
+
+                                                // Technical section keywords - comment out to show specific sections
+                                                const technicalHeaders = [
+                                                    'technical architecture',
+                                                    'system architecture',
+                                                    'architecture overview',
+                                                    'technical implementation',
+                                                    'implementation details',
+                                                    'api design',
+                                                    'api endpoints',
+                                                    'database schema',
+                                                    'database design',
+                                                    'data model',
+                                                    'technology stack',
+                                                    'tech stack',
+                                                    'development approach',
+                                                    'technical requirements',
+                                                    'technical specifications',
+                                                    'infrastructure',
+                                                    'deployment',
+                                                    'security implementation',
+                                                    'authentication flow',
+                                                    'code structure',
+                                                    'technical details',
+                                                    'technical considerations',
+                                                    'deliverable mapping',
+                                                    'api specifications',
+                                                    'file creation plan',
+                                                    'dependency and tool research',
+                                                ];
+
+                                                // Function to filter content based on configuration
                                                 const hideTechnicalSections = (content) => {
                                                     if (!content) return '';
                                                     
-                                                    // Technical section headers to hide (case-insensitive)
-                                                    const technicalHeaders = [
-                                                        'technical architecture',
-                                                        'system architecture',
-                                                        'architecture overview',
-                                                        'technical implementation',
-                                                        'implementation details',
-                                                        'api design',
-                                                        'api endpoints',
-                                                        'database schema',
-                                                        'database design',
-                                                        'data model',
-                                                        'technology stack',
-                                                        'tech stack',
-                                                        'development approach',
-                                                        'technical requirements',
-                                                        'technical specifications',
-                                                        'infrastructure',
-                                                        'deployment',
-                                                        'security implementation',
-                                                        'authentication flow',
-                                                        'code structure',
-                                                        'technical details',
-                                                        'technical considerations',
-                                                        'deliverable mapping'
-                                                    ];
+                                                    // If not hiding anything, return original content
+                                                    if (!hideConfig.codeBlocks && !hideConfig.technicalSections) {
+                                                        return content;
+                                                    }
 
                                                     const lines = content.split('\n');
                                                     const result = [];
                                                     let skipSection = false;
+                                                    let inCodeBlock = false;
 
                                                     for (const line of lines) {
                                                         const trimmed = line.trim();
-                                                        const lower = trimmed.toLowerCase();
+
+                                                        // Handle code blocks
+                                                        if (trimmed.startsWith('```')) {
+                                                            if (hideConfig.codeBlocks) {
+                                                                inCodeBlock = !inCodeBlock;
+                                                                continue; // Skip code block markers
+                                                            } else {
+                                                                // Keep code blocks
+                                                                result.push(line);
+                                                                continue;
+                                                            }
+                                                        }
+
+                                                        // Skip content inside code blocks if hiding them
+                                                        if (inCodeBlock && hideConfig.codeBlocks) {
+                                                            continue;
+                                                        }
 
                                                         // Check if this is a header
                                                         const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
                                                         
-                                                        if (headerMatch) {
-                                                            const headerText = headerMatch[2].toLowerCase();
+                                                        if (headerMatch && hideConfig.technicalSections) {
+                                                            const headerText = headerMatch[2].toLowerCase().trim();
                                                             
-                                                            // Check if this is a technical header
+                                                            // Check if this header matches any technical keyword
                                                             const isTechnical = technicalHeaders.some(tech => 
-                                                                headerText.includes(tech) || tech.includes(headerText)
+                                                                headerText.includes(tech)
                                                             );
                                                             
                                                             if (isTechnical) {
                                                                 skipSection = true;
                                                                 continue; // Skip this header
                                                             } else {
-                                                                // New non-technical section
+                                                                // New non-technical section - stop skipping
                                                                 skipSection = false;
                                                             }
-                                                        }
-
-                                                        // Skip code blocks
-                                                        if (trimmed.startsWith('```')) {
-                                                            skipSection = true;
-                                                            continue;
                                                         }
 
                                                         // Add line if not in skipped section
@@ -1699,15 +1744,6 @@ export default function AgentAnalysis({
                                                     return result.join('\n');
                                                 };
 
-                                                if (htmlToRender) {
-                                                    return (
-                                                        <div
-                                                            className="bg-app-bg-card rounded-lg border border-app-border p-4"
-                                                            dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
-                                                        />
-                                                    );
-                                                }
-
                                                 if (processing && !analysisContent.trim()) {
                                                     return (
                                                         <div className="text-sm text-app-text-muted italic">
@@ -1716,21 +1752,19 @@ export default function AgentAnalysis({
                                                     );
                                                 }
 
-                                                // Filter out technical sections
-                                                const filteredContent = hideTechnicalSections(analysisContent);
-
+                                                // Always use ReactMarkdown for consistent formatting
                                                 return (
                                                     <ReactMarkdown 
                                                         remarkPlugins={[remarkGfm]}
                                                         components={{
-                                                            h1: ({node, ...props}) => <h1 className="text-3xl font-bold text-gray-900 mt-8 mb-4 pb-3 border-b-2 border-gray-200" {...props} />,
-                                                            h2: ({node, ...props}) => <h2 className="text-2xl font-bold text-gray-900 mt-8 mb-4 pb-2 border-b border-gray-200" {...props} />,
-                                                            h3: ({node, ...props}) => <h3 className="text-xl font-semibold text-gray-800 mt-6 mb-3" {...props} />,
-                                                            h4: ({node, ...props}) => <h4 className="text-lg font-semibold text-gray-800 mt-4 mb-2" {...props} />,
-                                                            p: ({node, ...props}) => <p className="text-gray-700 leading-relaxed mb-4" {...props} />,
-                                                            ul: ({node, ...props}) => <ul className="list-disc list-outside ml-6 space-y-2 mb-4 text-gray-700" {...props} />,
-                                                            ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-6 space-y-2 mb-4 text-gray-700" {...props} />,
-                                                            li: ({node, ...props}) => <li className="leading-relaxed" {...props} />,
+                                                            h1: ({node, ...props}) => <h1 className="text-lg font-bold text-gray-900 mt-6 mb-3 pb-2 border-b-2 border-gray-200" {...props} />,
+                                                            h2: ({node, ...props}) => <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props} />,
+                                                            h3: ({node, ...props}) => <h3 className="text-sm font-semibold text-gray-800 mt-4 mb-2" {...props} />,
+                                                            h4: ({node, ...props}) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1" {...props} />,
+                                                            p: ({node, ...props}) => <p className="text-sm text-gray-700 leading-relaxed mb-3" {...props} />,
+                                                            ul: ({node, ...props}) => <ul className="list-disc list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+                                                            ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+                                                            li: ({node, ...props}) => <li className="leading-relaxed text-sm" {...props} />,
                                                             table: ({node, ...props}) => (
                                                                 <div className="overflow-x-auto my-6">
                                                                     <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
@@ -1740,19 +1774,23 @@ export default function AgentAnalysis({
                                                             th: ({node, ...props}) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
                                                             td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
                                                             code: ({node, inline, className, children, ...props}) => {
-                                                                // Hide all code blocks (technical)
-                                                                return null;
+                                                                // Show inline code, hide blocks based on config
+                                                                if (inline) {
+                                                                    return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+                                                                }
+                                                                // Code blocks are already filtered by hideTechnicalSections
+                                                                return hideConfig.codeBlocks ? null : <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
                                                             },
                                                             pre: ({node, children, ...props}) => {
-                                                                // Hide all pre blocks (technical)
-                                                                return null;
+                                                                // Pre blocks are already filtered by hideTechnicalSections
+                                                                return hideConfig.codeBlocks ? null : <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
                                                             },
                                                             blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
                                                             a: ({node, ...props}) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
                                                             strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
                                                         }}
                                                     >
-                                                        {filteredContent}
+                                                        {analysisContent}
                                                     </ReactMarkdown>
                                                 );
                                             })()}
@@ -1824,24 +1862,42 @@ export default function AgentAnalysis({
                                     Close
                                 </button>
                             </div>
-                            <div className="flex-1 bg-app-bg-page">
-                                {rfNodes.length > 0 ? (
-                                    <ReactFlow
-                                        nodes={rfNodes}
-                                        edges={rfEdges}
-                                        fitView
-                                        nodesDraggable={false}
-                                        nodesConnectable={false}
-                                        elementsSelectable={false}
-                                    >
-                                        <Background gap={16} size={1} />
-                                        <Controls showInteractive={false} />
-                                    </ReactFlow>
-                                ) : (
-                                    <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
-                                        Architecture details are not available for this analysis.
-                                    </div>
-                                )}
+                            <div className="flex-1 bg-app-bg-page overflow-auto p-6">
+                                {(() => {
+                                    // Extract mermaid diagram from analysis content
+                                    const analysisContent = result.analysis?.analysis || '';
+                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
+                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
+
+                                    if (mermaidCode) {
+                                        return <MermaidDiagram code={mermaidCode} />;
+                                    }
+
+                                    // Fallback to ReactFlow if no mermaid found
+                                    if (rfNodes.length > 0) {
+                                        return (
+                                            <div className="h-full">
+                                                <ReactFlow
+                                                    nodes={rfNodes}
+                                                    edges={rfEdges}
+                                                    fitView
+                                                    nodesDraggable={false}
+                                                    nodesConnectable={false}
+                                                    elementsSelectable={false}
+                                                >
+                                                    <Background gap={16} size={1} />
+                                                    <Controls showInteractive={false} />
+                                                </ReactFlow>
+                                            </div>
+                                        );
+                                    }
+
+                                    return (
+                                        <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
+                                            Architecture details are not available for this analysis.
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>
