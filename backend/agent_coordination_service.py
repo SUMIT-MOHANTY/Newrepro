@@ -5,6 +5,13 @@ from datetime import datetime, timedelta
 from enum import Enum
 import json
 
+# Import enhanced context service
+from enhanced_context_service import (
+    enhanced_context_service,
+    AgentContextUpdate,
+    ContextMessageType
+)
+
 logger = logging.getLogger(__name__)
 
 # Set up detailed coordination logging
@@ -50,6 +57,12 @@ class AgentCoordinationService:
         master_plan: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Initialize coordination state for a project"""
+        
+        # Initialize enhanced context service
+        await enhanced_context_service.initialize_project_context(
+            project_token,
+            agents_config
+        )
         
         coordination_state = {
             "project_token": project_token,

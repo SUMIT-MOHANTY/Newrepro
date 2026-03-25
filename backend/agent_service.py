@@ -2504,6 +2504,9 @@ async def _call_ai_for_code(
     url = llm_gateway.resolve_url()
     key = llm_gateway.resolve_key()
     model_name = llm_gateway.resolve_model()
+    
+    # Log prompt details for debugging
+    logger.info(f"AI Code Generation - Model: {model_name}, Agent Type: {agent_type}")
 
     if not llm_gateway.check_api_key():
         raise ValueError("AI API key not configured")
@@ -2593,6 +2596,10 @@ async def _call_ai_for_code(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
+    
+    # Log prompt size for debugging
+    logger.info(f"AI Prompt - System: {len(system_prompt)} chars, User: {len(user_content)} chars")
+    logger.debug(f"AI Prompt preview (first 500 chars): {user_content[:500]}...")
 
     last_err = None
     content = ""
@@ -2611,12 +2618,17 @@ async def _call_ai_for_code(
             break
         except Exception as e:
             last_err = e
+            logger.error(f"AI call attempt {attempt + 1} failed: {str(e)[:200]}")
             if attempt == 2:
                 raise
     if last_err:
         raise last_err
 
     if content:
+        # Log response size for debugging
+        logger.info(f"AI Response - Length: {len(content)} chars, Lines: {len(content.splitlines())}")
+        logger.debug(f"AI Response preview (first 500 chars): {content[:500]}...")
+        
         return _clean_ai_code_response(content)
     else:
         raise ValueError("No response from AI model")
@@ -14619,11 +14631,111 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             agent["progress"] = 30
             agent["progress_message"] = "Running project..."
+            
+            generated_lines = len(generated_code.splitlines())
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"AI generated {len(generated_code.splitlines())} lines of build script"
+                "message": f"AI generated {generated_lines} lines of build script"
             })
+            
+            # ── Validate AI Response Quality ─────────────────────────
+            # Ensure AI generated substantial code, not just a comment or empty script
+            MIN_CODE_LINES = 10
+            if generated_lines < MIN_CODE_LINES:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": f"⚠️ AI generated insufficient code ({generated_lines} lines, minimum {MIN_CODE_LINES}). Retrying with explicit instructions..."
+                })
+                
+                # Log the insufficient response for debugging
+                logger.warning(f"[{agent_id}] Insufficient AI response ({generated_lines} lines): {generated_code[:200]}")
+                
+                # Retry with more explicit prompt
+                retry_prompt = f"""CRITICAL: You MUST generate a COMPLETE shell script that creates ALL files.
+
+Previous attempt only generated {generated_lines} lines which is INSUFFICIENT.
+
+Task: {canonical_files_prefix + task["description"]}
+
+You MUST generate a COMPLETE bash script that:
+1. Creates ALL necessary directories using mkdir -p
+2. Creates ALL files using cat > filename << 'EOF' ... EOF
+3. Writes COMPLETE file contents (not TODO comments or placeholders)
+4. Includes proper error checking (set -e)
+5. Prints [CREATED] for each file created
+6. Prints === SUMMARY === at the end
+
+The script MUST be at least 50 lines and create real, working, production-quality code.
+DO NOT just write comments or placeholders - write ACTUAL WORKING CODE.
+
+Example structure:
+```bash
+#!/bin/bash
+set -e
+
+# Create directories
+mkdir -p backend/app
+mkdir -p frontend/src
+
+# Create backend file with REAL code
+cat > backend/app/main.py << 'EOF'
+from flask import Flask
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return {{"message": "Hello World"}}
+
+if __name__ == '__main__':
+    app.run(debug=True)
+EOF
+echo "[CREATED] backend/app/main.py"
+
+# ... more files ...
+
+echo "=== SUMMARY ==="
+echo "Created X files"
+```
+
+NOW GENERATE THE COMPLETE SCRIPT:"""
+
+                try:
+                    generated_code, thought = await _call_ai_for_code(
+                        retry_prompt, agent["type"],
+                        code_context=jit_context,
+                        system_prompt_override=dynamic_system_prompt,
+                        tech_spec=tech_spec,
+                        workspace_tree=canonical_master_tree,
+                        live_repo_tree=repo_tree_context,
+                        peer_context=peer_ctx,
+                        project_root=project_root,
+                    )
+                    
+                    retry_lines = len(generated_code.splitlines())
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"🔄 Retry generated {retry_lines} lines of build script"
+                    })
+                    
+                    # If still insufficient, log error but continue (bulletproof loop may fix it)
+                    if retry_lines < MIN_CODE_LINES:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "error",
+                            "message": f"❌ Retry still insufficient ({retry_lines} lines). Proceeding anyway - bulletproof loop may recover."
+                        })
+                        logger.error(f"[{agent_id}] Retry still insufficient ({retry_lines} lines): {generated_code[:200]}")
+                    
+                except Exception as retry_err:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "error",
+                        "message": f"❌ Retry failed: {str(retry_err)[:100]}. Using original response."
+                    })
+                    logger.error(f"[{agent_id}] AI retry failed: {retry_err}")
 
             # ── Execute build script ─────────────────────────────────
             result = await asyncio.to_thread(
@@ -15318,101 +15430,146 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                 task["title"],
                                 project_token=project_token
                             )
+                        
+                        # ── Bootstrap Validation: Only release gate if files were created ──
                         if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
-                            await _mark_repo_bootstrap_result(
-                                project_token=project_token,
-                                source_agent=agent_id,
-                                success=True,
-                                source_branch=effective_branch,
-                                message=(
-                                    f"Initial scaffold pushed by {agent_id} on branch {effective_branch}."
-                                ),
-                            )
-                            bootstrap_signal_sent = True
-                            repo_base_branch = effective_branch
+                            # Check if any files were actually created
+                            workspace_file_count = workspace_tree.count('FILE:') if workspace_tree else 0
+                            ground_truth_file_count = len(touched_files_ground_truth) if touched_files_ground_truth else 0
                             
-                            # Store bootstrap branch as the new base for all subsequent tasks
-                            state["repo_bootstrap"]["source_branch"] = effective_branch
-                            
-                            # Capture actual file tree from container and store as canonical spec
-                            try:
-                                tree_result = subprocess.run(
-                                    ["docker", "exec", "-w", "/workspace", container_name, "find", ".", "-type", "f", "-o", "-type", "d"],
-                                    capture_output=True, text=True, timeout=30,
+                            if workspace_file_count == 0 and ground_truth_file_count == 0:
+                                # Bootstrap FAILED - no files created
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "error",
+                                    "message": "❌ Bootstrap FAILED: No files created in workspace. Not releasing bootstrap gate."
+                                })
+                                logger.error(f"[{agent_id}] Bootstrap failed: No files created despite successful push")
+                                
+                                await _mark_repo_bootstrap_result(
+                                    project_token=project_token,
+                                    source_agent=agent_id,
+                                    success=False,
+                                    source_branch=effective_branch,
+                                    message=(
+                                        f"Bootstrap failed: No files created by {agent_id} on branch {effective_branch}. "
+                                        f"AI may have generated insufficient code."
+                                    ),
                                 )
-                                if tree_result.returncode == 0:
-                                    actual_tree = tree_result.stdout.strip()
-                                    
-                                    # Detect and store project root directory
-                                    project_root = "/workspace"
-                                    import re as _re_bootstrap
-                                    tree_lines = actual_tree.splitlines()
-                                    excluded_dirs = {'node_modules', '.git', '__pycache__', 'dist', 'build', '.vscode',
-                                                    'venv', 'env', '.env', 'coverage', '.pytest_cache', '.mypy_cache'}
-                                    for line in tree_lines:
-                                        line = line.strip()
-                                        # Match patterns like: ./my-todo-app or ./my-todo-app/
-                                        match = _re_bootstrap.match(r'^\./([a-zA-Z0-9_-]+)/?$', line)
-                                        if match:
-                                            dir_name = match.group(1)
-                                            if dir_name not in excluded_dirs:
-                                                project_root = f"/workspace/{dir_name}"
-                                                logger.info(f"[Bootstrap] Detected project root: {project_root}")
-                                                break
-                                    
-                                    # Store project root in state for all subsequent tasks
-                                    state["repo_bootstrap"]["project_root"] = project_root
-                                    
-                                    canonical_spec = f"# Canonical Project Structure (from Bootstrap)\n\n```\n{actual_tree}\n```\n\n{task.get('description', '')}"
-                                    _project_tech_specs[project_token] = {
-                                        "spec": canonical_spec,
-                                        "generated_at": datetime.utcnow().isoformat(),
-                                        "source": "bootstrap_actual_tree",
-                                        "char_length": len(canonical_spec),
-                                        "project_root": project_root,  # Store here too for easy access
-                                    }
-                                    agent["output_log"].append({
-                                        "time": datetime.utcnow().isoformat(),
-                                        "type": "info",
-                                        "message": f"Captured actual file tree as canonical spec ({len(actual_tree)} chars)"
-                                    })
+                                bootstrap_signal_sent = True  # Prevent retry in same execution
+                                
+                                # Post failure message to task
+                                await _post_task_message(
+                                    task,
+                                    f"❌ Bootstrap failed: No files were created. AI generated insufficient code. "
+                                    f"Please review the task description and try again.",
+                                    task_token=task_token
+                                )
+                            else:
+                                # Bootstrap SUCCESS - files were created
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"✅ Bootstrap SUCCESS: {max(workspace_file_count, ground_truth_file_count)} files created. Releasing bootstrap gate."
+                                })
+                                
+                                await _mark_repo_bootstrap_result(
+                                    project_token=project_token,
+                                    source_agent=agent_id,
+                                    success=True,
+                                    source_branch=effective_branch,
+                                    message=(
+                                        f"Initial scaffold pushed by {agent_id} on branch {effective_branch}. "
+                                        f"Created {max(workspace_file_count, ground_truth_file_count)} files."
+                                    ),
+                                )
+                                bootstrap_signal_sent = True
+                                repo_base_branch = effective_branch
+                                bootstrap_signal_sent = True
+                                repo_base_branch = effective_branch
+                                
+                                # Store bootstrap branch as the new base for all subsequent tasks
+                                state["repo_bootstrap"]["source_branch"] = effective_branch
+                                
+                                # Capture actual file tree from container and store as canonical spec
+                                try:
+                                    tree_result = subprocess.run(
+                                        ["docker", "exec", "-w", "/workspace", container_name, "find", ".", "-type", "f", "-o", "-type", "d"],
+                                        capture_output=True, text=True, timeout=30,
+                                    )
+                                    if tree_result.returncode == 0:
+                                        actual_tree = tree_result.stdout.strip()
+                                        
+                                        # Detect and store project root directory
+                                        project_root = "/workspace"
+                                        import re as _re_bootstrap
+                                        tree_lines = actual_tree.splitlines()
+                                        excluded_dirs = {'node_modules', '.git', '__pycache__', 'dist', 'build', '.vscode',
+                                                        'venv', 'env', '.env', 'coverage', '.pytest_cache', '.mypy_cache'}
+                                        for line in tree_lines:
+                                            line = line.strip()
+                                            # Match patterns like: ./my-todo-app or ./my-todo-app/
+                                            match = _re_bootstrap.match(r'^\./([a-zA-Z0-9_-]+)/?$', line)
+                                            if match:
+                                                dir_name = match.group(1)
+                                                if dir_name not in excluded_dirs:
+                                                    project_root = f"/workspace/{dir_name}"
+                                                    logger.info(f"[Bootstrap] Detected project root: {project_root}")
+                                                    break
+                                        
+                                        # Store project root in state for all subsequent tasks
+                                        state["repo_bootstrap"]["project_root"] = project_root
+                                        
+                                        canonical_spec = f"# Canonical Project Structure (from Bootstrap)\n\n```\n{actual_tree}\n```\n\n{task.get('description', '')}"
+                                        _project_tech_specs[project_token] = {
+                                            "spec": canonical_spec,
+                                            "generated_at": datetime.utcnow().isoformat(),
+                                            "source": "bootstrap_actual_tree",
+                                            "char_length": len(canonical_spec),
+                                            "project_root": project_root,  # Store here too for easy access
+                                        }
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "info",
+                                            "message": f"Captured actual file tree as canonical spec ({len(actual_tree)} chars)"
+                                        })
 
-                                    # ── PHASE 1: Generate API Contract from bootstrap scaffold ──
-                                    agent["output_log"].append({
-                                        "time": datetime.utcnow().isoformat(),
-                                        "type": "info",
-                                        "message": "🔗 Generating API contract from bootstrap scaffold..."
-                                    })
-                                    try:
-                                        scaffold_contents = {}
-                                        key_files = [f.strip() for f in actual_tree.splitlines()
-                                                     if f.strip() and not f.strip().startswith("./.")
-                                                     and any(f.strip().endswith(ext) for ext in
-                                                             [".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yml", ".yaml"])]
-                                        for fpath in key_files[:20]:
-                                            try:
-                                                cat = subprocess.run(
-                                                    ["docker", "exec", container_name, "cat", f"/workspace/{fpath.lstrip('./')}"],
-                                                    capture_output=True, text=True, timeout=5,
+                                        # ── PHASE 1: Generate API Contract from bootstrap scaffold ──
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "info",
+                                            "message": "🔗 Generating API contract from bootstrap scaffold..."
+                                        })
+                                        try:
+                                            scaffold_contents = {}
+                                            key_files = [f.strip() for f in actual_tree.splitlines()
+                                                         if f.strip() and not f.strip().startswith("./.")
+                                                         and any(f.strip().endswith(ext) for ext in
+                                                                 [".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yml", ".yaml"])]
+                                            for fpath in key_files[:20]:
+                                                try:
+                                                    cat = subprocess.run(
+                                                        ["docker", "exec", container_name, "cat", f"/workspace/{fpath.lstrip('./')}"],
+                                                        capture_output=True, text=True, timeout=5,
+                                                    )
+                                                    if cat.returncode == 0 and cat.stdout.strip():
+                                                        scaffold_contents[fpath] = cat.stdout[:2000]
+                                                except Exception:
+                                                    pass
+
+                                            if scaffold_contents:
+                                                files_block = "\n\n".join(
+                                                    f"### {fp}\n```\n{content}\n```"
+                                                    for fp, content in scaffold_contents.items()
                                                 )
-                                                if cat.returncode == 0 and cat.stdout.strip():
-                                                    scaffold_contents[fpath] = cat.stdout[:2000]
-                                            except Exception:
-                                                pass
-
-                                        if scaffold_contents:
-                                            files_block = "\n\n".join(
-                                                f"### {fp}\n```\n{content}\n```"
-                                                for fp, content in scaffold_contents.items()
-                                            )
-                                            all_tasks_for_contract = state.get("tasks", [task])
-                                            task_titles = "\n".join(
-                                                f"- {t.get('title') or t.get('taskName', '')}"
-                                                for t in all_tasks_for_contract[:20]
-                                            )
-                                            contract_messages = [
-                                                {"role": "system", "content": "You are a precise API contract generator. Output only the contract, no preamble."},
-                                                {"role": "user", "content": f"""Given the bootstrap scaffold below, generate a precise API contract ALL agents must follow.
+                                                all_tasks_for_contract = state.get("tasks", [task])
+                                                task_titles = "\n".join(
+                                                    f"- {t.get('title') or t.get('taskName', '')}"
+                                                    for t in all_tasks_for_contract[:20]
+                                                )
+                                                contract_messages = [
+                                                    {"role": "system", "content": "You are a precise API contract generator. Output only the contract, no preamble."},
+                                                    {"role": "user", "content": f"""Given the bootstrap scaffold below, generate a precise API contract ALL agents must follow.
 
 PROJECT TASKS:
 {task_titles}
@@ -15431,37 +15588,37 @@ Types/interfaces shared between frontend and backend
 State clearly: snake_case or camelCase for API fields
 
 Be extremely specific. Every field name must be exact. This is the single source of truth."""},
-                                            ]
-                                            api_contract = await llm_gateway.call_llm_and_extract(
-                                                messages=contract_messages,
-                                                api_url=llm_gateway.resolve_url(),
-                                                api_key=llm_gateway.resolve_key(),
-                                                model=llm_gateway.resolve_model(),
-                                                timeout=120.0,
-                                            )
-                                            if api_contract:
-                                                full_spec = f"{canonical_spec}\n\n# API CONTRACT\n\n{api_contract}"
-                                                _project_tech_specs[project_token]["spec"] = full_spec
-                                                _project_tech_specs[project_token]["api_contract"] = api_contract
-                                                _project_tech_specs[project_token]["char_length"] = len(full_spec)
-                                                _project_tech_specs[project_token]["source"] = "bootstrap_with_api_contract"
-                                                agent["output_log"].append({
-                                                    "time": datetime.utcnow().isoformat(),
-                                                    "type": "info",
-                                                    "message": f"✅ API contract generated ({len(api_contract)} chars) — all agents will use this"
-                                                })
-                                    except Exception as contract_err:
-                                        logger.warning(f"[{agent_id}] API contract generation failed: {contract_err}")
-                            except Exception as tree_err:
-                                logger.warning(f"Failed to capture bootstrap tree: {tree_err}")
-                            
-                            agent["output_log"].append({
-                                "time": datetime.utcnow().isoformat(),
-                                "type": "info",
-                                "message": (
-                                    "Bootstrap gate released after push. Other agents can now start work."
-                                )
-                            })
+                                                ]
+                                                api_contract = await llm_gateway.call_llm_and_extract(
+                                                    messages=contract_messages,
+                                                    api_url=llm_gateway.resolve_url(),
+                                                    api_key=llm_gateway.resolve_key(),
+                                                    model=llm_gateway.resolve_model(),
+                                                    timeout=120.0,
+                                                )
+                                                if api_contract:
+                                                    full_spec = f"{canonical_spec}\n\n# API CONTRACT\n\n{api_contract}"
+                                                    _project_tech_specs[project_token]["spec"] = full_spec
+                                                    _project_tech_specs[project_token]["api_contract"] = api_contract
+                                                    _project_tech_specs[project_token]["char_length"] = len(full_spec)
+                                                    _project_tech_specs[project_token]["source"] = "bootstrap_with_api_contract"
+                                                    agent["output_log"].append({
+                                                        "time": datetime.utcnow().isoformat(),
+                                                        "type": "info",
+                                                        "message": f"✅ API contract generated ({len(api_contract)} chars) — all agents will use this"
+                                                    })
+                                        except Exception as contract_err:
+                                            logger.warning(f"[{agent_id}] API contract generation failed: {contract_err}")
+                                except Exception as tree_err:
+                                    logger.warning(f"Failed to capture bootstrap tree: {tree_err}")
+                                
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": (
+                                        "Bootstrap gate released after push. Other agents can now start work."
+                                    )
+                                })
                     else:
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
