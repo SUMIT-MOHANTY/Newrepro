@@ -1679,6 +1679,7 @@ export default function AgentAnalysis({
                                                     'api specifications',
                                                     'file creation plan',
                                                     'dependency and tool research',
+                                                    'implementation phases',
                                                 ];
 
                                                 // Function to filter content based on configuration
@@ -1790,7 +1791,7 @@ export default function AgentAnalysis({
                                                             strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
                                                         }}
                                                     >
-                                                        {analysisContent}
+                                                        {hideTechnicalSections(analysisContent)}
                                                     </ReactMarkdown>
                                                 );
                                             })()}
