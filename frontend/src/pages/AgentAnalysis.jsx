@@ -9,6 +9,71 @@ import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
+import mermaid from 'mermaid';
+
+// Initialize mermaid with configuration
+mermaid.initialize({
+    startOnLoad: false,
+    theme: 'default',
+    securityLevel: 'loose',
+    fontFamily: 'inherit',
+});
+
+// Mermaid Diagram Component
+const MermaidDiagram = ({ code }) => {
+    const containerRef = useRef(null);
+    const [svg, setSvg] = useState('');
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const renderDiagram = async () => {
+            try {
+                const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
+                const { svg: renderedSvg } = await mermaid.render(id, code);
+                if (!cancelled) {
+                    setSvg(renderedSvg);
+                    setError(null);
+                }
+            } catch (err) {
+                console.warn('Mermaid render error:', err);
+                if (!cancelled) {
+                    setError(err.message || 'Failed to render diagram');
+                    setSvg('');
+                }
+            }
+        };
+        renderDiagram();
+        return () => { cancelled = true; };
+    }, [code]);
+
+    if (error) {
+        return (
+            <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono my-4">
+                <code>{code}</code>
+            </pre>
+        );
+    }
+
+    if (!svg) {
+        return (
+            <div className="flex items-center justify-center py-8 my-4 bg-gray-50 rounded-lg border border-gray-200">
+                <Loader2 className="w-5 h-5 text-gray-400 animate-spin mr-2" />
+                <span className="text-sm text-gray-500">Rendering diagram...</span>
+            </div>
+        );
+    }
+
+    return (
+        <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+            <div
+                ref={containerRef}
+                className="flex justify-center [&>svg]:max-w-full"
+                dangerouslySetInnerHTML={{ __html: svg }}
+            />
+        </div>
+    );
+};
 
 const parseStoredDocumentAnalysis = (doc) => {
     try {
@@ -196,8 +261,8 @@ const isLikelyHtml = (str) => {
 
 const sanitizeHtml = (html) => {
     return DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
-        ALLOWED_ATTR: ['href', 'target', 'class'],
+        ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div', 'span'],
+        ALLOWED_ATTR: ['href', 'target', 'class', 'style'],
     });
 };
 
@@ -223,6 +288,7 @@ export default function AgentAnalysis({
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const [isArchModalOpen, setIsArchModalOpen] = useState(false);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Start closed by default
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
@@ -406,7 +472,7 @@ export default function AgentAnalysis({
             let buffer = '';
 
             setProgress(85);
-            setProgressMessage('Generating  analysis report...');
+            setProgressMessage('Generating comprehensive Agent Action Plan... This may take up to 10 minutes.');
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -574,7 +640,7 @@ export default function AgentAnalysis({
                 });
             } else {
                 setProgress(85);
-                setProgressMessage('Generating repository analysis report...');
+                setProgressMessage('Generating repository Agent Action Plan... This may take up to 10 minutes.');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: repoContext,
                     governanceContext: governanceContext,
@@ -650,7 +716,7 @@ export default function AgentAnalysis({
                 });
             } else {
                 setProgress(85);
-                setProgressMessage('Generating analysis report...');
+                setProgressMessage('Generating comprehensive Agent Action Plan... This may take up to 10 minutes.');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: pendingRepoContext,
                     governanceContext: effectiveGovernanceContext,
@@ -889,7 +955,7 @@ export default function AgentAnalysis({
                 });
             } else {
                 setProgress(70);
-                setProgressMessage('Generating refined analysis report...');
+                setProgressMessage('Generating refined Agent Action Plan... This may take up to 10 minutes.');
                 await fetchAnalysisRef.current(aiPayload, token, result, {
                     repoContext: repoContext,
                     governanceContext: governanceContext,
@@ -1274,7 +1340,156 @@ export default function AgentAnalysis({
 
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
-            <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+            {/* Fixed Right Sidebar - Outside main container */}
+            <div className={`fixed right-0 bg-white border-l border-gray-200 shadow-2xl transition-transform duration-300 z-40 ${
+                isSidebarOpen ? 'translate-x-0' : 'translate-x-full'
+            } w-[480px] overflow-hidden`} style={{ top: 'var(--sidebar-top, 0px)', height: 'calc(100vh - var(--sidebar-top, 0px))' }} ref={(el) => {
+                if (el) {
+                    // Calculate the top offset based on header + stepper height
+                    const mainContent = el.closest('.flex-1.min-w-0');
+                    if (mainContent) {
+                        const header = mainContent.querySelector('header');
+                        const stepper = header?.nextElementSibling;
+                        let topOffset = 0;
+                        if (header) topOffset += header.offsetHeight;
+                        if (stepper && stepper.querySelector('[class*="RoadmapHeader"]') !== null || (stepper && !stepper.classList.contains('flex-1'))) {
+                            topOffset += stepper.offsetHeight;
+                        }
+                        el.style.setProperty('--sidebar-top', `${topOffset}px`);
+                    }
+                }
+            }}>
+
+                {/* Sidebar Content */}
+                <div className="h-full overflow-y-auto p-6 space-y-6 pt-6">
+                    <div className="flex justify-between items-center pb-2 border-b border-gray-100">
+                        <h2 className="text-base font-bold text-gray-900">Analysis Data</h2>
+                        <button
+                            onClick={() => setIsSidebarOpen(false)}
+                            className="text-xs text-gray-500 hover:text-gray-900 font-semibold flex items-center transition-colors px-2 py-1.5 hover:bg-gray-100 rounded-md"
+                        >
+                            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                            </svg>
+                            Hide Details
+                        </button>
+                    </div>
+                    {result?.analysis?.architecture && (() => {
+                        const arch = result.analysis.architecture || {};
+                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
+                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
+
+                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
+                        const rfEdges = edges.map((edge, idx) => ({
+                            id: String(edge.id || `e-${idx}`),
+                            source: String(edge.from),
+                            target: String(edge.to),
+                            label: edge.description || undefined,
+                        }));
+
+                        return (
+                            <div className="bg-white rounded-xl border border-gray-200 p-5">
+                                <div className="flex items-center justify-between mb-4">
+                                    <h3 className="text-base font-bold text-gray-900">
+                                        Application Architecture
+                                    </h3>
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsArchModalOpen(true)}
+                                        className="text-xs font-semibold text-blue-600 hover:text-blue-800 underline"
+                                    >
+                                        Expand
+                                    </button>
+                                </div>
+
+                                {rfNodes.length > 0 ? (
+                                    <div className="h-80 w-full rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+                                        <ReactFlow
+                                            nodes={rfNodes}
+                                            edges={rfEdges}
+                                            fitView
+                                            nodesDraggable={false}
+                                            nodesConnectable={false}
+                                            elementsSelectable={false}
+                                        >
+                                            <Background gap={16} size={1} />
+                                            <Controls showInteractive={false} />
+                                        </ReactFlow>
+                                    </div>
+                                ) : (
+                                    <p className="text-sm text-gray-500 italic">
+                                        Architecture details are not available.
+                                    </p>
+                                )}
+                            </div>
+                        );
+                    })()}
+
+                    {/* Clarification Needed Section */}
+                    <div className="bg-white rounded-xl border border-gray-200 p-5">
+                        <div className="flex items-center mb-4">
+                            <div className="w-2 h-2 rounded-full bg-orange-500 mr-2"></div>
+                            <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                                Clarification Needed
+                            </h3>
+                        </div>
+
+                        <p className="text-xs text-gray-600 mb-6 leading-relaxed">
+                            The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
+                        </p>
+
+                        {(() => {
+                            const questions = aiQuestions?.length > 0
+                                ? aiQuestions
+                                : (result?.analysis?.questions || []);
+
+                            return questions?.length > 0 ? (
+                                <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
+                                    {questions.map((q, i) => (
+                                        <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                                            <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
+                                            <input
+                                                type="text"
+                                                value={userAnswers[i] || ''}
+                                                onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
+                                                className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                                placeholder="Your answer..."
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p className="text-xs text-gray-500 italic">No clarification questions at this time.</p>
+                            );
+                        })()}
+
+                        <div className="mt-6 pt-4 border-t border-gray-200">
+                            <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
+                            <textarea
+                                value={userFeedback}
+                                onChange={(e) => setUserFeedback(e.target.value)}
+                                placeholder="Any other details..."
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-white resize-none"
+                            />
+                            <button
+                                onClick={handleRefineAnalysis}
+                                disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
+                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${
+                                    processing
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
+                                }`}
+                            >
+                                {processing ? 'Refining...' : 'Update Analysis'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Main Content Container */}
+            <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[480px]' : 'mr-0'}`}>
+                <div className="max-w-[1400px] mx-auto px-6 py-6 space-y-6">
                 {result && (
                     <div className="space-y-6 animate-fade-in-up">
                         {/* Result Header */}
@@ -1305,6 +1520,19 @@ export default function AgentAnalysis({
                                 >
                                     <Plus className="w-4 h-4 mr-1" /> Analyze Another
                                 </button>
+                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
+                                {!isSidebarOpen && (
+                                    <button
+                                        onClick={() => setIsSidebarOpen(true)}
+                                        className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
+                                        title="Show Details"
+                                    >
+                                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                                        </svg>
+                                        Show Details
+                                    </button>
+                                )}
                             </div>
                         </div>
 
@@ -1383,15 +1611,15 @@ export default function AgentAnalysis({
                                 </div>
                             )}
 
-                            {/* Main Content Grid */}
-                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                                {/* Left Column: Report (8 cols) */}
-                                <div className="lg:col-span-8 space-y-6">
-                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                                        <h3 className="text-base font-bold text-app-text-main mb-4 pb-2 border-b border-app-border-light">
+                            {/* Main Content with Fixed Right Sidebar */}
+                            <div className="relative">
+                                {/* Main Content Area - Add right margin when sidebar is open */}
+                                <div>
+                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-6 sm:p-8">
+                                        <h3 className="text-2xl font-bold text-app-text-main mb-6 pb-3 border-b-2 border-app-border-light">
                                             Executive Summary & Agent Analysis
                                         </h3>
-                                        <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
+                                        <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
                                             {(() => {
                                                 const analysisContent = result.analysis?.analysis || '';
                                                 const explicitHtml = result.analysis?.html;
@@ -1415,7 +1643,48 @@ export default function AgentAnalysis({
                                                 }
 
                                                 return (
-                                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                    <ReactMarkdown 
+                                                        remarkPlugins={[remarkGfm]}
+                                                        components={{
+                                                            h1: ({node, ...props}) => <h1 className="text-3xl font-bold text-gray-900 mt-8 mb-4 pb-3 border-b-2 border-gray-200" {...props} />,
+                                                            h2: ({node, ...props}) => <h2 className="text-2xl font-bold text-gray-900 mt-8 mb-4 pb-2 border-b border-gray-200" {...props} />,
+                                                            h3: ({node, ...props}) => <h3 className="text-xl font-semibold text-gray-800 mt-6 mb-3" {...props} />,
+                                                            h4: ({node, ...props}) => <h4 className="text-lg font-semibold text-gray-800 mt-4 mb-2" {...props} />,
+                                                            p: ({node, ...props}) => <p className="text-gray-700 leading-relaxed mb-4" {...props} />,
+                                                            ul: ({node, ...props}) => <ul className="list-disc list-outside ml-6 space-y-2 mb-4 text-gray-700" {...props} />,
+                                                            ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-6 space-y-2 mb-4 text-gray-700" {...props} />,
+                                                            li: ({node, ...props}) => <li className="leading-relaxed" {...props} />,
+                                                            table: ({node, ...props}) => (
+                                                                <div className="overflow-x-auto my-6">
+                                                                    <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
+                                                                </div>
+                                                            ),
+                                                            thead: ({node, ...props}) => <thead className="bg-gray-50" {...props} />,
+                                                            th: ({node, ...props}) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
+                                                            td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
+                                                            code: ({node, inline, className, children, ...props}) => {
+                                                                const match = /language-(\w+)/.exec(className || '');
+                                                                const lang = match ? match[1] : '';
+                                                                if (!inline && lang === 'mermaid') {
+                                                                    return <MermaidDiagram code={String(children).replace(/\n$/, '')} />;
+                                                                }
+                                                                return inline 
+                                                                    ? <code className="px-1.5 py-0.5 bg-gray-100 text-pink-600 rounded text-sm font-mono" {...props}>{children}</code>
+                                                                    : <code className={`block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono my-4 ${className || ''}`} {...props}>{children}</code>;
+                                                            },
+                                                            pre: ({node, children, ...props}) => {
+                                                                // If the child is a mermaid diagram, don't wrap in pre
+                                                                const child = Array.isArray(children) ? children[0] : children;
+                                                                if (child?.props?.className && /language-mermaid/.test(child.props.className)) {
+                                                                    return <>{children}</>;
+                                                                }
+                                                                return <pre className="bg-gray-900 rounded-lg overflow-hidden my-4" {...props}>{children}</pre>;
+                                                            },
+                                                            blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
+                                                            a: ({node, ...props}) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
+                                                            strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
+                                                        }}
+                                                    >
                                                         {analysisContent}
                                                     </ReactMarkdown>
                                                 );
@@ -1451,124 +1720,11 @@ export default function AgentAnalysis({
                                         </details>
                                     </div>
                                 </div>
-
-                                {/* Right Column: Architecture + Key Actions / Q&A (4 cols) */}
-                                <div className="lg:col-span-4 space-y-6">
-                                    {/* Application Architecture (React Flow diagram from AI JSON) */}
-                                    {result.analysis?.architecture && (() => {
-                                        const arch = result.analysis.architecture || {};
-                                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
-                                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
-
-                                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
-                                        const rfEdges = edges.map((edge, idx) => ({
-                                            id: String(edge.id || `e-${idx}`),
-                                            source: String(edge.from),
-                                            target: String(edge.to),
-                                            label: edge.description || undefined,
-                                        }));
-
-                                        return (
-                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5">
-                                                <div className="flex items-center justify-between mb-3">
-                                                    <h3 className="text-sm font-bold text-app-text-main">
-                                                        Application Architecture
-                                                    </h3>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setIsArchModalOpen(true)}
-                                                        className="text-[11px] font-semibold text-app-primary hover:text-app-primary-dark border border-app-primary-light rounded-full px-2 py-0.5 bg-app-bg-page"
-                                                    >
-                                                        Expand
-                                                    </button>
-                                                </div>
-
-                                                {rfNodes.length > 0 ? (
-                                                    <div className="h-80 w-full rounded-lg border border-app-border-light bg-app-bg-page overflow-hidden">
-                                                        <ReactFlow
-                                                            nodes={rfNodes}
-                                                            edges={rfEdges}
-                                                            fitView
-                                                            nodesDraggable={false}
-                                                            nodesConnectable={false}
-                                                            elementsSelectable={false}
-                                                        >
-                                                            <Background gap={16} size={1} />
-                                                            <Controls showInteractive={false} />
-                                                        </ReactFlow>
-                                                    </div>
-                                                ) : (
-                                                    <p className="text-xs text-app-text-muted italic">
-                                                        Architecture details are not available for this analysis.
-                                                    </p>
-                                                )}
-                                            </div>
-                                        );
-                                    })()}
-
-                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:sticky lg:top-6">
-                                        <div className="flex items-center mb-4">
-                                            <div className="w-1.5 h-1.5 rounded-full bg-app-status-warning mr-2"></div>
-                                            <h3 className="text-sm font-bold text-app-text-main uppercase tracking-wide">
-                                                Clarification Needed
-                                            </h3>
-                                        </div>
-
-                                        <p className="text-xs text-app-text-muted mb-6 leading-relaxed">
-                                            The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
-                                        </p>
-
-                                        {(() => {
-                                            // Get questions from state or from result analysis
-                                            const questions = aiQuestions?.length > 0
-                                                ? aiQuestions
-                                                : (result?.analysis?.questions || []);
-
-                                            return questions?.length > 0 ? (
-                                                <div className="space-y-4 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
-                                                    {questions.map((q, i) => (
-                                                        <div key={i} className="bg-app-bg-page rounded-lg p-3 border border-app-border-light">
-                                                            <p className="text-xs font-medium text-app-text-label mb-2">{q}</p>
-                                                            <input
-                                                                type="text"
-                                                                value={userAnswers[i] || ''}
-                                                                onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
-                                                                className="w-full px-3 py-2 text-xs border border-app-border rounded-md focus:ring-1 focus:ring-app-primary focus:border-app-primary bg-app-bg-card"
-                                                                placeholder="Your answer..."
-                                                            />
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <p className="text-xs text-app-text-muted italic">No clarification questions at this time.</p>
-                                            );
-                                        })()}
-
-                                        <div className="mt-6 pt-4 border-t border-app-border-light">
-                                            <label className="block text-xs font-medium text-app-text-label mb-2">Additional Context</label>
-                                            <textarea
-                                                value={userFeedback}
-                                                onChange={(e) => setUserFeedback(e.target.value)}
-                                                placeholder="Any other details..."
-                                                className="w-full p-3 border border-app-border rounded-lg focus:ring-app-primary focus:border-app-primary min-h-[80px] text-xs bg-app-bg-page resize-none"
-                                            />
-                                            <button
-                                                onClick={handleRefineAnalysis}
-                                                disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
-                                                    ? 'bg-app-text-light cursor-not-allowed'
-                                                    : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
-                                                    }`}
-                                            >
-                                                {processing ? 'Refining...' : 'Update Analysis'}
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
                 )}
+            </div>
             </div>
 
             {/* Architecture Fullscreen Modal */}

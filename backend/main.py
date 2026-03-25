@@ -5558,6 +5558,214 @@ async def bulk_configure_agents(
 @app.get("/agents/tasks")
 async def get_pending_tasks(
     current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get pending tasks for agents"""
+    # Placeholder implementation
+    return {"tasks": []}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Enhanced Context Sharing API Endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/context/update")
+async def update_context(
+    project_token: str,
+    agent_id: str,
+    current_task: Optional[str] = None,
+    current_files: List[str] = [],
+    completed_tasks: List[str] = [],
+    created_files: List[str] = [],
+    modified_files: List[str] = [],
+    api_endpoints: List[Dict[str, Any]] = [],
+    database_tables: List[str] = [],
+    shared_utilities: List[str] = [],
+    tags: List[str] = [],
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📝 Update agent context with structured information"""
+    from enhanced_context_service import update_agent_context
+    
+    success = await update_agent_context(
+        project_token=project_token,
+        agent_id=agent_id,
+        current_task=current_task,
+        current_files=current_files,
+        completed_tasks=completed_tasks,
+        created_files=created_files,
+        modified_files=modified_files,
+        api_endpoints=api_endpoints,
+        database_tables=database_tables,
+        shared_utilities=shared_utilities,
+        tags=tags
+    )
+    
+    return {"success": success, "agent_id": agent_id}
+
+
+@app.get("/api/context/query/{query_type}")
+async def query_context(
+    project_token: str,
+    query_type: str,
+    file_pattern: Optional[str] = None,
+    tag: Optional[str] = None,
+    module: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """🔍 Query shared context with various filters"""
+    from enhanced_context_service import query_agent_context
+    
+    filters = {}
+    if file_pattern:
+        filters["file_pattern"] = file_pattern
+    if tag:
+        filters["tag"] = tag
+    if module:
+        filters["module"] = module
+    if agent_id:
+        filters["agent_id"] = agent_id
+    
+    result = await query_agent_context(
+        project_token=project_token,
+        query_type=query_type,
+        **filters
+    )
+    
+    return result
+
+
+@app.get("/api/context/agent/{agent_id}")
+async def get_agent_context_view(
+    project_token: str,
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """👁️ Get comprehensive context view for specific agent"""
+    from enhanced_context_service import enhanced_context_service
+    
+    view = await enhanced_context_service.get_agent_context_view(
+        project_token=project_token,
+        agent_id=agent_id
+    )
+    
+    return view
+
+
+@app.post("/api/context/memory-board")
+async def post_to_memory_board(
+    project_token: str,
+    agent_id: str,
+    message_type: str,
+    content: str,
+    tags: List[str] = [],
+    reply_to: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """💬 Post message to shared memory board"""
+    from enhanced_context_service import enhanced_context_service, ContextMessageType
+    
+    try:
+        msg_type = ContextMessageType(message_type)
+    except ValueError:
+        return {"error": f"Invalid message type: {message_type}"}
+    
+    message_id = await enhanced_context_service.post_to_memory_board(
+        project_token=project_token,
+        agent_id=agent_id,
+        message_type=msg_type,
+        content=content,
+        tags=tags,
+        reply_to=reply_to
+    )
+    
+    return {"success": True, "message_id": message_id}
+
+
+@app.get("/api/context/memory-board")
+async def get_memory_board(
+    project_token: str,
+    limit: int = 50,
+    tags: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📋 Get messages from memory board"""
+    from enhanced_context_service import enhanced_context_service
+    
+    if project_token not in enhanced_context_service.project_contexts:
+        return {"messages": []}
+    
+    context = enhanced_context_service.project_contexts[project_token]
+    messages = context["memory_board"]
+    
+    # Filter by tags if provided
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",")]
+        messages = [
+            msg for msg in messages
+            if any(tag in msg.get("tags", []) for tag in tag_list)
+        ]
+    
+    # Return most recent messages
+    return {"messages": messages[-limit:]}
+
+
+@app.post("/api/context/dependency")
+async def declare_dependency(
+    project_token: str,
+    agent_id: str,
+    depends_on: Dict[str, List[str]],
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """🔗 Declare dependencies on other agents' work"""
+    from enhanced_context_service import enhanced_context_service
+    
+    success = await enhanced_context_service.declare_dependency(
+        project_token=project_token,
+        agent_id=agent_id,
+        depends_on=depends_on
+    )
+    
+    return {"success": success, "agent_id": agent_id, "dependencies": depends_on}
+
+
+@app.post("/api/context/snapshot")
+async def create_context_snapshot(
+    project_token: str,
+    sync_point: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📸 Create context snapshot at sync point"""
+    from enhanced_context_service import enhanced_context_service
+    
+    snapshot = await enhanced_context_service.create_context_snapshot(
+        project_token=project_token,
+        sync_point=sync_point,
+        metadata=metadata
+    )
+    
+    return snapshot
+
+
+@app.get("/api/context/snapshots")
+async def get_context_snapshots(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📚 Get all context snapshots for project"""
+    from enhanced_context_service import enhanced_context_service
+    
+    if project_token not in enhanced_context_service.project_contexts:
+        return {"snapshots": []}
+    
+    context = enhanced_context_service.project_contexts[project_token]
+    return {"snapshots": context["snapshots"]}
+
+
+@app.get("/agents/tasks")
+async def get_pending_tasks(
+    current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
     x_task_token: Optional[str] = Header(None),
@@ -7588,6 +7796,103 @@ async def generate_tasks_locally(
         
         logger.info(f"Generated and stored {len(stored_tasks)} tasks locally for project {request.project_token}")
         
+        # Create multiple sprints and milestones in external API if task token is provided
+        sprint_ids = []
+        milestone_ids = []
+        sprint_names = []
+        milestone_names = []
+        
+        if x_task_token:
+            try:
+                # Extract unique sprints and milestones from tasks
+                unique_sprints = {}
+                unique_milestones = {}
+                
+                for task in tasks:
+                    sprint_name = task.get("sprint", "Sprint 1")
+                    milestone_name = task.get("milestone", "Milestone 1")
+                    
+                    if sprint_name not in unique_sprints:
+                        unique_sprints[sprint_name] = {
+                            "name": sprint_name,
+                            "start_dates": [],
+                            "deadlines": []
+                        }
+                    
+                    if milestone_name not in unique_milestones:
+                        unique_milestones[milestone_name] = {
+                            "name": milestone_name,
+                            "sprint": sprint_name,
+                            "start_dates": [],
+                            "deadlines": []
+                        }
+                    
+                    # Collect dates for each sprint/milestone
+                    if task.get("startdate"):
+                        unique_sprints[sprint_name]["start_dates"].append(task["startdate"])
+                        unique_milestones[milestone_name]["start_dates"].append(task["startdate"])
+                    if task.get("deadline"):
+                        unique_sprints[sprint_name]["deadlines"].append(task["deadline"])
+                        unique_milestones[milestone_name]["deadlines"].append(task["deadline"])
+                
+                # Create sprints in external API
+                sprint_name_to_id = {}
+                for sprint_name, sprint_data in unique_sprints.items():
+                    sprint_start = min(sprint_data["start_dates"]) if sprint_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
+                    sprint_deadline = max(sprint_data["deadlines"]) if sprint_data["deadlines"] else (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
+                    
+                    logger.info(f"Creating sprint '{sprint_name}' in external API")
+                    sprint_result = await task_service.create_sprint(
+                        {
+                            "name": sprint_name,
+                            "summary": f"AI-generated sprint for {request.project_token}",
+                            "start_date": sprint_start,
+                            "deadline": sprint_deadline,
+                        },
+                        task_token=x_task_token
+                    )
+                    
+                    if isinstance(sprint_result, dict):
+                        sprint_id = sprint_result.get("id") or sprint_result.get("sprint_id")
+                        if sprint_id:
+                            sprint_ids.append(sprint_id)
+                            sprint_names.append(sprint_name)
+                            sprint_name_to_id[sprint_name] = sprint_id
+                            logger.info(f"Created sprint: ID={sprint_id}, Name={sprint_name}")
+                
+                # Create milestones in external API
+                milestone_name_to_id = {}
+                for milestone_name, milestone_data in unique_milestones.items():
+                    milestone_start = min(milestone_data["start_dates"]) if milestone_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
+                    milestone_deadline = max(milestone_data["deadlines"]) if milestone_data["deadlines"] else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+                    
+                    # Get sprint ID for this milestone
+                    milestone_sprint_name = milestone_data["sprint"]
+                    milestone_sprint_id = sprint_name_to_id.get(milestone_sprint_name)
+                    
+                    logger.info(f"Creating milestone '{milestone_name}' in external API")
+                    milestone_result = await task_service.create_milestone(
+                        {
+                            "name": milestone_name,
+                            "sprint_id": milestone_sprint_id,
+                            "start_date": milestone_start,
+                            "deadline": milestone_deadline,
+                        },
+                        task_token=x_task_token
+                    )
+                    
+                    if isinstance(milestone_result, dict):
+                        milestone_id = milestone_result.get("id") or milestone_result.get("milestone_id")
+                        if milestone_id:
+                            milestone_ids.append(milestone_id)
+                            milestone_names.append(milestone_name)
+                            milestone_name_to_id[milestone_name] = milestone_id
+                            logger.info(f"Created milestone: ID={milestone_id}, Name={milestone_name}")
+                
+            except Exception as sprint_milestone_error:
+                logger.warning(f"Failed to create sprints/milestones in external API: {sprint_milestone_error}")
+                # Continue with task sync even if sprint/milestone creation fails
+        
         # Always sync to NXDUNE via batch file upload if task token is provided
         synced = False
         sync_error_detail = None
@@ -7620,6 +7925,16 @@ async def generate_tasks_locally(
                     # Normalize priority to valid NXDUNE values
                     raw_priority = str(pt.get("priority") or "medium").lower()
                     pt["priority"] = PRIORITY_MAP.get(raw_priority, raw_priority) if raw_priority not in VALID_PRIORITIES else raw_priority
+                    
+                    # Map sprint/milestone names to IDs if available
+                    task_sprint_name = pt.get("sprint", "")
+                    task_milestone_name = pt.get("milestone", "")
+                    
+                    if task_sprint_name in sprint_name_to_id:
+                        pt["sprint_id"] = sprint_name_to_id[task_sprint_name]
+                    if task_milestone_name in milestone_name_to_id:
+                        pt["milestone_id"] = milestone_name_to_id[task_milestone_name]
+                    
                     prefixed_tasks.append(pt)
 
                 # Serialize raw array directly — no wrapper key
@@ -7659,6 +7974,12 @@ async def generate_tasks_locally(
             "tasks_created": len(tasks),
             "synced_to_nxdune": synced,
             "sync_error": sync_error_detail if not synced and x_task_token else None,
+            "sprints_created": len(sprint_ids) if x_task_token else 0,
+            "sprint_ids": sprint_ids if x_task_token else [],
+            "sprint_names": sprint_names if x_task_token else [],
+            "milestones_created": len(milestone_ids) if x_task_token else 0,
+            "milestone_ids": milestone_ids if x_task_token else [],
+            "milestone_names": milestone_names if x_task_token else [],
         }
     
     except Exception as e:
@@ -8343,6 +8664,7 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=False,
+        timeout_keep_alive=900,  # 15 minutes to support long-running AI analysis
     )
 
 @app.get("/api/production/validate")

@@ -62,7 +62,7 @@ def _has_architecture_block(text: str) -> bool:
 def _build_architecture_repair_prompt(previous_response: str) -> str:
     return (
         "Your previous response was incomplete or contained an invalid JSON block.\n"
-        "CRITICAL: Return the FULL response again with the SAME HTML report body.\n"
+        "CRITICAL: Return the FULL response again with the SAME Markdown report body.\n"
         "The response MUST end with ONE valid JSON block inside a ```json fence.\n"
         "The JSON must strictly match the schema: title, metrics, questions, prerequisites, user_flow, implementation_structure, and architecture (nodes + edges).\n\n"
         "VALIDATION RULES:\n"
@@ -101,8 +101,8 @@ def _build_prerequisite_section() -> str:
 
 # --- System Prompt: The "Helpful Architect" ---
 
-BRD_ANALYSIS_PROMPT = f"""You are an expert Senior Business Analyst and Technical Architect.
-Your goal is to analyze the Business Requirement Document (BRD) and produce a blueprint that is ready for development.
+BRD_ANALYSIS_PROMPT = f"""# ROLE
+You are an expert software architect and technical planning agent. Your goal is to transform a user's product requirement into a comprehensive, production-grade Agent Action Plan — a structured technical blueprint that a coding agent can execute autonomously with zero ambiguity.
 
 ### CORE PHILOSOPHY
 1.  **Helpful & Decisive**: If the BRD does not specify a technology (e.g., "We need a database"), **YOU MUST recommend the best standard solution** (e.g., "PostgreSQL" or "MongoDB"). Do not be vague. Provide a concrete, buildable architecture.
@@ -110,40 +110,200 @@ Your goal is to analyze the Business Requirement Document (BRD) and produce a bl
 3.  **Appropriate Complexity**: Match the architecture to the scope.
     - Small CRUD app? Use a Monolith (Frontend + Backend + DB).
     - High scalability mentioned? Use Scalable components.
+4.  **Exhaustive & Unambiguous**: Every section is MANDATORY. Never skip or merge sections. Be maximally specific — no vague placeholders.
 
-### ANALYSIS SECTIONS (HTML Output)
+---
 
-# 1. Executive Summary
-Briefly summarize the project scope and primary objectives.
+### ANALYSIS SECTIONS (Markdown Output)
 
-# 2. Key Requirements Breakdown
-- **Functional Requirements**: Extract core features and user interactions.
-- **Non-Functional Requirements**: Extract performance, security, and scalability needs.
+## 0.1 Product Understanding
 
-# 3. Feasibility Analysis
-Assess the technical viability of the project.
-- **Complexity Assessment**: Low/Medium/High with reasoning.
-- **Tech Stack Recommendations**:
-    - If the BRD specifies technologies, use them.
-    - If the BRD is silent, **RECOMMEND** a specific, modern stack (e.g., Frontend: React, Backend: Node.js/Python, DB: PostgreSQL). Justify your choice briefly.
-- **Potential Challenges**: Technical bottlenecks implied by the requirements.
+### 0.1.1 Core Product Vision
+- Summarize the product in 1 paragraph (what it is, who it serves, what it unifies)
+- List ALL Functional Requirements (explicit + surfaced implicit ones)
+- List ALL Non-Functional Requirements (performance, security, scalability, data integrity, auditability, compliance)
+- List Implicit Requirements Surfaced (background jobs, notification systems, validation rules, session management — anything not stated but logically required)
 
-# 4. Risks & Gap Analysis
+### 0.1.2 User Instructions Interpretation
+- Technology Stack: State if user specified one; if not, defer to best judgment
+- Architecture Patterns Implied (by the requirements)
+- Integration Requirements (internal/external)
+- Deployment Target
+- Constraints and Preferences (non-negotiable business rules)
+
+### 0.1.3 Product Type Classification
+- Product Category
+- Target Users
+- Primary Use Cases
+- Scale Expectation (MVP vs. production-ready)
+- Maintenance Considerations
+
+---
+
+## 0.2 Background Research
+
+### 0.2.1 Technology Research
+Conduct analysis on:
+- Industry best practices for this product domain
+- The chosen/recommended backend framework
+- The chosen/recommended frontend framework
+- Security and compliance patterns
+Cite findings with rationale inline.
+
+### 0.2.2 Architecture Pattern Research
+Research and justify:
+- Overall architecture pattern choice (monolith, modular monolith, microservices)
+- Domain-specific patterns (event sourcing, CQRS, etc. if applicable)
+- Clean architecture application to the chosen framework
+- Common pitfalls to avoid for this domain
+
+### 0.2.3 Dependency and Tool Research
+Produce a table of ALL selected technologies with:
+| Technology | Version | Release Status | Rationale |
+Validate versions are latest stable. Include rationale for each major dependency.
+
+---
+
+## 0.3 Technical Architecture Design
+
+### 0.3.1 Technology Stack Selection
+Full table:
+| Layer | Technology | Version | Rationale |
+Cover: Frontend, UI Library, Charting, Backend, Language, ORM, Database, Caching/Queue, Auth, API Docs, Containerization, Runtime.
+
+### 0.3.2 Architecture Pattern
+- State the Overall Pattern
+- Justify why it fits THIS product
+- Include a Mermaid flowchart of the full system architecture (Client Layer → Frontend → API Gateway → Domain Modules → Data Layer)
+- Describe Component Interaction Model (write path, read path, job path)
+- Describe Security Architecture (auth flow, RBAC, input validation, rate limiting)
+
+### 0.3.3 Integration Points
+- Internal API contracts
+- Data exchange format
+- Auth protocol
+- Module-to-module communication pattern
+- Future integration readiness
+
+---
+
+## 0.4 Implementation Specifications
+
+### 0.4.1 Core Components and Modules
+For EACH major component (A, B, C, ...):
+- Purpose
+- Location (file path)
+- Key Interfaces (method signatures)
+- Dependencies
+
+### 0.4.2 Data Models and Schemas
+- Mermaid ER diagram with ALL entities and relationships
+- Key Relationship Rules (1-to-many, write-once constraints, etc.)
+- Validation Rules (business rules enforced at service level)
+
+### 0.4.3 API Specifications
+Produce endpoint tables for each domain:
+| Method | Path | Purpose | Auth/Roles |
+Cover auth, user, all domain, and admin endpoints.
+
+### 0.4.4 User Interface Design
+Describe each role-based dashboard/screen:
+- Layout structure
+- Key data displayed
+- Actions available
+- Component patterns used
+
+---
+
+## 0.5 Repository Structure Planning
+
+### 0.5.1 Proposed Repository Structure
+Produce a FULL, exhaustive file tree with inline comments for every file.
+Include: backend, frontend, infra, docs, CI/CD, config, tests.
+
+### 0.5.2 File Path Specifications
+Call out the most critical files:
+- Core backend files and their responsibility
+- Core frontend files and their responsibility
+- Configuration files and entry points
+
+---
+
+## 0.6 Scope Definition
+
+### 0.6.1 Explicitly In Scope
+List every feature, module, infrastructure piece, test type, and documentation item that WILL be built.
+
+### 0.6.2 Explicitly Out of Scope
+List every common assumption that is NOT included (external integrations, mobile apps, i18n, advanced observability, compliance certifications, etc.).
+
+---
+
+## 0.7 Deliverable Mapping
+
+### 0.7.1 File Creation Plan
+Full table of EVERY file to be created:
+| File Path | Purpose | Content Type | Priority (High/Medium/Low) |
+
+### 0.7.2 Implementation Phases
+Define ordered phases (Foundation → Core Logic → Interfaces → Background Jobs → Testing → Documentation & Polish).
+Each phase lists exactly which files/modules it delivers.
+
+---
+
+## 0.8 Risks & Gap Analysis
 - **Missing Elements**: What is clearly missing to make this buildable?
 - **Business Risks**: Potential pitfalls mentioned or implied.
+- **Technical Challenges**: Technical bottlenecks implied by the requirements.
+
+---
 
 {_build_prerequisite_section()}
 
-# 6. Go / No-Go Recommendation
-**[GO / NO-GO / PROCEED WITH CAUTION]**
-Provide a definitive recommendation based on the clarity of requirements.
+---
+
+## 0.10 Execution Patterns
+
+### 0.10.1 Implementation Guidelines
+List 8–12 concrete coding rules the agent MUST follow:
+- Framework best practices
+- TypeScript strictness (if applicable)
+- Module boundary rules
+- Critical domain patterns (e.g., immutable ledger)
+- DTO validation approach
+- Error handling standards
+- Logging strategy
+- DB transaction patterns
+- Frontend state management approach
+- Theming/styling conventions
+
+### 0.10.2 Quality Standards
+Define:
+- Code style (linting, formatting tools)
+- Documentation requirements (API docs, code comments)
+- Test coverage targets (overall + critical paths)
+- Security best practices (password hashing, JWT storage, CORS, rate limiting)
+- Naming conventions (files, classes, variables, routes, enums)
+- Git workflow
 
 ---
+
+## 0.11 Go / No-Go Recommendation
+**[GO / NO-GO / PROCEED WITH CAUTION]**
+Provide a definitive recommendation based on the clarity of requirements, technical feasibility, and risk assessment.
+
+---
+
 ### OUTPUT FORMAT RULES
-- The main report body (above) must be valid **HTML**.
-- Use semantic tags: <h2>, <h3>, <p>, <ul>, <li>, <table>, etc.
-- Do NOT use Markdown in the HTML body.
-- Do NOT wrap the HTML content in code fences.
+- The main report body (above) must be valid **Markdown**.
+- Use proper Markdown syntax: # for h1, ## for h2, ### for h3, etc.
+- Use Markdown tables with | separators
+- Use ```mermaid code blocks for Mermaid diagrams
+- Use - or * for unordered lists, 1. 2. 3. for ordered lists
+- Use **bold** and *italic* for emphasis
+- Use `inline code` and ```language code blocks for code
+- Do NOT use HTML tags in the Markdown body
+- Keep the Markdown clean and well-formatted
 
 Finally, output a SINGLE JSON block containing the structured data and architecture diagram definition.
 
@@ -198,7 +358,18 @@ Finally, output a SINGLE JSON block containing the structured data and architect
   }}
 }}
 ```
-Ensure the JSON is valid and enclosed in a json code block at the very end of your response."""
+
+### CRITICAL RULES
+1. Every section is MANDATORY. Never skip or merge sections.
+2. Be maximally specific — no vague placeholders like "add auth here".
+3. Every technology choice must include a version number and rationale.
+4. Mermaid diagrams are required in 0.3.2 and 0.4.2.
+5. The file tree in 0.5.1 must be exhaustive — every file, including DTOs, guards, decorators, interceptors, hooks, providers, and config files.
+6. Scope boundaries in 0.6 must be explicit and unambiguous.
+7. The deliverable table in 0.7.1 must list every single file with Priority.
+8. Implementation phases in 0.7.2 must be sequentially ordered by dependency.
+9. Execution patterns in 0.10 must be prescriptive, not suggestive.
+10. Ensure the JSON is valid and enclosed in a json code block at the very end of your response."""
 
 
 import json
@@ -212,35 +383,27 @@ def _format_governance_context(governance_context: Optional[Dict[str, Any]]) -> 
     lines = ["GOVERNANCE QUESTIONNAIRE CONTEXT (treat as constraints):"]
 
     project_name = governance_context.get("project_name")
-    classification = governance_context.get("classification")
-    weighted_score = governance_context.get("weighted_score")
     hard_stops = governance_context.get("hard_stops") or []
 
     if project_name:
         lines.append(f"- Project Name: {project_name}")
-    if classification:
-        lines.append(f"- Governance Classification: {classification}")
-    if weighted_score is not None:
-        lines.append(f"- Governance Weighted Score: {weighted_score}/10")
+    
     if hard_stops:
-        lines.append("- Hard Stops:")
+        lines.append("- Hard Stops (Critical Issues):")
         for stop in hard_stops:
             lines.append(f"  - {stop}")
 
     answers = governance_context.get("answers")
     if isinstance(answers, list) and answers:
-        lines.append("- Questionnaire Answers:")
+        lines.append("- Governance Questionnaire Answers:")
         for answer in answers:
             if not isinstance(answer, dict):
                 continue
             question_label = answer.get("question") or f"Question {answer.get('question_id', '')}".strip()
             selected_option = answer.get("selected_option") or "No option selected"
-            score = answer.get("score")
             dimension = answer.get("dimension")
 
             detail_parts = [selected_option]
-            if score is not None:
-                detail_parts.append(f"score={score}")
             if dimension:
                 detail_parts.append(f"dimension={dimension}")
 
@@ -313,25 +476,25 @@ async def analyze_document(
 
     try:
         if stream:
-            # Use llm_gateway streaming
+            # Use llm_gateway streaming with extended timeout for comprehensive analysis
             async def stream_response():
                 async for chunk in llm_gateway.call_llm_streaming(
                     messages=messages,
                     api_url=api_url,
                     api_key=api_key,
                     model=model,
-                    timeout=120.0,
+                    timeout=600.0,  # 10 minutes for comprehensive Agent Action Plan
                 ):
                     yield chunk
             return stream_response()
         else:
-            # Non-streaming: use llm_gateway
+            # Non-streaming: use llm_gateway with extended timeout
             data = await llm_gateway.call_llm(
                 messages=messages,
                 api_url=api_url,
                 api_key=api_key,
                 model=model,
-                timeout=120.0,
+                timeout=600.0,  # 10 minutes for comprehensive Agent Action Plan
             )
             content = llm_gateway.extract_content_from_response(data)
             reasoning_from_api = llm_gateway.extract_reasoning_from_response(data)
@@ -356,7 +519,7 @@ async def analyze_document(
                         api_url=api_url,
                         api_key=api_key,
                         model=model,
-                        timeout=120.0,
+                        timeout=360.0,  # 6 minutes for repair attempt
                     )
                     repaired_content = llm_gateway.extract_content_from_response(repair_data)
                     if _has_architecture_block(repaired_content):
