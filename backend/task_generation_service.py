@@ -17,13 +17,57 @@ INTELLIGENT_TASK_GENERATION_PROMPT = """You are a senior AI systems architect sp
 
 I will give you an Agent Action Plan markdown document. Your job is to convert it into a structured task list that multiple AI coding agents can execute IN PARALLEL without conflicts.
 
-Each task must be designed so that:
-- It is fully self-contained and executable by a single agent independently
-- It does NOT overlap file ownership with another parallel task
-- It clearly declares what it needs (dependencies) before it can start
-- It specifies which agent type should execute it
-- Tasks with no dependencies can all start simultaneously (Sprint 1, Wave 1)
-- Tasks within the same sprint that share no dependencies run in parallel
+CRITICAL: Create CHUNKED, MEANINGFUL tasks — NOT micro-tasks. Group related work together into substantial units of work.
+
+## Core Principles
+
+**1. AGGRESSIVE GROUPING — Merge Everything That Belongs Together**
+- If two pieces of work touch the same layer/domain, they should be ONE task
+- Backend auth + backend calculator = ONE backend task (not two)
+- Frontend pages + frontend components = ONE frontend task (not separate)
+- Integration + CORS + API client = ONE integration task (not separate)
+- DO NOT split by feature within the same layer — split by LAYER
+
+**2. Avoid Over-Fragmentation (Critical Rule)**
+- Simple monolithic projects → 4-6 tasks maximum
+- Medium projects with some modularity → 6-10 tasks
+- Complex microservices/distributed systems → 10-15 tasks (each service can be separate)
+- If you're creating more tasks than this, you're splitting too much
+- BUT: In microservices, each independent service with its own database/API can be its own task
+
+**3. Complexity-Aware Splitting**
+- Analyze the project architecture first before deciding task boundaries
+- Simple monolithic apps → Merge aggressively (4-6 tasks)
+- Microservices/distributed systems → Each independent service can be its own task
+- Key question: "Can these two things be built by the same agent without conflicts?"
+  - If YES and same layer → Merge them
+  - If NO or different services → Keep separate
+
+**Examples:**
+- Calculator app: Backend auth + calculator logic → MERGE (same Flask app)
+- E-commerce: User Service + Product Service → KEEP SEPARATE (different microservices, different databases)
+- E-commerce: Order Service + Payment Service → MERGE if tightly coupled, SEPARATE if independent
+
+**4. Layer-Based Thinking (Not Feature-Based)**
+- Think: "What can one agent own completely?"
+- Backend agent owns ALL backend code (models + APIs + business logic + auth)
+- Frontend agent owns ALL frontend code (pages + components + routing + styling)
+- Integration agent owns ALL connection code (API calls + error handling + CORS)
+- Don't split backend into "auth task" and "calculator task" — that's over-fragmentation
+- EXCEPTION: In microservices, each service is independent and can be its own task
+
+**5. Merge Small Tasks**
+- If a task is < 3 wallet points, it's probably too small
+- CORS setup is NOT a separate task — merge it into integration
+- Config/setup is NOT a separate task — merge it into bootstrap
+- Small utilities are NOT separate tasks — merge them into the layer that uses them
+- EXCEPTION: In microservices, a small independent service can still be its own task
+
+**6. Think in Parallel Execution**
+- Tasks that don't share file ownership can run simultaneously
+- Backend and Frontend can run in parallel (different folders)
+- But don't split backend into multiple tasks just to "create more parallelism"
+- Quality > artificial parallelism
 
 Use this exact JSON format for every task:
 
@@ -31,10 +75,10 @@ Use this exact JSON format for every task:
   {
     "task_id": "TASK-00",
     "taskName": "Short, specific task title",
-    "description": "[What to build]. This agent owns: src/path/to/module/. This agent must NOT modify: src/other/module/.",
+    "description": "[What to build - describe the ENTIRE scope of this task]. This agent owns: [folders/modules]. This agent must NOT modify: [other folders].",
     "task_type": "FEATURE | BUG | TASK",
     "priority": "high | medium | low",
-    "task_wallet": <1 | 2 | 3 | 5 based on complexity>,
+    "task_wallet": <2 | 3 | 5 | 8 based on scope>,
     "deadline": "YYYY-MM-DD",
     "startdate": "YYYY-MM-DD",
     "sprint": "Sprint name from AVAILABLE SPRINTS list",
@@ -43,60 +87,59 @@ Use this exact JSON format for every task:
     "linked_tasks": ["TASK-ID"],
     "reported_by": "system",
     "checklist": [
-      { "text": "Specific actionable step with exact file path or command", "completed": false },
-      { "text": "Specific actionable step", "completed": false },
-      { "text": "Specific actionable step", "completed": false },
-      { "text": "Specific actionable step", "completed": false },
-      { "text": "Verify output and write/pass unit test for this task", "completed": false }
+      { "text": "High-level milestone covering multiple related items", "completed": false },
+      { "text": "High-level milestone covering multiple related items", "completed": false },
+      { "text": "High-level milestone covering multiple related items", "completed": false },
+      { "text": "High-level milestone covering multiple related items", "completed": false },
+      { "text": "Verify entire task scope works end-to-end with tests", "completed": false }
     ]
   }
 ]
 
 ---
 
-## Agent Parallelism Rules
+## Sprint Assignment Logic
 
 **Sprint = Wave of parallel execution.**
 All tasks with the same sprint number will be dispatched to different agents simultaneously.
-Tasks in Sprint 2 can only start after ALL Sprint 1 tasks are complete. Apply this strictly.
+Tasks in Sprint N+1 can only start after ALL Sprint N tasks are complete.
 
-**Sprint Assignment Logic:**
-- Sprint 1 → Zero-dependency foundation tasks (project scaffold, DB schema, config, Docker)
-- Sprint 2 → Tasks that only depend on Sprint 1 outputs (core domain modules, services)
-- Sprint 3 → Tasks that depend on Sprint 2 outputs (UI dashboards, background jobs, integrations)
-- Sprint 4 → Tasks that depend on Sprint 3 outputs (testing, docs, polish)
+- Sprint 1 → Foundation tasks (bootstrap, setup, infrastructure)
+- Sprint 2 → Core implementation tasks that depend on Sprint 1 (can run in parallel if no file conflicts)
+- Sprint 3 → Integration tasks that depend on Sprint 2 outputs
+- Sprint 4 → Finalization tasks (testing, polish, deployment)
 
-**Milestone = Agent Specialization Group.**
-Assign milestones based on module ownership. Each agent owns one module end-to-end.
-Examples:
-- Infrastructure Agent → Docker, DB, config, base setup
-- Auth Agent → JWT, guards, RBAC, user module
-- Domain Module Agents → Each owns their specific domain (e.g., Banking, Insurance, etc.)
-- Frontend Agent → UI dashboards, API client, routing
-- QA Agent → Unit tests, integration tests, e2e tests
-- Docs Agent → Swagger, README, API docs
+Assign sprints based on actual dependencies in the project, not a fixed formula.
 
-**File Ownership Rules (critical for parallel safety):**
-- Each task description MUST state: "This agent owns: [list of files/folders]"
-- Each task description MUST state: "This agent must NOT modify: [list of files owned by other agents]"
-- Shared interfaces/types must be created in Sprint 1 by the Infrastructure Agent so all others can import them
-- Critical shared modules (like Ledger) must be completed early so others can depend on them
+---
 
-**Task Wallet (effort points) Guide:**
-- 1 → Config, scaffold, simple CRUD
-- 2 → Standard service with 3-5 methods
-- 3 → Complex business logic, cross-module dependency
-- 5 → Critical cross-cutting concern (auth, ledger, scheduler)
+## Task Wallet (Effort Points) Guide
 
-**Checklist Item Rules:**
-- Every item must be actionable by an AI agent (no vague steps)
-- Include exact file paths from the repository structure
-- Include exact method names from the implementation specs
-- Include exact API endpoint paths from the API specs
+Since tasks are chunked and represent complete layers:
+- 2 → Very simple setup (bootstrap for tiny project)
+- 3 → Standard layer with moderate scope (simple backend or simple frontend)
+- 5 → Complex layer with significant scope (backend with auth + business logic + APIs)
+- 8 → Very large layer or critical integration (full microservice, complex frontend with many features)
+
+Most tasks should be 3-5 wallet points. If you have many 2-point tasks, you're splitting too much.
+
+---
+
+## File Ownership Rules
+
+- Each task description MUST state: "This agent owns: [folders/modules]"
+- Each task description MUST state: "This agent must NOT modify: [other folders]"
+- Define clear boundaries so parallel tasks don't conflict
+- Shared/common code should be created early so other tasks can depend on it
+
+---
+
+## Checklist Item Rules
+
+- Checklist items should be HIGH-LEVEL milestones, not micro-steps
+- Each item should cover a meaningful chunk of work (multiple files, complete feature, etc.)
+- Focus on what needs to be accomplished, not how to do it step-by-step
 - Last checklist item must always be a test/verification step
-
-**Description Field Format (strictly follow this):**
-"[What to build]. This agent owns: src/path/to/module/. This agent must NOT modify: src/other/module/."
 
 ---
 
@@ -111,27 +154,48 @@ Examples:
 2. **Dependency Management:**
    - Use `linked_tasks` array to declare dependencies
    - ALL tasks (except TASK-00) must include "TASK-00" in linked_tasks
-   - Frontend tasks depend on corresponding backend API tasks
-   - Integration tasks depend on both modules being integrated
+   - If Task B needs Task A's output, add Task A to Task B's linked_tasks
+   - Tasks with no shared dependencies can run in parallel (same sprint)
 
 3. **Sprint Assignment:**
    - Use the AVAILABLE SPRINTS list provided
-   - Assign tasks to sprints based on their dependencies
-   - Tasks in the same sprint can run in parallel if they don't share file ownership
+   - Assign tasks to sprints based on their actual dependencies
+   - Tasks in the same sprint should not have file ownership conflicts
 
 4. **Milestone Assignment:**
    - Use the AVAILABLE MILESTONES list provided
    - Group related tasks under the same milestone
-   - Each milestone represents an agent specialization
+   - Milestones represent major functional areas or system layers
 
 5. **File Path Accuracy:**
-   - Reference exact file paths from the repository structure
+   - Reference folders/modules from the repository structure
    - Use paths from section 0.5.1 of the Agent Action Plan
+   - Be specific about ownership boundaries
 
 6. **Output Format:**
    - Return ONLY valid JSON array
    - No markdown code blocks, no explanations, no extra text
    - Ensure all JSON is properly escaped and valid
+
+7. **Dynamic Task Count (Follow These Guidelines):**
+   - Simple monolithic projects (calculator, todo, blog) → 4-6 tasks total
+   - Medium projects (CRM, inventory, booking) → 6-10 tasks total
+   - Complex microservices (e-commerce, platform) → 10-15 tasks total
+   - Each independent microservice with its own DB/API → Can be its own task
+   - If you exceed these ranges for monolithic apps, you're over-splitting
+   - Quality over quantity — fewer meaningful tasks beat many fragmented ones
+
+8. **Microservices Special Rule:**
+   - If the project uses microservices architecture, each service can be a separate task
+   - User Service, Product Service, Order Service → Can each be their own task
+   - But still merge within each service (don't split a service into multiple tasks)
+   - Frontend can still be one task (or split by customer/admin if very large)
+
+9. **Common Merging Patterns:**
+   - Backend auth + backend business logic → ONE backend task
+   - Frontend pages + frontend components → ONE frontend task
+   - Integration + CORS + error handling → ONE integration task
+   - Testing + polish + deployment → ONE QA task (unless project is very large)
 
 ---
 
