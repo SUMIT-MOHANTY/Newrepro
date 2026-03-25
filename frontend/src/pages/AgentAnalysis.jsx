@@ -1652,7 +1652,8 @@ export default function AgentAnalysis({
                                                         'authentication flow',
                                                         'code structure',
                                                         'technical details',
-                                                        'technical considerations'
+                                                        'technical considerations',
+                                                        'deliverable mapping'
                                                     ];
 
                                                     const lines = content.split('\n');
