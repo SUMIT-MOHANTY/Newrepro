@@ -15399,13 +15399,39 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                     logger.warning(f"Failed to list remote branches: {e}")
                             
                             if not bootstrap_branch:
+                                # Before failing hard, wait a moment and retry once
+                                # (in case there's a tiny race condition with DB commit)
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "warning",
+                                    "message": "⚠️ Bootstrap branch not found. Waiting 2s and retrying..."
+                                })
+                                await asyncio.sleep(2)
+                                
+                                # Retry DB lookup
+                                bootstrap_branch = get_bootstrap_branch(project_token)
+                                if bootstrap_branch:
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": f"✅ Bootstrap branch found on retry: {bootstrap_branch}"
+                                    })
+                            
+                            if not bootstrap_branch:
                                 # FAIL HARD — do NOT hardcode a guess. The bootstrap must have
                                 # pushed and been recorded. If we get here, something is wrong.
-                                raise ValueError(
+                                error_msg = (
                                     "Cannot determine bootstrap branch. Bootstrap was marked as pushed "
                                     "but no branch name was persisted in DB, in-memory state, or found "
-                                    "on remote. This should not happen — check bootstrap agent logs."
+                                    "on remote. This indicates a bootstrap agent failure. "
+                                    "Check bootstrap agent logs or reset bootstrap state."
                                 )
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "error",
+                                    "message": f"❌ {error_msg}"
+                                })
+                                raise ValueError(error_msg)
                         
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
@@ -17211,6 +17237,11 @@ Generate a MINIMAL bash script (under 50 lines) that fixes ONLY these specific i
                                         "message": f"✅ Bootstrap SUCCESS: {max(workspace_file_count, ground_truth_file_count)} files created and pushed to {effective_branch}. Releasing bootstrap gate."
                                     })
                                     
+                                    # CRITICAL: Store bootstrap branch BEFORE marking success to prevent race condition
+                                    # where other agents see bootstrap as pushed but no branch name
+                                    state["repo_bootstrap"]["source_branch"] = effective_branch
+                                    set_bootstrap_branch(project_token, effective_branch)
+                                    
                                     await _mark_repo_bootstrap_result(
                                         project_token=project_token,
                                         source_agent=agent_id,
@@ -17223,11 +17254,6 @@ Generate a MINIMAL bash script (under 50 lines) that fixes ONLY these specific i
                                     )
                                     bootstrap_signal_sent = True
                                     repo_base_branch = effective_branch
-                                
-                                # Store bootstrap branch as the new base for all subsequent tasks
-                                state["repo_bootstrap"]["source_branch"] = effective_branch
-                                # Also persist to DB so it survives server restarts
-                                set_bootstrap_branch(project_token, effective_branch)
                                 
                                 # Capture actual file tree from container and store as canonical spec
                                 try:
