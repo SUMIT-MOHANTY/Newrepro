@@ -24,6 +24,7 @@ class BootstrapState(Base):
     master_note_id = Column(String, nullable=True)
     workspace_tree = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
+    bootstrap_branch = Column(String, nullable=True)  # The branch name where bootstrap scaffold was pushed
     
     # Metadata
     task_signature = Column(String, nullable=True)

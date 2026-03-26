@@ -128,7 +128,7 @@ Return a JSON object with:
 }}
 """
             
-            response = await llm_gateway.chat_completion(
+            response = await llm_gateway.call_llm(
                 messages=[{
                     "role": "user",
                     "content": analysis_prompt
@@ -138,7 +138,7 @@ Return a JSON object with:
             
             import json
             import re
-            content = response.get("content", "")
+            content = llm_gateway.extract_content_from_response(response)
             json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
             if json_match:
                 content = json_match.group(1)
@@ -240,7 +240,7 @@ Return a JSON object with:
 }}
 """
             
-            response = await llm_gateway.chat_completion(
+            response = await llm_gateway.call_llm(
                 messages=[{
                     "role": "user",
                     "content": analysis_prompt
@@ -252,7 +252,7 @@ Return a JSON object with:
             import json
             import re
             
-            content = response.get("content", "")
+            content = llm_gateway.extract_content_from_response(response)
             # Extract JSON from markdown code blocks if present
             json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
             if json_match:

@@ -21,10 +21,11 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from config import settings
 import httpx
-from bootstrap_persistence import is_bootstrap_pushed, set_bootstrap_success
+from bootstrap_persistence import is_bootstrap_pushed, set_bootstrap_success, get_bootstrap_branch, set_bootstrap_branch
 from agent_communication_hooks import broadcast_task_started, broadcast_task_completed, broadcast_task_failed, broadcast_bootstrap_waiting
 import logging
 import llm_gateway
+from agent_bash_ai_integration import get_ai_bash_interface, cleanup_bash_executor
 
 logger = logging.getLogger(__name__)
 
@@ -1175,12 +1176,27 @@ BULLETPROOF SUCCESS RULES - 100% EXECUTION GUARANTEE:
 - Follow language-specific best practices religiously
 - Include setup instructions and dependency installation
 
+CRITICAL: WORKING IN EXISTING PROJECT STRUCTURE (POST-BOOTSTRAP):
+- The project structure has ALREADY been created by the bootstrap agent
+- Files and directories ALREADY EXIST as empty placeholders - you are adding IMPLEMENTATION ONLY
+- DO NOT create ANY new files - all files already exist from bootstrap
+- DO NOT create ANY new directories - all directories already exist from bootstrap
+- DO NOT use 'touch' command - files already exist
+- DO NOT use 'mkdir' command - directories already exist
+- ONLY add content to EXISTING empty files using 'cat <<'EOF' > path'
+- Focus ONLY on the specific files mentioned in your task description
+- If a file you need doesn't exist, it means it's not part of the project structure - DO NOT create it
+- Your job is to IMPLEMENT features in existing files, NOT to create new files
+
 CRITICAL SCRIPT SIZE RULES:
 - Return a Bash shell script UNDER 300 lines total. This is very important.
-- Use shell commands to inspect and create files: ls, find, mkdir -p, cat <<'EOF' > file, grep -q, sed -i, cp, mv, rm -f, touch.
-- Write each file's content with heredocs via cat <<'EOF' > path or cat <<'EOF' >> path. Do NOT use Python code to write files.
-- Focus on the 10-15 most essential files. Do NOT try to create 30+ files in one script.
-- Keep all work rooted in /workspace and prefer editing existing files instead of recreating whole trees.
+- Use shell commands to inspect files: ls, find, grep -q, cat
+- Write content to EXISTING files with heredocs: cat <<'EOF' > path or cat <<'EOF' >> path
+- DO NOT use Python code to write files
+- DO NOT use 'touch' to create new files (all files already exist from bootstrap)
+- DO NOT use 'mkdir' to create new directories (all directories already exist from bootstrap)
+- Focus on the 10-15 most essential files that need implementation
+- Keep all work rooted in /workspace and ONLY edit existing files
 
 CRITICAL SHELL COMPATIBILITY RULES (MANDATORY - FAILURE TO FOLLOW CAUSES CRASHES):
 - NEVER EVER use 'set -o pipefail' or 'set -euo pipefail' - these cause fatal errors in Docker environments
@@ -1310,6 +1326,11 @@ FORBIDDEN PATTERNS (these will cause immediate script failure):
 ❌ Incomplete code without error handling
 ❌ Missing imports or dependencies
 ❌ Hardcoded values without configuration
+❌ Recreating the entire project structure (it already exists!)
+❌ Creating ANY new directories (all directories exist from bootstrap)
+❌ Creating ANY new files (all files exist from bootstrap)
+❌ Using 'touch' command (files already exist)
+❌ Using 'mkdir' or 'mkdir -p' command (directories already exist)
 
 ALLOWED PATTERNS:
 ✅ set -e (only this)
@@ -1318,6 +1339,9 @@ ALLOWED PATTERNS:
 ✅ Complete, runnable code with error handling
 ✅ All necessary imports and dependencies
 ✅ Proper validation and fallbacks
+✅ Adding content to EXISTING empty files using 'cat <<'EOF' > path'
+✅ Working ONLY within the existing project structure
+✅ Implementing features in files that already exist
 
 CRITICAL STRUCTURAL RULES (NO EXCEPTIONS):
 - You MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure).
@@ -1344,6 +1368,55 @@ BULLETPROOF VALIDATION REQUIREMENTS:
 - ALWAYS include proper HTTP status codes
 - ALWAYS validate environment variables exist
 - ALWAYS include database connection error handling
+"""
+
+# Bootstrap-specific rules (NO file content generation)
+_BOOTSTRAP_CODE_RULES = """
+
+BOOTSTRAP TASK RULES - STRUCTURE ONLY:
+- Bootstrap tasks create EMPTY placeholder files and directories ONLY
+- DO NOT write any code content into files
+- Use ONLY 'touch' command to create empty files
+- Use 'mkdir -p' to create directories
+- DO NOT use 'cat <<EOF' or heredocs - files must remain EMPTY
+- Focus on creating the EXACT directory structure specified in the task
+
+MANDATORY SCRIPT PATTERN FOR BOOTSTRAP:
+```bash
+#!/usr/bin/env bash
+set -e
+cd /workspace
+
+echo "Creating project structure..."
+
+# Step 1: Create ALL directories first
+mkdir -p backend/models
+mkdir -p backend/routes
+mkdir -p frontend/components
+
+# Step 2: Create ALL files as EMPTY placeholders
+touch backend/models/__init__.py
+touch backend/models/user.py
+touch backend/routes/__init__.py
+touch frontend/components/App.jsx
+touch README.md
+
+echo "[CREATED] All directories and files"
+
+# Step 3: Verify structure
+[ -d "backend" ] && echo "[CHECK] PASS: backend exists" || echo "[CHECK] FAIL"
+[ -f "README.md" ] && echo "[CHECK] PASS: README exists" || echo "[CHECK] FAIL"
+
+ls -R
+```
+
+CRITICAL BOOTSTRAP RULES:
+- Files MUST be EMPTY (use touch only)
+- NO cat <<EOF allowed
+- NO echo with content allowed
+- Create directories before files
+- Verify structure with checklist items
+- Print [CREATED] and [CHECK] messages
 """
 
 # CRITICAL: Keep scripts compact (<300 lines) to avoid AI token-limit truncation.
@@ -1462,13 +1535,82 @@ CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - If you think a new top-level directory is required, STOP and instead extend the existing structure provided by the master agent.
 
 CRITICAL: FOLLOW THE TASK CHECKLIST EXACTLY!
-- The task includes a checklist of specific steps to execute
-- Execute EACH checklist item in order
-- For bootstrap tasks (TASK-00), the checklist defines the EXACT directory structure to create
-- The directory structure in the task description MUST match what you create
-- Use the exact commands specified in checklist items (mkdir -p, cd, npm install, etc.)
-- If a checklist item says "Create X directory", you MUST create that exact directory
-- If a checklist item says "VERIFY: Run 'ls -R'", include that verification command in your script
+- The task includes a checklist of verification items to validate your work
+- After creating files, verify EACH checklist item is satisfied
+- For bootstrap tasks (TASK-00 or "Project Bootstrap"), the checklist verifies the directory structure was created correctly
+- Use the checklist items as validation criteria, not as commands to execute
+- If a checklist item says "Verify X exists", include a check in your script to confirm X was created
+- Print [CHECK] PASS/FAIL for each checklist validation
+
+SPECIAL RULE FOR BOOTSTRAP TASKS (TASK-00):
+- Bootstrap tasks are STRUCTURE-ONLY - create directories and empty placeholder files
+- The task description contains the CANONICAL directory structure between ===BEGIN_DIRECTORY_STRUCTURE=== and ===END_DIRECTORY_STRUCTURE=== markers
+- You MUST extract this structure and create EVERY directory and file shown in it
+- Parse the tree structure carefully - each line represents a directory (ending with /) or file
+- Create the EXACT structure shown - do not add or remove anything
+- CRITICAL: DO NOT write actual code content inside files for bootstrap tasks - files must be EMPTY
+- CRITICAL: Use ONLY 'touch' to create empty files - DO NOT use 'cat <<EOF' or heredocs
+- CRITICAL: DO NOT use 'echo' with multi-line content - files must remain EMPTY
+- CRITICAL: If you absolutely must add a marker, use ONLY: echo "# Placeholder" > filename (single line only)
+- Use 'mkdir -p' to create all directories from the structure
+- After creating the structure, verify each checklist item to ensure correctness
+- The goal is to establish the project structure, not implement functionality
+- CRITICAL: Create ALL parent directories BEFORE creating files in them
+- CRITICAL: Your output MUST be a BASH SCRIPT, NOT Python code or any other language
+- CRITICAL: DO NOT generate application code - only generate bash commands to create the structure
+- CRITICAL: Create files directly under /workspace/, NOT in a subdirectory like /workspace/project-name/
+- CRITICAL: If the structure shows "my-project/backend/app.py", create it as "/workspace/backend/app.py" (ignore the root folder name)
+- CRITICAL: The /workspace/ directory IS the project root - do not create an additional nesting level
+- Example script pattern (CORRECT - files are EMPTY):
+  ```bash
+  #!/usr/bin/env bash
+  set -e
+  
+  echo "Creating project structure..."
+  
+  # Step 1: Create ALL directories first
+  mkdir -p /workspace/backend/models
+  mkdir -p /workspace/backend/routes  
+  mkdir -p /workspace/frontend/components
+  mkdir -p /workspace/frontend/styles
+  
+  # Step 2: Create ALL files as EMPTY placeholders using touch
+  touch /workspace/backend/models/__init__.py
+  touch /workspace/backend/models/user.py
+  touch /workspace/backend/routes/__init__.py
+  touch /workspace/backend/routes/api.py
+  touch /workspace/backend/app.py
+  touch /workspace/frontend/components/App.jsx
+  touch /workspace/frontend/index.html
+  touch /workspace/README.md
+  
+  echo "[CREATED] All directories and files"
+  
+  # Step 3: Verify checklist items
+  [ -d "/workspace/backend" ] && echo "[CHECK] PASS: backend exists" || echo "[CHECK] FAIL"
+  [ -f "/workspace/README.md" ] && echo "[CHECK] PASS: README exists" || echo "[CHECK] FAIL"
+  
+  ls -R /workspace/
+  ```
+
+WRONG EXAMPLE - DO NOT DO THIS FOR BOOTSTRAP:
+  ```bash
+  # ❌ WRONG - This writes content into files (DO NOT DO THIS)
+  cat <<'EOF' > /workspace/backend/app.py
+  from flask import Flask
+  app = Flask(__name__)
+  EOF
+  
+  # ❌ WRONG - This also writes content (DO NOT DO THIS)
+  echo "from flask import Flask" > /workspace/backend/app.py
+  echo "app = Flask(__name__)" >> /workspace/backend/app.py
+  ```
+
+CORRECT EXAMPLE - DO THIS FOR BOOTSTRAP:
+  ```bash
+  # ✅ CORRECT - Creates empty file
+  touch /workspace/backend/app.py
+  ```
 
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
@@ -1480,10 +1622,11 @@ CRITICAL: NEVER create or commit these files:
 - venv/, env/, .venv/ (virtual environments)
 
 Given a task description and Technical Specification, you must:
-1. READ the task description carefully to understand the required directory structure
-2. READ the checklist items and execute EACH ONE in your shell script
-3. READ the Master Agent's Canonical Project Tree carefully to determine file locations
-4. Create files EXACTLY in the directories specified in the Master Agent tree
+1. READ the task description carefully - extract the directory structure between ===BEGIN_DIRECTORY_STRUCTURE=== markers
+2. CREATE ALL DIRECTORIES FIRST using mkdir -p (this prevents "No such file or directory" errors)
+3. CREATE ALL FILES SECOND using touch or cat (files need their parent directories to exist first)
+4. VERIFY each checklist item to ensure correctness
+5. READ the Master Agent's Canonical Project Tree carefully to determine file locations
 5. Generate a BASH SHELL SCRIPT that CREATES all necessary files and directories using 'cat <<EOF'
 6. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
 7. Write real, production-quality code into each file
@@ -1500,10 +1643,25 @@ CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
 
 CRITICAL: FOLLOW THE TASK CHECKLIST EXACTLY!
-- The task includes a checklist of specific steps to execute
-- Execute EACH checklist item in order
-- For bootstrap tasks (TASK-00), the checklist defines the EXACT directory structure to create
-- Use the exact commands specified in checklist items
+- The task includes a checklist of verification items to validate your work
+- After creating files, verify EACH checklist item is satisfied
+- Use the checklist items as validation criteria, not as commands to execute
+- Print [CHECK] PASS/FAIL for each checklist validation
+
+SPECIAL RULE FOR BOOTSTRAP TASKS (TASK-00):
+- Bootstrap tasks are STRUCTURE-ONLY - create directories and empty placeholder files
+- The task description contains the CANONICAL directory structure between ===BEGIN_DIRECTORY_STRUCTURE=== and ===END_DIRECTORY_STRUCTURE=== markers
+- You MUST extract this structure and create EVERY directory and file shown in it
+- Parse the tree structure carefully - each line represents a directory (ending with /) or file
+- CRITICAL: DO NOT write actual code content inside files for bootstrap tasks - files must be EMPTY
+- CRITICAL: Use ONLY 'touch' to create empty files - DO NOT use 'cat <<EOF' or heredocs
+- Use 'mkdir -p' to create all directories from the structure
+- After creating the structure, verify each checklist item to ensure correctness
+- The goal is to establish the project structure, not implement functionality
+- CRITICAL: Your output MUST be a BASH SCRIPT, NOT Python code or any other language
+- CRITICAL: DO NOT generate application code - only generate bash commands to create the structure
+- CRITICAL: Your output MUST be a BASH SCRIPT, NOT Python code or any other language
+- CRITICAL: DO NOT generate application code - only generate bash commands to create the structure
 
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
@@ -1532,10 +1690,20 @@ CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
 - DO NOT invent new top-level directories (e.g., `app/`, `src/`, `project/`) unless the canonical tree already includes them.
 
 CRITICAL: FOLLOW THE TASK CHECKLIST EXACTLY!
-- The task includes a checklist of specific steps to execute
-- Execute EACH checklist item in order
-- For bootstrap tasks (TASK-00), the checklist defines the EXACT directory structure to create
-- Use the exact commands specified in checklist items
+- The task includes a checklist of verification items to validate your work
+- After creating files, verify EACH checklist item is satisfied
+- Use the checklist items as validation criteria, not as commands to execute
+- Print [CHECK] PASS/FAIL for each checklist validation
+
+SPECIAL RULE FOR BOOTSTRAP TASKS (TASK-00):
+- Bootstrap tasks are STRUCTURE-ONLY - create directories and empty placeholder files
+- The task description contains the CANONICAL directory structure between ===BEGIN_DIRECTORY_STRUCTURE=== and ===END_DIRECTORY_STRUCTURE=== markers
+- You MUST extract this structure and create EVERY directory and file shown in it
+- Parse the tree structure carefully - each line represents a directory (ending with /) or file
+- CRITICAL: DO NOT write actual code content inside files for bootstrap tasks - files must be EMPTY
+- CRITICAL: Use ONLY 'touch' to create empty files - DO NOT use 'cat <<EOF' or heredocs
+- Use 'mkdir -p' to create all directories from the structure
+- The goal is to establish the project structure, not implement functionality
 
 CRITICAL: NEVER create or commit these files:
 - __pycache__/ directories or *.pyc files (Python cache - will cause merge conflicts)
@@ -1964,7 +2132,16 @@ async def _generate_dynamic_prompt(
         return static_prompt
 
     task_title = task.get("title", "Untitled")
-    task_desc = task.get("description", "")[:1500]
+    task_desc_full = task.get("description", "")
+    
+    # CRITICAL: For bootstrap tasks, DO NOT truncate description - it contains the full directory structure
+    is_bootstrap = "bootstrap" in task_title.lower() or "TASK-00" in str(task.get("id", ""))
+    if is_bootstrap:
+        task_desc = task_desc_full  # Keep full description for bootstrap tasks
+        logger.info(f"[{agent_id}] Bootstrap task detected - using full description ({len(task_desc)} chars)")
+    else:
+        task_desc = task_desc_full[:1500]  # Truncate for non-bootstrap tasks
+    
     checklist = task.get("checklist", [])
     checklist_text = "\n".join(f"  - {item.get('title', item) if isinstance(item, dict) else item}" for item in checklist[:10]) if checklist else "None"
 
@@ -2753,6 +2930,50 @@ async def _call_ai_for_code(
     # Log prompt size for debugging
     logger.info(f"AI Prompt - System: {len(system_prompt)} chars, User: {len(user_content)} chars")
     logger.debug(f"AI Prompt preview (first 500 chars): {user_content[:500]}...")
+    
+    # CRITICAL: Log full prompt to file for ALL tasks (for debugging)
+    if agent_id and agent_output_log is not None:
+        try:
+            import datetime
+            timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            
+            # Determine task type for filename
+            is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
+            task_type = "bootstrap" if is_bootstrap else "task"
+            log_filename = f"{task_type}_prompt_{agent_id}_{timestamp}.txt"
+            
+            with open(log_filename, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write(f"{task_type.upper()} TASK - FULL AI PROMPT LOG\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"Agent ID: {agent_id}\n")
+                f.write(f"Timestamp: {timestamp}\n")
+                f.write(f"Model: {model_name}\n")
+                f.write(f"Project Root: {project_root}\n")
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("SYSTEM PROMPT\n")
+                f.write("=" * 80 + "\n")
+                f.write(system_prompt)
+                f.write("\n\n" + "=" * 80 + "\n")
+                f.write("USER PROMPT\n")
+                f.write("=" * 80 + "\n")
+                f.write(user_content)
+                f.write("\n\n" + "=" * 80 + "\n")
+                f.write("TASK DESCRIPTION (RAW)\n")
+                f.write("=" * 80 + "\n")
+                f.write(task_description)
+                f.write("\n\n" + "=" * 80 + "\n")
+                f.write("END OF PROMPT LOG\n")
+                f.write("=" * 80 + "\n")
+            
+            logger.info(f"[{agent_id}] Prompt logged to: {log_filename}")
+            agent_output_log.append({
+                "time": datetime.datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"📝 Full prompt logged to: {log_filename}"
+            })
+        except Exception as log_err:
+            logger.warning(f"[{agent_id}] Failed to log prompt: {log_err}")
 
     last_err = None
     content = ""
@@ -2793,6 +3014,43 @@ async def _call_ai_for_code(
         # Log response size for debugging
         logger.info(f"AI Response - Length: {len(content)} chars, Lines: {len(content.splitlines())}")
         logger.debug(f"AI Response preview (first 500 chars): {content[:500]}...")
+        
+        # CRITICAL: Log full AI response to file for ALL tasks (for debugging)
+        if agent_id and agent_output_log is not None:
+            try:
+                import datetime
+                timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                
+                # Determine task type for filename
+                is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
+                task_type = "bootstrap" if is_bootstrap else "task"
+                log_filename = f"{task_type}_response_{agent_id}_{timestamp}.txt"
+                
+                with open(log_filename, 'w', encoding='utf-8') as f:
+                    f.write("=" * 80 + "\n")
+                    f.write(f"{task_type.upper()} TASK - FULL AI RESPONSE LOG\n")
+                    f.write("=" * 80 + "\n")
+                    f.write(f"Agent ID: {agent_id}\n")
+                    f.write(f"Timestamp: {timestamp}\n")
+                    f.write(f"Model: {model_name}\n")
+                    f.write(f"Response Length: {len(content)} chars\n")
+                    f.write(f"Response Lines: {len(content.splitlines())}\n")
+                    f.write("\n" + "=" * 80 + "\n")
+                    f.write("RAW AI RESPONSE\n")
+                    f.write("=" * 80 + "\n")
+                    f.write(content)
+                    f.write("\n\n" + "=" * 80 + "\n")
+                    f.write("END OF RESPONSE LOG\n")
+                    f.write("=" * 80 + "\n")
+                
+                logger.info(f"[{agent_id}] Response logged to: {log_filename}")
+                agent_output_log.append({
+                    "time": datetime.datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"📝 Full AI response logged to: {log_filename}"
+                })
+            except Exception as log_err:
+                logger.warning(f"[{agent_id}] Failed to log response: {log_err}")
         
         return _clean_ai_code_response(content)
     else:
@@ -2971,7 +3229,8 @@ async def _call_ai_for_self_review(
 
     # CRITICAL: Limit workspace tree size to prevent API overload
     # If workspace tree is too large (>500KB), truncate it intelligently
-    MAX_WORKSPACE_SIZE = 500_000  # 500KB limit
+    # For bootstrap tasks with many files, be more aggressive
+    MAX_WORKSPACE_SIZE = 300_000  # 300KB limit (reduced from 500KB for faster processing)
     if len(workspace_tree) > MAX_WORKSPACE_SIZE:
         logger.warning(f"Workspace tree too large ({len(workspace_tree)} chars), truncating to {MAX_WORKSPACE_SIZE} chars for self-review")
         
@@ -3001,7 +3260,17 @@ async def _call_ai_for_self_review(
             # Simple truncation if no FILE: markers found
             workspace_tree = workspace_tree[:MAX_WORKSPACE_SIZE] + "\n\n... [Truncated due to size limit]"
 
-    system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
+    system_prompt = """You are a Code Review AI. Your job is to analyze code structure and identify specific issues.
+
+CRITICAL RULES:
+1. Reply with PASS or FAIL on the first line
+2. If FAIL, list SPECIFIC, ACTIONABLE issues in a structured format
+3. DO NOT generate bash scripts or code in your response
+4. DO NOT provide solutions - only identify problems
+5. Be precise - mention exact file paths and directory names
+6. Focus on structure validation, not implementation details
+
+Your response should be analytical and diagnostic, not prescriptive."""
     
     review_prompt = f"""SELF-REVIEW TASK:
 You are about to commit your work to the main repository. Before you do, evaluate your generated workspace tree against the original task description and technical requirements.
@@ -3016,26 +3285,81 @@ ORIGINAL TASK:
     review_prompt += f"""GENERATED WORKSPACE TREE:
 {workspace_tree}
 
-IMPORTANT NOTES FOR VALIDATION:
-1. The workspace root is /workspace/ - this is the project root directory
-2. If the task description shows a root folder name (e.g., "my-project/"), this is just documentation
-3. Files should be created directly under /workspace/, NOT under /workspace/my-project/
-4. Example: If task shows "my-project/backend/app.py", create "/workspace/backend/app.py"
-5. Focus on validating the STRUCTURE (folders and files), not the root directory name
-
 VALIDATION CRITERIA:
-- Are all required directories present? (backend/, frontend/, etc.)
-- Are all required files present in the correct locations?
-- Does the structure match the task requirements (ignoring root folder name)?
-- Are there any missing critical files or folders?
+1. Compare the GENERATED WORKSPACE TREE with the ORIGINAL TASK requirements
+2. Check if all required directories are present
+3. Check if all required files are present in correct locations
+4. Identify SPECIFIC missing directories or files
+5. Identify SPECIFIC files in wrong locations
+6. For bootstrap tasks: verify files are EMPTY (no content)
+7. For NON-bootstrap tasks: verify NO NEW files or directories were created (structure is fixed after bootstrap)
 
-Reply EXACTLY on the very first line with either 'PASS' or 'FAIL'.
-On the following lines, provide a short 1-3 sentence justification explaining what's correct or what's missing."""
+CRITICAL FOR NON-BOOTSTRAP TASKS:
+- The project structure was already created by the bootstrap agent
+- Agents should ONLY add content to existing files
+- Creating new files or directories is FORBIDDEN
+- If you see new files that weren't in the original structure, mark as FAIL
+
+RESPONSE FORMAT:
+Line 1: Reply EXACTLY with either 'PASS' or 'FAIL'
+Line 2+: If FAIL, provide a SPECIFIC, ACTIONABLE list of issues:
+  - "Missing directory: path/to/dir"
+  - "Missing file: path/to/file.ext"
+  - "Wrong location: file.ext should be in dir/ not root/"
+  - "File has content: file.ext should be empty for bootstrap"
+  - "Unauthorized new file: path/to/newfile.ext (structure is fixed after bootstrap)"
+  - "Unauthorized new directory: path/to/newdir/ (structure is fixed after bootstrap)"
+  
+DO NOT generate bash scripts in your response.
+DO NOT provide solutions or fixes.
+ONLY identify specific issues in a clear, structured format.
+
+Example FAIL response:
+FAIL
+Missing directory: backend/models
+Missing directory: frontend/components
+Missing file: backend/models/__init__.py
+Missing file: README.md
+Wrong location: app.py should be in backend/ not root/
+File has content: config.py should be empty for bootstrap task
+Unauthorized new file: backend/extra.py (not in original structure)"""
 
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": review_prompt},
     ]
+    
+    # CRITICAL: Log self-review prompt for ALL tasks (for debugging)
+    is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
+    try:
+        import datetime as dt
+        timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        
+        # Determine task type for filename
+        task_type = "bootstrap" if is_bootstrap else "task"
+        log_filename = f"{task_type}_self_review_prompt_{timestamp}.txt"
+        
+        with open(log_filename, 'w', encoding='utf-8') as f:
+            f.write("=" * 80 + "\n")
+            f.write(f"{task_type.upper()} TASK - SELF-REVIEW PROMPT LOG\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Agent Type: {agent_type}\n")
+            f.write("\n" + "=" * 80 + "\n")
+            f.write("SYSTEM PROMPT\n")
+            f.write("=" * 80 + "\n")
+            f.write(system_prompt)
+            f.write("\n\n" + "=" * 80 + "\n")
+            f.write("REVIEW PROMPT\n")
+            f.write("=" * 80 + "\n")
+            f.write(review_prompt)
+            f.write("\n\n" + "=" * 80 + "\n")
+            f.write("END OF SELF-REVIEW PROMPT LOG\n")
+            f.write("=" * 80 + "\n")
+        
+        logger.info(f"Self-review prompt logged to: {log_filename}")
+    except Exception as log_err:
+        logger.warning(f"Failed to log self-review prompt: {log_err}")
 
     last_err = None
     content = ""
@@ -3053,7 +3377,7 @@ On the following lines, provide a short 1-3 sentence justification explaining wh
                 api_url=url,
                 api_key=key,
                 model=model_name,
-                timeout=90.0,  # Increased timeout from 60s to 90s
+                timeout=120.0,  # Increased timeout from 90s to 120s for large workspaces
                 temperature=0.2
             )
             last_err = None
@@ -3083,6 +3407,34 @@ On the following lines, provide a short 1-3 sentence justification explaining wh
             return False, f"Self-review API server error (BournAI API unavailable). FAILING by default to prevent pushing broken code. Please retry or check API status."
         
         return False, f"Self-review API failed: {error_msg}. FAILING by default to prevent pushing broken code."
+
+    # CRITICAL: Log self-review response for ALL tasks (for debugging)
+    if content:
+        try:
+            import datetime as dt
+            timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            
+            # Determine task type for filename
+            task_type = "bootstrap" if is_bootstrap else "task"
+            log_filename = f"{task_type}_self_review_response_{timestamp}.txt"
+            
+            with open(log_filename, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write(f"{task_type.upper()} TASK - SELF-REVIEW RESPONSE LOG\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"Timestamp: {timestamp}\n")
+                f.write(f"Response Length: {len(content)} chars\n")
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("SELF-REVIEW RESPONSE\n")
+                f.write("=" * 80 + "\n")
+                f.write(content)
+                f.write("\n\n" + "=" * 80 + "\n")
+                f.write("END OF SELF-REVIEW RESPONSE LOG\n")
+                f.write("=" * 80 + "\n")
+            
+            logger.info(f"Self-review response logged to: {log_filename}")
+        except Exception as log_err:
+            logger.warning(f"Failed to log self-review response: {log_err}")
 
     if content:
         passed = content.upper().startswith("PASS")
@@ -3416,9 +3768,13 @@ async def _mark_repo_bootstrap_result(
             if success else f"Bootstrap failed on {source_agent}"
         )
     state["repo_bootstrap_event"].set()
-    # Signal all waiting agents via the simple module-level flag
-    set_bootstrap_success(project_token)  # Persistent bootstrap state
-    logger.info(f"[{source_agent}] Bootstrap flag set for project {project_token}")
+    # Signal all waiting agents via the simple module-level flag AND persist bootstrap branch
+    if success and source_branch:
+        set_bootstrap_success(project_token, bootstrap_branch=source_branch)  # Persistent bootstrap state + branch
+        set_bootstrap_branch(project_token, source_branch)  # Redundant but ensures branch is persisted
+    else:
+        set_bootstrap_success(project_token)  # Persistent bootstrap state
+    logger.info(f"[{source_agent}] Bootstrap flag set for project {project_token} (branch: {source_branch})")
 
 
 async def _coordinate_repo_bootstrap(
@@ -3758,6 +4114,115 @@ def _collect_repo_summary(container_name: str) -> Dict[str, Any]:
                 pkg_scripts = {}
     summary["package_scripts"] = pkg_scripts
     return summary
+
+
+def _collect_workspace_file_paths(container_name: str) -> List[str]:
+    result = subprocess.run(
+        [
+            "docker", "exec", "-w", "/workspace", container_name, "sh", "-lc",
+            (
+                "find /workspace -type f "
+                "-not -path '*/.git/*' "
+                "-not -path '*/node_modules/*' "
+                "-not -path '*/dist/*' "
+                "-not -path '*/build/*' "
+                "-not -path '*/.next/*' "
+                "-not -path '*/.turbo/*' "
+                "-not -path '*/__pycache__/*' "
+                "-not -path '*/venv/*' "
+                "-not -path '*/.venv/*' "
+                "-not -path '*/.pytest_cache/*' "
+                "| sed 's|^/workspace/||' | LC_ALL=C sort"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        path.strip()
+        for path in (result.stdout or "").splitlines()
+        if path.strip()
+    ]
+
+
+async def _agent_execute_bash_command(
+    container_name: str,
+    agent_id: str,
+    command: str,
+    working_dir: str = "/workspace",
+    timeout: int = 60
+) -> Dict[str, Any]:
+    """
+    Helper function for agents to execute bash commands in their container.
+    
+    Args:
+        container_name: Docker container name
+        agent_id: Agent identifier
+        command: Bash command to execute
+        working_dir: Working directory for command execution
+        timeout: Command timeout in seconds
+        
+    Returns:
+        Dict with success, stdout, stderr, exit_code
+    """
+    try:
+        from agent_bash_executor import create_bash_executor
+        
+        executor = create_bash_executor(container_name, working_dir)
+        result = await executor.execute_command(command, timeout=timeout)
+        
+        return {
+            "success": result.success,
+            "exit_code": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "duration": result.duration,
+            "command": command
+        }
+    except Exception as e:
+        logger.error(f"Bash command execution failed for {agent_id}: {e}")
+        return {
+            "success": False,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": str(e),
+            "duration": 0,
+            "command": command
+        }
+
+
+async def _agent_gather_context_with_ai(
+    container_name: str,
+    agent_id: str,
+    request: str,
+    working_dir: str = "/workspace"
+) -> Dict[str, Any]:
+    """
+    Helper function for agents to gather context using AI-powered bash interface.
+    
+    Args:
+        container_name: Docker container name
+        agent_id: Agent identifier
+        request: Natural language request (e.g., "find all Python files")
+        working_dir: Working directory
+        
+    Returns:
+        Dict with results and AI interpretation
+    """
+    try:
+        ai_interface = get_ai_bash_interface(container_name, agent_id, working_dir)
+        result = await ai_interface.process_ai_request(request)
+        return result
+    except Exception as e:
+        logger.error(f"AI context gathering failed for {agent_id}: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "request": request
+        }
 
 
 def _collect_workspace_file_paths(container_name: str) -> List[str]:
@@ -4554,7 +5019,7 @@ async def _run_integration_check(project_token: Optional[str]) -> None:
     try:
         subprocess.run(
             ["docker", "run", "-d", "--name", container_name,
-             "python:3.11-slim", "sleep", "3600"],
+             "python:3.11", "sleep", "3600"],
             capture_output=True, timeout=30,
         )
 
@@ -4767,7 +5232,7 @@ async def _run_integration_check(project_token: Optional[str]) -> None:
     container_name = f"integration_{uuid.uuid4().hex[:8]}"
     try:
         subprocess.run(
-            ["docker", "run", "-d", "--name", container_name, "python:3.11-slim", "sleep", "3600"],
+            ["docker", "run", "-d", "--name", container_name, "python:3.11", "sleep", "3600"],
             capture_output=True, timeout=30,
         )
         auth_url = _build_git_auth_url(git_repo_url, git_token) if git_token else git_repo_url
@@ -5522,7 +5987,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 capture_output=True, text=True, timeout=10,
             )
             subprocess.run(
-                ["docker", "exec", container_name, "git", "config", "--global", "user.name", "BRD Git Manager"],
+                ["docker", "exec", container_name, "git", "config", "--global", "user.name", "DSuite Git Manager"],
                 capture_output=True, text=True, timeout=10,
             )
 
@@ -6071,7 +6536,7 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             capture_output=True, text=True, timeout=10,
         )
         subprocess.run(
-            ["docker", "exec", container_name, "git", "config", "--global", "user.name", "BRD Agent"],
+            ["docker", "exec", container_name, "git", "config", "--global", "user.name", "DSuite Agent"],
             capture_output=True, text=True, timeout=10,
         )
 
@@ -6098,12 +6563,26 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/* /workspace/.* 2>/dev/null || true"],
             capture_output=True, text=True, timeout=10,
         )
+        # Try cloning the specific branch directly for efficiency.
+        # This ensures non-bootstrap agents clone from the bootstrap branch directly.
         clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", clone_url, "/workspace"],
+            ["docker", "exec", container_name, "git", "clone", "--branch", branch_name, clone_url, "/workspace"],
             capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
-            return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
+            # Branch may not exist on remote yet (e.g., bootstrap agent creating a new branch).
+            # Fall back to cloning the default branch.
+            logger.info(f"Clone with --branch {branch_name} failed, falling back to default branch clone")
+            subprocess.run(
+                ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/* /workspace/.* 2>/dev/null || true"],
+                capture_output=True, text=True, timeout=10,
+            )
+            clone = subprocess.run(
+                ["docker", "exec", container_name, "git", "clone", clone_url, "/workspace"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if clone.returncode != 0:
+                return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
 
         # Ensure the remote URL has credentials embedded so push works without a TTY.
         # For Azure DevOps this is handled via credential.helper; for GitHub/others we
@@ -6751,7 +7230,7 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
              "-not", "-name", "*.pyc",
              "-not", "-name", "*.map",
              "-not", "-name", "package-lock.json"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, errors="replace", timeout=15,
         )
 
         if find_result.returncode != 0 or not (find_result.stdout or "").strip():
@@ -6766,14 +7245,30 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
         output_parts.append("=" * 60)
         output_parts.append("")
 
-        # File tree summary
+        # File tree summary - Show full directory structure
         output_parts.append("File Tree:")
+        
+        # Build a proper tree structure showing directories and files
+        dirs_seen = set()
         for f in files:
             rel = f.replace(f"{project_root}/", "")
+            # Add all parent directories first
+            parts = rel.split("/")
+            for i in range(len(parts) - 1):  # All parts except the filename
+                dir_path = "/".join(parts[:i+1])
+                if dir_path not in dirs_seen:
+                    depth = dir_path.count("/")
+                    indent = "  " * depth
+                    dir_name = parts[i]
+                    output_parts.append(f"  {indent}{dir_name}/")
+                    dirs_seen.add(dir_path)
+            
+            # Add the file
             depth = rel.count("/")
             indent = "  " * depth
             name = os.path.basename(rel)
             output_parts.append(f"  {indent}{name}")
+        
         output_parts.append("")
         output_parts.append(f"Total: {len(files)} files")
         output_parts.append("")
@@ -6787,7 +7282,7 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
 
             cat_result = subprocess.run(
                 ["docker", "exec", container_name, "cat", filepath],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, errors="replace", timeout=10,
             )
 
             if cat_result.returncode == 0:
@@ -6810,6 +7305,9 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
 def _destroy_container(container_name: str):
     """Force remove a Docker container."""
     try:
+        # Clean up bash executor before destroying container
+        cleanup_bash_executor(container_name)
+        
         subprocess.run(
             ["docker", "rm", "-f", container_name],
             capture_output=True, text=True, timeout=15,
@@ -13481,16 +13979,20 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
     for i, t in enumerate(external_tasks[:5]):  # Log first 5 tasks
         logger.info(f"[{agent_id}] DEBUG: Task {i+1}: {t.get('title')} | Status: {t.get('status')} | Type: {t.get('task_type')}")
 
-    # ── GUARD: Check if this agent already has an active (non-completed) task ──
+    # ── PRIORITY 1: Check if this agent already has an active assigned task ──
     # If the agent is already assigned to a task, return that task instead of picking a new one.
     # This prevents a single agent from being assigned to multiple tasks simultaneously.
-    # agent and agent_username already retrieved at function start
+    # This check happens BEFORE any other task selection logic.
+    logger.info(f"[{agent_id}] Checking for assigned tasks...")
     for t in external_tasks:
         if _task_status_is_done(t.get("status")):
             continue
         resolved_owner = _resolve_assigned_runtime_agent_id(t, project_agents)
         if resolved_owner == agent_id:
             tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "")
+            task_title = (t.get('title') or t.get('taskName') or 'Untitled')[:50]
+            
+            logger.info(f"[{agent_id}] ✅ Found assigned task: {tid} - {task_title}")
             
             # Ensure we don't pick an assigned task that is still blocked by dependencies
             if live_mem:
@@ -13503,15 +14005,27 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
                     if not live_mem.check_task_dependencies(tid):
                         blocking = live_mem.get_blocking_tasks(tid)
-                        logger.info(f"[{agent_id}] Assigned task {tid} is still blocked by deps {blocking}. Looking for other assigned tasks.")
+                        logger.info(f"[{agent_id}] ⏸️ Assigned task {tid} is blocked by dependencies: {blocking}. Looking for other assigned tasks.")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "warning",
+                                "message": f"⏸️ Assigned task '{task_title}' is blocked by dependencies: {blocking}"
+                            })
                         continue
 
             # This agent already has this task — return it, don't pick another
             logger.info(
-                f"[{agent_id}] Already assigned to active task {tid} "
-                f"('{(t.get('title') or t.get('taskName') or '')[:50]}'). "
-                f"Resuming instead of picking a new task."
+                f"[{agent_id}] 🎯 Resuming assigned task {tid} "
+                f"('{task_title}'). "
+                f"Will NOT pick a new task."
             )
+            if agent:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"🎯 Resuming assigned task: {task_title}"
+                })
             claimed_task_ids.add(tid)
             reserved = _apply_master_task_metadata(dict(t), project_token=project_token)
             if project_token:
@@ -13520,6 +14034,16 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 agent["current_task"] = reserved
                 agent["resume_pending_task"] = True
             return reserved
+    
+    # No assigned tasks found - proceed to pick from available tasks
+    logger.info(f"[{agent_id}] No assigned tasks found. Looking for available tasks to opt-in...")
+    if agent:
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"📋 No assigned tasks. Checking available tasks..."
+        })
+
 
     async with task_claim_lock:
         active_owned_ids = _active_owned_task_ids(project_token)
@@ -13959,12 +14483,20 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 assigned_task = None  # re-pick task on retry
                 continue
             else:
-                # All retries exhausted
+                # All retries exhausted - CRITICAL FAILURE
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "error",
                     "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {error_msg}",
                 })
+                
+                # CRITICAL: Mark agent as blocked to prevent picking up new tasks
+                agent["status"] = "error"
+                agent["blocked"] = True
+                agent["blocked_reason"] = f"Task failed after {MAX_RETRIES} attempts: {error_msg}"
+                agent["current_task"] = None
+                
+                logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
                 return last_result
 
         except Exception as e:
@@ -13995,6 +14527,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 assigned_task = None
                 continue
             else:
+                # All retries exhausted - CRITICAL FAILURE
                 agent["status"] = "error"
                 agent["resume_pending_task"] = False
                 agent["progress"] = 0
@@ -14004,6 +14537,10 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "type": "error",
                     "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {str(e)}",
                 })
+                
+                # CRITICAL: Mark agent as blocked to prevent picking up new tasks
+                agent["blocked"] = True
+                agent["blocked_reason"] = f"Task failed after {MAX_RETRIES} attempts: {error_msg}"
                 
                 # Notify Master Agent for failure analysis
                 try:
@@ -14020,6 +14557,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 
                 agent["last_run"] = datetime.utcnow().isoformat()
                 agent["current_task"] = None
+                
+                logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
                 return last_result
 
     return last_result
@@ -14084,11 +14623,41 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
     # 1. Get the first task
     resumed_existing_task = False
+    
+    # CRITICAL: Check if agent is blocked from previous failure
+    if agent.get("blocked"):
+        blocked_reason = agent.get("blocked_reason", "Unknown reason")
+        logger.error(f"[{agent_id}] Agent is BLOCKED: {blocked_reason}")
+        agent["status"] = "error"
+        agent["progress_message"] = f"Blocked: {blocked_reason}"
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "error",
+            "message": f"🚫 Agent is blocked and cannot pick up new tasks. Reason: {blocked_reason}"
+        })
+        return {
+            "success": False,
+            "agent_id": agent_id,
+            "error": f"Agent blocked: {blocked_reason}",
+            "reason": "agent_blocked",
+            "tasks_completed": 0,
+            "duration": 0,
+        }
+    
+    # PRIORITY 1: Use explicitly assigned task (from function parameter)
     if assigned_task:
         task = assigned_task
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"📌 Using explicitly assigned task: {assigned_task.get('title', 'Untitled')}"
+        })
+    # PRIORITY 2: Resume current task if agent has one in progress
     elif isinstance(agent.get("current_task"), dict):
         resumed_task = _apply_master_task_metadata(dict(agent["current_task"]), project_token=project_token)
         resumed_task_id = _task_identity(resumed_task)
+        
+        # Verify the task is still active in external system
         external_tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
         if resumed_task_id:
             external_match = next(
@@ -14100,16 +14669,38 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             )
             if external_match and not _task_status_is_done(external_match.get("status")):
                 resumed_task = _apply_master_task_metadata(dict(external_match), project_token=project_token)
+        
         if project_token:
             resumed_task.setdefault("_project_token", project_token)
+        
+        # If task is still active, resume it
         if resumed_task_id and not _task_status_is_done(resumed_task.get("status")):
             task = resumed_task
             resumed_existing_task = True
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"🔄 Resuming in-progress task: {resumed_task.get('title', 'Untitled')}"
+            })
         else:
+            # Task is completed or no longer exists, clear it and pick new one
             agent["current_task"] = None
             agent["resume_pending_task"] = False
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"✅ Previous task completed. Looking for new task..."
+            })
             task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+    # PRIORITY 3: Check if agent has any assigned tasks in external system (even if not in current_task)
+    # This handles the case where agent was stopped and restarted
     else:
+        agent["output_log"].append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"🔍 Checking for assigned tasks..."
+        })
+        # _pick_next_task already checks for assigned tasks first (lines 13960-13995)
         task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
     
     # If no task found and NOT in continuous mode, exit immediately
@@ -14311,11 +14902,106 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     container_name = f"{agent_id}_{uuid.uuid4().hex[:8]}"
     container_created = False
     
-    # Use bootstrap branch as base if available
+    # Use bootstrap branch as base if available (DB first, then in-memory, then fallback)
     bootstrap_state = state.get("repo_bootstrap", {})
-    repo_base_branch = bootstrap_state.get("source_branch") or "main"
+    repo_base_branch = get_bootstrap_branch(project_token) or bootstrap_state.get("source_branch") or "main"
     bootstrap_role = "none"
     bootstrap_signal_sent = False
+
+    # ── CRITICAL: Bootstrap Gate - Check BEFORE starting any work ────
+    # If this is a regular (non-bootstrap) task and git is configured, 
+    # wait for bootstrap to complete before proceeding
+    if task and use_git:
+        is_bootstrap_task = (
+            (task.get("task_id") or task.get("external_task_id") or "").strip().upper() == "TASK-00"
+            or "project bootstrap" in (task.get("title") or task.get("taskName") or "").strip().lower()
+        )
+        
+        if not is_bootstrap_task:
+            # Check if bootstrap exists in project
+            try:
+                external_tasks_for_check = await _fetch_external_tasks(project_token)
+                has_bootstrap = any(
+                    (ext_t.get("task_id") or ext_t.get("external_task_id") or "").strip().upper() == "TASK-00"
+                    or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
+                    for ext_t in (external_tasks_for_check or [])
+                )
+                
+                if has_bootstrap and not is_bootstrap_pushed(project_token):
+                    agent["status"] = "waiting"
+                    agent["progress"] = 5
+                    agent["progress_message"] = "Waiting for bootstrap to complete..."
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"⏳ BOOTSTRAP GATE: Waiting for bootstrap agent to complete before starting '{task.get('title', 'task')}'"
+                    })
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "⏸️ Agent will NOT create container or start work until bootstrap is pushed to git"
+                    })
+                    
+                    # Broadcast waiting status
+                    try:
+                        from database import SessionLocal
+                        import agent_communication_service as _comm
+                        _db = SessionLocal()
+                        try:
+                            await _comm.send_message(
+                                db=_db,
+                                project_token=project_token or "",
+                                from_agent=agent_id,
+                                message=f"⏳ Waiting for bootstrap before starting: {task.get('title', 'task')}",
+                                msg_type="INFO",
+                            )
+                        finally:
+                            _db.close()
+                    except Exception:
+                        pass
+                    
+                    # Wait for bootstrap flag (check every 10 seconds, timeout 30 minutes)
+                    bootstrap_wait_start = time.time()
+                    bootstrap_timeout = 1800  # 30 minutes
+                    while not is_bootstrap_pushed(project_token):
+                        await asyncio.sleep(10)
+                        waited = int(time.time() - bootstrap_wait_start)
+                        if waited >= bootstrap_timeout:
+                            agent["status"] = "error"
+                            raise ValueError(f"Bootstrap wait timeout after {waited}s. Bootstrap agent has not completed.")
+                        if waited % 60 == 0:  # Log every minute
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"⏳ Still waiting for bootstrap... ({waited}s elapsed)"
+                            })
+                    
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": "✅ Bootstrap complete! Agent can now start work"
+                    })
+                    agent["status"] = "running"
+                    
+                    # Broadcast ready status
+                    try:
+                        from database import SessionLocal
+                        import agent_communication_service as _comm
+                        _db = SessionLocal()
+                        try:
+                            await _comm.send_message(
+                                db=_db,
+                                project_token=project_token or "",
+                                from_agent=agent_id,
+                                message=f"✅ Bootstrap complete! Starting: {task.get('title', 'task')}",
+                                msg_type="INFO",
+                            )
+                        finally:
+                            _db.close()
+                    except Exception:
+                        pass
+            except Exception as bootstrap_check_err:
+                logger.warning(f"[{agent_id}] Failed to check bootstrap status: {bootstrap_check_err}")
 
     # ── CONTINUOUS MODE: Poll for tasks if none available initially ──
     if not task and continuous:
@@ -14567,50 +15253,222 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "message": f"Environment '{container_name}' is running with /workspace/ ready"
                 })
 
-                # Clone git repo ONCE on first task
+                # ── BOOTSTRAP COORDINATION: Determine if this agent should bootstrap ────
                 if use_git:
-                    first_branch = force_branch if force_branch else _branch_name_for_task(task)
-                    agent["progress"] = 15
-                    agent["progress_message"] = f"Cloning git repo & creating branch: {first_branch}"
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"Cloning {agent['git_repo_url']} into /workspace/..."
-                    })
-
-                    git_result = await asyncio.to_thread(
-                        _setup_git_in_container, container_name,
-                        agent["git_repo_url"], agent.get("git_token", ""), first_branch
+                    # Check if this is a bootstrap task
+                    is_bootstrap_task = (
+                        (task.get("task_id") or task.get("external_task_id") or "").strip().upper() == "TASK-00"
+                        or "project bootstrap" in (task.get("title") or task.get("taskName") or "").strip().lower()
                     )
-                    if not git_result["success"]:
-                        raise ValueError(f"Git setup failed: {git_result['error']}")
-
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"Git repo cloned. Working on branch: {first_branch}"
-                    })
-
-                    repo_base_branch = git_result.get("default_branch") or repo_base_branch
-                    bootstrap_info = await _coordinate_repo_bootstrap(
-                        agent=agent,
-                        agent_id=agent_id,
-                        repo_url=agent.get("git_repo_url") or "",
-                        container_name=container_name,
-                        local_branch=first_branch,
-                        needs_bootstrap=bool(git_result.get("needs_bootstrap")),
-                        project_token=project_token,
-                        current_task=task,
-                    )
-                    bootstrap_role = bootstrap_info.get("role", "none")
-                    if bootstrap_info.get("base_branch"):
-                        repo_base_branch = bootstrap_info["base_branch"]
-                    if repo_base_branch and bootstrap_role == "bootstrap":
+                    
+                    if is_bootstrap_task:
+                        # This agent is the bootstrap agent - clone and create initial structure
+                        first_branch = force_branch if force_branch else _branch_name_for_task(task)
+                        agent["progress"] = 15
+                        agent["progress_message"] = f"Bootstrap: Cloning repo & creating branch: {first_branch}"
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"Bootstrap base branch set to: {repo_base_branch}"
+                            "message": f"🏗️ BOOTSTRAP AGENT: Cloning {agent['git_repo_url']} to create initial structure..."
                         })
+
+                        git_result = await asyncio.to_thread(
+                            _setup_git_in_container, container_name,
+                            agent["git_repo_url"], agent.get("git_token", ""), first_branch
+                        )
+                        if not git_result["success"]:
+                            raise ValueError(f"Git setup failed: {git_result['error']}")
+
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"✅ Bootstrap repo cloned. Working on branch: {first_branch}"
+                        })
+
+                        repo_base_branch = git_result.get("default_branch") or repo_base_branch
+                        
+                        # Mark this agent as bootstrap owner
+                        bootstrap_info = await _coordinate_repo_bootstrap(
+                            agent=agent,
+                            agent_id=agent_id,
+                            repo_url=agent.get("git_repo_url") or "",
+                            container_name=container_name,
+                            local_branch=first_branch,
+                            needs_bootstrap=True,  # Force bootstrap mode
+                            project_token=project_token,
+                            current_task=task,
+                        )
+                        bootstrap_role = bootstrap_info.get("role", "none")
+                        if bootstrap_info.get("base_branch"):
+                            repo_base_branch = bootstrap_info["base_branch"]
+                        
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"🏗️ Bootstrap role confirmed. Other agents will wait for push to {first_branch}"
+                        })
+                    else:
+                        # This is a regular agent - bootstrap already completed, clone from bootstrap branch
+                        agent["progress"] = 15
+                        agent["progress_message"] = "Discovering bootstrap branch..."
+                        
+                        # ── INTELLIGENT BOOTSTRAP BRANCH DISCOVERY (3-layer, no hardcoding) ──
+                        # Layer 1: Persistent DB (survives server restarts)
+                        bootstrap_branch = get_bootstrap_branch(project_token)
+                        if bootstrap_branch:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"✅ Bootstrap branch from DB: {bootstrap_branch}"
+                            })
+                        
+                        # Layer 2: In-memory project state
+                        if not bootstrap_branch:
+                            state = _ensure_project_state(project_token)
+                            bootstrap_state = state.get("repo_bootstrap", {})
+                            bootstrap_branch = bootstrap_state.get("source_branch")
+                            if bootstrap_branch:
+                                # Persist to DB for future use
+                                set_bootstrap_branch(project_token, bootstrap_branch)
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"✅ Bootstrap branch from in-memory state: {bootstrap_branch} (now persisted to DB)"
+                                })
+                        
+                        # Layer 3: Smart remote detection — query ALL remote branches and find
+                        # the one that matches the bootstrap task pattern (no hardcoded names)
+                        if not bootstrap_branch:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "warning",
+                                "message": "⚠️ Bootstrap branch not in DB or state. Detecting from remote branches..."
+                            })
+                            
+                            git_url = agent.get("git_repo_url", "")
+                            git_token = agent.get("git_token", "")
+                            
+                            if git_url:
+                                auth_url = _build_git_auth_url(git_url, git_token) if git_token else git_url
+                                
+                                try:
+                                    # List ALL remote branches
+                                    ls_remote = subprocess.run(
+                                        ["git", "ls-remote", "--heads", auth_url],
+                                        capture_output=True, text=True, timeout=30,
+                                    )
+                                    if ls_remote.returncode == 0 and ls_remote.stdout.strip():
+                                        remote_branches = []
+                                        for line in ls_remote.stdout.strip().splitlines():
+                                            # Format: <sha>\trefs/heads/<branch_name>
+                                            parts = line.split("\t")
+                                            if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+                                                branch_name_candidate = parts[1].replace("refs/heads/", "")
+                                                remote_branches.append(branch_name_candidate)
+                                        
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "info",
+                                            "message": f"🔍 Found {len(remote_branches)} remote branches: {', '.join(remote_branches[:10])}"
+                                        })
+                                        
+                                        # Smart pattern matching: find the branch that was created by
+                                        # the bootstrap task. Bootstrap tasks create branches with
+                                        # patterns like "feature/TASK-00-*", "*bootstrap*", "*scaffold*"
+                                        bootstrap_patterns = [
+                                            "task-00", "task_00", "bootstrap", "scaffold",
+                                            "initial-structure", "project-setup", "project_setup"
+                                        ]
+                                        
+                                        for branch_candidate in remote_branches:
+                                            branch_lower = branch_candidate.lower()
+                                            for pattern in bootstrap_patterns:
+                                                if pattern in branch_lower:
+                                                    bootstrap_branch = branch_candidate
+                                                    agent["output_log"].append({
+                                                        "time": datetime.utcnow().isoformat(),
+                                                        "type": "info",
+                                                        "message": f"✅ Detected bootstrap branch from remote: {bootstrap_branch} (matched pattern: '{pattern}')"
+                                                    })
+                                                    # Persist to DB
+                                                    set_bootstrap_branch(project_token, bootstrap_branch)
+                                                    break
+                                            if bootstrap_branch:
+                                                break
+                                except Exception as e:
+                                    logger.warning(f"Failed to list remote branches: {e}")
+                            
+                            if not bootstrap_branch:
+                                # FAIL HARD — do NOT hardcode a guess. The bootstrap must have
+                                # pushed and been recorded. If we get here, something is wrong.
+                                raise ValueError(
+                                    "Cannot determine bootstrap branch. Bootstrap was marked as pushed "
+                                    "but no branch name was persisted in DB, in-memory state, or found "
+                                    "on remote. This should not happen — check bootstrap agent logs."
+                                )
+                        
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"✅ Bootstrap pushed to {bootstrap_branch}! Now cloning..."
+                        })
+                        
+                        # Clone the repo
+                        first_branch = force_branch if force_branch else _branch_name_for_task(task)
+                        agent["progress"] = 20
+                        agent["progress_message"] = f"Cloning from bootstrap branch: {bootstrap_branch}"
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Cloning {agent['git_repo_url']} and checking out {bootstrap_branch}..."
+                        })
+
+                        git_result = await asyncio.to_thread(
+                            _setup_git_in_container, container_name,
+                            agent["git_repo_url"], agent.get("git_token", ""), bootstrap_branch
+                        )
+                        if not git_result["success"]:
+                            raise ValueError(f"Git setup failed: {git_result['error']}")
+
+                        # Create new branch from bootstrap branch
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"Creating new branch {first_branch} from {bootstrap_branch}..."
+                        })
+                        
+                        checkout_result = subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name, "git", "checkout", "-b", first_branch],
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        if checkout_result.returncode != 0:
+                            raise ValueError(f"Failed to create branch {first_branch}: {checkout_result.stderr}")
+
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"✅ Working on new branch: {first_branch} (based on {bootstrap_branch})"
+                        })
+                        
+                        # Broadcast success
+                        try:
+                            from database import SessionLocal
+                            import agent_communication_service as _comm
+                            _db = SessionLocal()
+                            try:
+                                await _comm.send_message(
+                                    db=_db,
+                                    project_token=project_token or "",
+                                    from_agent=agent_id,
+                                    message=f"✅ Cloned from bootstrap branch '{bootstrap_branch}' and created working branch '{first_branch}'",
+                                    msg_type="INFO",
+                                )
+                            finally:
+                                _db.close()
+                        except Exception:
+                            pass
+                        
+                        repo_base_branch = bootstrap_branch
 
             # ── Create task-specific git branch (for 2nd+ tasks) ─────
             branch_name = None
@@ -14644,11 +15502,18 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                          "git", "fetch", "origin"],
                         capture_output=True, text=True, timeout=120,
                     )
+                    # Checkout bootstrap branch as base
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Using base branch: {repo_base_branch} (from bootstrap)"
+                    })
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "checkout", "-B", repo_base_branch, f"origin/{repo_base_branch}"],
                         capture_output=True, text=True, timeout=60,
                     )
+                    # Create new task branch from bootstrap branch
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "checkout", "-B", branch_name],
@@ -14657,7 +15522,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
                         "type": "info",
-                        "message": f"Created branch: {branch_name}"
+                        "message": f"Created branch: {branch_name} (from {repo_base_branch})"
                     })
 
             # ── Structure Validation Before Code Generation ────────────
@@ -14882,50 +15747,89 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
 
             # ── Fix 4: Resolve canonical file targets from master tree ─
+            # SKIP for bootstrap tasks - they create the entire structure, not specific files
+            task_id_str = (task.get("task_id") or task.get("external_task_id") or "").strip().upper()
+            task_title_str = (task.get("title") or task.get("taskName") or "").strip().lower()
+            is_bootstrap_task = (
+                task_id_str == "TASK-00"
+                or "project bootstrap" in task_title_str
+                or "bootstrap" in task_title_str
+            )
+            
             canonical_master_tree = master_note_result.get("workspace_tree", "") if master_note_result else ""
-            canonical_files = _resolve_canonical_files_for_task(task, canonical_master_tree, project_token)
-            if canonical_files:
+            canonical_files = []
+            
+            if not is_bootstrap_task:
+                canonical_files = _resolve_canonical_files_for_task(task, canonical_master_tree, project_token)
+                if canonical_files:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"📁 Canonical file targets resolved: {', '.join(canonical_files[:6])}"
+                    })
+            else:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"📁 Canonical file targets resolved: {', '.join(canonical_files[:6])}"
+                    "message": f"📁 Bootstrap task: Will create entire project structure (no specific file targets)"
                 })
 
             # ── LAYER 3: Generate Dynamic Prompt ────────────────────
             agent["progress"] = 22
             agent["progress_message"] = "Manager Agent writing task-specific prompt..."
-            try:
-                dynamic_system_prompt = await _generate_dynamic_prompt(
-                    task=task,
-                    agent_type=agent["type"],
-                    agent_id=agent_id,
-                    tech_spec=tech_spec,
-                    kg_context=jit_context,
-                    cross_agent_info=cross_agent_info,
-                    file_ownership_block=file_ownership_block,   # Fix 3
-                    canonical_files=canonical_files,             # Fix 4
-                    project_token=project_token or "",           # Contract store
-                )
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"🎯 Dynamic prompt generated: {len(dynamic_system_prompt)} chars (task-specific)"
-                })
-            except Exception as prompt_err:
-                dynamic_system_prompt = AGENT_SYSTEM_PROMPTS.get(agent["type"], AGENT_SYSTEM_PROMPTS["validator"])
-                
-                # Add recovery prompt even if dynamic generation failed
-                master_recovery_prompt = agent.get("master_recovery_prompt")
-                if master_recovery_prompt:
-                    dynamic_system_prompt = f"{dynamic_system_prompt}\n\n{master_recovery_prompt}"
-                    agent.pop("master_recovery_prompt", None)
-                    agent.pop("master_failure_analysis", None)
+            
+            # CRITICAL: For bootstrap tasks, skip dynamic prompt and use ONLY static system prompt
+            # Dynamic prompt contains contradictory instructions about file content generation
+            is_bootstrap_task = "bootstrap" in task.get("title", "").lower() or "TASK-00" in str(task.get("id", ""))
+            
+            if is_bootstrap_task:
+                # Use static system prompt for bootstrap - but replace bulletproof rules with bootstrap rules
+                base_prompt = AGENT_SYSTEM_PROMPTS.get(agent["type"], AGENT_SYSTEM_PROMPTS["validator"])
+                # Replace the bulletproof rules section with bootstrap-specific rules
+                if _BULLETPROOF_CODE_RULES in base_prompt:
+                    dynamic_system_prompt = base_prompt.replace(_BULLETPROOF_CODE_RULES, _BOOTSTRAP_CODE_RULES)
+                else:
+                    dynamic_system_prompt = base_prompt + _BOOTSTRAP_CODE_RULES
                 
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"Dynamic prompt failed ({str(prompt_err)[:60]}), using static prompt"
+                    "message": f"🏗️ Bootstrap task: using bootstrap-specific system prompt (touch only, no file content)"
                 })
+            else:
+                # Generate dynamic prompt for non-bootstrap tasks
+                try:
+                    dynamic_system_prompt = await _generate_dynamic_prompt(
+                        task=task,
+                        agent_type=agent["type"],
+                        agent_id=agent_id,
+                        tech_spec=tech_spec,
+                        kg_context=jit_context,
+                        cross_agent_info=cross_agent_info,
+                        file_ownership_block=file_ownership_block,   # Fix 3
+                        canonical_files=canonical_files,             # Fix 4
+                        project_token=project_token or "",           # Contract store
+                    )
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"🎯 Dynamic prompt generated: {len(dynamic_system_prompt)} chars (task-specific)"
+                    })
+                except Exception as prompt_err:
+                    dynamic_system_prompt = AGENT_SYSTEM_PROMPTS.get(agent["type"], AGENT_SYSTEM_PROMPTS["validator"])
+                    
+                    # Add recovery prompt even if dynamic generation failed
+                    master_recovery_prompt = agent.get("master_recovery_prompt")
+                    if master_recovery_prompt:
+                        dynamic_system_prompt = f"{dynamic_system_prompt}\n\n{master_recovery_prompt}"
+                        agent.pop("master_recovery_prompt", None)
+                        agent.pop("master_failure_analysis", None)
+                    
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Dynamic prompt failed ({str(prompt_err)[:60]}), using static prompt"
+                    })
 
             agent["progress"] = 25
             agent["progress_message"] = "AI is generating build script..."
@@ -14980,8 +15884,20 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     + "\n\nAll file paths in your script MUST match the above exactly.\n\n---\n\n"
                 )
 
+            # CRITICAL FIX: Add checklist items to task description for bootstrap tasks
+            task_description_with_checklist = task["description"]
+            checklist_items = task.get("checklist", [])
+            if checklist_items:
+                checklist_text = "\n\n=== CHECKLIST ITEMS (EXECUTE EACH IN ORDER) ===\n"
+                for idx, item in enumerate(checklist_items, 1):
+                    item_text = item.get("text", str(item)) if isinstance(item, dict) else str(item)
+                    checklist_text += f"{idx}. {item_text}\n"
+                checklist_text += "\n⚠️ CRITICAL: Execute EACH checklist item above in your shell script.\n"
+                checklist_text += "For bootstrap tasks, the checklist defines the EXACT directory structure to create.\n"
+                task_description_with_checklist = task["description"] + checklist_text
+
             generated_code, thought = await _call_ai_for_code(
-                canonical_files_prefix + task["description"], agent["type"],
+                canonical_files_prefix + task_description_with_checklist, agent["type"],
                 code_context=jit_context,
                 system_prompt_override=dynamic_system_prompt,
                 tech_spec=tech_spec,
@@ -15004,6 +15920,41 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "type": "info",
                 "message": f"AI generated {generated_lines} lines of build script"
             })
+            
+            # CRITICAL: Log full cleaned script to file for ALL tasks (for debugging)
+            try:
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                
+                # Determine task type for filename
+                is_bootstrap_task = "bootstrap" in task.get("title", "").lower() or "TASK-00" in str(task.get("id", ""))
+                task_type = "bootstrap" if is_bootstrap_task else "task"
+                log_filename = f"{task_type}_script_{agent_id}_{timestamp}.sh"
+                
+                with open(log_filename, 'w', encoding='utf-8') as f:
+                    f.write(generated_code)
+                
+                logger.info(f"[{agent_id}] Script logged to: {log_filename}")
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"📝 Full cleaned script logged to: {log_filename}"
+                })
+            except Exception as log_err:
+                logger.warning(f"[{agent_id}] Failed to log script: {log_err}")
+            
+            # Log the generated script for debugging (first 100 lines)
+            script_preview = '\n'.join(generated_code.splitlines()[:100])
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"📜 Generated script preview (first 100 lines):\n{script_preview}"
+            })
+            if generated_lines > 100:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"... (script continues for {generated_lines - 100} more lines)"
+                })
             
             # ── Validate AI Response Quality ─────────────────────────
             # Ensure AI generated substantial code, not just a comment or empty script
@@ -15245,11 +16196,60 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                 # Set to empty so self-review is skipped
                 workspace_tree = ""
             else:
+                file_count = workspace_tree.count('FILE:')
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"📂 Captured {workspace_tree.count('FILE:')} files from {capture_root}/"
+                    "message": f"📂 Captured {file_count} files from {capture_root}/"
                 })
+                
+                # CRITICAL: Log full workspace tree to file for ALL tasks (for debugging)
+                try:
+                    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                    
+                    # Determine task type for filename
+                    task_type = "bootstrap" if is_bootstrap_task else "task"
+                    log_filename = f"{task_type}_workspace_{agent_id}_{timestamp}.txt"
+                    
+                    with open(log_filename, 'w', encoding='utf-8') as f:
+                        f.write("=" * 80 + "\n")
+                        f.write(f"{task_type.upper()} TASK - WORKSPACE TREE LOG\n")
+                        f.write("=" * 80 + "\n")
+                        f.write(f"Agent ID: {agent_id}\n")
+                        f.write(f"Timestamp: {timestamp}\n")
+                        f.write(f"Capture Root: {capture_root}\n")
+                        f.write(f"File Count: {file_count}\n")
+                        f.write("\n" + "=" * 80 + "\n")
+                        f.write("WORKSPACE TREE\n")
+                        f.write("=" * 80 + "\n")
+                        f.write(workspace_tree)
+                        f.write("\n\n" + "=" * 80 + "\n")
+                        f.write("END OF WORKSPACE LOG\n")
+                        f.write("=" * 80 + "\n")
+                    
+                    logger.info(f"[{agent_id}] Workspace logged to: {log_filename}")
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"📝 Full workspace tree logged to: {log_filename}"
+                    })
+                except Exception as log_err:
+                    logger.warning(f"[{agent_id}] Failed to log workspace: {log_err}")
+                
+                # Log workspace tree structure (first 50 lines for debugging)
+                tree_lines = workspace_tree.splitlines()
+                tree_preview = '\n'.join(tree_lines[:50])
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"📁 Workspace structure preview (first 50 lines):\n{tree_preview}"
+                })
+                if len(tree_lines) > 50:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"... (workspace tree continues for {len(tree_lines) - 50} more lines)"
+                    })
 
             # ── Fix 2: Ground-truth file list via docker exec find . ──────────
             # This replaces parsing the workspace_tree stdout string, which can
@@ -15372,6 +16372,25 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                         })
                         
                         if not passed_review:
+                            # Check if failure is due to API timeout/error (not bad code)
+                            is_api_failure = any(keyword in review_feedback for keyword in [
+                                "Self-review API failed",
+                                "ReadTimeout",
+                                "timeout",
+                                "API unavailable",
+                                "server error"
+                            ])
+                            
+                            if is_api_failure:
+                                # API failure - don't try to "fix" code, just log and break
+                                logger.warning(f"[{agent_id}] Self-review failed due to API issue, not code issue. Skipping fix attempts.")
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "warning",
+                                    "message": f"⚠️ Self-review API unavailable. Cannot verify code quality. Aborting to prevent pushing unverified code."
+                                })
+                                break  # Exit the fix loop - don't try to fix code when API is the problem
+                            
                             fix_attempt += 1
                             
                             if fix_attempt < max_fix_attempts:
@@ -15381,20 +16400,69 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
                                     "type": "warning",
-                                    "message": f"🔧 Self-review failed. Generating fix for missing/incorrect files..."
+                                    "message": f"🔧 Self-review failed. Generating targeted fix for specific issues..."
                                 })
                                 
-                                # Generate fix code
-                                fix_prompt = f"""
-SELF-REVIEW FAILED. You must fix the following issues:
+                                # Parse the review feedback to extract specific issues
+                                issues_list = []
+                                for line in review_feedback.split('\n')[1:]:  # Skip first line (PASS/FAIL)
+                                    line = line.strip()
+                                    if line and not line.startswith('```'):  # Skip empty lines and code blocks
+                                        issues_list.append(line)
+                                
+                                issues_text = '\n'.join(issues_list) if issues_list else review_feedback
+                                
+                                # Determine if this is a bootstrap task
+                                task_title = task.get("title", "").lower()
+                                task_desc = task.get("description", "").lower()
+                                is_bootstrap = "bootstrap" in task_title or "structure only" in task_desc or "TASK-00" in str(task.get("id", ""))
+                                
+                                # Generate TARGETED fix script based on specific issues
+                                if is_bootstrap:
+                                    fix_prompt = f"""
+SELF-REVIEW IDENTIFIED SPECIFIC ISSUES IN BOOTSTRAP TASK. Generate a MINIMAL fix script.
 
-{review_feedback}
+⚠️ CRITICAL: THIS IS A BOOTSTRAP TASK - FILES MUST BE EMPTY!
 
-Original Task:
-{task.get("description", task.get("title"))}
+ISSUES TO FIX:
+{issues_text}
 
-Generate a bash script that FIXES these issues. Create missing files, correct wrong structures, etc.
-The script should fix ONLY what's wrong, not recreate everything.
+BOOTSTRAP TASK RULES:
+1. Use ONLY 'touch' to create files - NO content allowed
+2. Use 'mkdir -p' to create directories
+3. DO NOT use 'cat <<EOF' or any heredocs
+4. DO NOT add any content to files
+5. Files must remain EMPTY
+6. For "Missing file: X" → use: touch X
+7. For "Missing directory: X" → use: mkdir -p X
+8. For "Wrong location: X should be in Y" → use: mkdir -p Y && mv X Y/ (if exists) or touch Y/X
+9. For "File has content: X should be empty" → use: > X (truncate to empty)
+10. For "Extra files: X" → use: rm -f X (remove extra files)
+
+Generate a MINIMAL bash script (under 30 lines) that fixes ONLY these specific issues.
+Use ONLY touch and mkdir commands. NO file content generation.
+"""
+                                else:
+                                    fix_prompt = f"""
+SELF-REVIEW IDENTIFIED SPECIFIC ISSUES. Generate a MINIMAL fix script.
+
+ISSUES TO FIX:
+{issues_text}
+
+ORIGINAL TASK (for context):
+{task.get("description", task.get("title"))[:1000]}
+
+CRITICAL INSTRUCTIONS:
+1. Generate a bash script that fixes ONLY the specific issues listed above
+2. DO NOT recreate the entire project structure
+3. For "Missing directory: X" → use: mkdir -p X
+4. For "Missing file: X" → use: create with appropriate content
+5. For "Wrong location: X should be in Y" → use: mkdir -p Y && mv X Y/
+6. Keep the script MINIMAL - only fix what's broken
+7. Print [FIX] for each fix applied
+8. Print [CHECK] PASS/FAIL for verification
+
+Generate a MINIMAL bash script (under 50 lines) that fixes ONLY these specific issues.
 """
                                 
                                 fix_code, fix_thought = await _call_ai_for_code(
@@ -15405,6 +16473,40 @@ The script should fix ONLY what's wrong, not recreate everything.
                                     agent_id=agent_id,
                                     agent_output_log=agent["output_log"],
                                 )
+                                
+                                # CRITICAL: Log the fix script to file for debugging
+                                if is_bootstrap_task:
+                                    try:
+                                        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                                        log_filename = f"bootstrap_fix_script_attempt{fix_attempt}_{agent_id}_{timestamp}.sh"
+                                        
+                                        with open(log_filename, 'w', encoding='utf-8') as f:
+                                            f.write("=" * 80 + "\n")
+                                            f.write(f"BOOTSTRAP FIX SCRIPT - ATTEMPT {fix_attempt}/{max_fix_attempts}\n")
+                                            f.write("=" * 80 + "\n")
+                                            f.write(f"Agent ID: {agent_id}\n")
+                                            f.write(f"Timestamp: {timestamp}\n")
+                                            f.write(f"Fix Attempt: {fix_attempt}\n")
+                                            f.write("\n" + "=" * 80 + "\n")
+                                            f.write("ISSUES IDENTIFIED BY SELF-REVIEW\n")
+                                            f.write("=" * 80 + "\n")
+                                            f.write(issues_text)
+                                            f.write("\n\n" + "=" * 80 + "\n")
+                                            f.write("FIX SCRIPT\n")
+                                            f.write("=" * 80 + "\n")
+                                            f.write(fix_code)
+                                            f.write("\n\n" + "=" * 80 + "\n")
+                                            f.write("END OF FIX SCRIPT LOG\n")
+                                            f.write("=" * 80 + "\n")
+                                        
+                                        logger.info(f"[{agent_id}] Fix script logged to: {log_filename}")
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "info",
+                                            "message": f"📝 Fix script logged to: {log_filename}"
+                                        })
+                                    except Exception as log_err:
+                                        logger.warning(f"[{agent_id}] Failed to log fix script: {log_err}")
                                 
                                 if fix_thought:
                                     agent["output_log"].append({
@@ -15427,6 +16529,35 @@ The script should fix ONLY what's wrong, not recreate everything.
                                     f"self_review_fix_{fix_attempt}",
                                     project_token
                                 )
+                                
+                                # CRITICAL: Log the fix script execution result
+                                if is_bootstrap_task:
+                                    try:
+                                        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                                        log_filename = f"bootstrap_fix_result_attempt{fix_attempt}_{agent_id}_{timestamp}.txt"
+                                        
+                                        with open(log_filename, 'w', encoding='utf-8') as f:
+                                            f.write("=" * 80 + "\n")
+                                            f.write(f"BOOTSTRAP FIX EXECUTION RESULT - ATTEMPT {fix_attempt}/{max_fix_attempts}\n")
+                                            f.write("=" * 80 + "\n")
+                                            f.write(f"Agent ID: {agent_id}\n")
+                                            f.write(f"Timestamp: {timestamp}\n")
+                                            f.write(f"Exit Code: {fix_result.get('exit_code')}\n")
+                                            f.write("\n" + "=" * 80 + "\n")
+                                            f.write("STDOUT\n")
+                                            f.write("=" * 80 + "\n")
+                                            f.write(fix_result.get('stdout', ''))
+                                            f.write("\n\n" + "=" * 80 + "\n")
+                                            f.write("STDERR\n")
+                                            f.write("=" * 80 + "\n")
+                                            f.write(fix_result.get('stderr', ''))
+                                            f.write("\n\n" + "=" * 80 + "\n")
+                                            f.write("END OF FIX RESULT LOG\n")
+                                            f.write("=" * 80 + "\n")
+                                        
+                                        logger.info(f"[{agent_id}] Fix result logged to: {log_filename}")
+                                    except Exception as log_err:
+                                        logger.warning(f"[{agent_id}] Failed to log fix result: {log_err}")
                                 
                                 if fix_result.get("exit_code") == 0:
                                     agent["output_log"].append({
@@ -15478,10 +16609,14 @@ The script should fix ONLY what's wrong, not recreate everything.
                                     "message": f"❌ ABORTING: Self-review failed after {max_fix_attempts} fix attempts. NOT pushing broken code."
                                 })
                                 
-                                # Mark task as failed
-                                agent["status"] = "idle"
+                                # CRITICAL: Mark agent as BLOCKED to prevent picking up new tasks
+                                agent["status"] = "error"
+                                agent["blocked"] = True
+                                agent["blocked_reason"] = f"Self-review failed after {max_fix_attempts} attempts"
                                 agent["progress"] = 0
                                 agent["current_task"] = None
+                                
+                                logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
                                 
                                 return {
                                     "success": False,
@@ -15506,10 +16641,15 @@ The script should fix ONLY what's wrong, not recreate everything.
                         "type": "error",
                         "message": "❌ Cannot push code - self-review did not pass"
                     })
-                    # Task failed, return error
-                    agent["status"] = "idle"
+                    
+                    # CRITICAL: Mark agent as BLOCKED to prevent picking up new tasks
+                    agent["status"] = "error"
+                    agent["blocked"] = True
+                    agent["blocked_reason"] = "Self-review did not pass"
                     agent["progress"] = 0
                     agent["current_task"] = None
+                    
+                    logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
                     
                     return {
                         "success": False,
@@ -15650,6 +16790,11 @@ The script should fix ONLY what's wrong, not recreate everything.
                          "git", "fetch", "origin"],
                         capture_output=True, text=True, timeout=120,
                     )
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"{'  ' * depth}Using base branch: {repo_base_branch} for linked task"
+                    })
                     subprocess.run(
                         ["docker", "exec", "-w", "/workspace", container_name,
                          "git", "checkout", "-B", repo_base_branch, f"origin/{repo_base_branch}"],
@@ -15660,6 +16805,11 @@ The script should fix ONLY what's wrong, not recreate everything.
                          "git", "checkout", "-B", lt_branch],
                         capture_output=True, text=True, timeout=15,
                     )
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"{'  ' * depth}Created linked task branch: {lt_branch} (from {repo_base_branch})"
+                    })
 
                     # Clock in
                     lt_clock_in_ok = await _post_timer_log(linked_task, "clock_in", task_token=task_token)
@@ -15980,7 +17130,7 @@ The script should fix ONLY what's wrong, not recreate everything.
                                 project_token=project_token
                             )
                         
-                        # ── Bootstrap Validation: Only release gate if files were created ──
+                        # ── Bootstrap Validation: Only release gate if files were created AND pushed to git ──
                         if bootstrap_role == "bootstrap" and not bootstrap_signal_sent:
                             # Check if any files were actually created
                             workspace_file_count = workspace_tree.count('FILE:') if workspace_tree else 0
@@ -16015,30 +17165,69 @@ The script should fix ONLY what's wrong, not recreate everything.
                                     task_token=task_token
                                 )
                             else:
-                                # Bootstrap SUCCESS - files were created
-                                agent["output_log"].append({
-                                    "time": datetime.utcnow().isoformat(),
-                                    "type": "info",
-                                    "message": f"✅ Bootstrap SUCCESS: {max(workspace_file_count, ground_truth_file_count)} files created. Releasing bootstrap gate."
-                                })
+                                # Verify the branch actually exists on remote before marking success
+                                branch_exists_on_remote = False
+                                try:
+                                    check_remote = subprocess.run(
+                                        ["docker", "exec", "-w", "/workspace", container_name, 
+                                         "git", "ls-remote", "--heads", "origin", effective_branch],
+                                        capture_output=True, text=True, timeout=15,
+                                    )
+                                    branch_exists_on_remote = effective_branch in (check_remote.stdout or "")
+                                    
+                                    if not branch_exists_on_remote:
+                                        logger.error(f"[{agent_id}] Bootstrap branch {effective_branch} NOT found on remote!")
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "error",
+                                            "message": f"❌ Bootstrap FAILED: Branch {effective_branch} was not pushed to remote"
+                                        })
+                                except Exception as check_err:
+                                    logger.error(f"[{agent_id}] Failed to verify bootstrap branch on remote: {check_err}")
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "warning",
+                                        "message": f"⚠️ Could not verify branch on remote: {check_err}"
+                                    })
                                 
-                                await _mark_repo_bootstrap_result(
-                                    project_token=project_token,
-                                    source_agent=agent_id,
-                                    success=True,
-                                    source_branch=effective_branch,
-                                    message=(
-                                        f"Initial scaffold pushed by {agent_id} on branch {effective_branch}. "
-                                        f"Created {max(workspace_file_count, ground_truth_file_count)} files."
-                                    ),
-                                )
-                                bootstrap_signal_sent = True
-                                repo_base_branch = effective_branch
-                                bootstrap_signal_sent = True
-                                repo_base_branch = effective_branch
+                                if not branch_exists_on_remote:
+                                    # Bootstrap FAILED - branch not on remote
+                                    await _mark_repo_bootstrap_result(
+                                        project_token=project_token,
+                                        source_agent=agent_id,
+                                        success=False,
+                                        source_branch=None,
+                                        message=(
+                                            f"Bootstrap failed: Branch {effective_branch} was not pushed to remote by {agent_id}. "
+                                            f"Git push may have failed silently."
+                                        ),
+                                    )
+                                    bootstrap_signal_sent = True
+                                else:
+                                    # Bootstrap SUCCESS - files were created AND branch is on remote
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": f"✅ Bootstrap SUCCESS: {max(workspace_file_count, ground_truth_file_count)} files created and pushed to {effective_branch}. Releasing bootstrap gate."
+                                    })
+                                    
+                                    await _mark_repo_bootstrap_result(
+                                        project_token=project_token,
+                                        source_agent=agent_id,
+                                        success=True,
+                                        source_branch=effective_branch,
+                                        message=(
+                                            f"Initial scaffold pushed by {agent_id} on branch {effective_branch}. "
+                                            f"Created {max(workspace_file_count, ground_truth_file_count)} files."
+                                        ),
+                                    )
+                                    bootstrap_signal_sent = True
+                                    repo_base_branch = effective_branch
                                 
                                 # Store bootstrap branch as the new base for all subsequent tasks
                                 state["repo_bootstrap"]["source_branch"] = effective_branch
+                                # Also persist to DB so it survives server restarts
+                                set_bootstrap_branch(project_token, effective_branch)
                                 
                                 # Capture actual file tree from container and store as canonical spec
                                 try:
