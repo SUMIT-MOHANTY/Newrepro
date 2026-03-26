@@ -1658,6 +1658,8 @@ export default function AgentAnalysis({
                                                     'architecture overview',
                                                     'technical implementation',
                                                     'implementation details',
+                                                    'implementation specifications',
+                                                    'core components and modules',
                                                     'api design',
                                                     'api endpoints',
                                                     'database schema',
@@ -1679,6 +1681,8 @@ export default function AgentAnalysis({
                                                     'api specifications',
                                                     'file creation plan',
                                                     'dependency and tool research',
+                                                    'implementation phases',
+                                                    'repository structure',
                                                 ];
 
                                                 // Function to filter content based on configuration
@@ -1702,9 +1706,8 @@ export default function AgentAnalysis({
                                                         if (trimmed.startsWith('```')) {
                                                             if (hideConfig.codeBlocks) {
                                                                 inCodeBlock = !inCodeBlock;
-                                                                continue; // Skip code block markers
+                                                                continue;
                                                             } else {
-                                                                // Keep code blocks
                                                                 result.push(line);
                                                                 continue;
                                                             }
@@ -1715,30 +1718,38 @@ export default function AgentAnalysis({
                                                             continue;
                                                         }
 
-                                                        // Check if this is a header
+                                                        // Check if this is a header (any level)
                                                         const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
                                                         
-                                                        if (headerMatch && hideConfig.technicalSections) {
-                                                            const headerText = headerMatch[2].toLowerCase().trim();
-                                                            
-                                                            // Check if this header matches any technical keyword
-                                                            const isTechnical = technicalHeaders.some(tech => 
-                                                                headerText.includes(tech)
-                                                            );
-                                                            
-                                                            if (isTechnical) {
-                                                                skipSection = true;
-                                                                continue; // Skip this header
+                                                        if (headerMatch) {
+                                                            if (hideConfig.technicalSections) {
+                                                                const headerText = headerMatch[2].toLowerCase().trim();
+                                                                const isTechnical = technicalHeaders.some(tech => 
+                                                                    headerText.includes(tech)
+                                                                );
+                                                                
+                                                                if (isTechnical) {
+                                                                    skipSection = true;
+                                                                    continue;
+                                                                } else {
+                                                                    skipSection = false;
+                                                                }
                                                             } else {
-                                                                // New non-technical section - stop skipping
                                                                 skipSection = false;
                                                             }
                                                         }
 
-                                                        // Add line if not in skipped section
-                                                        if (!skipSection) {
-                                                            result.push(line);
+                                                        // Skip if in a hidden section
+                                                        if (skipSection) {
+                                                            continue;
                                                         }
+
+                                                        // Skip empty lines or lines with only list markers
+                                                        if (trimmed === '' || trimmed === '-' || trimmed === '*') {
+                                                            continue;
+                                                        }
+
+                                                        result.push(line);
                                                     }
 
                                                     return result.join('\n');
@@ -1790,7 +1801,7 @@ export default function AgentAnalysis({
                                                             strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
                                                         }}
                                                     >
-                                                        {analysisContent}
+                                                        {hideTechnicalSections(analysisContent)}
                                                     </ReactMarkdown>
                                                 );
                                             })()}
