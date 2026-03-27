@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta
 
 import llm_gateway
+from llm_logs import log_llm_interaction_ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -525,7 +526,10 @@ async def analyze_document(
                 model=model,
                 timeout=600.0,  # 10 minutes for comprehensive Agent Action Plan
             )
+            print(f"Document Analysis AI response/n/n=================FROM ai_service.py line 528=============={data}")
+            
             content = llm_gateway.extract_content_from_response(data)
+            log_llm_interaction_ai_service(messages, content)
             reasoning_from_api = llm_gateway.extract_reasoning_from_response(data)
 
             # Clean up ქ blocks from content if present
@@ -1235,6 +1239,8 @@ async def generate_checklists_for_tasks(
             model=model,
             timeout=300.0,
         )
+        print(f"Checklist Generation AI response\n\n=================FROM ai_service.py [generate_checklists_for_tasks]==============\n{data}")
+        log_llm_interaction_ai_service(messages, content)
         content = content.replace("```json", "").replace("```", "").strip()
         start_idx = content.find("{")
         end_idx = content.rfind("}")
@@ -1332,6 +1338,8 @@ async def generate_task_batch(
             model=model,
             timeout=300.0,
         )
+        print(f"Task Batch AI response\n\n=================FROM ai_service.py [generate_task_batch]==============\n{content}")
+        log_llm_interaction_ai_service(messages, content)
         tasks = _parse_llm_task_response(content)
 
         if not tasks:
@@ -1423,6 +1431,8 @@ async def generate_all_tasks(
             model=model,
             timeout=300.0,
         )
+        print(f"Full Task Generation AI response\n\n=================FROM ai_service.py [generate_all_tasks]==============\n{content}")
+        log_llm_interaction_ai_service(messages, content)
         tasks = _parse_llm_task_response(content)
 
         if not tasks:
@@ -1756,6 +1766,8 @@ async def chat_with_llm(
             model=model,
             timeout=60.0,
         )
+        print(f"Chat AI response\n\n=================FROM ai_service.py [chat_with_llm]==============\n{content}")
+        log_llm_interaction_ai_service(messages, content)
         return content.strip()
 
     except httpx.HTTPStatusError as e:

@@ -26,6 +26,7 @@ from agent_communication_hooks import broadcast_task_started, broadcast_task_com
 import logging
 import llm_gateway
 from agent_bash_ai_integration import get_ai_bash_interface, cleanup_bash_executor
+from llm_logs import log_llm_interaction
 
 logger = logging.getLogger(__name__)
 
@@ -1977,7 +1978,8 @@ Do NOT use vague descriptions like "appropriate fields" — name every field exp
             model=model_name,
             timeout=180.0
         )
-
+        log_llm_interaction(messages, spec_text)
+        print(f"==========================AI Generated Technical Spec================\n\n{spec_text}")
         spec_record = {
             "status": "generated",
             "spec": spec_text,
@@ -2310,6 +2312,8 @@ Write ONLY the system prompt text. Do not include any meta-commentary."""
             model=model_name,
             timeout=60.0
         )
+        log_llm_interaction(messages, dynamic_prompt)
+        print(f"===================Master Agent=============\n\n{dynamic_prompt}")
         if len(dynamic_prompt) > 100:  # Sanity check
             logger.info(f"[{agent_id}] Dynamic prompt generated: {len(dynamic_prompt)} chars")
             return dynamic_prompt
@@ -3071,6 +3075,8 @@ async def _call_ai_for_code(
                 model=model_name,
                 timeout=120.0
             )
+            print(f"========================Code Content===================:\n\n{content}")
+            log_llm_interaction(messages, content)
             last_err = None
             break
         except Exception as e:
@@ -3220,9 +3226,12 @@ CRITICAL RULES TO AVOID CRASHING AGAIN:
 3. Do NOT use Python to write files.
 4. Keep the script under 300 lines total.
 5. Focus on the 10-15 most important files only.
-6. Print [CREATED] for each file and [CHECK] PASS for each validation.
-7. Print === SUMMARY === at the end.
-8. Use ONLY ASCII characters.
+
+⚠️ MANDATORY DIRECTORY CREATION RULE:
+- Before creating ANY file (touch, cat >, echo >, tee, etc.), you MUST first create its parent directory
+- ✅ CORRECT: mkdir -p backend/src/auth/dto && touch backend/src/auth/dto/login.dto.ts
+- ❌ WRONG: touch backend/src/auth/dto/login.dto.ts (will fail if parent dirs don't exist)
+- This is the #1 cause of script crashes - ALWAYS verify parent directories exist first
 """
     else:
         fix_prompt = f"""SELF-HEALING ITERATION {iteration}: FIX ALL ISSUES IN /workspace/
@@ -3258,6 +3267,12 @@ IMPORTANT RULES:
 - Do NOT use Python helpers or Python file-writing code.
 - Keep under 300 lines. Use ONLY ASCII characters.
 - Exit with code 0 if all fixes pass, 1 if any remain.
+
+⚠️ MANDATORY DIRECTORY CREATION RULE:
+- Before creating ANY file (touch, cat >, echo >, tee, etc.), you MUST first create its parent directory
+- ✅ CORRECT: mkdir -p backend/src/auth/dto && touch backend/src/auth/dto/login.dto.ts
+- ❌ WRONG: touch backend/src/auth/dto/login.dto.ts (will fail if parent dirs don't exist)
+- Example for nested paths: mkdir -p $(dirname backend/src/auth/dto/login.dto.ts) && touch backend/src/auth/dto/login.dto.ts
 """
 
     messages = [
@@ -3280,6 +3295,8 @@ IMPORTANT RULES:
                 model=model_name,
                 timeout=120.0
             )
+            print(f"====================Calling AI response for Fix===================\n\n{content}")
+            log_llm_interaction(messages, content)
             last_err = None
             break
         except Exception as e:
@@ -3510,6 +3527,8 @@ DO NOT generate bash scripts or code. DO NOT provide solutions. ONLY identify sp
                 timeout=120.0,  # Increased timeout from 90s to 120s for large workspaces
                 temperature=0.2
             )
+            print(f"==============Self Review AI response================{content}")
+            log_llm_interaction(messages, content)
             last_err = None
             break
         except Exception as e:
@@ -17498,6 +17517,7 @@ Be extremely specific. Every field name must be exact. This is the single source
                                                     model=llm_gateway.resolve_model(),
                                                     timeout=120.0,
                                                 )
+                                                print(f"==========================AI Generated API Contract================\n\n{api_contract}")
                                                 if api_contract:
                                                     full_spec = f"{canonical_spec}\n\n# API CONTRACT\n\n{api_contract}"
                                                     _project_tech_specs[project_token]["spec"] = full_spec

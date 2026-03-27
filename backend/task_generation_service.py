@@ -456,31 +456,43 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
 
 
 def _extract_repository_structure(analysis_text: str) -> str:
-    """Extract the Proposed Repository Structure from section 0.5.1 of Agent Action Plan"""
+    """Extract the repository structure from section 0.5.1 of Agent Action Plan"""
     if not analysis_text:
         return ""
     
     import re
     
-    # Look for section 0.5.1 Proposed Repository Structure
+    # Look for section 0.5.1 - match just the number, ignore title
     patterns = [
-        r'##\s*0\.5\.1\s+Proposed Repository Structure\s*\n(.*?)(?=\n##|\Z)',
-        r'###\s*0\.5\.1\s+Proposed Repository Structure\s*\n(.*?)(?=\n###|\Z)',
-        r'Proposed Repository Structure[:\s]*\n(.*?)(?=\n##|\n###|\Z)',
+        # Match: ## 0.5.1 (with or without title)
+        r'##\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\Z)',
+        # Match: ### 0.5.1 (with or without title)
+        r'###\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n###|\Z)',
+        # Match: 0.5.1 anywhere (with or without title)
+        r'0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
+        # Match: **0.5.1** (bold in markdown)
+        r'\*\*0\.5\.1\*\*\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\*\*\d+\.|\Z)',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, analysis_text, re.IGNORECASE | re.DOTALL)
         if match:
             structure = match.group(1).strip()
+            
             # Extract content from code blocks if present
-            code_block_match = re.search(r'```(?:text|bash|shell)?\s*(.*?)\s*```', structure, re.DOTALL)
+            code_block_match = re.search(r'```(?:text|bash|shell|tree)?\s*(.*?)\s*```', structure, re.DOTALL)
             if code_block_match:
-                return code_block_match.group(1).strip()
-            return structure
+                extracted = code_block_match.group(1).strip()
+                logger.info(f"Extracted repository structure from section 0.5.1 (from code block, {len(extracted)} chars)")
+                return extracted
+            
+            # If no code block, return the raw content
+            if structure:
+                logger.info(f"Extracted repository structure from section 0.5.1 (raw content, {len(structure)} chars)")
+                return structure
     
+    logger.warning("Could not find section 0.5.1 in BRD analysis")
     return ""
-
 
 def _build_project_context(
     project_token: str,
