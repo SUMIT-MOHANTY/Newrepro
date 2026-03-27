@@ -96,14 +96,14 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
     markdown_matches = []
     for pattern in markdown_patterns:
         matches = pattern.findall(content)
-        if matches and len(matches) >= 2:  # At least 2 files to be considered markdown format
+        if matches and len(matches) >= 1:  # At least 1 file to be considered markdown format
             markdown_matches = matches
             break
     
-    if markdown_matches and len(markdown_matches) >= 2:
+    if markdown_matches and len(markdown_matches) >= 1:
         # AI returned markdown file blocks - convert to bash script
         logger.warning(f"AI returned {len(markdown_matches)} markdown file blocks instead of bash script - converting...")
-        script_lines = ["#!/usr/bin/env bash", "set -e", ""]
+        script_lines = ["#!/usr/bin/env bash", "set -e", "cd /workspace", ""]
         
         files_created = 0
         for filepath, lang, file_content in markdown_matches:
@@ -122,6 +122,17 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
             if ' ' in filepath:
                 logger.debug(f"Skipping filepath with spaces: {filepath}")
                 continue
+            
+            # BUG FIX 1: Strip leading project-name segment from ALL paths, not just standard roots
+            # This prevents files from landing in /workspace/my-project/backend/ instead of /workspace/backend/
+            # Pattern: Remove first segment if it's followed by a standard root directory
+            filepath = _re.sub(r'^[^/]+/(backend/|frontend/|shared/|orchestrator/|src/|app/)', r'\1', filepath)
+            # Also handle case where project name wraps the entire path (e.g., "my-project/utils/helper.py")
+            # If path starts with a segment that doesn't look like a standard root, strip it
+            parts = filepath.split('/')
+            if len(parts) > 1 and parts[0] not in ['backend', 'frontend', 'shared', 'orchestrator', 'src', 'app', 'tests', 'docs', 'config']:
+                # First segment is likely a project name wrapper - remove it
+                filepath = '/'.join(parts[1:])
             
             # Determine directory from filepath
             if '/' in filepath:
@@ -1370,16 +1381,58 @@ BULLETPROOF VALIDATION REQUIREMENTS:
 - ALWAYS include database connection error handling
 """
 
-# Bootstrap-specific rules (NO file content generation)
+# Bootstrap-specific rules (NO file content generation) — TECH-STACK AGNOSTIC
 _BOOTSTRAP_CODE_RULES = """
 
-BOOTSTRAP TASK RULES - STRUCTURE ONLY:
+BOOTSTRAP TASK RULES - STRUCTURE ONLY (ANY TECH STACK):
 - Bootstrap tasks create EMPTY placeholder files and directories ONLY
-- DO NOT write any code content into files
+- The project may use ANY tech stack (React, Angular, Vue, Python, Go, vanilla HTML, etc.)
+- You MUST derive the exact structure from the Canonical Project Tree / task description
+- DO NOT hardcode or assume any particular framework directory layout
 - Use ONLY 'touch' command to create empty files
 - Use 'mkdir -p' to create directories
 - DO NOT use 'cat <<EOF' or heredocs - files must remain EMPTY
 - Focus on creating the EXACT directory structure specified in the task
+
+CRITICAL PATH RULES:
+- Files MUST remain in their correct subdirectories — NEVER copy or move them to root
+- If the canonical tree shows a file at src/components/App.jsx, create it EXACTLY as src/components/App.jsx
+- DO NOT use 'cp' or 'mv' commands to duplicate or relocate files to the workspace root
+- Verification checks MUST use the FULL relative path (e.g., src/components/App.jsx NOT App.jsx)
+- NEVER create duplicate files at both subdirectory AND root level
+
+CRITICAL: PYTHON PACKAGE STRUCTURE:
+- For Python projects, EVERY directory that is a Python package MUST contain __init__.py
+- This includes: backend/apps/*/ , backend/apps/*/*/, backend/config/, backend/apps/*/tests/
+- Use 'touch backend/apps/<name>/__init__.py' for each app
+- Use 'touch backend/apps/<name>/tests/__init__.py' for each test directory
+- Missing __init__.py will cause import errors and self-review failures
+
+CRITICAL: EMPTY DIRECTORY PERSISTENCE (GIT):
+- Git does NOT track empty directories — they will be lost unless they contain a file
+- After creating all directories and files, SCAN for any leaf directory that contains NO files
+- For EVERY such empty leaf directory, add a .gitkeep placeholder: touch <dir>/.gitkeep
+- Common examples of directories that may be empty at bootstrap time:
+    - Asset/media directories (images/, fonts/, icons/, videos/, etc.)
+    - Placeholder directories for future content (tests/, docs/, fixtures/, etc.)
+    - Python test directories (*/tests/)
+    - Template directories (templates/, static/, etc.)
+- ALWAYS check: after your touch commands, are there any directories with ZERO files? If yes, add .gitkeep
+
+CRITICAL: DOCKERFILE PLACEHOLDER:
+- If the tech stack implies containerization (most modern stacks), include a Dockerfile
+- Create empty placeholder: touch backend/Dockerfile or touch Dockerfile
+- This satisfies self-review checks for containerization readiness
+
+HOW TO DERIVE STRUCTURE FROM TASK:
+1. Read the task description and Canonical Project Tree carefully
+2. Extract EVERY directory path (lines ending with / or containing subdirectories)
+3. Extract EVERY file path (leaf entries that are not directories)
+4. Create ALL directories first with mkdir -p (in order from shallowest to deepest)
+5. Create ALL files with touch (using their FULL relative paths)
+6. For Python projects: ensure EVERY package directory has __init__.py
+7. Scan for empty directories and add .gitkeep to each
+8. Verify every path from the canonical tree exists
 
 MANDATORY SCRIPT PATTERN FOR BOOTSTRAP:
 ```bash
@@ -1389,34 +1442,62 @@ cd /workspace
 
 echo "Creating project structure..."
 
-# Step 1: Create ALL directories first
-mkdir -p backend/models
-mkdir -p backend/routes
-mkdir -p frontend/components
+# Step 1: Create ALL directories from the canonical tree (adapt to YOUR project's tree)
+mkdir -p <dir1>
+mkdir -p <dir1>/<subdir>
+mkdir -p <dir2>
+mkdir -p <dir3>/<nested>/<deep>
 
-# Step 2: Create ALL files as EMPTY placeholders
-touch backend/models/__init__.py
-touch backend/models/user.py
-touch backend/routes/__init__.py
-touch frontend/components/App.jsx
+# Step 2: Create ALL files as EMPTY placeholders (use FULL relative paths from canonical tree)
+touch <dir1>/<file1>
+touch <dir1>/<subdir>/<file2>
+touch <dir2>/<file3>
+touch <root-level-file>
 touch README.md
+
+# Step 3: Add Python __init__.py files to ALL package directories (CRITICAL)
+touch <dir1>/__init__.py
+touch <dir1>/<subdir>/__init__.py
+touch <dir2>/tests/__init__.py
+
+# Step 4: Add .gitkeep to any directories that ended up empty (no files inside them)
+# Check each leaf directory — if it has no files, add .gitkeep so Git preserves it
+touch <dir3>/<nested>/<deep>/.gitkeep
+
+# Step 5: Add Dockerfile placeholder if applicable
+touch Dockerfile  # or touch backend/Dockerfile
 
 echo "[CREATED] All directories and files"
 
-# Step 3: Verify structure
-[ -d "backend" ] && echo "[CHECK] PASS: backend exists" || echo "[CHECK] FAIL"
-[ -f "README.md" ] && echo "[CHECK] PASS: README exists" || echo "[CHECK] FAIL"
+# Step 6: Verify structure using FULL relative paths from the canonical tree
+[ -d "<dir1>" ] && echo "[CHECK] PASS: <dir1> exists" || echo "[CHECK] FAIL"
+[ -f "<dir1>/<file1>" ] && echo "[CHECK] PASS: <file1> exists" || echo "[CHECK] FAIL"
+[ -f "<dir1>/<subdir>/__init__.py" ] && echo "[CHECK] PASS: __init__.py exists" || echo "[CHECK] FAIL"
+[ -f "Dockerfile" ] && echo "[CHECK] PASS: Dockerfile exists" || echo "[CHECK] FAIL"
 
+echo "=== SUMMARY ==="
+echo "Project structure created successfully."
 ls -R
 ```
 
+NOTE: The paths above (e.g., <dir1><file1>
+React project: src/components/, src/hooks/, public/, etc.
+Angular project: src/app/components/, src/app/services/, src/assets/, etc.
+Python backend: backend/models/, backend/routes/, backend/utils/, etc.
+Vanilla HTML/CSS/JS: css/, js/, assets/images/, etc.
 CRITICAL BOOTSTRAP RULES:
-- Files MUST be EMPTY (use touch only)
-- NO cat <<EOF allowed
-- NO echo with content allowed
-- Create directories before files
-- Verify structure with checklist items
-- Print [CREATED] and [CHECK] messages
+Files MUST be EMPTY (use touch only)
+NO cat <<EOF allowed
+NO echo with content allowed (except README.md title is acceptable)
+Create directories BEFORE files
+Add .gitkeep to ALL empty leaf directories (directories with no files)
+Add init.py to ALL Python package directories
+Add Dockerfile placeholder for containerized stacks
+Verify structure with checklist items using FULL relative paths
+Print [CREATED] and [CHECK] messages
+NEVER use 'cp' or 'mv' to copy files to root directory
+Verification checks MUST use the FULL subdirectory path (src/App.jsx NOT App.jsx)
+Adapt to whatever tech stack the canonical tree specifies — do NOT assume any specific framework
 """
 
 # CRITICAL: Keep scripts compact (<300 lines) to avoid AI token-limit truncation.
@@ -1561,55 +1642,57 @@ SPECIAL RULE FOR BOOTSTRAP TASKS (TASK-00):
 - CRITICAL: Create files directly under /workspace/, NOT in a subdirectory like /workspace/project-name/
 - CRITICAL: If the structure shows "my-project/backend/app.py", create it as "/workspace/backend/app.py" (ignore the root folder name)
 - CRITICAL: The /workspace/ directory IS the project root - do not create an additional nesting level
-- Example script pattern (CORRECT - files are EMPTY):
+- Example script pattern (CORRECT - files are EMPTY, tech-stack agnostic):
   ```bash
   #!/usr/bin/env bash
   set -e
   
   echo "Creating project structure..."
   
-  # Step 1: Create ALL directories first
-  mkdir -p /workspace/backend/models
-  mkdir -p /workspace/backend/routes  
-  mkdir -p /workspace/frontend/components
-  mkdir -p /workspace/frontend/styles
+  # Step 1: Create ALL directories from the canonical tree
+  mkdir -p /workspace/<dir1>/<subdir1>
+  mkdir -p /workspace/<dir1>/<subdir2>
+  mkdir -p /workspace/<dir2>/<subdir3>
+  mkdir -p /workspace/<dir3>
   
-  # Step 2: Create ALL files as EMPTY placeholders using touch
-  touch /workspace/backend/models/__init__.py
-  touch /workspace/backend/models/user.py
-  touch /workspace/backend/routes/__init__.py
-  touch /workspace/backend/routes/api.py
-  touch /workspace/backend/app.py
-  touch /workspace/frontend/components/App.jsx
-  touch /workspace/frontend/index.html
+  # Step 2: Create ALL files as EMPTY placeholders using touch (FULL paths)
+  touch /workspace/<dir1>/<subdir1>/<file1>
+  touch /workspace/<dir1>/<subdir2>/<file2>
+  touch /workspace/<dir2>/<subdir3>/<file3>
+  touch /workspace/<dir2>/<file4>
+  touch /workspace/<root-file>
   touch /workspace/README.md
+  
+  # Step 3: Add .gitkeep to empty leaf directories so Git preserves them
+  touch /workspace/<dir3>/.gitkeep
   
   echo "[CREATED] All directories and files"
   
-  # Step 3: Verify checklist items
-  [ -d "/workspace/backend" ] && echo "[CHECK] PASS: backend exists" || echo "[CHECK] FAIL"
+  # Step 4: Verify checklist items using FULL relative paths
+  [ -d "/workspace/<dir1>" ] && echo "[CHECK] PASS: <dir1> exists" || echo "[CHECK] FAIL"
+  [ -f "/workspace/<dir1>/<subdir1>/<file1>" ] && echo "[CHECK] PASS: <file1> exists" || echo "[CHECK] FAIL"
   [ -f "/workspace/README.md" ] && echo "[CHECK] PASS: README exists" || echo "[CHECK] FAIL"
   
   ls -R /workspace/
   ```
+  NOTE: Replace <dir1>, <file1>, etc. with ACTUAL paths from the Canonical Project Tree.
+  The tree may describe React, Angular, Python, Go, etc. — adapt accordingly.
 
 WRONG EXAMPLE - DO NOT DO THIS FOR BOOTSTRAP:
   ```bash
   # ❌ WRONG - This writes content into files (DO NOT DO THIS)
-  cat <<'EOF' > /workspace/backend/app.py
-  from flask import Flask
-  app = Flask(__name__)
+  cat <<'EOF' > /workspace/some/path/file.ext
+  actual code content here
   EOF
   
   # ❌ WRONG - This also writes content (DO NOT DO THIS)
-  echo "from flask import Flask" > /workspace/backend/app.py
-  echo "app = Flask(__name__)" >> /workspace/backend/app.py
+  echo "code content" > /workspace/some/path/file.ext
   ```
 
 CORRECT EXAMPLE - DO THIS FOR BOOTSTRAP:
   ```bash
-  # ✅ CORRECT - Creates empty file
-  touch /workspace/backend/app.py
+  # ✅ CORRECT - Creates empty file with full path
+  touch /workspace/some/path/file.ext
   ```
 
 CRITICAL: NEVER create or commit these files:
@@ -3102,7 +3185,6 @@ async def _call_ai_for_fix(
             f"ALL file operations must be inside {project_root}/ - NEVER in /workspace/ root\n"
             f"Use: cd {project_root} && <your commands>\n\n"
         )
-    supplementary_context = ""
     if tech_spec:
         supplementary_context += f"\nTECHNICAL SPECIFICATION (follow exact naming and conventions):\n{tech_spec[:2000]}\n"
     if workspace_tree:
@@ -3259,6 +3341,19 @@ async def _call_ai_for_self_review(
         else:
             # Simple truncation if no FILE: markers found
             workspace_tree = workspace_tree[:MAX_WORKSPACE_SIZE] + "\n\n... [Truncated due to size limit]"
+        
+        import subprocess
+        try:
+            # Get actual ls -R output for critical directories
+            dir_listing = subprocess.run(
+                ["ls", "-R", "/workspace"], 
+                capture_output=True, 
+                text=True, 
+                timeout=10
+            ).stdout[:5000]  # Limit size
+            workspace_tree += f"\n\nACTUAL DIRECTORY LISTING:\n{dir_listing}\n"
+        except Exception as e:
+            logger.warning(f"Could not get directory listing: {e}")
 
     system_prompt = """You are a Code Review AI. Your job is to analyze code structure and identify specific issues.
 
@@ -3272,6 +3367,9 @@ CRITICAL RULES:
 
 Your response should be analytical and diagnostic, not prescriptive."""
     
+    # Detect bootstrap task EARLY so we can tailor the review prompt
+    is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
+
     review_prompt = f"""SELF-REVIEW TASK:
 You are about to commit your work to the main repository. Before you do, evaluate your generated workspace tree against the original task description and technical requirements.
 
@@ -3285,20 +3383,65 @@ ORIGINAL TASK:
     review_prompt += f"""GENERATED WORKSPACE TREE:
 {workspace_tree}
 
-VALIDATION CRITERIA:
+"""
+
+    if is_bootstrap:
+        review_prompt += """VALIDATION CRITERIA FOR BOOTSTRAP TASKS:
+This is a BOOTSTRAP / STRUCTURE-ONLY task. The agent's job is to create the directory
+structure and empty placeholder files from the Canonical Project Tree.
+
+1. Check if ALL directories listed in the Canonical Project Tree exist in the workspace
+2. Check if ALL files listed in the Canonical Project Tree exist in the workspace
+3. Files should be EMPTY or contain at most a single-line placeholder comment
+4. IMPORTANT: Extra files or directories beyond the canonical tree are ACCEPTABLE
+   - The canonical tree may have been enriched by the master agent
+   - .gitkeep files in empty directories are expected and correct
+   - Do NOT flag extra files as failures
+5. IMPORTANT: Path checking must use EXACT relative paths from workspace root
+   - A file at "backend/apps/users/urls.py" must be checked at that EXACT path
+   - Do NOT claim files are in wrong locations unless you've verified with ls -R
+   - Use [ -f "path" ] && echo "EXISTS: path" to verify before reporting missing
+6. Only FAIL if REQUIRED files or directories from the canonical tree are MISSING
+7. Only FAIL if files contain substantial application code (multi-line implementations)
+
+WHAT TO CHECK:
+- Are all directories from the canonical tree present?
+- Are all files from the canonical tree present in the correct subdirectories?
+- Are files empty (or near-empty with just a placeholder)?
+
+WHAT TO IGNORE (do NOT fail for these):
+- Extra files not in the canonical tree (these are acceptable)
+- Extra directories not in the canonical tree (these are acceptable)
+- .gitkeep files (these are expected)
+- Single-line placeholder comments in files
+- __pycache__ or .pyc files (these are auto-generated)
+
+RESPONSE FORMAT:
+Line 1: Reply EXACTLY with either 'PASS' or 'FAIL'
+Line 2+: If FAIL, list ONLY genuinely missing items with EXACT paths:
+  - "Missing directory: backend/apps/reports/tests"
+  - "Missing file: backend/apps/users/urls.py"
+  - "Missing file: backend/Dockerfile"
+  - "File has substantial code: backend/apps/users/models.py (should be empty for bootstrap)"
+
+CRITICAL: Before reporting FAIL, verify your path assumptions:
+- If you think a file is in the wrong location, run: find /workspace -name "filename"
+- If you think a directory is missing, run: ls -la /workspace/parent/
+- Only report FAIL if you can confirm with actual directory listings
+
+DO NOT generate bash scripts or code. DO NOT provide solutions. ONLY identify specific issues."""
+    else:
+        review_prompt += """VALIDATION CRITERIA FOR NON-BOOTSTRAP TASKS:
+The project structure was already created by the bootstrap agent.
+Agents should ONLY add content to existing files.
+
 1. Compare the GENERATED WORKSPACE TREE with the ORIGINAL TASK requirements
 2. Check if all required directories are present
 3. Check if all required files are present in correct locations
 4. Identify SPECIFIC missing directories or files
 5. Identify SPECIFIC files in wrong locations
-6. For bootstrap tasks: verify files are EMPTY (no content)
-7. For NON-bootstrap tasks: verify NO NEW files or directories were created (structure is fixed after bootstrap)
-
-CRITICAL FOR NON-BOOTSTRAP TASKS:
-- The project structure was already created by the bootstrap agent
-- Agents should ONLY add content to existing files
-- Creating new files or directories is FORBIDDEN
-- If you see new files that weren't in the original structure, mark as FAIL
+6. Creating NEW files or directories that were NOT in the original bootstrap structure is FORBIDDEN
+7. If you see new files that weren't in the original structure, mark as FAIL
 
 RESPONSE FORMAT:
 Line 1: Reply EXACTLY with either 'PASS' or 'FAIL'
@@ -3306,23 +3449,10 @@ Line 2+: If FAIL, provide a SPECIFIC, ACTIONABLE list of issues:
   - "Missing directory: path/to/dir"
   - "Missing file: path/to/file.ext"
   - "Wrong location: file.ext should be in dir/ not root/"
-  - "File has content: file.ext should be empty for bootstrap"
   - "Unauthorized new file: path/to/newfile.ext (structure is fixed after bootstrap)"
   - "Unauthorized new directory: path/to/newdir/ (structure is fixed after bootstrap)"
-  
-DO NOT generate bash scripts in your response.
-DO NOT provide solutions or fixes.
-ONLY identify specific issues in a clear, structured format.
 
-Example FAIL response:
-FAIL
-Missing directory: backend/models
-Missing directory: frontend/components
-Missing file: backend/models/__init__.py
-Missing file: README.md
-Wrong location: app.py should be in backend/ not root/
-File has content: config.py should be empty for bootstrap task
-Unauthorized new file: backend/extra.py (not in original structure)"""
+DO NOT generate bash scripts or code. DO NOT provide solutions. ONLY identify specific issues."""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -3330,7 +3460,7 @@ Unauthorized new file: backend/extra.py (not in original structure)"""
     ]
     
     # CRITICAL: Log self-review prompt for ALL tasks (for debugging)
-    is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
+    # NOTE: is_bootstrap was already detected above for prompt tailoring
     try:
         import datetime as dt
         timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -14507,6 +14637,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 "tasks_completed": 0,
                 "duration": 0,
             }
+            error_msg = str(e)  # FIX: Define error_msg for use in blocked_reason below
 
             if attempt < MAX_RETRIES:
                 delay = RETRY_DELAYS[attempt - 1]
@@ -16376,7 +16507,7 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                     "message": "Initiating AI self-review before committing..."
                 })
                 
-                max_fix_attempts = 3
+                max_fix_attempts = 5
                 fix_attempt = 0
                 passed_review = False
                 review_feedback = ""
@@ -16460,13 +16591,20 @@ BOOTSTRAP TASK RULES:
 4. DO NOT add any content to files
 5. Files must remain EMPTY
 6. For "Missing file: X" → use: touch X
-7. For "Missing directory: X" → use: mkdir -p X
-8. For "Wrong location: X should be in Y" → use: mkdir -p Y && mv X Y/ (if exists) or touch Y/X
+7. For "Missing directory: X" → use: mkdir -p X && touch X/.gitkeep
+8. For "Wrong location: X should be in Y" → FIRST remove root copy: rm -f X, THEN ensure subdirectory file exists: mkdir -p Y && touch Y/X
 9. For "File has content: X should be empty" → use: > X (truncate to empty)
-10. For "Extra files: X" → use: rm -f X (remove extra files)
+10. For "Extra files: X" or "Wrong location" root copies → use: rm -f X (remove extra files from root)
 
-Generate a MINIMAL bash script (under 30 lines) that fixes ONLY these specific issues.
-Use ONLY touch and mkdir commands. NO file content generation.
+CRITICAL RULES FOR THIS FIX:
+- Git does NOT track empty directories. For EVERY empty directory, add: touch <dir>/.gitkeep
+- NEVER copy or move files to root. Files belong in their subdirectories (e.g., css/main.css NOT main.css)
+- If files were incorrectly copied to root, REMOVE the root copies with rm -f
+- When creating missing directories, ALWAYS add .gitkeep: mkdir -p <dir> && touch <dir>/.gitkeep
+
+Generate a MINIMAL bash script (under 40 lines) that fixes ONLY these specific issues.
+Script MUST start with: #!/usr/bin/env bash\nset -e\ncd /workspace
+Use ONLY touch, mkdir, and rm commands. NO file content generation.
 """
                                 else:
                                     fix_prompt = f"""

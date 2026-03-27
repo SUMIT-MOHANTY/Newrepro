@@ -135,7 +135,7 @@ Context:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                model="gpt-4o-mini",
+                model=llm_gateway.resolve_model(),
                 temperature=0.3,
                 max_tokens=1000
             )
@@ -214,7 +214,7 @@ Please interpret these results and provide insights."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                model="gpt-4o-mini",
+                model=llm_gateway.resolve_model(),
                 temperature=0.5,
                 max_tokens=800
             )

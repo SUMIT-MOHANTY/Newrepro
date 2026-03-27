@@ -185,6 +185,15 @@ Cover: Frontend, UI Library, Charting, Backend, Language, ORM, Database, Caching
 6. Label each component descriptively 
 7. Include specific technology names where relevant 
 
+**CRITICAL Mermaid Syntax Rules (MUST FOLLOW — violations cause render failures):**
+1. **Matched subgraph/end pairs**: Every `subgraph` MUST have exactly ONE corresponding `end`. Count them — the number of `end` keywords must EQUAL the number of `subgraph` keywords. Do NOT add extra `end` at the bottom of the diagram.
+2. **Quote labels with special characters**: If a node label contains parentheses, brackets, ampersands, or other special characters, wrap it in quotes: `id["Label (with parens)"]` NOT `id[Label (with parens)]`
+3. **Arrows OUTSIDE subgraphs**: Place all connection lines (`-->`, `---`, `-.->`) AFTER the last `end` keyword, NOT inside subgraph blocks. Connections inside subgraphs often cause parsing errors.
+4. **No HTML tags in labels**: Use only plain text in node labels. No `<br>`, `<b>`, or any HTML.
+5. **Valid node IDs**: Node IDs must be alphanumeric (with underscores). No spaces, dashes, or dots in IDs. Use `AUTH_SERVICE` not `auth-service`.
+6. **Ampersand (&) in connections**: The `&` operator for multi-node connections (e.g., `A & B --> C`) is valid ONLY in Mermaid v10+. For maximum compatibility, prefer separate lines: `A --> C` and `B --> C`.
+7. **Self-check before output**: Before outputting the diagram, mentally verify: (a) subgraph count == end count, (b) no stray end at bottom, (c) all node IDs in edges exist as defined nodes.
+
 - Describe Component Interaction Model in detail:
   * Write path: How data flows from user input to database
   * Read path: How data is retrieved and displayed
@@ -216,6 +225,7 @@ For EACH major component (A, B, C, ...):
 
 ### 0.4.2 Data Models and Schemas
 - Mermaid ER diagram with ALL entities and relationships
+  **ER Diagram Syntax Rules:** Use erDiagram (no 'end' keyword needed for ER diagrams). Use proper relationship syntax: ||--o{{, }}o--||, etc. Quote attribute names if they contain spaces.
 - Key Relationship Rules (1-to-many, write-once constraints, etc.)
 - Validation Rules (business rules enforced at service level)
 
@@ -317,6 +327,7 @@ Provide a definitive recommendation based on the clarity of requirements, techni
 - Use proper Markdown syntax: # for h1, ## for h2, ### for h3, etc.
 - Use Markdown tables with | separators
 - Use ```mermaid code blocks for Mermaid diagrams
+- **Mermaid Validation**: Before outputting ANY Mermaid block, self-check: (1) count of `subgraph` == count of `end`, (2) no stray `end` after the last subgraph closure, (3) all node IDs referenced in edges are defined, (4) labels with special chars are quoted
 - Use - or * for unordered lists, 1. 2. 3. for ordered lists
 - Use **bold** and *italic* for emphasis
 - Use `inline code` and ```language code blocks for code

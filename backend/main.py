@@ -5200,7 +5200,7 @@ async def _sanitize_agent_for_user_with_public_check(
                 match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", repo_url)
                 if match:
                     owner, repo = match.groups()
-                    safe_agent["is_public_repo"] = await github_service.is_repo_public(owner, repo)
+                    safe_agent["is_public_repo"] = await github_service.is_repo_public(owner, repo, token=settings.GITHUB_TOKEN)
             # Check if it's Azure DevOps repo
             elif "dev.azure.com" in repo_url or "visualstudio.com" in repo_url:
                 parsed = azure_devops_service.parse_azure_repo_url(repo_url)

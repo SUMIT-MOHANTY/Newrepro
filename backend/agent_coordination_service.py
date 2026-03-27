@@ -192,36 +192,29 @@ class AgentCoordinationService:
         file_path: str,
         lock_type: str = "write"
     ) -> Dict[str, Any]:
-        """Request exclusive access to a file"""
+        """Request exclusive access to a file - BUG FIX 2: Uses unified locking through agent_contract_store"""
+        import agent_contract_store
         
-        if project_token not in self.coordination_state:
-            return {"success": False, "error": "Project not found"}
-            
-        state = self.coordination_state[project_token]
+        success = await agent_contract_store.acquire_file_lock(
+            project_token, agent_id, file_path, timeout_seconds=60
+        )
         
-        # Check if file is already locked
-        if file_path in state["file_locks"]:
-            existing_lock = state["file_locks"][file_path]
-            if existing_lock["agent_id"] != agent_id:
-                # File is locked by another agent
-                return {
-                    "success": False,
-                    "error": "File locked by another agent",
-                    "locked_by": existing_lock["agent_id"],
-                    "locked_at": existing_lock["locked_at"]
-                }
+        if not success:
+            return {
+                "success": False,
+                "error": "File locked by another agent",
+            }
         
-        # Grant the lock
-        state["file_locks"][file_path] = {
-            "agent_id": agent_id,
-            "locked_at": datetime.utcnow().isoformat(),
-            "lock_type": lock_type
-        }
-        
-        # Update agent's lock list
-        agent_locks = state["agents"][agent_id]["file_locks"]
-        if file_path not in agent_locks:
-            agent_locks.append(file_path)
+        # BUG FIX 2: Also update local state to keep both systems in sync
+        if project_token in self.coordination_state:
+            state = self.coordination_state[project_token]
+            state["file_locks"][file_path] = {
+                "agent_id": agent_id,
+                "acquired_at": datetime.utcnow().isoformat(),
+                "lock_type": lock_type
+            }
+            if agent_id in state["agents"]:
+                state["agents"][agent_id]["file_locks"].append(file_path)
         
         await self._log_coordination_event(
             project_token,
@@ -242,37 +235,29 @@ class AgentCoordinationService:
         agent_id: str, 
         file_path: str
     ) -> bool:
-        """Release file lock"""
+        """Release file lock - BUG FIX 2: Keeps both locking systems in sync"""
+        import agent_contract_store
         
-        if project_token not in self.coordination_state:
-            return False
-            
-        state = self.coordination_state[project_token]
+        await agent_contract_store.release_file_lock(project_token, agent_id, file_path)
         
-        # Check if agent owns the lock
-        if file_path in state["file_locks"]:
-            lock_info = state["file_locks"][file_path]
-            if lock_info["agent_id"] == agent_id:
-                # Remove the lock
+        # BUG FIX 2: Also update local state to keep both systems in sync
+        if project_token in self.coordination_state:
+            state = self.coordination_state[project_token]
+            if file_path in state["file_locks"]:
                 del state["file_locks"][file_path]
-                
-                # Remove from agent's lock list
-                agent_locks = state["agents"][agent_id]["file_locks"]
-                if file_path in agent_locks:
-                    agent_locks.remove(file_path)
-                
-                await self._log_coordination_event(
-                    project_token,
-                    CoordinationEventType.FILE_LOCK_RELEASE,
-                    {
-                        "agent_id": agent_id,
-                        "file_path": file_path
-                    }
-                )
-                
-                return True
+            if agent_id in state["agents"] and file_path in state["agents"][agent_id]["file_locks"]:
+                state["agents"][agent_id]["file_locks"].remove(file_path)
         
-        return False
+        await self._log_coordination_event(
+            project_token,
+            CoordinationEventType.FILE_LOCK_RELEASE,
+            {
+                "agent_id": agent_id,
+                "file_path": file_path
+            }
+        )
+        
+        return True
     
     async def update_shared_context(
         self, 
@@ -597,10 +582,27 @@ class AgentCoordinationService:
                 await self._send_to_agent(project_token, agent_id, message)
     
     async def _send_to_agent(self, project_token: str, agent_id: str, message: Dict[str, Any]):
-        """Send message to specific agent"""
-        # This would integrate with your agent communication system
-        # For now, we'll just log it
-        logger.info(f"Message to {agent_id} in {project_token}: {message}")
+        """Send message to specific agent - BUG FIX 3: Now actually sends messages instead of just logging"""
+        import agent_communication_service
+        from database import SessionLocal
+        
+        db = SessionLocal()
+        try:
+            msg_text = str(message.get("type", "coordination_message"))
+            await agent_communication_service.send_message(
+                db=db,
+                project_token=project_token,
+                from_agent="system_coordinator",
+                to_agent=agent_id,
+                message=msg_text,
+                msg_type="COORDINATION",
+                payload=message
+            )
+            logger.info(f"Sent coordination message to {agent_id}: {msg_text}")
+        except Exception as e:
+            logger.error(f"Failed to send coordination message to {agent_id}: {e}")
+        finally:
+            db.close()
     
     async def _check_dependency_resolution(
         self, 
