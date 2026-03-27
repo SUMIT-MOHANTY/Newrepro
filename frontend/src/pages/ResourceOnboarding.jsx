@@ -464,7 +464,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
           )}
 
           {/* Organization capacity summary removed on request */}
-
+{/* 
           {existingSharedCount > 0 && (
             <div className="rounded-xl border border-app-border-light bg-app-bg-muted px-4 py-3">
               <p className="text-xs font-bold text-app-text-main">Shared agents already created (org-wide)</p>
@@ -488,7 +488,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 )}
               </div>
             </div>
-          )}
+          )} */}
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2 border-t border-app-border-light">
             <div className="text-xs text-app-text-muted space-y-1">

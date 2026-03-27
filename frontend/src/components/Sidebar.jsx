@@ -24,6 +24,7 @@ export default function Sidebar({
 }) {
     const navigate = useNavigate();
     const location = useLocation();
+    const [navExpanded, setNavExpanded] = useState(true);
     // Agents state
     const [agents, setAgents] = useState([]);
     const [agentsLoading, setAgentsLoading] = useState(false);
@@ -177,7 +178,22 @@ export default function Sidebar({
                     </div>
                 </div>
 
-                <div className="p-4 border-t border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
+                <div className="border-t border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
+                    <button
+                        type="button"
+                        onClick={() => setNavExpanded((v) => !v)}
+                        className="flex items-center justify-between w-full px-4 py-3 text-xs font-semibold text-app-text-muted uppercase tracking-wider hover:text-white transition-colors"
+                    >
+                        <span>Navigation</span>
+                        <svg
+                            className={`w-3 h-3 transition-transform duration-200 ${navExpanded ? 'rotate-180' : ''}`}
+                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                        >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </button>
+                    <div className={`overflow-hidden transition-all duration-300 ease-in-out ${navExpanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'}`}>
+                    <div className="px-4 pb-4">
                     {canAccess('/status-dashboard') && (
                         <button
                             onClick={() => setCurrentView('statusDashboard')}
@@ -259,6 +275,8 @@ export default function Sidebar({
                             </button>
                         </div>
                     )}
+                    </div>
+                    </div>
                 </div>
             </div>
         </>
