@@ -6306,36 +6306,49 @@ async def add_agent(
 
     # Enforce org quota by requested agent kind and sub_type for the project.
     quota = _get_or_init_org_agent_quota(db, organization_name)
-    org_usage = _count_org_agent_usage(db, organization_name)
     agent_sub_type = (_normalized_text(getattr(request, 'sub_type', None) or '').lower()) or 'dev'
 
-    # Auto-expand quota to accommodate new agent (quota is a high-water mark, not a hard cap)
+    # Check if adding this agent would exceed quota limits
+    # Shared agents: check organization-wide usage (shared across all projects)
+    # Dedicated agents: check per-project usage (each project has its own pool)
     if agent_kind == "dedicated":
+        # For dedicated agents, check usage within THIS project only
+        project_usage = _count_org_agent_usage_for_project(db, organization_name, project_token)
         if agent_sub_type == "dev":
-            needed = org_usage.get("dedicated_dev", 0) + 1
-            if needed > int(quota.dedicated_dev_quota or 0):
-                quota.dedicated_dev_quota = needed
-                quota.dedicated_quota = int(quota.dedicated_quota or 0) + 1
-                db.commit()
+            current_used = project_usage.get("dedicated_dev", 0)
+            quota_limit = int(quota.dedicated_dev_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Dedicated Dev agent quota exceeded for this project. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
         elif agent_sub_type == "test":
-            needed = org_usage.get("dedicated_test", 0) + 1
-            if needed > int(quota.dedicated_test_quota or 0):
-                quota.dedicated_test_quota = needed
-                quota.dedicated_quota = int(quota.dedicated_quota or 0) + 1
-                db.commit()
+            current_used = project_usage.get("dedicated_test", 0)
+            quota_limit = int(quota.dedicated_test_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Dedicated Test agent quota exceeded for this project. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
     else:
+        # For shared agents, check organization-wide usage (shared across all projects)
+        org_usage = _count_org_agent_usage(db, organization_name)
         if agent_sub_type == "dev":
-            needed = org_usage.get("shared_dev", 0) + 1
-            if needed > int(quota.shared_dev_quota or 0):
-                quota.shared_dev_quota = needed
-                quota.shared_quota = int(quota.shared_quota or 0) + 1
-                db.commit()
+            current_used = org_usage.get("shared_dev", 0)
+            quota_limit = int(quota.shared_dev_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Shared Dev agent quota exceeded. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
         elif agent_sub_type == "test":
-            needed = org_usage.get("shared_test", 0) + 1
-            if needed > int(quota.shared_test_quota or 0):
-                quota.shared_test_quota = needed
-                quota.shared_quota = int(quota.shared_quota or 0) + 1
-                db.commit()
+            current_used = org_usage.get("shared_test", 0)
+            quota_limit = int(quota.shared_test_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Shared Test agent quota exceeded. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
 
     # CRITICAL: Serialize agent creation per project to prevent race conditions
     # Multiple parallel calls would all see the same DB state and create duplicate agent_01
