@@ -3317,6 +3317,7 @@ async def _call_ai_for_self_review(
     agent_type: str,
     workspace_tree: str,
     tech_spec: str = "",
+    project_root: str = "/workspace",
 ) -> tuple[bool, str]:
     """Call AI to generate a self-review of the project structure before pushing."""
     url = llm_gateway.resolve_url()
@@ -3384,8 +3385,18 @@ CRITICAL RULES:
 
 Your response should be analytical and diagnostic, not prescriptive."""
     
-    # Detect bootstrap task EARLY so we can tailor the review prompt
-    is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
+    # Detect bootstrap task EARLY so we can tailor the review prompt.
+    # Bootstrap = the agent's job was to create EMPTY placeholder files/dirs only.
+    # We use multiple signals so this never mis-classifies as a content task.
+    _td_lower = task_description.lower()
+    is_bootstrap = (
+        "bootstrap" in _td_lower
+        or "task-00" in _td_lower
+        or "===begin_directory_structure===" in _td_lower
+        or "structure only" in _td_lower
+        or "touch only" in _td_lower
+        or ("placeholder" in _td_lower and "empty" in _td_lower)
+    )
 
     review_prompt = f"""SELF-REVIEW TASK:
 You are about to commit your work to the main repository. Before you do, evaluate your generated workspace tree against the original task description and technical requirements.
@@ -3394,6 +3405,19 @@ ORIGINAL TASK:
 {task_description}
 
 """
+
+    # Prepend project-root context AFTER review_prompt is initialised so the AI
+    # reviewer knows the tree is rooted inside a subdirectory and won't falsely
+    # flag the subdirectory itself as missing.
+    if project_root and project_root != "/workspace":
+        project_name = project_root.split("/")[-1]
+        review_prompt = (
+            f"NOTE: All files for this project live inside the '{project_name}/' subdirectory "
+            f"(absolute path: {project_root}/). The workspace tree shown below is relative to "
+            f"{project_root}/, NOT to /workspace/. When you see a file listed as 'index.html', "
+            f"it means '{project_name}/index.html' exists. The '{project_name}/' directory itself "
+            f"IS present \u2014 do not flag it as missing.\n\n"
+        ) + review_prompt
     if tech_spec:
         review_prompt += f"TECH SPEC:\n{tech_spec[:2000]}\n\n"
 
@@ -3404,70 +3428,76 @@ ORIGINAL TASK:
 
     if is_bootstrap:
         review_prompt += """VALIDATION CRITERIA FOR BOOTSTRAP TASKS:
-This is a BOOTSTRAP / STRUCTURE-ONLY task. The agent's job is to create the directory
-structure and empty placeholder files from the Canonical Project Tree.
+This is a BOOTSTRAP / STRUCTURE-ONLY task. The agent creates EMPTY placeholder files and
+directories only. NO file content is expected. Files being empty IS CORRECT.
 
-1. Check if ALL directories listed in the Canonical Project Tree exist in the workspace
-2. Check if ALL files listed in the Canonical Project Tree exist in the workspace
-3. Files should be EMPTY or contain at most a single-line placeholder comment
-4. IMPORTANT: Extra files or directories beyond the canonical tree are ACCEPTABLE
-   - The canonical tree may have been enriched by the master agent
-   - .gitkeep files in empty directories are expected and correct
-   - Do NOT flag extra files as failures
-5. IMPORTANT: Path checking must use EXACT relative paths from workspace root
-   - A file at "backend/apps/users/urls.py" must be checked at that EXACT path
-   - Do NOT claim files are in wrong locations unless you've verified with ls -R
-   - Use [ -f "path" ] && echo "EXISTS: path" to verify before reporting missing
-6. Only FAIL if REQUIRED files or directories from the canonical tree are MISSING
-7. Only FAIL if files contain substantial application code (multi-line implementations)
+ABSOLUTE RULES — read every rule before responding:
 
-WHAT TO CHECK:
-- Are all directories from the canonical tree present?
-- Are all files from the canonical tree present in the correct subdirectories?
-- Are files empty (or near-empty with just a placeholder)?
+RULE 1 — EMPTY FILES ARE CORRECT AND EXPECTED.
+  - A file that exists but has no content is CORRECT for a bootstrap task.
+  - DO NOT fail because a file is empty, has no content, or lacks implementation.
+  - Comments in the canonical tree like "# quick start" or "# validation logic" are
+    LABELS describing future content — they are NOT requirements for the bootstrap step.
+  - NEVER report "Missing file: X" when X is present but empty. Present + empty = PASS.
 
-WHAT TO IGNORE (do NOT fail for these):
-- Extra files not in the canonical tree (these are acceptable)
-- Extra directories not in the canonical tree (these are acceptable)
-- .gitkeep files (these are expected)
-- Single-line placeholder comments in files
-- __pycache__ or .pyc files (these are auto-generated)
+RULE 2 — .gitkeep FILES ARE EXPECTED IN EMPTY DIRECTORIES.
+  - Git cannot track empty directories, so bootstrap agents add .gitkeep files.
+  - .gitkeep in any directory is CORRECT. Never flag it as unauthorized or wrong location.
+  - public/.gitkeep is CORRECT. src/css/.gitkeep is CORRECT. Do NOT remove or flag them.
+
+RULE 3 — ONLY FAIL FOR GENUINELY MISSING PATHS.
+  - Only report FAIL if a file or directory from the canonical tree is entirely absent
+    from the workspace tree shown above.
+  - A directory containing only .gitkeep is PRESENT — do not report it as missing.
+  - If a path appears in the workspace tree in any form, it is PRESENT.
+
+RULE 4 — EXTRA FILES ARE ACCEPTABLE.
+  - Files or directories not in the canonical tree are fine. Do not flag them.
+  - __pycache__, .pyc, node_modules scaffold files, lock files — all acceptable.
+
+RULE 5 — DO NOT INVENT REQUIREMENTS.
+  - Only check against the Canonical Project Tree listed in ORIGINAL TASK above.
+  - Do not add requirements from outside the task (e.g., "HTML files need a skeleton").
+  - Bootstrap only requires: paths exist. Content is irrelevant.
+
+HOW TO EVALUATE:
+  For each path in the Canonical Project Tree:
+    → If it appears in GENERATED WORKSPACE TREE (even empty, even with .gitkeep) → PRESENT
+    → If it does NOT appear at all → MISSING (report it)
+  If ALL paths are present → reply PASS
+  If ANY path is missing → reply FAIL and list only those missing paths
 
 RESPONSE FORMAT:
-Line 1: Reply EXACTLY with either 'PASS' or 'FAIL'
-Line 2+: If FAIL, list ONLY genuinely missing items with EXACT paths:
-  - "Missing directory: backend/apps/reports/tests"
-  - "Missing file: backend/apps/users/urls.py"
-  - "Missing file: backend/Dockerfile"
-  - "File has substantial code: backend/apps/users/models.py (should be empty for bootstrap)"
+Line 1: Reply EXACTLY with either 'PASS' or 'FAIL' (nothing else on this line)
+Line 2+: If FAIL, list ONLY paths that are completely absent from the workspace:
+  - "Missing directory: public/"
+  - "Missing file: src/login.html"
 
-CRITICAL: Before reporting FAIL, verify your path assumptions:
-- If you think a file is in the wrong location, run: find /workspace -name "filename"
-- If you think a directory is missing, run: ls -la /workspace/parent/
-- Only report FAIL if you can confirm with actual directory listings
-
-DO NOT generate bash scripts or code. DO NOT provide solutions. ONLY identify specific issues."""
+DO NOT generate bash scripts or code. DO NOT provide solutions. ONLY list missing paths."""
     else:
         review_prompt += """VALIDATION CRITERIA FOR NON-BOOTSTRAP TASKS:
-The project structure was already created by the bootstrap agent.
-Agents should ONLY add content to existing files.
+This agent had to implement real functionality. Evaluate whether the task requirements
+are met by the workspace tree shown.
 
-1. Compare the GENERATED WORKSPACE TREE with the ORIGINAL TASK requirements
-2. Check if all required directories are present
-3. Check if all required files are present in correct locations
-4. Identify SPECIFIC missing directories or files
-5. Identify SPECIFIC files in wrong locations
-6. Creating NEW files or directories that were NOT in the original bootstrap structure is FORBIDDEN
-7. If you see new files that weren't in the original structure, mark as FAIL
+RULES:
+1. Check if all files required by the task description are present with content.
+2. Check if required directories are present.
+3. ACCEPTABLE extra files: .gitkeep, __pycache__, *.pyc, lock files, generated build files,
+   and any config or tooling files commonly produced by the tech stack in use.
+4. DO NOT flag .gitkeep as unauthorized — these are bootstrap artifacts and are always allowed.
+5. DO NOT fail for extra files unless they clearly indicate the wrong tech stack was used
+   (e.g., a React component in a Flask-only project).
+6. A file that exists but appears empty is only a failure if the task explicitly required
+   content in that file.
+7. Focus on: does the workspace satisfy the task's functional requirements?
 
 RESPONSE FORMAT:
-Line 1: Reply EXACTLY with either 'PASS' or 'FAIL'
-Line 2+: If FAIL, provide a SPECIFIC, ACTIONABLE list of issues:
-  - "Missing directory: path/to/dir"
-  - "Missing file: path/to/file.ext"
-  - "Wrong location: file.ext should be in dir/ not root/"
-  - "Unauthorized new file: path/to/newfile.ext (structure is fixed after bootstrap)"
-  - "Unauthorized new directory: path/to/newdir/ (structure is fixed after bootstrap)"
+Line 1: Reply EXACTLY with either 'PASS' or 'FAIL' (nothing else on this line)
+Line 2+: If FAIL, list ONLY genuine issues:
+  - "Missing file: path/to/file.ext (required by task)"
+  - "Missing directory: path/to/dir/ (required by task)"
+  - "Empty file: path/to/file.ext (task requires content here)"
+  - "Wrong tech stack: found X but task requires Y"
 
 DO NOT generate bash scripts or code. DO NOT provide solutions. ONLY identify specific issues."""
 
@@ -14263,7 +14293,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             # EPIC, FEATURE, STORY are organizational containers, not implementation units
             # TASK-00 is the bootstrap task (type TASK) and runs first — all others wait for it
             task_type = (t.get("task_type") or "").upper()
-            if task_type not in ["TASK", "BUG"]:
+            if task_type not in ["TASK", "BUG", "FEATURE"]:
                 skip_reasons.setdefault("non_executable_type", 0)
                 skip_reasons["non_executable_type"] += 1
                 continue
@@ -15568,20 +15598,110 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                     })
                             
                             if not bootstrap_branch:
-                                # FAIL HARD — do NOT hardcode a guess. The bootstrap must have
-                                # pushed and been recorded. If we get here, something is wrong.
-                                error_msg = (
-                                    "Cannot determine bootstrap branch. Bootstrap was marked as pushed "
-                                    "but no branch name was persisted in DB, in-memory state, or found "
-                                    "on remote. This indicates a bootstrap agent failure. "
-                                    "Check bootstrap agent logs or reset bootstrap state."
-                                )
+                                # Bootstrap was flagged as pushed but the branch name is not yet
+                                # recorded — this is a race condition where the bootstrap agent
+                                # set the "pushed" flag slightly before it persisted the branch
+                                # name.  Poll for up to 10 minutes instead of failing hard, so
+                                # non-bootstrap agents simply wait rather than crash-and-retry.
+                                agent["status"] = "waiting"
+                                agent["progress_message"] = "⏳ Waiting for bootstrap agent to persist branch name..."
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
-                                    "type": "error",
-                                    "message": f"❌ {error_msg}"
+                                    "type": "warning",
+                                    "message": (
+                                        "⏳ Bootstrap was marked as pushed but branch name is not yet "
+                                        "available. Waiting for bootstrap agent to finish persisting "
+                                        "state (will retry every 10s, timeout 10 min)..."
+                                    )
                                 })
-                                raise ValueError(error_msg)
+
+                                # Broadcast waiting status so the UI shows a meaningful message
+                                try:
+                                    from database import SessionLocal
+                                    import agent_communication_service as _comm_bs
+                                    _db_bs = SessionLocal()
+                                    try:
+                                        await _comm_bs.send_message(
+                                            db=_db_bs,
+                                            project_token=project_token or "",
+                                            from_agent=agent_id,
+                                            message=(
+                                                f"⏳ {agent_id} is waiting for bootstrap branch name "
+                                                f"before starting '{task.get('title', 'task')}'"
+                                            ),
+                                            msg_type="INFO",
+                                        )
+                                    finally:
+                                        _db_bs.close()
+                                except Exception:
+                                    pass
+
+                                _branch_wait_start = time.time()
+                                _branch_wait_timeout = 600  # 10 minutes
+                                while not bootstrap_branch:
+                                    await asyncio.sleep(10)
+                                    _branch_waited = int(time.time() - _branch_wait_start)
+
+                                    # Re-try all three discovery layers on each iteration
+                                    bootstrap_branch = get_bootstrap_branch(project_token)
+                                    if not bootstrap_branch:
+                                        _bst_state = _ensure_project_state(project_token).get("repo_bootstrap", {})
+                                        bootstrap_branch = _bst_state.get("source_branch")
+                                        if bootstrap_branch:
+                                            set_bootstrap_branch(project_token, bootstrap_branch)
+                                    if not bootstrap_branch and git_url:
+                                        try:
+                                            _auth_url2 = _build_git_auth_url(git_url, agent.get("git_token", "")) if agent.get("git_token") else git_url
+                                            _ls2 = subprocess.run(
+                                                ["git", "ls-remote", "--heads", _auth_url2],
+                                                capture_output=True, text=True, timeout=30,
+                                            )
+                                            if _ls2.returncode == 0 and _ls2.stdout.strip():
+                                                for _line2 in _ls2.stdout.strip().splitlines():
+                                                    _parts2 = _line2.split("\t")
+                                                    if len(_parts2) == 2 and _parts2[1].startswith("refs/heads/"):
+                                                        _cand2 = _parts2[1].replace("refs/heads/", "")
+                                                        for _pat2 in bootstrap_patterns:
+                                                            if _pat2 in _cand2.lower():
+                                                                bootstrap_branch = _cand2
+                                                                set_bootstrap_branch(project_token, bootstrap_branch)
+                                                                break
+                                                    if bootstrap_branch:
+                                                        break
+                                        except Exception:
+                                            pass
+
+                                    if bootstrap_branch:
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "info",
+                                            "message": f"✅ Bootstrap branch now available after {_branch_waited}s wait: {bootstrap_branch}"
+                                        })
+                                        break
+
+                                    if _branch_waited >= _branch_wait_timeout:
+                                        error_msg = (
+                                            f"Cannot determine bootstrap branch after waiting {_branch_waited}s. "
+                                            "Bootstrap was marked as pushed but no branch name was persisted "
+                                            "in DB, in-memory state, or found on remote. "
+                                            "Check bootstrap agent logs or reset bootstrap state."
+                                        )
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "error",
+                                            "message": f"❌ {error_msg}"
+                                        })
+                                        raise ValueError(error_msg)
+
+                                    if _branch_waited % 60 == 0:
+                                        agent["output_log"].append({
+                                            "time": datetime.utcnow().isoformat(),
+                                            "type": "info",
+                                            "message": f"⏳ Still waiting for bootstrap branch... ({_branch_waited}s elapsed)"
+                                        })
+
+                                agent["status"] = "running"
+                                agent["progress_message"] = f"Bootstrap branch resolved: {bootstrap_branch}"
                         
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
@@ -16537,7 +16657,8 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                             task_description=task.get("description", task.get("title")),
                             agent_type=agent["type"],
                             workspace_tree=workspace_tree,
-                            tech_spec=task.get("_tech_spec", "")
+                            tech_spec=task.get("_tech_spec", ""),
+                            project_root=project_root,
                         )
                         log_type = "info" if passed_review else "warning"
                         pass_str = "PASSED" if passed_review else "FAILED"
@@ -16596,56 +16717,59 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                                 # Generate TARGETED fix script based on specific issues
                                 if is_bootstrap:
                                     fix_prompt = f"""
-SELF-REVIEW IDENTIFIED SPECIFIC ISSUES IN BOOTSTRAP TASK. Generate a MINIMAL fix script.
+SELF-REVIEW IDENTIFIED MISSING PATHS IN BOOTSTRAP TASK. Generate a MINIMAL fix script.
 
-⚠️ CRITICAL: THIS IS A BOOTSTRAP TASK - FILES MUST BE EMPTY!
+⚠️ THIS IS A BOOTSTRAP TASK. The ONLY job is to ensure every path EXISTS.
+Files must be EMPTY (use touch). Directories must exist (use mkdir -p).
 
-ISSUES TO FIX:
+MISSING PATHS TO FIX:
 {issues_text}
 
-BOOTSTRAP TASK RULES:
-1. Use ONLY 'touch' to create files - NO content allowed
-2. Use 'mkdir -p' to create directories
-3. DO NOT use 'cat <<EOF' or any heredocs
-4. DO NOT add any content to files
-5. Files must remain EMPTY
-6. For "Missing file: X" → use: touch X
-7. For "Missing directory: X" → use: mkdir -p X && touch X/.gitkeep
-8. For "Wrong location: X should be in Y" → FIRST remove root copy: rm -f X, THEN ensure subdirectory file exists: mkdir -p Y && touch Y/X
-9. For "File has content: X should be empty" → use: > X (truncate to empty)
-10. For "Extra files: X" or "Wrong location" root copies → use: rm -f X (remove extra files from root)
+BOOTSTRAP FIX RULES — follow exactly:
+1. For "Missing file: X"      → mkdir -p $(dirname X) && touch X
+2. For "Missing directory: X" → mkdir -p X && touch X/.gitkeep
+3. NEVER delete any .gitkeep file — they are required for empty directory tracking.
+   NEVER run: rm -f X/.gitkeep  (this would make the directory disappear from git)
+4. NEVER add content to files. Use ONLY: touch, mkdir -p
+5. NEVER use cat, echo, heredocs, or any content-writing command
+6. After fixing, verify with: [ -e "path" ] && echo "[CHECK] PASS: path" || echo "[CHECK] FAIL: path"
 
-CRITICAL RULES FOR THIS FIX:
-- Git does NOT track empty directories. For EVERY empty directory, add: touch <dir>/.gitkeep
-- NEVER copy or move files to root. Files belong in their subdirectories (e.g., css/main.css NOT main.css)
-- If files were incorrectly copied to root, REMOVE the root copies with rm -f
-- When creating missing directories, ALWAYS add .gitkeep: mkdir -p <dir> && touch <dir>/.gitkeep
-
-Generate a MINIMAL bash script (under 40 lines) that fixes ONLY these specific issues.
-Script MUST start with: #!/usr/bin/env bash\nset -e\ncd /workspace
-Use ONLY touch, mkdir, and rm commands. NO file content generation.
+Generate a MINIMAL bash script (under 30 lines) that fixes ONLY the missing paths above.
+Script MUST start with:
+#!/usr/bin/env bash
+set -e
+cd {project_root}
 """
                                 else:
                                     fix_prompt = f"""
-SELF-REVIEW IDENTIFIED SPECIFIC ISSUES. Generate a MINIMAL fix script.
+SELF-REVIEW IDENTIFIED SPECIFIC ISSUES. Generate a TARGETED fix script.
 
 ISSUES TO FIX:
 {issues_text}
 
-ORIGINAL TASK (for context):
-{task.get("description", task.get("title"))[:1000]}
+ORIGINAL TASK:
+{task.get("description", task.get("title", ""))[:2000]}
 
-CRITICAL INSTRUCTIONS:
-1. Generate a bash script that fixes ONLY the specific issues listed above
-2. DO NOT recreate the entire project structure
-3. For "Missing directory: X" → use: mkdir -p X
-4. For "Missing file: X" → use: create with appropriate content
-5. For "Wrong location: X should be in Y" → use: mkdir -p Y && mv X Y/
-6. Keep the script MINIMAL - only fix what's broken
-7. Print [FIX] for each fix applied
-8. Print [CHECK] PASS/FAIL for verification
+CURRENT WORKSPACE TREE (for context — do not recreate what already exists):
+{workspace_tree[:3000]}
 
-Generate a MINIMAL bash script (under 50 lines) that fixes ONLY these specific issues.
+INSTRUCTIONS:
+1. Generate a bash script that fixes ONLY the specific issues listed above.
+2. DO NOT recreate the entire project. Only touch what is missing or broken.
+3. For "Missing directory: X"      → mkdir -p X
+4. For "Missing file: X"           → mkdir -p $(dirname X) && write the required content to X using cat <<'EOF'
+5. For "Empty file: X"             → write the required content to X based on the task description
+6. For "Wrong location: X → Y"     → mkdir -p Y && mv X Y/
+7. NEVER delete .gitkeep files.
+8. Use: echo "[FIX] <description>" for each fix applied (MUST be wrapped in echo, NOT a bare line).
+9. Use: echo "[CHECK] PASS" or echo "[CHECK] FAIL" for each verification (also wrapped in echo).
+10. Exit 0 on success, 1 if any verification fails.
+
+Generate a bash script (under 100 lines) that fixes ONLY these specific issues.
+Script MUST start with:
+#!/usr/bin/env bash
+set -e
+cd {project_root}
 """
                                 
                                 fix_code, fix_thought = await _call_ai_for_code(
@@ -16656,7 +16780,21 @@ Generate a MINIMAL bash script (under 50 lines) that fixes ONLY these specific i
                                     agent_id=agent_id,
                                     agent_output_log=agent["output_log"],
                                 )
-                                
+
+                                # Defensive sanitiser: wrap any bare [TAG] lines the AI
+                                # emits without echo -- bash treats them as commands otherwise.
+                                # e.g.  [FIX] Creating foo  ->  echo "[FIX] Creating foo"
+                                import re as _re_fix
+                                _sanitised_lines = []
+                                for _fix_line in fix_code.splitlines():
+                                    _stripped = _fix_line.lstrip()
+                                    if _re_fix.match(r'^\[[A-Z][A-Z0-9 _-]*\]', _stripped) and not _stripped.startswith('echo '):
+                                        _indent = _fix_line[:len(_fix_line) - len(_stripped)]
+                                        _sanitised_lines.append(f'{_indent}echo "{_stripped}"')
+                                    else:
+                                        _sanitised_lines.append(_fix_line)
+                                fix_code = '\n'.join(_sanitised_lines)
+
                                 # CRITICAL: Log the fix script to file for debugging
                                 if is_bootstrap_task:
                                     try:
@@ -17421,12 +17559,17 @@ Generate a MINIMAL bash script (under 50 lines) that fixes ONLY these specific i
                                     if tree_result.returncode == 0:
                                         actual_tree = tree_result.stdout.strip()
                                         
-                                        # Detect and store project root directory
+                                        # Detect and store project root directory.
+                                        # A candidate subdir is only accepted as project root if it directly
+                                        # contains real source files (not just nested .gitkeep placeholders).
+                                        # Pure asset dirs (assets/, images/, static/, media/, public/) are never
+                                        # promoted to project root so they don't misdirect all subsequent agents.
                                         project_root = "/workspace"
                                         import re as _re_bootstrap
                                         tree_lines = actual_tree.splitlines()
                                         excluded_dirs = {'node_modules', '.git', '__pycache__', 'dist', 'build', '.vscode',
-                                                        'venv', 'env', '.env', 'coverage', '.pytest_cache', '.mypy_cache'}
+                                                        'venv', 'env', '.env', 'coverage', '.pytest_cache', '.mypy_cache',
+                                                        'assets', 'static', 'media', 'public', 'images', 'fonts', 'icons'}
                                         for line in tree_lines:
                                             line = line.strip()
                                             # Match patterns like: ./my-todo-app or ./my-todo-app/
@@ -17434,14 +17577,44 @@ Generate a MINIMAL bash script (under 50 lines) that fixes ONLY these specific i
                                             if match:
                                                 dir_name = match.group(1)
                                                 if dir_name not in excluded_dirs:
-                                                    project_root = f"/workspace/{dir_name}"
-                                                    logger.info(f"[Bootstrap] Detected project root: {project_root}")
-                                                    break
+                                                    # Only accept as root if it actually contains non-placeholder source files
+                                                    _verify_src = subprocess.run(
+                                                        ["docker", "exec", container_name, "find",
+                                                         f"/workspace/{dir_name}", "-maxdepth", "3",
+                                                         "-type", "f", "!", "-name", ".gitkeep",
+                                                         "!", "-name", ".DS_Store"],
+                                                        capture_output=True, text=True, timeout=10,
+                                                    )
+                                                    _has_src = bool(_verify_src.returncode == 0 and _verify_src.stdout.strip())
+                                                    if _has_src:
+                                                        project_root = f"/workspace/{dir_name}"
+                                                        logger.info(f"[Bootstrap] Detected project root: {project_root}")
+                                                    else:
+                                                        logger.info(f"[Bootstrap] Skipping '{dir_name}/' as root "
+                                                                    f"(no source files, only placeholders) -- keeping /workspace")
+                                                break
                                         
                                         # Store project root in state for all subsequent tasks
                                         state["repo_bootstrap"]["project_root"] = project_root
                                         
-                                        canonical_spec = f"# Canonical Project Structure (from Bootstrap)\n\n```\n{actual_tree}\n```\n\n{task.get('description', '')}"
+                                        # Filter actual_tree to remove noise (node_modules, .git, etc.)
+                                        # so the canonical spec shown to subsequent agents is clean.
+                                        _noise_prefixes = (
+                                            './node_modules', './.git', './__pycache__',
+                                            './dist', './build', './.venv', './venv',
+                                            './env', './coverage', './.pytest_cache',
+                                            './.mypy_cache', './.tox',
+                                        )
+                                        _clean_tree_lines = [
+                                            _l for _l in actual_tree.splitlines()
+                                            if not any(
+                                                _l.strip().startswith(_p.lstrip('./'))
+                                                or _l.strip().startswith(_p)
+                                                for _p in _noise_prefixes
+                                            )
+                                        ]
+                                        clean_tree = '\n'.join(_clean_tree_lines)
+                                        canonical_spec = f"# Canonical Project Structure (from Bootstrap)\n\n```\n{clean_tree}\n```\n\n{task.get('description', '')}"
                                         _project_tech_specs[project_token] = {
                                             "spec": canonical_spec,
                                             "generated_at": datetime.utcnow().isoformat(),
@@ -20347,7 +20520,7 @@ async def _master_supervisor_loop(
                     continue
                 # FIX: Master supervisor should only assign executable tasks (TASK/BUG), not containers
                 task_type = (task.get("task_type") or "").upper()
-                if task_type not in ["TASK", "BUG"]:
+                if task_type not in ["TASK", "BUG", "FEATURE"]:
                     continue
                 available_tasks.append(task)
             
