@@ -823,6 +823,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         code: response.data.code,
         versionId: response.data.version_id,
         toolCalls: response.data.tool_calls_log || null,
+        suggestions: response.data.suggestions || null,
         timestamp: new Date().toISOString()
       };
 
@@ -1183,6 +1184,8 @@ Please suggest improvements or modifications for this element.`;
         const msg = event.data;
         if (!msg || !msg.type) return;
 
+        console.log('📥 Received message from iframe:', msg.type, msg);
+
         if (msg.type === 'element-hover') {
           if (!msg.data) {
             setHoveredElement(null);
@@ -1263,7 +1266,10 @@ Please suggest improvements or modifications for this element.`;
     // Send edit-mode state to iframe's injected script
     const iframe = iframeRef.current;
     if (iframe && iframe.contentWindow) {
+      console.log('📤 Sending edit mode message to iframe:', editMode);
       iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
+    } else {
+      console.warn('⚠️ Iframe or contentWindow not available');
     }
   }, [editMode]);
 
@@ -1318,6 +1324,7 @@ Please suggest improvements or modifications for this element.`;
         code: response.data.code,
         versionId: response.data.version_id,
         toolCalls: response.data.tool_calls_log || null,
+        suggestions: response.data.suggestions || null,
         timestamp: new Date().toISOString()
       };
 
@@ -2212,11 +2219,15 @@ Please suggest improvements or modifications for this element.`;
             setBranchCommits([]);
           }}
           disabled={!currentProjectId}
-          suggestions={[
-            'Create a beautiful landing page with gradient background',
-            'Build a todo app with Flask backend',
-            'Create a calculator app'
-          ]}
+          suggestions={(() => {
+            // Get suggestions from the last assistant message, or use defaults
+            const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant');
+            return lastAssistantMsg?.suggestions || [
+              'Create a beautiful landing page with gradient background',
+              'Build a todo app with Flask backend',
+              'Create a calculator app'
+            ];
+          })()}
           discussMode={discussMode}
           onToggleDiscuss={() => setDiscussMode(prev => !prev)}
         />

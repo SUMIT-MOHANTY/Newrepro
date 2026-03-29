@@ -12,6 +12,7 @@ from typing import List, Optional
 import os
 import uuid
 import re as _re
+from datetime import datetime
 from dotenv import load_dotenv
 from ai_config import ai_config
 from project_manager import project_manager
@@ -27,6 +28,36 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+# Helper function to log prompts and responses
+def log_ai_interaction(prompt: str, response: str, interaction_type: str = "main"):
+    """Log AI prompts and responses to a text file for testing."""
+    try:
+        log_dir = Path("ai_logs")
+        log_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"ai_log_{timestamp}.txt"
+        
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(f"{'='*80}\n")
+            f.write(f"AI INTERACTION LOG - {interaction_type.upper()}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"{'='*80}\n\n")
+            
+            f.write(f"{'─'*80}\n")
+            f.write(f"PROMPT:\n")
+            f.write(f"{'─'*80}\n")
+            f.write(prompt)
+            f.write(f"\n\n{'─'*80}\n")
+            f.write(f"RESPONSE:\n")
+            f.write(f"{'─'*80}\n")
+            f.write(response)
+            f.write(f"\n\n{'='*80}\n")
+        
+        print(f"📝 Logged AI interaction to: {log_file}")
+    except Exception as e:
+        print(f"Failed to log AI interaction: {e}")
 
 app = FastAPI(title=f"{APP_NAME} API")
 
@@ -124,6 +155,7 @@ class GenerateResponse(BaseModel):
     version_id: Optional[str] = None
     preview_url: Optional[str] = None
     tool_calls_log: Optional[List[dict]] = None
+    suggestions: Optional[List[str]] = None
 
 class ProjectCreateRequest(BaseModel):
     project_id: Optional[str] = None
@@ -152,6 +184,48 @@ class GitRequest(BaseModel):
     token: Optional[str] = None
     chat_version: Optional[int] = None
     version_id: Optional[str] = None
+
+async def generate_suggestions(message: str, code: str, user_prompt: str) -> List[str]:
+    """Use AI to generate 3 contextual one-liner suggestions based on what was just created."""
+    try:
+        suggestion_prompt = f"""Based on what was just generated, provide exactly 3 short, actionable one-liner suggestions for what the user might want to do next. Each suggestion should be a natural follow-up to enhance or extend what was created.
+
+User's original request: {user_prompt}
+
+What was generated:
+{message[:500]}
+
+Code summary: {"Code was generated" if code else "No code generated"}
+
+Provide ONLY 3 suggestions, one per line, no numbering, no explanations. Each should be a complete sentence that could be sent directly as a prompt. Keep each under 60 characters.
+
+Example format:
+Add a navigation bar with smooth scrolling
+Make the design responsive for mobile
+Add hover animations to the buttons"""
+
+        suggestion_messages = [
+            {"role": "system", "content": "You are a helpful assistant that generates concise, actionable suggestions."},
+            {"role": "user", "content": suggestion_prompt}
+        ]
+        
+        response = ai_config.make_request(suggestion_messages, temperature=0.7)
+        suggestions_text = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
+        
+        # Log the suggestion generation interaction
+        log_ai_interaction(suggestion_prompt, suggestions_text, "suggestion_generation")
+        
+        # Parse suggestions (one per line)
+        suggestions = [s.strip() for s in suggestions_text.strip().split('\n') if s.strip()]
+        # Remove any numbering like "1.", "2.", etc.
+        suggestions = [_re.sub(r'^\d+[\.\)]\s*', '', s) for s in suggestions]
+        # Take only first 3
+        suggestions = suggestions[:3]
+        
+        return suggestions if len(suggestions) == 3 else []
+    except Exception as e:
+        print(f"Failed to generate suggestions: {e}")
+        return []
 
 # AI Configuration is now handled by ai_config.py
 
@@ -479,13 +553,21 @@ async def generate_code(request: GenerateRequest):
 
             response = ai_config.make_request(messages)
             ai_response = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
+            
+            # Log the discuss mode interaction
+            log_ai_interaction(request.prompt, ai_response, "discuss_mode")
+            
+            # Generate suggestions for discuss mode too
+            suggestions = await generate_suggestions(ai_response, "", request.prompt)
+            
             return GenerateResponse(
                 message=ai_response,
                 code=None,
                 project_id=project_id,
                 version_id=None,
                 preview_url=None,
-                tool_calls_log=None
+                tool_calls_log=None,
+                suggestions=suggestions
             )
 
         # Check if there's existing code in the workspace
@@ -555,6 +637,9 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
             
         messages.append(build_vision_message(prompt_with_instructions, request.images))
 
+        # Log just the user prompt (not the entire messages array with system prompt and history)
+        log_prompt = f"User Request: {request.prompt}\n\nWith Instructions: {prompt_with_instructions}"
+        
         # Call AI API with function calling support (web search + page fetch)
         response = await make_request_with_tools(messages)
         
@@ -566,6 +651,9 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
             ai_response = response["choices"][0]["message"].get("content") or ""
         else:
             raise Exception("Invalid response format from AI API")
+        
+        # Log the main AI interaction
+        log_ai_interaction(log_prompt, ai_response, "main_generation")
 
         # Extract code if present
         import re as _re
@@ -722,7 +810,8 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                         project_id=project_id,
                         version_id=None,
                         preview_url=None,
-                        tool_calls_log=tool_calls_log
+                        tool_calls_log=tool_calls_log,
+                        suggestions=None
                     )
                 else:
                     raise
@@ -757,13 +846,17 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
                     print(f"Failed to create container: {str(e)}")
                     preview_url = None
 
+        # Generate contextual suggestions
+        suggestions = await generate_suggestions(message, code or "", request.prompt)
+        
         return GenerateResponse(
             message=message,  # Always return AI's message directly
             code=code,
             project_id=project_id,
             version_id=version_id,
             preview_url=preview_url,
-            tool_calls_log=tool_calls_log
+            tool_calls_log=tool_calls_log,
+            suggestions=suggestions
         )
 
     except Exception as e:
@@ -778,7 +871,8 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
             project_id=project_id,
             version_id=None,
             preview_url=None,
-            tool_calls_log=None
+            tool_calls_log=None,
+            suggestions=None
         )
 
 @app.get("/vibecoding/api/health")

@@ -206,7 +206,8 @@ const ChatMessage = ({
   selectedVersion,
   onLoadVersion,
   onCopyMessage,
-  onRegenerate
+  onRegenerate,
+  onSuggestionClick
 }) => {
   // Find the commit that matches this message's versionId (commit hash)
   const msgVersion = message.versionId && codeVersions ? 
@@ -426,6 +427,41 @@ const ChatMessage = ({
           )}
         </div>
       </div>
+      
+      {/* Suggestions - Only show for assistant messages */}
+      {!isUser && message.suggestions && message.suggestions.length > 0 && (
+        <div className="mt-3 ml-11 space-y-2">
+          <div className={cn(
+            'text-xs font-medium mb-2',
+            darkMode ? 'text-gray-400' : 'text-gray-500'
+          )}>
+            Try these next:
+          </div>
+          <div className="flex flex-col gap-2">
+            {message.suggestions.map((suggestion, idx) => (
+              <button
+                key={idx}
+                onClick={() => onSuggestionClick && onSuggestionClick(suggestion)}
+                className={cn(
+                  'text-left px-3 py-2 rounded-lg text-xs transition-all border',
+                  darkMode
+                    ? 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10 hover:border-purple-500/50'
+                    : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200 hover:border-blue-300'
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <Sparkles className={cn(
+                    'w-3 h-3 flex-shrink-0',
+                    darkMode ? 'text-purple-400' : 'text-blue-500'
+                  )} />
+                  <span className="leading-relaxed">{suggestion}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      
       {!isUser && (
         <div className="flex items-center gap-2 mt-2 ml-11">
           {/* <Button

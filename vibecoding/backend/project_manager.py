@@ -33,6 +33,7 @@ def sanitize_html(content: str) -> str:
 EDITOR_INJECTION_SCRIPT = """
 <script id="__vibe_editor__">
 (function() {
+  console.log('🎨 VibeCoding Editor Script Loaded');
   var hoveredEl = null;
   var selectedEl = null;
   var editMode = false;
@@ -41,6 +42,7 @@ EDITOR_INJECTION_SCRIPT = """
     if (!e.data || !e.data.type) return;
     
     if (e.data.type === 'set-edit-mode') {
+      console.log('📝 Edit mode changed:', e.data.value);
       editMode = e.data.value;
       if (!editMode) { clearHover(); clearSelection(); }
     } else if (e.data.type === 'update-element-property') {
@@ -84,6 +86,7 @@ EDITOR_INJECTION_SCRIPT = """
 
   document.addEventListener('click', function(e) {
     if (!editMode) return;
+    console.log('🖱️ Element clicked in edit mode:', e.target.tagName);
     e.preventDefault();
     e.stopPropagation();
     var el = e.target;
@@ -92,6 +95,7 @@ EDITOR_INJECTION_SCRIPT = """
     var info = getElementInfo(el);
     info.mouseX = e.clientX;
     info.mouseY = e.clientY;
+    console.log('📤 Sending element-selected message:', info);
     window.parent.postMessage({ type: 'element-selected', data: info }, '*');
   }, true);
 
@@ -102,6 +106,22 @@ EDITOR_INJECTION_SCRIPT = """
 })();
 </script>
 """
+
+def inject_editor_script_into_html(html_content: str) -> str:
+    """Inject the editor script into HTML content for edit mode support."""
+    if not html_content or '__vibe_editor__' in html_content:
+        return html_content
+    
+    # Inject before </body> if exists
+    if '</body>' in html_content.lower():
+        return re.sub(r'</body>', EDITOR_INJECTION_SCRIPT + '\n</body>', html_content, flags=re.IGNORECASE)
+    # Otherwise inject before </html>
+    elif '</html>' in html_content.lower():
+        return re.sub(r'</html>', EDITOR_INJECTION_SCRIPT + '\n</html>', html_content, flags=re.IGNORECASE)
+    # Otherwise append at the end
+    else:
+        return html_content + '\n' + EDITOR_INJECTION_SCRIPT
+
 
 class ProjectManager:
     """Manages container-based code execution and project artifacts"""
@@ -266,6 +286,50 @@ class ProjectManager:
         except Exception as e:
             logger.error(f"Error checking image: {e}")
             return False
+
+    def _inject_editor_into_workspace(self, version_dir: Path):
+        """Inject editor script into all HTML files in the workspace for edit mode support."""
+        try:
+            # Find all HTML files recursively
+            html_files = list(version_dir.rglob("*.html"))
+            
+            if not html_files:
+                logger.debug(f"No HTML files found in {version_dir}")
+                return
+            
+            logger.info(f"🔧 Injecting editor script into {len(html_files)} HTML file(s)")
+            
+            for html_file in html_files:
+                try:
+                    # Read the HTML file
+                    with open(html_file, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
+                    
+                    # Remove old editor script if present (to avoid duplicates)
+                    if '__vibe_editor__' in html_content:
+                        logger.debug(f"Removing old editor script from {html_file.name}")
+                        # Remove the old script tag
+                        html_content = re.sub(
+                            r'<script id="__vibe_editor__">.*?</script>',
+                            '',
+                            html_content,
+                            flags=re.DOTALL
+                        )
+                    
+                    # Inject the editor script
+                    modified_html = inject_editor_script_into_html(html_content)
+                    
+                    # Write back to file
+                    with open(html_file, 'w', encoding='utf-8') as f:
+                        f.write(modified_html)
+                    
+                    logger.info(f"✅ Injected editor script into {html_file.name}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to inject editor into {html_file.name}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to inject editor scripts: {e}")
 
     def _stream_container_logs(self, container, container_name: str):
         """Stream container logs to console in a separate thread"""
@@ -1341,6 +1405,11 @@ except Exception as e:
             version_dir = project_dir / "versions" / version_id
             metadata_file = version_dir / "metadata.json"
         
+        # Inject editor script into all HTML files for edit mode support
+        logger.info(f"🔧 Injecting editor script into workspace: {version_dir}")
+        self._inject_editor_into_workspace(version_dir)
+        logger.info(f"✅ Editor script injection complete")
+        
         # Read version metadata to get runtime info
         try:
             with open(metadata_file, 'r') as f:
@@ -1403,6 +1472,10 @@ except Exception as e:
                 
                 if success:
                     logger.info(f"✅ Switched to version {version_id}")
+                    # Trigger container restart to ensure web server picks up injected editor scripts
+                    logger.info(f"🔄 Triggering container restart to reload HTML files")
+                    self._trigger_container_restart(project_id)
+                    await asyncio.sleep(2)  # Wait for restart to complete
                     container = existing_container
                 else:
                     logger.warning(f"⚠️ Failed to switch version, recreating container")

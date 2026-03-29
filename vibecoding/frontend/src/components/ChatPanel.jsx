@@ -207,6 +207,7 @@ const ChatPanel = ({
             onLoadVersion={onLoadVersion}
             onCopyMessage={onCopyMessage}
             onRegenerate={onRegenerate}
+            onSuggestionClick={setInput}
           />
         ))}
 

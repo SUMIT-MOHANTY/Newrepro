@@ -22,3 +22,4 @@ Thumbs.db
 # Logs
 *.log
 project_artifacts/
+ai_logs/
