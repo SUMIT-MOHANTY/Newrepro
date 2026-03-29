@@ -1019,27 +1019,33 @@ export default function TaskCreation({
 
                         <button
                             onClick={handleMasterCreate}
-                            disabled={!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true}
-                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating || projectInfo?.tasks_created === true)
+                            disabled={!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken}
+                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken)
                                 ? 'bg-app-border text-app-text-muted cursor-not-allowed'
                                 : 'bg-gradient-to-r from-app-primary to-app-primary text-app-bg-card hover:from-app-primary-hover hover:to-app-primary-hover'
                                 }`}
                         >
-                            {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                            {isGenerating ? 'Creating Plan...' : projectInfo?.tasks_created === true ? 'Tasks Already Created' : 'Create Tasks (AI Auto Plan)'}
+                            {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : (isLoadingProjectInfo || isResolvingTaskToken) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                            {isGenerating ? 'Creating Plan...' : (isLoadingProjectInfo || isResolvingTaskToken) ? 'Loading Project Info...' : 'Create Tasks (AI Auto Plan)'}
                         </button>
                         {!selectedProjectKey && (
                             <p className="text-xs text-app-status-warning bg-app-status-warningBg border border-amber-200 rounded-lg px-3 py-2">
                                 No project selected. Select a project from the sidebar or top project dropdown.
                             </p>
                         )}
-                        {selectedProjectKey && projectInfo?.tasks_created === true && (
+                        {selectedProjectKey && (isLoadingProjectInfo || isResolvingTaskToken) && (
                             <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-start gap-2">
-                                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-                                <span>Tasks have already been created for this project. You can view them below or refresh to see the latest tasks.</span>
+                                <Loader2 className="w-4 h-4 mt-0.5 shrink-0 animate-spin" />
+                                <span>Loading project information and deadline. Please wait before creating tasks...</span>
                             </p>
                         )}
-                        {tasks.some(t => !t.synced_to_nxdune) && taskToken && (
+                        {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
+                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-start gap-2">
+                                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                                <span>Tasks have been created for this project. You can regenerate them or view existing tasks below.</span>
+                            </p>
+                        )}
+                        {tasks.some(t => !t.synced_to_nxdune) && taskToken && !isLoadingProjectInfo && !isResolvingTaskToken && (
                             <button
                                 onClick={handleSync}
                                 disabled={isSyncing}

@@ -1177,16 +1177,25 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
                     {(classification !== 'ENTERPRISE' || !isSkipFollowUpCase) && (
                         <button
                             onClick={async () => {
-                                sessionStorage.setItem('governanceResult', JSON.stringify(result));
-                                sessionStorage.setItem('shouldStartAnalysis', 'true');
-                                
-                                // Refresh roadmap data before navigation so AppLayout knows the current step
-                                if (fetchRoadmapData && result.project_token) {
-                                    await fetchRoadmapData(result.project_token);
+                                try {
+                                    sessionStorage.setItem('governanceResult', JSON.stringify(result));
+                                    sessionStorage.setItem('shouldStartAnalysis', 'true');
+                                    
+                                    // Refresh roadmap data before navigation so AppLayout knows the current step
+                                    if (fetchRoadmapData && result.project_token) {
+                                        await fetchRoadmapData(result.project_token);
+                                    }
+                                    
+                                    // Small delay to ensure state updates are processed
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+                                    
+                                    // Navigate to Agent Analysis page
+                                    navigate('/agent-analysis');
+                                } catch (error) {
+                                    console.error('Failed to proceed to Agent Analysis:', error);
+                                    // Still navigate even if roadmap fetch fails
+                                    navigate('/agent-analysis');
                                 }
-                                
-                                // Navigate to Agent Analysis page
-                                navigate('/agent-analysis');
                             }}
                             className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
                         >
