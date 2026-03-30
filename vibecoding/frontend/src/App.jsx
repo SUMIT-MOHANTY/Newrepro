@@ -1,50 +1,122 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History } from 'lucide-react';
+import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut, X, Lock, Unlock } from 'lucide-react';
+import { Routes, Route, Navigate, useNavigate, Link, useParams, useLocation } from 'react-router-dom';
+import { useAuth } from './contexts/AuthContext';
+import LandingPage from './components/LandingPage';
+import LoginPage from './components/LoginPage';
+import SignupPage from './components/SignupPage';
+import ForgotPasswordPage from './components/ForgotPasswordPage';
+import ResetPasswordPage from './components/ResetPasswordPage';
+import Header from './components/Header';
+import GitPanel from './components/GitPanel';
+import bourntecLogo from '../assets/bourntec_logo.png';
 import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
 
-function App() {
-  const [currentProjectId, setCurrentProjectId] = useState(() => {
-    // Load or create workspace ID
-    const saved = localStorage.getItem('vibecoding_workspace_id');
-    if (saved) return saved;
-    const newId = `workspace_${Date.now()}`;
-    localStorage.setItem('vibecoding_workspace_id', newId);
-    return newId;
-  });
-  
-  const [chatVersion, setChatVersion] = useState(() => {
-    // Load current chat version for this workspace
-    const saved = localStorage.getItem(`vibecoding_${currentProjectId}_version`);
-    return saved ? parseInt(saved) : 1;
-  });
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
 
-  const [messages, setMessages] = useState(() => {
-    // Load chat history for current workspace and version
-    const saved = localStorage.getItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [codeVersions, setCodeVersions] = useState(() => {
-    // Load code versions for current chat
-    const saved = localStorage.getItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [currentCodeVersion, setCurrentCodeVersion] = useState(() => {
-    const saved = localStorage.getItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`);
-    return saved ? parseInt(saved) : 0;
-  });
-  
+function App() {
+  const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // Auth loading state
+  if (authLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[#0A0A0F]">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center animate-pulse">
+            <Zap className="w-7 h-7 text-white" />
+          </div>
+          <div className="auth-spinner" style={{ width: 28, height: 28, borderWidth: 3 }} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Routes>
+      <Route path="/" element={
+        isAuthenticated ? <Workspace key="default" user={user} logout={logout} isAuthenticated={isAuthenticated} /> :
+          <LandingPage onGetStarted={() => navigate('/signup')} onSignIn={() => navigate('/login')} />
+      } />
+      <Route path="/a/:project_id" element={
+        isAuthenticated ? <Workspace key={location.pathname} user={user} logout={logout} isAuthenticated={isAuthenticated} /> :
+          <Navigate to="/login" replace />
+      } />
+      <Route path="/login" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><LoginPage onSwitchToSignup={() => navigate('/signup')} onForgotPassword={() => navigate('/forgot-password')} /></AuthLayout>
+      } />
+      <Route path="/signup" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><SignupPage onSwitchToLogin={() => navigate('/login')} /></AuthLayout>
+      } />
+      <Route path="/forgot-password" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><ForgotPasswordPage onBackToLogin={() => navigate('/login')} /></AuthLayout>
+      } />
+      <Route path="/reset-password" element={
+        isAuthenticated ? <Navigate to="/" replace /> : <AuthLayout><ResetPasswordPage /></AuthLayout>
+      } />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
+
+function AuthLayout({ children }) {
+  return (
+    <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
+      <Header chatVersion="1.0" user={null} />
+      {children}
+    </div>
+  );
+}
+
+function Workspace({ user, logout, isAuthenticated }) {
+  // Router hooks must come first
+  const { project_id: urlParamId } = useParams();
+  const navigate = useNavigate();
+
+  // Refs
+  const iframeRef = useRef(null);
+  const iframeContainerRef = useRef(null);
+  const prevProjectIdRef = useRef(null);
+  const containerLoadExpectedRef = useRef(false);
+  const containerPollIntervalRef = useRef(null);
+
+  // Determine active project ID from URL
+  const params = new URLSearchParams(window.location.search);
+  const urlProjectId = urlParamId || params.get('project_id');
+
+  // Initialize prevProjectIdRef
+  if (prevProjectIdRef.current === null) {
+    prevProjectIdRef.current = urlProjectId;
+  }
+
+  // State declarations
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showProjectDropdown, setShowProjectDropdown] = useState(false);
+  const [showChatHistory, setShowChatHistory] = useState(false);
+  const [showGitPanel, setShowGitPanel] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [allChats, setAllChats] = useState([]);
+  const [currentProjectId, setCurrentProjectId] = useState(urlProjectId || null);
+  const [chatVersion, setChatVersion] = useState(1);
+  const [messages, setMessages] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [currentBranch, setCurrentBranch] = useState('main');
+  const [branchCommits, setBranchCommits] = useState([]);
+  const [versionsLoaded, setVersionsLoaded] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [viewingCheckpoint, setViewingCheckpoint] = useState(null); // {hash, message, date}
+  const [showCheckpointSnackbar, setShowCheckpointSnackbar] = useState(false);
   const [previewCode, setPreviewCode] = useState('');
-  const [fullCode, setFullCode] = useState(''); // Store full code for edit mode
+  const [fullCode, setFullCode] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
-  const [activeView, setActiveView] = useState('preview'); // preview or code
+  const [activeView, setActiveView] = useState('preview');
   const [copied, setCopied] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileTree, setFileTree] = useState([]);
   const [expandedFolders, setExpandedFolders] = useState(new Set());
@@ -52,79 +124,550 @@ function App() {
   const [selectedElement, setSelectedElement] = useState(null);
   const [hoveredElement, setHoveredElement] = useState(null);
   const [editPrompt, setEditPrompt] = useState('');
-  const [screenSize, setScreenSize] = useState('desktop'); // desktop, tablet, mobile
+  const [screenSize, setScreenSize] = useState('desktop');
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [deployStatus, setDeployStatus] = useState(null);
+  const [errorHeader, setErrorHeader] = useState(null);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
-  const iframeRef = useRef(null);
+  const [isContainerLoading, setIsContainerLoading] = useState(false);
+  const [isCheckpointLoading, setIsCheckpointLoading] = useState(false);
+  const [discussMode, setDiscussMode] = useState(false);
+  const [frozenFiles, setFrozenFiles] = useState([]);
+  const [freezeLoading, setFreezeLoading] = useState(false);
+
+  useEffect(() => {
+    prevProjectIdRef.current = currentProjectId;
+  }, [currentProjectId]);
+
+  // Fetch frozen files when project changes
+  useEffect(() => {
+    if (currentProjectId) {
+      fetchFrozenFiles();
+    }
+  }, [currentProjectId]);
+
+  const fetchFrozenFiles = async () => {
+    if (!currentProjectId) return;
+
+    try {
+      const token = localStorage.getItem('vibecoding_token');
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setFrozenFiles(response.data.frozen_files || []);
+    } catch (error) {
+      console.error('Failed to fetch frozen files:', error);
+    }
+  };
+
+  const toggleFileFrozen = async (filePath, e) => {
+    e.stopPropagation();
+    if (!currentProjectId) return;
+
+    setFreezeLoading(true);
+    try {
+      const token = localStorage.getItem('vibecoding_token');
+      const isFrozen = frozenFiles.includes(filePath);
+
+      await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
+        file_path: filePath,
+        frozen: !isFrozen
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      // Update local state
+      if (isFrozen) {
+        setFrozenFiles(frozenFiles.filter(f => f !== filePath));
+      } else {
+        setFrozenFiles([...frozenFiles, filePath]);
+      }
+    } catch (error) {
+      console.error('Failed to toggle file frozen status:', error);
+    } finally {
+      setFreezeLoading(false);
+    }
+  };
+
+  const fetchProjects = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/projects`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+      });
+      // Sort projects by created_at descending (most recent first)
+      const sortedProjects = (response.data.projects || []).sort((a, b) => {
+        return new Date(b.created_at) - new Date(a.created_at);
+      });
+      setProjects(sortedProjects);
+    } catch (error) {
+      console.error('Failed to fetch projects:', error);
+    }
+  };
+
+  // Poll the container-health endpoint until healthy, then show the iframe.
+  // The iframe src is NOT set until the container is confirmed ready, so the user
+  // never sees "Connection was reset" or broken pages.
+  const startContainerRetry = (url) => {
+    if (containerPollIntervalRef.current) {
+      clearTimeout(containerPollIntervalRef.current);
+      containerPollIntervalRef.current = null;
+    }
+
+    containerLoadExpectedRef.current = true;
+
+    let attempts = 0;
+    const maxAttempts = 60;
+    const pollInterval = 2000;
+
+    const poll = async () => {
+      attempts++;
+      try {
+        const resp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/container-health`);
+        if (resp.data.healthy) {
+          console.log(`✅ Container healthy after ${attempts} polls — showing preview`);
+          containerLoadExpectedRef.current = false;
+          setIsContainerLoading(false);
+          setIframeKey(prev => prev + 1);
+          containerPollIntervalRef.current = null;
+          return;
+        }
+        console.log(`🔄 Health poll ${attempts}/${maxAttempts}: ${resp.data.reason || 'not ready'}`);
+      } catch (err) {
+        console.log(`🔄 Health poll ${attempts}/${maxAttempts}: request failed`);
+      }
+
+      if (attempts < maxAttempts) {
+        containerPollIntervalRef.current = setTimeout(poll, pollInterval);
+      } else {
+        console.log('⏱️ Max health polls reached — showing preview anyway');
+        containerLoadExpectedRef.current = false;
+        setIsContainerLoading(false);
+        setIframeKey(prev => prev + 1);
+        containerPollIntervalRef.current = null;
+      }
+    };
+
+    console.log('🚀 Container URL received, starting health polling in 3s:', url);
+    containerPollIntervalRef.current = setTimeout(poll, 3000);
+  };
+
+  // Load branches from backend for the current project
+  const loadBranchesFromBackend = async (projectId) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions`);
+      const backendBranches = response.data.versions || [];
+
+      if (backendBranches.length > 0) {
+        console.log(`📦 Found ${backendBranches.length} branches on backend for project ${projectId}`);
+
+        // Set branches
+        setBranches(backendBranches);
+
+        // Find current branch
+        const currentBranchData = backendBranches.find(b => b.is_current);
+        const currentBranchName = currentBranchData ? currentBranchData.version_id : backendBranches[0].version_id;
+        setCurrentBranch(currentBranchName);
+
+        // Load commits for current branch
+        await loadBranchCommits(projectId, currentBranchName);
+
+        // Load files for current branch
+        try {
+          const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions/${currentBranchName}/files`);
+          const filesMap = filesResp.data.files || {};
+
+          // Build code string with file markers
+          let fullCode = '';
+          Object.entries(filesMap).forEach(([filePath, content]) => {
+            fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+          });
+
+          // Parse into file tree
+          const fileTree = parseCodeToFiles(fullCode);
+
+          setPreviewCode(fullCode);
+          setFullCode(fullCode);
+          setFileTree(fileTree);
+
+          // Select first file
+          const findFirstFile = (items) => {
+            for (const item of items) {
+              if (item.type === 'file') return item;
+              if (item.type === 'folder' && item.children) {
+                const found = findFirstFile(item.children);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+          const firstFile = findFirstFile(fileTree);
+          if (firstFile) setSelectedFile(firstFile);
+
+          // Get or create preview URL — retry if Docker is still starting after PC restart
+          const startPreviewWithRetry = async (retries = 3, delay = 3000) => {
+            for (let attempt = 1; attempt <= retries; attempt++) {
+              try {
+                const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${projectId}/versions/workspace/preview`);
+                if (previewResp.data.preview_url) {
+                  console.log(`🌐 Restored container preview (attempt ${attempt}):`, previewResp.data.preview_url);
+                  containerLoadExpectedRef.current = true;
+                  setIsContainerLoading(true);
+                  setPreviewUrl(previewResp.data.preview_url);
+                  startContainerRetry(previewResp.data.preview_url);
+                  return;
+                }
+              } catch (previewErr) {
+                console.warn(`⚠️ Preview attempt ${attempt}/${retries} failed:`, previewErr.message);
+                if (attempt < retries) {
+                  await new Promise(r => setTimeout(r, delay));
+                }
+              }
+            }
+            console.error('Failed to get preview URL after all retries');
+          };
+          startPreviewWithRetry();
+
+        } catch (err) {
+          console.error('Failed to load branch files:', err);
+        }
+      }
+
+      setVersionsLoaded(true);
+    } catch (err) {
+      console.error('Failed to load branches from backend:', err);
+      setVersionsLoaded(true);
+    }
+  };
+
+  // Load commits for a specific branch
+  const loadBranchCommits = async (projectId, branchName) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/branches/${branchName}/commits`);
+      const commits = response.data.commits || [];
+      console.log(`📝 Found ${commits.length} commits in branch ${branchName}`);
+      setBranchCommits(commits);
+    } catch (err) {
+      console.error('Failed to load branch commits:', err);
+      setBranchCommits([]);
+    }
+  };
+
+  useEffect(() => {
+    const initProject = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const urlProjectId = params.get('project_id') || window.location.pathname.split('/a/')[1];
+      const projectName = params.get('name');
+
+      let projectIdToLoad = currentProjectId;
+
+      if (urlProjectId) {
+        try {
+          // First, check if the project exists
+          const response = await axios.get(`${API_BASE_URL}/api/projects/${urlProjectId}`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+          });
+
+          // Project exists, load it
+          setCurrentProjectId(urlProjectId);
+          projectIdToLoad = urlProjectId;
+
+          // Clear URL params without reloading
+          window.history.replaceState({}, '', `/vibecoding/a/${urlProjectId}`);
+        } catch (error) {
+          console.error('Failed to load project from URL:', error);
+          // If project doesn't exist (404) or access denied (403), redirect to last opened project or home
+          if (error.response && (error.response.status === 404 || error.response.status === 403)) {
+            console.warn(`Project ${urlProjectId} not found or access denied`);
+            // Redirect to last opened project if available, otherwise to home
+            if (currentProjectId) {
+              console.log(`Redirecting to last opened project: ${currentProjectId}`);
+              navigate(`/vibecoding/a/${currentProjectId}`);
+            } else {
+              console.log('No last project, redirecting to home');
+              navigate('/vibecoding');
+            }
+            return;
+          }
+        }
+      }
+
+      fetchProjects();
+
+      // Load branches from the backend (this will also restore preview URL)
+      await loadBranchesFromBackend(projectIdToLoad);
+
+      // Load chat history for the current version
+      try {
+        const chatResp = await axios.get(`${API_BASE_URL}/api/projects/${projectIdToLoad}/chat/v${chatVersion}`);
+        if (chatResp.data && chatResp.data.history && chatResp.data.history.length > 0) {
+          setMessages(chatResp.data.history);
+        }
+      } catch (err) {
+        console.error("Failed to load chat history:", err);
+      }
+    };
+
+    if (isAuthenticated) {
+      initProject();
+    }
+  }, [isAuthenticated]);
+
+  // Switch to a different branch
+  const switchToBranch = async (branchName) => {
+    try {
+      console.log(`🔀 Switching to branch: ${branchName}`);
+
+      // Checkout the branch on backend
+      await axios.post(`${API_BASE_URL}/api/git/checkout`, {
+        project_id: currentProjectId,
+        branch_name: branchName
+      });
+
+      setCurrentBranch(branchName);
+
+      // Load commits for this branch
+      await loadBranchCommits(currentProjectId, branchName);
+
+      // Load files for this branch
+      const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/${branchName}/files`);
+      const filesMap = filesResp.data.files || {};
+
+      let fullCode = '';
+      Object.entries(filesMap).forEach(([filePath, content]) => {
+        fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+      });
+
+      const fileTree = parseCodeToFiles(fullCode);
+      setPreviewCode(fullCode);
+      setFullCode(fullCode);
+      setFileTree(fileTree);
+
+      // Update preview
+      const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
+      if (previewResp.data.preview_url) {
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
+        setPreviewUrl(previewResp.data.preview_url);
+        startContainerRetry(previewResp.data.preview_url);
+      }
+
+      // Load chat history for this branch
+      try {
+        const chatResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/${branchName}`);
+        if (chatResp.data && chatResp.data.history) {
+          setMessages(chatResp.data.history);
+        } else {
+          setMessages([]);
+        }
+      } catch (err) {
+        console.error('Failed to load chat for branch:', err);
+        setMessages([]);
+      }
+
+      setShowVersionHistory(false);
+    } catch (err) {
+      console.error('Failed to switch branch:', err);
+    }
+  };
+
+  // Load code from a specific commit (checkpoint)
+  const loadCommitCheckpoint = async (commitHash) => {
+    try {
+      setIsCheckpointLoading(true);
+      console.log(`🔖 Loading checkpoint: ${commitHash}`);
+      console.log(`📍 Current project: ${currentProjectId}`);
+
+      // Find the commit info from branchCommits
+      const commitInfo = branchCommits.find(c => c.hash === commitHash);
+
+      // Checkout the commit
+      const checkoutResp = await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
+        project_id: currentProjectId,
+        version_id: commitHash
+      });
+      console.log('✅ Checkout response:', checkoutResp.data);
+
+      if (checkoutResp.data.status === 'error') {
+        console.error('❌ Checkout failed:', checkoutResp.data.message);
+        return;
+      }
+
+      // Set viewing checkpoint state
+      if (commitInfo) {
+        setViewingCheckpoint({
+          hash: commitHash,
+          message: commitInfo.message,
+          date: commitInfo.date
+        });
+        setShowCheckpointSnackbar(true);
+
+        // Auto-hide snackbar after 5 seconds
+        setTimeout(() => {
+          setShowCheckpointSnackbar(false);
+        }, 5000);
+      }
+
+      // Load files from workspace (now at this commit)
+      const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
+      const filesMap = filesResp.data.files || {};
+      console.log(`📁 Loaded ${Object.keys(filesMap).length} files from workspace`);
+
+      let fullCode = '';
+      let htmlContent = '';
+      Object.entries(filesMap).forEach(([filePath, content]) => {
+        fullCode += `// FILE: ${filePath}\n${content}\n\n`;
+        if (filePath.endsWith('.html')) {
+          htmlContent = content;
+        }
+      });
+
+      const fileTree = parseCodeToFiles(fullCode);
+      console.log(`🌳 Built file tree with ${fileTree.length} items`);
+
+      setPreviewCode(htmlContent || fullCode);
+      setFullCode(fullCode);
+      setFileTree(fileTree);
+
+      // Expand all folders
+      const allFolderPaths = new Set();
+      const collectFolders = (items) => {
+        items.forEach(item => {
+          if (item.type === 'folder') {
+            allFolderPaths.add(item.path);
+            if (item.children) {
+              collectFolders(item.children);
+            }
+          }
+        });
+      };
+      collectFolders(fileTree);
+      setExpandedFolders(allFolderPaths);
+      console.log(`📂 Expanded ${allFolderPaths.size} folders`);
+
+      // Select first file with unique timestamp to force re-render
+      const findFirstFile = (items) => {
+        for (const item of items) {
+          if (item.type === 'file') return item;
+          if (item.type === 'folder' && item.children) {
+            const found = findFirstFile(item.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const firstFile = findFirstFile(fileTree);
+      if (firstFile) {
+        // Add timestamp to force React to detect change
+        setSelectedFile({ ...firstFile, _loadedAt: Date.now() });
+        console.log('📄 Selected file:', firstFile.name, `(${firstFile.content?.length || 0} chars)`);
+      } else {
+        console.warn('⚠️ No file found to select');
+      }
+
+      // Get preview URL for the workspace at this commit
+      try {
+        const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
+        if (previewResp.data.preview_url) {
+          console.log('🌐 Checkpoint preview:', previewResp.data.preview_url);
+          console.log('📊 Setting isContainerLoading = true for checkpoint');
+
+          setIsCheckpointLoading(false);
+          containerLoadExpectedRef.current = true;
+          setIsContainerLoading(true);
+          setPreviewUrl(previewResp.data.preview_url);
+          setActiveView('preview');
+
+          startContainerRetry(previewResp.data.preview_url);
+
+          console.log('🔄 Container loading started for checkpoint');
+        } else {
+          setIsCheckpointLoading(false);
+        }
+      } catch (previewErr) {
+        console.error('Failed to get preview URL:', previewErr);
+        setIsCheckpointLoading(false);
+      }
+
+      console.log('✅ Checkpoint loaded successfully');
+
+    } catch (err) {
+      console.error('❌ Failed to load commit checkpoint:', err);
+      console.error('Error details:', err.response?.data || err.message);
+      setIsCheckpointLoading(false);
+    }
+  };
 
   // Save chat history whenever messages change
   useEffect(() => {
+    const saveChat = async () => {
+      if (messages.length > 0 && currentProjectId === prevProjectIdRef.current) {
+        try {
+          // Save to backend only
+          await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/v${chatVersion}`, {
+            history: messages
+          });
+        } catch (err) {
+          console.error("Failed to save chat to backend:", err);
+        }
+      }
+    };
+
     if (messages.length > 0) {
-      localStorage.setItem(`vibecoding_chat_${currentProjectId}_v${chatVersion}`, JSON.stringify(messages));
-      localStorage.setItem(`vibecoding_${currentProjectId}_version`, chatVersion.toString());
+      saveChat();
     }
   }, [messages, currentProjectId, chatVersion]);
 
-  // Save code versions whenever they change
+  // Reload iframe when previewUrl changes — single effect, no about:blank trick
+  // When a container previewUrl arrives, wait 3s for container to fully boot,
+  // then start auto-refreshing the iframe every 2s until it loads successfully.
   useEffect(() => {
-    if (codeVersions.length > 0) {
-      localStorage.setItem(`vibecoding_code_versions_${currentProjectId}_v${chatVersion}`, JSON.stringify(codeVersions));
-      localStorage.setItem(`vibecoding_current_code_version_${currentProjectId}_v${chatVersion}`, currentCodeVersion.toString());
-    }
-  }, [codeVersions, currentCodeVersion, currentProjectId, chatVersion]);
-
-  // Load code version when switching
-  useEffect(() => {
-    if (codeVersions.length > 0 && currentCodeVersion > 0 && currentCodeVersion <= codeVersions.length) {
-      const version = codeVersions[currentCodeVersion - 1];
-      setPreviewCode(version.code);
-      setPreviewUrl(version.previewUrl || '');
-      setFileTree(version.fileTree || []);
-      if (version.fileTree && version.fileTree.length > 0) {
-        const findFirstFile = (items) => {
-          for (const item of items) {
-            if (item.type === 'file') return item;
-            if (item.type === 'folder' && item.children) {
-              const found = findFirstFile(item.children);
-              if (found) return found;
-            }
-          }
-          return null;
-        };
-        const firstFile = findFirstFile(version.fileTree);
-        if (firstFile) setSelectedFile(firstFile);
-      }
+    // Only handle non-container URL changes (container retries are started imperatively)
+    if (previewUrl && !isContainerLoading) {
       setIframeKey(prev => prev + 1);
     }
-  }, [currentCodeVersion]);
+  }, [previewUrl]);
 
   // Function to save a new code version
-  const saveCodeVersion = (code, previewUrl, fileTree, prompt) => {
-    const newVersion = {
-      version: codeVersions.length + 1,
-      code,
-      previewUrl,
-      fileTree,
-      prompt,
-      timestamp: new Date().toISOString()
-    };
-    setCodeVersions(prev => [...prev, newVersion]);
-    setCurrentCodeVersion(newVersion.version);
-  };
-
   // Function to start a new chat
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
     const newVersion = chatVersion + 1;
     setChatVersion(newVersion);
     setMessages([]);
+    setEditMode(false);
+    setSelectedElement(null);
+
+    // Create a new Git branch for this chat session
+    try {
+      await axios.post(`${API_BASE_URL}/api/chat/new`, {
+        project_id: currentProjectId,
+        chat_version: newVersion
+      });
+      console.log(`🌿 Created new git branch for chat v${newVersion}`);
+      // Refresh branches list from backend
+      await loadBranchesFromBackend(currentProjectId);
+    } catch (err) {
+      console.error('Failed to create new git branch:', err);
+    }
+  };
+
+  // Function to handle new project creation - clears chat and resets state
+  const handleCreateProject = (newProjectId) => {
+    // Clear all chat-related state
+    setMessages([]);
     setPreviewCode('');
+    setFullCode('');
     setPreviewUrl('');
     setFileTree([]);
     setSelectedFile(null);
+    setBranches([]);
+    setCurrentBranch('main');
+    setBranchCommits([]);
+    setChatVersion(1);
     setEditMode(false);
     setSelectedElement(null);
-    setCodeVersions([]);
-    setCurrentCodeVersion(0);
-    localStorage.setItem(`vibecoding_${currentProjectId}_version`, newVersion.toString());
+    setHoveredElement(null);
+
+    console.log(`🆕 Created new project ${newProjectId}, chat cleared`);
   };
 
   const toggleFolder = (folderPath) => {
@@ -136,6 +679,66 @@ function App() {
         newSet.add(folderPath);
       }
       return newSet;
+    });
+  };
+
+  const renderFileTreeWithFreeze = (items, level = 0) => {
+    return items.map((item, idx) => {
+      if (item.type === 'folder') {
+        const isExpanded = expandedFolders.has(item.path);
+        return (
+          <div key={item.path}>
+            <div
+              onClick={() => toggleFolder(item.path)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors text-gray-400 hover:bg-white/5 hover:text-white"
+              style={{ paddingLeft: `${12 + level * 16}px` }}
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-4 h-4 flex-shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 flex-shrink-0" />
+              )}
+              <Folder className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </div>
+            {isExpanded && item.children && (
+              <div>{renderFileTreeWithFreeze(item.children, level + 1)}</div>
+            )}
+          </div>
+        );
+      } else {
+        const isFrozen = frozenFiles.includes(item.path);
+        const FreezeIcon = isFrozen ? Lock : Unlock;
+
+        return (
+          <div
+            key={item.path}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors group ${selectedFile?.path === item.path
+                ? 'bg-white/10 text-white'
+                : 'text-gray-400 hover:bg-white/5 hover:text-white'
+              }`}
+            style={{ paddingLeft: `${12 + level * 16}px` }}
+          >
+            <div className="flex items-center gap-2 flex-1 min-w-0" onClick={() => setSelectedFile(item)}>
+              <File className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </div>
+            {currentProjectId && (
+              <button
+                onClick={(e) => toggleFileFrozen(item.path, e)}
+                disabled={freezeLoading}
+                className={`p-1 rounded flex-shrink-0 ${isFrozen
+                    ? 'text-yellow-500 hover:text-yellow-600'
+                    : 'opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-300'
+                  }`}
+                title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
+              >
+                <FreezeIcon className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        );
+      }
     });
   };
 
@@ -168,11 +771,10 @@ function App() {
           <div
             key={item.path}
             onClick={() => setSelectedFile(item)}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
-              selectedFile?.path === item.path
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${selectedFile?.path === item.path
                 ? 'bg-white/10 text-white'
                 : 'text-gray-400 hover:bg-white/5 hover:text-white'
-            }`}
+              }`}
             style={{ paddingLeft: `${12 + level * 16}px` }}
           >
             <File className="w-4 h-4 flex-shrink-0" />
@@ -183,134 +785,242 @@ function App() {
     });
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || loading) return;
+  const handleSend = async (imageDataUrls = []) => {
+    if ((!input.trim() && imageDataUrls.length === 0) || loading) return;
 
-    const userMessage = { role: 'user', content: input, timestamp: new Date().toISOString() };
+    // Check if a project is selected
+    if (!currentProjectId) {
+      alert('Please select or create a project first');
+      return;
+    }
+
+    const userMessage = {
+      role: 'user',
+      content: input,
+      images: imageDataUrls.length > 0 ? imageDataUrls : undefined,
+      timestamp: new Date().toISOString()
+    };
     setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
     setInput('');
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/generate', {
+      const payload = {
         prompt: currentInput,
         history: messages,
-        project_id: currentProjectId
-      });
-
-      console.log('🔍 API Response:', response.data);
+        project_id: currentProjectId,
+        discuss_mode: discussMode,
+      };
+      if (imageDataUrls.length > 0) {
+        payload.images = imageDataUrls;
+      }
+      const response = await axios.post(`${API_BASE_URL}/api/generate`, payload);
 
       const aiMessage = {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        versionId: response.data.version_id,
         toolCalls: response.data.tool_calls_log || null,
+        suggestions: response.data.suggestions || null,
         timestamp: new Date().toISOString()
       };
 
       setMessages(prev => [...prev, aiMessage]);
-      
+
       if (response.data.code) {
         const fullCodeContent = response.data.code;
-        setFullCode(fullCodeContent); // Store full code
-        setPreviewCode(fullCodeContent);
-        setIframeKey(prev => prev + 1); // Force iframe refresh
-        
-        // Parse code to build file tree
-        const code = fullCodeContent;
-        const files = parseCodeToFiles(code);
-        setFileTree(files);
-        
-        // Save this as a new code version
-        saveCodeVersion(code, response.data.preview_url || '', files, currentInput);
-        
-        // Expand all folders by default
-        const allFolderPaths = new Set();
-        const collectFolders = (items) => {
-          items.forEach(item => {
-            if (item.type === 'folder') {
-              allFolderPaths.add(item.path);
-              if (item.children) {
-                collectFolders(item.children);
+        const isPatchResponse = /\/\/\s*PATCH:\s*/.test(fullCodeContent);
+
+        if (isPatchResponse) {
+          // Patch was applied server-side — reload full workspace files from backend
+          try {
+            const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
+            const filesMap = filesResp.data.files || {};
+            let rebuiltCode = '';
+            Object.entries(filesMap).forEach(([filePath, content]) => {
+              rebuiltCode += `// FILE: ${filePath}\n${content}\n\n`;
+            });
+            setFullCode(rebuiltCode);
+            setPreviewCode(rebuiltCode);
+            const files = parseCodeToFiles(rebuiltCode);
+            setFileTree(files);
+            const allFolderPaths = new Set();
+            const collectFolders = (items) => {
+              items.forEach(item => {
+                if (item.type === 'folder') { allFolderPaths.add(item.path); if (item.children) collectFolders(item.children); }
+              });
+            };
+            collectFolders(files);
+            setExpandedFolders(allFolderPaths);
+            const findFirstFile = (items) => {
+              for (const item of items) {
+                if (item.type === 'file') return item;
+                if (item.type === 'folder' && item.children) { const f = findFirstFile(item.children); if (f) return f; }
+              }
+              return null;
+            };
+            const firstFile = findFirstFile(files);
+            if (firstFile) setSelectedFile(firstFile);
+
+            // After patch, ensure container preview is refreshed
+            if (!response.data.preview_url) {
+              try {
+                const previewResp = await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/preview`);
+                if (previewResp.data.preview_url) {
+                  console.log('🌐 Restarted container after patch:', previewResp.data.preview_url);
+                  containerLoadExpectedRef.current = true;
+                  setIsContainerLoading(true);
+                  setPreviewUrl(previewResp.data.preview_url);
+                  setActiveView('preview');
+                  startContainerRetry(previewResp.data.preview_url);
+                }
+              } catch (previewErr) {
+                console.error('Failed to get container preview after patch:', previewErr);
               }
             }
-          });
-        };
-        collectFolders(files);
-        setExpandedFolders(allFolderPaths);
-        
-        // Select first file
-        const findFirstFile = (items) => {
-          for (const item of items) {
-            if (item.type === 'file') return item;
-            if (item.type === 'folder' && item.children) {
-              const found = findFirstFile(item.children);
-              if (found) return found;
-            }
+          } catch (err) {
+            console.error('Failed to reload workspace after patch:', err);
           }
-          return null;
-        };
-        const firstFile = findFirstFile(files);
-        if (firstFile) {
-          setSelectedFile(firstFile);
-        }
-        
-        // For preview display (not edit mode), extract the first HTML file or use full code
-        const findPreviewHtmlFile = (items) => {
-          // First, look for preview.html (standalone preview)
-          for (const item of items) {
-            if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
-              return item.content;
+        } else {
+          setFullCode(fullCodeContent); // Store full code
+          setPreviewCode(fullCodeContent);
+          setIframeKey(prev => prev + 1); // Force iframe refresh
+
+          // Parse code to build file tree
+          const code = fullCodeContent;
+          const files = parseCodeToFiles(code);
+          setFileTree(files);
+
+          // Expand all folders by default
+          const allFolderPaths = new Set();
+          const collectFolders = (items) => {
+            items.forEach(item => {
+              if (item.type === 'folder') {
+                allFolderPaths.add(item.path);
+                if (item.children) {
+                  collectFolders(item.children);
+                }
+              }
+            });
+          };
+          collectFolders(files);
+          setExpandedFolders(allFolderPaths);
+
+          // Select first file
+          const findFirstFile = (items) => {
+            for (const item of items) {
+              if (item.type === 'file') return item;
+              if (item.type === 'folder' && item.children) {
+                const found = findFirstFile(item.children);
+                if (found) return found;
+              }
             }
-            if (item.type === 'folder' && item.children) {
-              const found = findPreviewHtmlFile(item.children);
-              if (found) return found;
-            }
+            return null;
+          };
+          const firstFile = findFirstFile(files);
+          if (firstFile) {
+            setSelectedFile(firstFile);
           }
-          
-          // If no preview.html, look for any HTML file
-          for (const item of items) {
-            if (item.type === 'file' && item.name.endsWith('.html')) {
-              return item.content;
+
+          // For preview display (not edit mode), extract the first HTML file or use full code
+          const findPreviewHtmlFile = (items) => {
+            for (const item of items) {
+              if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
+                return item.content;
+              }
+              if (item.type === 'folder' && item.children) {
+                const found = findPreviewHtmlFile(item.children);
+                if (found) return found;
+              }
             }
-            if (item.type === 'folder' && item.children) {
-              const found = findPreviewHtmlFile(item.children);
-              if (found) return found;
+            for (const item of items) {
+              if (item.type === 'file' && item.name.endsWith('.html')) {
+                return item.content;
+              }
+              if (item.type === 'folder' && item.children) {
+                const found = findPreviewHtmlFile(item.children);
+                if (found) return found;
+              }
             }
+            return null;
+          };
+
+          const htmlContent = findPreviewHtmlFile(files);
+          if (htmlContent) {
+            setPreviewCode(htmlContent);
+          } else if (files.length === 1 && files[0].type === 'file') {
+            setPreviewCode(files[0].content);
           }
-          return null;
-        };
-        
-        const htmlContent = findPreviewHtmlFile(files);
-        if (htmlContent) {
-          // Found HTML file, use it for preview display
-          setPreviewCode(htmlContent);
-        } else if (files.length === 1 && files[0].type === 'file') {
-          // Single file, use its content
-          setPreviewCode(files[0].content);
-        }
-        // Otherwise keep the full code for preview
+        } // end non-patch branch
       }
-      
+
       if (response.data.preview_url) {
         console.log('🌐 Container preview:', response.data.preview_url);
+        console.log('📊 Setting isContainerLoading = true');
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
         setPreviewUrl(response.data.preview_url);
         setActiveView('preview');
+        // Start retry loop imperatively — bypasses React batching issues
+        startContainerRetry(response.data.preview_url);
       } else if (response.data.code) {
         // No container URL, use inline preview
         setPreviewUrl('');
         setActiveView('preview');
       }
+
+      // Reload branch commits to show new checkpoint in version history
+      if (response.data.version_id) {
+        await loadBranchCommits(currentProjectId, currentBranch);
+      }
     } catch (error) {
       console.error('Error:', error);
+      const errorMessage = error.response?.data?.detail || error.message || 'Sorry, there was an error. Please try again.';
+      setErrorHeader(errorMessage);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: 'Sorry, there was an error. Please try again.',
+        content: `I encountered an error while generating or deploying the preview: ${errorMessage}`,
         timestamp: new Date().toISOString()
       }]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDeploy = async () => {
+    if (!currentProjectId || loading || isDeploying) return;
+
+    setIsDeploying(true);
+    setDeployStatus(null);
+
+    try {
+      // Step 1: Simulate preparation
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      // Step 2: Call download API to prepare build
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/download`, {
+        responseType: 'blob'
+      });
+
+      // Step 3: Trigger download as if "deployed" to a local package
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${currentProjectId}_deploy.zip`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      setDeployStatus('success');
+      setTimeout(() => setDeployStatus(null), 5000);
+    } catch (error) {
+      console.error('Deployment error:', error);
+      setDeployStatus('error');
+      setTimeout(() => setDeployStatus(null), 5000);
+    } finally {
+      setIsDeploying(false);
     }
   };
 
@@ -321,7 +1031,9 @@ function App() {
   };
 
   const handleRefresh = () => {
+    setIsRefreshing(true);
     setIframeKey(prev => prev + 1);
+    setTimeout(() => setIsRefreshing(false), 600);
   };
 
   const handleDownload = () => {
@@ -329,9 +1041,34 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'code.html';
+    a.download = 'vibecoding-code.txt';
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleSendElementToAI = (elementInfo) => {
+    const prompt = `Please modify this ${elementInfo.tagName} element. Current details:
+- Tag: ${elementInfo.tagName}
+- ID: ${elementInfo.id || 'none'}
+- Classes: ${elementInfo.className || 'none'}
+- Current text: ${elementInfo.textContent || 'none'}
+- Current styles: ${JSON.stringify(elementInfo.styles)}
+
+Please suggest improvements or modifications for this element.`;
+
+    setInput(prompt);
+    // Focus on chat input
+    document.getElementById('chat-input')?.focus();
+  };
+
+  const handleUpdateCode = (updatedHTML) => {
+    setPreviewCode(updatedHTML);
+    setFullCode(updatedHTML);
+
+    // Save as new version
+    saveCodeVersion(updatedHTML, previewUrl, fileTree, 'Element edited in preview');
   };
 
   // ─── VISUAL EDITOR: postMessage-based architecture ───────────────────────────
@@ -351,11 +1088,21 @@ function App() {
 
       // Listen for edit-mode toggle from parent
       window.addEventListener('message', function(e) {
-        if (e.data && e.data.type === 'set-edit-mode') {
+        if (!e.data || !e.data.type) return;
+
+        if (e.data.type === 'set-edit-mode') {
           editMode = e.data.value;
           if (!editMode) {
             clearHover();
             clearSelection();
+          }
+        } else if (e.data.type === 'update-element-property') {
+          if (selectedEl && e.data.property) {
+            if (e.data.property === 'textContent' || e.data.property === 'innerHTML' || e.data.property === 'innerText') {
+              selectedEl[e.data.property] = e.data.value;
+            } else {
+              selectedEl.style[e.data.property] = e.data.value;
+            }
           }
         }
       });
@@ -404,7 +1151,10 @@ function App() {
         var el = e.target;
         if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
         selectedEl = el;
-        window.parent.postMessage({ type: 'element-selected', data: getElementInfo(el) }, '*');
+        var info = getElementInfo(el);
+        info.mouseX = e.clientX;
+        info.mouseY = e.clientY;
+        window.parent.postMessage({ type: 'element-selected', data: info }, '*');
       }, true);
 
       // Scroll events: re-broadcast hover rect when page scrolls
@@ -427,57 +1177,78 @@ function App() {
     return html + script;
   };
 
-  // Track iframe container ref for overlay positioning
-  const iframeContainerRef = useRef(null);
-
   // Listen for postMessage events from iframe
   useEffect(() => {
     const handleMessage = (event) => {
-      const msg = event.data;
-      if (!msg || !msg.type) return;
+      try {
+        const msg = event.data;
+        if (!msg || !msg.type) return;
 
-      if (msg.type === 'element-hover') {
-        if (!msg.data) {
-          setHoveredElement(null);
-          return;
+        console.log('📥 Received message from iframe:', msg.type, msg);
+
+        if (msg.type === 'element-hover') {
+          if (!msg.data) {
+            setHoveredElement(null);
+            return;
+          }
+          // Coordinates from iframe are relative to iframe viewport.
+          // We need to offset by the iframe element's position in parent.
+          const iframe = iframeRef.current;
+          const container = iframeContainerRef.current;
+          if (!iframe || !container) return;
+          const iframeRect = iframe.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          const offsetTop = iframeRect.top - containerRect.top;
+          const offsetLeft = iframeRect.left - containerRect.left;
+          setHoveredElement({
+            ...msg.data,
+            rect: {
+              top: msg.data.rect.top + offsetTop,
+              left: msg.data.rect.left + offsetLeft,
+              width: msg.data.rect.width,
+              height: msg.data.rect.height,
+            }
+          });
+        } else if (msg.type === 'element-selected') {
+          const iframe = iframeRef.current;
+          const container = iframeContainerRef.current;
+          if (!iframe || !container) return;
+          const iframeRect = iframe.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          const offsetTop = iframeRect.top - containerRect.top;
+          const offsetLeft = iframeRect.left - containerRect.left;
+
+          const elementData = {
+            ...msg.data,
+            rect: {
+              top: msg.data.rect.top + offsetTop,
+              left: msg.data.rect.left + offsetLeft,
+              width: msg.data.rect.width,
+              height: msg.data.rect.height,
+            }
+          };
+
+          setSelectedElement(elementData);
+
+          // Position menu at mouse click position (offset from iframe top-left)
+          const menuX = iframeRect.left + (msg.data.mouseX || (msg.data.rect.left + msg.data.rect.width / 2));
+          const menuY = iframeRect.top + (msg.data.mouseY || msg.data.rect.top);
+          // Clamp so menu doesn't go off-screen right/bottom
+          const clampedX = Math.min(menuX, window.innerWidth - 220);
+          const clampedY = Math.min(menuY, window.innerHeight - 320);
+
+          setEditMenu({
+            visible: true,
+            element: elementData,
+            position: { x: clampedX, y: clampedY }
+          });
+        } else if (msg.type === 'element-deselect') {
+          setSelectedElement(null);
+          setEditMenu({ ...editMenu, visible: false });
         }
-        // Coordinates from iframe are relative to iframe viewport.
-        // We need to offset by the iframe element's position in parent.
-        const iframe = iframeRef.current;
-        const container = iframeContainerRef.current;
-        if (!iframe || !container) return;
-        const iframeRect = iframe.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const offsetTop = iframeRect.top - containerRect.top;
-        const offsetLeft = iframeRect.left - containerRect.left;
-        setHoveredElement({
-          ...msg.data,
-          rect: {
-            top: msg.data.rect.top + offsetTop,
-            left: msg.data.rect.left + offsetLeft,
-            width: msg.data.rect.width,
-            height: msg.data.rect.height,
-          }
-        });
-      } else if (msg.type === 'element-selected') {
-        const iframe = iframeRef.current;
-        const container = iframeContainerRef.current;
-        if (!iframe || !container) return;
-        const iframeRect = iframe.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const offsetTop = iframeRect.top - containerRect.top;
-        const offsetLeft = iframeRect.left - containerRect.left;
-        setSelectedElement({
-          ...msg.data,
-          rect: {
-            top: msg.data.rect.top + offsetTop,
-            left: msg.data.rect.left + offsetLeft,
-            width: msg.data.rect.width,
-            height: msg.data.rect.height,
-          }
-        });
-      } else if (msg.type === 'element-deselect') {
-        setSelectedElement(null);
+      } catch (err) {
+        // Silently ignore postMessage errors from other sources
+        console.debug('Ignored postMessage error:', err.message);
       }
     };
 
@@ -495,7 +1266,10 @@ function App() {
     // Send edit-mode state to iframe's injected script
     const iframe = iframeRef.current;
     if (iframe && iframe.contentWindow) {
+      console.log('📤 Sending edit mode message to iframe:', editMode);
       iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
+    } else {
+      console.warn('⚠️ Iframe or contentWindow not available');
     }
   }, [editMode]);
 
@@ -505,10 +1279,22 @@ function App() {
       if (showVersionHistory && !event.target.closest('.version-history-container')) {
         setShowVersionHistory(false);
       }
+      if (showUserMenu && !event.target.closest('.user-menu-container')) {
+        setShowUserMenu(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showVersionHistory]);
+  }, [showVersionHistory, showUserMenu]);
+
+  // Cleanup poll timer on unmount
+  useEffect(() => {
+    return () => {
+      if (containerPollIntervalRef.current) {
+        clearTimeout(containerPollIntervalRef.current);
+      }
+    };
+  }, []);
 
   // ─── END VISUAL EDITOR ───────────────────────────────────────────────────────
 
@@ -526,7 +1312,7 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/generate', {
+      const response = await axios.post(`${API_BASE_URL}/api/generate`, {
         prompt: editMessage.content,
         history: messages,
         project_id: currentProjectId
@@ -536,25 +1322,24 @@ function App() {
         role: 'assistant',
         content: response.data.message,
         code: response.data.code,
+        versionId: response.data.version_id,
         toolCalls: response.data.tool_calls_log || null,
+        suggestions: response.data.suggestions || null,
         timestamp: new Date().toISOString()
       };
 
       setMessages(prev => [...prev, aiMessage]);
-      
+
       if (response.data.code) {
         const fullCodeContent = response.data.code;
         setFullCode(fullCodeContent);
         setPreviewCode(fullCodeContent);
-        setIframeKey(prev => prev + 1);
-        
+
         const code = fullCodeContent;
         const files = parseCodeToFiles(code);
         setFileTree(files);
-        
-        // Save this as a new code version
-        saveCodeVersion(code, response.data.preview_url || '', files, editMessage.content);
-        
+
+        // Expand all folders
         const allFolderPaths = new Set();
         const collectFolders = (items) => {
           items.forEach(item => {
@@ -568,7 +1353,8 @@ function App() {
         };
         collectFolders(files);
         setExpandedFolders(allFolderPaths);
-        
+
+        // Select first file
         const findFirstFile = (items) => {
           for (const item of items) {
             if (item.type === 'file') return item;
@@ -583,7 +1369,8 @@ function App() {
         if (firstFile) {
           setSelectedFile(firstFile);
         }
-        
+
+        // Find HTML for preview
         const findPreviewHtmlFile = (items) => {
           for (const item of items) {
             if (item.type === 'file' && (item.name === 'preview.html' || item.path.endsWith('/preview.html'))) {
@@ -594,7 +1381,7 @@ function App() {
               if (found) return found;
             }
           }
-          
+
           for (const item of items) {
             if (item.type === 'file' && item.name.endsWith('.html')) {
               return item.content;
@@ -606,7 +1393,7 @@ function App() {
           }
           return null;
         };
-        
+
         const htmlContent = findPreviewHtmlFile(files);
         if (htmlContent) {
           setPreviewCode(htmlContent);
@@ -614,11 +1401,21 @@ function App() {
           setPreviewCode(files[0].content);
         }
       }
-      
+
+      // Update preview URL if provided
       if (response.data.preview_url) {
+        console.log('🌐 Container preview:', response.data.preview_url);
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
         setPreviewUrl(response.data.preview_url);
+        setActiveView('preview');
+        // Start retry loop imperatively — bypasses React batching issues
+        startContainerRetry(response.data.preview_url);
       }
-      
+
+      // Reload branches to show new commit
+      await loadBranchesFromBackend(currentProjectId);
+
       setSelectedElement(null);
     } catch (error) {
       console.error('Error:', error);
@@ -639,19 +1436,19 @@ function App() {
     const now = new Date();
     const diffMs = now - date;
     const diffMins = Math.floor(diffMs / 60000);
-    
+
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins}m ago`;
-    
+
     const diffHours = Math.floor(diffMins / 60);
     if (diffHours < 24) return `${diffHours}h ago`;
-    
+
     // Show time for today, date for older
     const isToday = date.toDateString() === now.toDateString();
     if (isToday) {
       return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     }
-    
+
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   };
 
@@ -660,30 +1457,46 @@ function App() {
     // Check if code contains file markers
     const fileMarkerRegex = /\/\/\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->/gi;
     const matches = [...code.matchAll(fileMarkerRegex)];
-    
+
     if (matches.length > 0) {
-      // Multi-file structure
-      const files = [];
-      
+      // Collect all file blocks, deduplicating by cleaned path (last occurrence wins)
+      const fileMap = new Map();
+
       for (let i = 0; i < matches.length; i++) {
         const match = matches[i];
-        const filename = (match[1] || match[2] || match[3]).trim();
+        const rawFilename = (match[1] || match[2] || match[3]).trim();
+        // Strip "(Updated)" suffix that some AI models append
+        const filename = rawFilename.replace(/\s*\(Updated\)\s*$/i, '').trim();
+        if (!filename || filename === 'metadata.json') continue;
+
         const startPos = match.index + match[0].length;
         const endPos = i < matches.length - 1 ? matches[i + 1].index : code.length;
-        const content = code.substring(startPos, endPos).trim();
-        
-        files.push({
-          name: filename.split('/').pop(),
-          path: filename,
-          content: content,
-          type: 'file'
-        });
+        let content = code.substring(startPos, endPos).trim();
+
+        // Skip entries whose content is only SEARCH/REPLACE artifacts
+        if (/^<<<\s*SEARCH/.test(content) && !content.includes('<!DOCTYPE') && !content.includes('<html')) {
+          continue;
+        }
+
+        // Only keep entries with actual content (skip empty "// FILE:" labels)
+        if (content) {
+          fileMap.set(filename, {
+            name: filename.split('/').pop(),
+            path: filename,
+            content: content,
+            type: 'file'
+          });
+        }
       }
-      
-      // Build tree structure from flat file list
-      return buildFileTree(files);
-    } else {
-      // Single file - detect type
+
+      const files = [...fileMap.values()];
+      if (files.length > 0) {
+        return buildFileTree(files);
+      }
+    }
+
+    // Fallback: single file - detect type by content
+    {
       let filename = 'app.py';
       if (code.includes('from flask') || code.includes('Flask(')) {
         filename = 'app.py';
@@ -698,7 +1511,7 @@ function App() {
       } else if (code.includes('const express') || code.includes('require(')) {
         filename = 'server.js';
       }
-      
+
       return [{
         name: filename,
         path: filename,
@@ -713,13 +1526,13 @@ function App() {
   const buildFileTree = (files) => {
     const tree = [];
     const folderMap = new Map();
-    
+
     // Sort files by path to ensure folders come before their contents
     files.sort((a, b) => a.path.localeCompare(b.path));
-    
+
     files.forEach(file => {
       const parts = file.path.split('/');
-      
+
       if (parts.length === 1) {
         // Root level file
         tree.push({
@@ -730,13 +1543,13 @@ function App() {
         // Nested file - create folder structure
         let currentPath = '';
         let currentLevel = tree;
-        
+
         for (let i = 0; i < parts.length - 1; i++) {
           const folderName = parts[i];
           currentPath = currentPath ? `${currentPath}/${folderName}` : folderName;
-          
+
           let folder = folderMap.get(currentPath);
-          
+
           if (!folder) {
             folder = {
               name: folderName,
@@ -748,10 +1561,10 @@ function App() {
             folderMap.set(currentPath, folder);
             currentLevel.push(folder);
           }
-          
+
           currentLevel = folder.children;
         }
-        
+
         // Add file to its parent folder
         currentLevel.push({
           ...file,
@@ -759,7 +1572,7 @@ function App() {
         });
       }
     });
-    
+
     return tree;
   };
 
@@ -793,104 +1606,129 @@ function App() {
     };
     const htmlFromTree = findHtml(fileTree);
     if (htmlFromTree) return htmlFromTree;
-    // Last resort: fullCode (may be single-file HTML or raw code)
-    return fullCode || previewCode || '';
+    // If fullCode looks like HTML, use it; otherwise show a waiting message
+    if (fullCode && (fullCode.includes('<html') || fullCode.includes('<!DOCTYPE'))) {
+      return fullCode;
+    }
+    return `<!DOCTYPE html><html><head><style>
+      body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
+             background:#0A0A0F; color:#9ca3af; font-family:system-ui,sans-serif; text-align:center; }
+      .icon { font-size:3rem; margin-bottom:1rem; }
+      h2 { color:#e5e7eb; font-size:1.1rem; margin:0 0 0.5rem; }
+      p { font-size:0.85rem; margin:0; }
+    </style></head><body><div><div class="icon">⏳</div><h2>Starting container preview...</h2><p>Your app is being deployed. The preview will appear shortly.</p></div></body></html>`;
+  };
+
+  // pollUntilReady is handled directly via startContainerRetry above
+
+  // Called from iframe onLoad — if container is loading and iframe got real content, stop retrying
+  const handleIframeLoad = () => {
+    // Only act if we're actively waiting for a container
+    if (containerLoadExpectedRef.current) {
+      const iframe = iframeRef.current;
+
+      // Ignore about:blank loads (fired when iframeKey changes before real URL loads)
+      try {
+        const src = iframe?.contentWindow?.location?.href || '';
+        if (src === 'about:blank' || src === '') {
+          return; // not real content yet
+        }
+      } catch {
+        // Cross-origin means real content is being served — fall through to success check
+      }
+
+      // Check if the iframe got real content or a browser error page
+      let isErrorPage = false;
+      try {
+        const doc = iframe?.contentDocument || iframe?.contentWindow?.document;
+        const bodyText = doc?.body?.innerText || '';
+        if (
+          bodyText.includes("didn't send any data") ||
+          bodyText.includes('ERR_EMPTY_RESPONSE') ||
+          bodyText.includes('ERR_CONNECTION_REFUSED') ||
+          bodyText.includes('This site can') ||
+          bodyText.includes('refused to connect')
+        ) {
+          isErrorPage = true;
+        }
+      } catch {
+        // Cross-origin block = real content served by container, not an error page
+        isErrorPage = false;
+      }
+
+      if (!isErrorPage) {
+        // Real content loaded — stop retrying, clear loader
+        console.log('✅ Container content loaded — stopping retry loop');
+        if (containerPollIntervalRef.current) {
+          clearTimeout(containerPollIntervalRef.current);
+          containerPollIntervalRef.current = null;
+        }
+        containerLoadExpectedRef.current = false;
+        setIsContainerLoading(false);
+      }
+      // If it IS an error page, the retry loop keeps firing
+    }
+
+    const iframe = iframeRef.current;
+    if (iframe && iframe.contentWindow) {
+      try {
+        iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
+      } catch { /* cross-origin, ignore */ }
+    }
   };
 
   return (
     <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
-      {/* Top Header - Base44 Style */}
-      <div className="h-14 border-b border-white/10 flex items-center justify-between px-6 bg-[#0F0F14]">
-        <div className="flex items-center gap-3">
+      <Header
+        chatVersion={`v${chatVersion}`}
+        user={user}
+        showUserMenu={showUserMenu}
+        setShowUserMenu={setShowUserMenu}
+        projects={projects}
+        currentProjectId={currentProjectId}
+        setCurrentProjectId={setCurrentProjectId}
+        showProjectDropdown={showProjectDropdown}
+        setShowProjectDropdown={setShowProjectDropdown}
+        onNewChat={handleNewChat}
+        onCreateProject={handleCreateProject}
+        onGitClick={() => setShowGitPanel(true)}
+        onDeploy={handleDeploy}
+        isDeploying={isDeploying}
+        deployStatus={deployStatus}
+        previewCode={previewCode}
+        loading={loading}
+        onLogout={logout}
+        branches={branches}
+        currentBranch={currentBranch}
+        onBranchSwitch={switchToBranch}
+        formatTimestamp={formatTimestamp}
+      />
+
+      {/* Error/Status Banner */}
+      {(errorHeader || deployStatus === 'success') && (
+        <div className={`h-10 flex items-center justify-center px-6 text-sm animate-in slide-in-from-top duration-300 ${deployStatus === 'success' ? 'bg-green-600/20 text-green-300' : 'bg-red-600/20 text-red-300'
+          }`}>
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-              <Zap className="w-5 h-5" />
-            </div>
-            <span className="font-bold text-lg">VibeCoding</span>
+            {deployStatus === 'success' ? (
+              <Check className="w-4 h-4" />
+            ) : (
+              <Zap className="w-4 h-4" />
+            )}
+            <span>{deployStatus === 'success' ? 'Project successfully deployed and downloaded!' : errorHeader}</span>
           </div>
-          <div className="h-6 w-px bg-white/10" />
-          <span className="text-sm text-gray-400">Chat v{chatVersion}</span>
-          {codeVersions.length > 0 && (
-            <>
-              <div className="h-6 w-px bg-white/10" />
-              <div className="relative version-history-container">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowVersionHistory(!showVersionHistory)}
-                  className="flex items-center gap-2 bg-white/5 hover:bg-white/10"
-                >
-                  <History className="w-4 h-4" />
-                  <span>Code v{currentCodeVersion}/{codeVersions.length}</span>
-                </Button>
-                
-                {/* Version History Dropdown */}
-                {showVersionHistory && (
-                  <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a1f] border border-white/10 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
-                    <div className="p-3 border-b border-white/10">
-                      <div className="text-sm font-semibold text-white">Code Version History</div>
-                      <div className="text-xs text-gray-400 mt-1">{codeVersions.length} versions saved</div>
-                    </div>
-                    <div className="p-2">
-                      {codeVersions.map((version) => (
-                        <Button
-                          key={version.version}
-                          variant="ghost"
-                          onClick={() => {
-                            setCurrentCodeVersion(version.version);
-                            setShowVersionHistory(false);
-                          }}
-                          className={`w-full text-left px-3 py-2 h-auto rounded-lg mb-1 ${
-                            currentCodeVersion === version.version
-                              ? 'bg-purple-600/20 border border-purple-500/30'
-                              : 'hover:bg-white/5'
-                          }`}
-                        >
-                          <div className="w-full">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className={`text-sm font-medium ${
-                                currentCodeVersion === version.version ? 'text-purple-300' : 'text-white'
-                              }`}>
-                                Version {version.version}
-                              </span>
-                              <span className="text-xs text-gray-500">
-                                {formatTimestamp(version.timestamp)}
-                              </span>
-                            </div>
-                            <div className="text-xs text-gray-400 line-clamp-2">
-                              {version.prompt}
-                            </div>
-                          </div>
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button 
-            variant="ghost"
-            size="sm"
-            onClick={handleNewChat}
-            className="bg-white/5 hover:bg-white/10"
-            title="Start a new chat"
+          <button
+            onClick={() => { setErrorHeader(null); setDeployStatus(null); }}
+            className="ml-4 hover:text-white"
           >
-            <Plus className="w-4 h-4" />
-            New Chat
-          </Button>
-          <Button className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-sm font-medium">
-            Deploy
-          </Button>
+            <Plus className="w-4 h-4 rotate-45" />
+          </button>
         </div>
-      </div>
+      )}
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Right Panel - Preview/Code */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {/* View Tabs */}
           <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#0F0F14] sticky top-0 z-10">
             <div className="flex items-center gap-1">
@@ -898,11 +1736,10 @@ function App() {
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveView('preview')}
-                className={`${
-                  activeView === 'preview'
+                className={`${activeView === 'preview'
                     ? 'bg-white/10 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
-                }`}
+                    : 'text-white hover:bg-white/5'
+                  }`}
               >
                 <Eye className="w-4 h-4 inline mr-2" />
                 Preview
@@ -911,18 +1748,17 @@ function App() {
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveView('code')}
-                className={`${
-                  activeView === 'code'
+                className={`${activeView === 'code'
                     ? 'bg-white/10 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
-                }`}
+                    : 'text-white hover:bg-white/5'
+                  }`}
               >
                 <Code className="w-4 h-4 inline mr-2" />
                 Code
               </Button>
             </div>
 
-            
+
             {previewCode && activeView === 'preview' && (
               <div className="flex items-center gap-2">
                 {/* Screen Size Selector */}
@@ -931,41 +1767,38 @@ function App() {
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('mobile')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
-                    }`}
+                    className={`h-8 w-8 ${screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-white'
+                      }`}
                     title="Mobile (375px)"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2"/>
+                      <rect x="7" y="2" width="10" height="20" rx="2" strokeWidth="2" />
                     </svg>
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('tablet')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
-                    }`}
+                    className={`h-8 w-8 ${screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-white'
+                      }`}
                     title="Tablet (768px)"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2"/>
+                      <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2" />
                     </svg>
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('desktop')}
-                    className={`h-8 w-8 ${
-                      screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-gray-400 hover:text-white'
-                    }`}
+                    className={`h-8 w-8 ${screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-white'
+                      }`}
                     title="Desktop (100%)"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <rect x="2" y="4" width="20" height="12" rx="2" strokeWidth="2"/>
-                      <path d="M8 20h8" strokeWidth="2"/>
-                      <path d="M12 16v4" strokeWidth="2"/>
+                      <rect x="2" y="4" width="20" height="12" rx="2" strokeWidth="2" />
+                      <path d="M8 20h8" strokeWidth="2" />
+                      <path d="M12 16v4" strokeWidth="2" />
                     </svg>
                   </Button>
                 </div>
@@ -975,11 +1808,10 @@ function App() {
                   variant={editMode ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => setEditMode(!editMode)}
-                  className={`${
-                    editMode 
-                      ? 'bg-purple-600 text-white hover:bg-purple-700' 
-                      : 'bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white'
-                  }`}
+                  className={`${editMode
+                      ? 'bg-purple-600 text-white hover:bg-purple-700'
+                      : 'bg-white/5 hover:bg-white/10 text-white'
+                    }`}
                   title="Edit Mode - Click elements to edit"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -987,65 +1819,64 @@ function App() {
                   </svg>
                   {editMode ? 'Editing' : 'Edit'}
                 </Button>
-                
+
                 <div className="h-6 w-px bg-white/10" />
-                
+
                 <Button
-                  variant="ghost"
                   size="icon"
                   onClick={handleRefresh}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="!bg-white/5 hover:!bg-white/10 !text-white !border-0"
                   title="Refresh Preview"
                 >
-                  <RefreshCw className="w-4 h-4" />
+                  <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                 </Button>
-                <Button
+                {/* <Button
                   variant="ghost"
                   size="sm"
                   onClick={handleCopy}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button 
+                </Button> */}
+                {/* <Button 
                   variant="ghost"
                   size="sm"
                   onClick={handleDownload}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   <Download className="w-4 h-4" />
                   Download
-                </Button>
+                </Button> */}
               </div>
             )}
-            
+
             {previewCode && activeView === 'code' && (
               <div className="flex items-center gap-2">
-                <Button
+                {/* <Button
                   variant="ghost"
                   size="sm"
                   onClick={handleCopy}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button 
+                </Button> */}
+                {/* <Button 
                   variant="ghost"
                   size="sm"
                   onClick={handleDownload}
-                  className="bg-white/5 hover:bg-white/10"
+                  className="bg-white/5 hover:bg-white/10 text-white"
                 >
                   <Download className="w-4 h-4" />
                   Download
-                </Button>
+                </Button> */}
               </div>
             )}
           </div>
 
           {/* Content Area */}
-          <div className="flex-1 relative bg-[#0A0A0F]">
+          <div className="flex-1 relative bg-[#0A0A0F] overflow-hidden min-h-0 flex flex-col">
             {!previewCode ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
@@ -1058,42 +1889,7 @@ function App() {
               </div>
             ) : activeView === 'preview' ? (
               <div className="h-full flex flex-col">
-                {/* Browser-like URL Bar */}
-                <div className="flex-shrink-0 border-b border-white/10 bg-[#0F0F14]">
-                  <div className="flex items-center gap-2 px-4 py-2">
-                    <Button 
-                      variant="ghost"
-                      size="icon"
-                      onClick={handleRefresh}
-                      className="h-8 w-8 hover:bg-white/10"
-                      title="Refresh"
-                    >
-                      <RefreshCw className="w-4 h-4 text-gray-400" />
-                    </Button>
-                    <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e1e1e] border border-white/10">
-                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                      </svg>
-                      <input
-                        type="text"
-                        value={previewUrl || 'your-app.vibecoding.app'}
-                        readOnly
-                        className="flex-1 bg-transparent text-sm outline-none text-gray-300"
-                      />
-                      {previewUrl && (
-                        <Button
-                          variant="default"
-                          size="sm"
-                          onClick={() => window.open(previewUrl, '_blank')}
-                          className="h-6 px-2 text-xs bg-blue-600 text-white hover:bg-blue-700"
-                        >
-                          Open
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                
+
                 {/* Edit Mode Banner */}
                 {editMode && (
                   <div className="flex-shrink-0 bg-purple-600/20 border-b border-purple-500/30 px-4 py-2">
@@ -1115,19 +1911,18 @@ function App() {
                     </div>
                   </div>
                 )}
-                
+
                 {/* Preview iframe with responsive sizing */}
                 {/* The iframe source NEVER changes when toggle edit mode.
                     Editor script is always injected into srcDoc; it stays dormant until activated. */}
-                <div 
+                <div
                   className={`flex-1 relative flex items-center justify-center bg-[#0A0A0F]`}
                 >
-                  <div 
-                    className={`h-full transition-all duration-300 relative ${
-                      screenSize === 'mobile' ? 'w-[375px]' :
-                      screenSize === 'tablet' ? 'w-[768px]' :
-                      'w-full'
-                    }`}
+                  <div
+                    className={`h-full transition-all duration-300 relative ${screenSize === 'mobile' ? 'w-[375px]' :
+                        screenSize === 'tablet' ? 'w-[768px]' :
+                          'w-full'
+                      }`}
                     style={{
                       boxShadow: screenSize !== 'desktop' ? (editMode ? '0 0 0 1px rgba(0,0,0,0.1)' : '0 0 0 1px rgba(255,255,255,0.1)') : 'none'
                     }}
@@ -1141,13 +1936,72 @@ function App() {
                       title="Preview"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                       onLoad={() => {
-                        // Notify injected script of current edit mode state after (re)load
-                        const iframe = iframeRef.current;
-                        if (iframe && iframe.contentWindow) {
-                          iframe.contentWindow.postMessage({ type: 'set-edit-mode', value: editMode }, '*');
-                        }
+                        handleIframeLoad();
                       }}
                     />
+
+                    {/* Container / Checkpoint loader overlay */}
+                    {(isCheckpointLoading || (isContainerLoading && previewUrl)) && (
+                      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#0A0A0F]/95 backdrop-blur-sm">
+                        {/* Animated rings */}
+                        <div className="relative flex items-center justify-center mb-8">
+                          <div className="absolute w-24 h-24 rounded-full border-2 border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
+                          <div className="absolute w-20 h-20 rounded-full border border-purple-400/30 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.3s' }} />
+                          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center shadow-lg shadow-purple-500/30 animate-pulse">
+                            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              {isCheckpointLoading ? (
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              ) : (
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M12 5l7 7-7 7" />
+                              )}
+                            </svg>
+                          </div>
+                        </div>
+
+                        {/* Spinning arc */}
+                        <div className="relative w-12 h-12 mb-6">
+                          <svg className="w-12 h-12 animate-spin" viewBox="0 0 48 48" fill="none">
+                            <circle cx="24" cy="24" r="20" stroke="rgba(168,85,247,0.15)" strokeWidth="3" />
+                            <path d="M24 4 A20 20 0 0 1 44 24" stroke="url(#gradLoader)" strokeWidth="3" strokeLinecap="round" />
+                            <defs>
+                              <linearGradient id="gradLoader" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#a855f7" />
+                                <stop offset="100%" stopColor="#ec4899" />
+                              </linearGradient>
+                            </defs>
+                          </svg>
+                        </div>
+
+                        {/* Text */}
+                        <p className="text-white font-semibold text-base mb-1 tracking-wide">
+                          {isCheckpointLoading ? 'Loading checkpoint' : 'Starting your app'}
+                        </p>
+                        <p className="text-gray-400 text-sm">
+                          {isCheckpointLoading ? 'Restoring files from commit...' : 'Waiting for your app to be ready...'}
+                        </p>
+
+                        {/* Animated dots progress */}
+                        <div className="flex items-center gap-1.5 mt-5">
+                          {[0, 1, 2, 3, 4].map(i => (
+                            <div
+                              key={i}
+                              className="w-1.5 h-1.5 rounded-full bg-purple-500"
+                              style={{
+                                animation: 'containerDotBounce 1.2s ease-in-out infinite',
+                                animationDelay: `${i * 0.15}s`
+                              }}
+                            />
+                          ))}
+                        </div>
+
+                        <style>{`
+                          @keyframes containerDotBounce {
+                            0%, 80%, 100% { transform: scaleY(1); opacity: 0.4; }
+                            40% { transform: scaleY(1.8); opacity: 1; }
+                          }
+                        `}</style>
+                      </div>
+                    )}
 
                     {/* Overlay container – pointer-events none preserves iframe scrolling */}
                     <div
@@ -1204,10 +2058,9 @@ function App() {
                             {selectedElement.id && <span className="text-violet-200">#{selectedElement.id}</span>}
                             {selectedElement.className && <span className="text-violet-200">.{selectedElement.className.trim().split(/\s+/)[0]}</span>}
                           </div>
-                          {['tl','tr','bl','br'].map(c => (
-                            <div key={c} className={`absolute w-2.5 h-2.5 bg-violet-500 rounded-sm border border-white ${
-                              c==='tl' ? '-top-1.5 -left-1.5' : c==='tr' ? '-top-1.5 -right-1.5' : c==='bl' ? '-bottom-1.5 -left-1.5' : '-bottom-1.5 -right-1.5'
-                            }`} />
+                          {['tl', 'tr', 'bl', 'br'].map(c => (
+                            <div key={c} className={`absolute w-2.5 h-2.5 bg-violet-500 rounded-sm border border-white ${c === 'tl' ? '-top-1.5 -left-1.5' : c === 'tr' ? '-top-1.5 -right-1.5' : c === 'bl' ? '-bottom-1.5 -left-1.5' : '-bottom-1.5 -right-1.5'
+                              }`} />
                           ))}
                         </div>
                       )}
@@ -1221,10 +2074,10 @@ function App() {
                     </div>
                   )}
                 </div>
-                
+
                 {/* Edit Prompt Panel */}
                 {editMode && selectedElement && (
-                  <div className="flex-shrink-0 border-t border-white/10 bg-[#0F0F14] p-4">
+                  <div className="absolute bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-[#0F0F14]/95 backdrop-blur-sm p-4 shadow-2xl">
                     <div className="max-w-4xl mx-auto">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="flex items-center gap-2 text-sm text-gray-400">
@@ -1281,9 +2134,9 @@ function App() {
                 )}
               </div>
             ) : (
-              <div className="h-full flex">
+              <div className="flex-1 flex min-h-0 overflow-hidden">
                 {/* File Tree Sidebar */}
-                <div className="w-64 border-r border-white/10 bg-[#0F0F14] overflow-y-auto">
+                <div className="w-64 border-r border-white/10 bg-[#0F0F14] flex flex-col">
                   <div className="p-3 border-b border-white/10">
                     <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
                       <Folder className="w-4 h-4" />
@@ -1291,13 +2144,13 @@ function App() {
                       <span className="ml-auto text-gray-500">{fileTree.length}</span>
                     </div>
                   </div>
-                  <div className="p-2">
-                    {renderFileTree(fileTree)}
+                  <div className="flex-1 overflow-y-auto p-2">
+                    {renderFileTreeWithFreeze(fileTree)}
                   </div>
                 </div>
 
                 {/* Code Editor */}
-                <div className="flex-1 flex flex-col">
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden min-w-0">
                   {/* File Header */}
                   <div className="px-4 py-2 border-b border-white/10 bg-[#0F0F14] flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -1314,8 +2167,8 @@ function App() {
                   </div>
 
                   {/* Code Content */}
-                  <div className="flex-1 overflow-auto">
-                    <div className="flex h-full">
+                  <div className="flex-1 overflow-auto min-h-0 custom-scrollbar">
+                    <div className="flex min-h-full" key={selectedFile?._loadedAt || selectedFile?.path || 'no-file'}>
                       {/* Line Numbers */}
                       <div className="py-4 px-3 select-none bg-[#0A0A0F] text-gray-600 border-r border-white/10">
                         <pre className="text-xs font-mono leading-relaxed text-right">
@@ -1324,11 +2177,11 @@ function App() {
                           ))}
                         </pre>
                       </div>
-                      
+
                       {/* Code Content */}
-                      <div className="flex-1 py-4 px-4 overflow-x-auto bg-[#0A0A0F]">
+                      <div className="flex-1 py-4 px-4 overflow-x-auto custom-scrollbar bg-[#0A0A0F] min-w-0">
                         <pre className="text-sm font-mono leading-relaxed text-gray-300">
-                          <code>{selectedFile?.content || previewCode}</code>
+                          <code key={selectedFile?._loadedAt || selectedFile?.path || 'preview'}>{selectedFile?.content || previewCode}</code>
                         </pre>
                       </div>
                     </div>
@@ -1346,38 +2199,75 @@ function App() {
           input={input}
           setInput={setInput}
           onSend={handleSend}
-          onKeyPress={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
           darkMode={true}
-          codeVersions={codeVersions}
-          selectedVersion={currentCodeVersion}
-          onLoadVersion={(versionId) => {
-            setCurrentCodeVersion(versionId);
+          codeVersions={branchCommits}
+          selectedVersion={null}
+          onLoadVersion={async (commitHash) => {
+            await loadCommitCheckpoint(commitHash);
           }}
           onCopyMessage={async (text) => {
             await navigator.clipboard.writeText(text);
           }}
-          onRegenerate={() => {}}
+          onRegenerate={() => { }}
           onClearHistory={() => {
             setMessages([]);
             setPreviewCode('');
             setPreviewUrl('');
             setFileTree([]);
             setSelectedFile(null);
-            setCodeVersions([]);
-            setCurrentCodeVersion(0);
+            setBranches([]);
+            setBranchCommits([]);
           }}
-          suggestions={[
-            'Create a beautiful landing page with gradient background',
-            'Build a todo app with Flask backend',
-            'Create a calculator app'
-          ]}
+          disabled={!currentProjectId}
+          suggestions={(() => {
+            // Get suggestions from the last assistant message, or use defaults
+            const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant');
+            return lastAssistantMsg?.suggestions || [
+              'Create a beautiful landing page with gradient background',
+              'Build a todo app with Flask backend',
+              'Create a calculator app'
+            ];
+          })()}
+          discussMode={discussMode}
+          onToggleDiscuss={() => setDiscussMode(prev => !prev)}
         />
       </div>
+
+      {/* Git Panel */}
+      <GitPanel
+        isVisible={showGitPanel}
+        onClose={() => setShowGitPanel(false)}
+        darkMode={true}
+        projectId={currentProjectId}
+      />
+
+      {/* Checkpoint Snackbar */}
+      {showCheckpointSnackbar && viewingCheckpoint && (
+        <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom duration-300">
+          <div className="bg-amber-600/90 backdrop-blur-sm border border-amber-500/50 rounded-lg shadow-2xl px-4 py-3 min-w-[320px] max-w-md">
+            <div className="flex items-start gap-3">
+              <History className="w-5 h-5 text-amber-200 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-white mb-1">
+                  Checkpoint Loaded
+                </div>
+                <div className="text-xs text-amber-100/80">
+                  {viewingCheckpoint.message}
+                </div>
+                <div className="text-xs text-amber-200/60 mt-1">
+                  {viewingCheckpoint.date}
+                </div>
+              </div>
+              <button
+                onClick={() => setShowCheckpointSnackbar(false)}
+                className="text-amber-200 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

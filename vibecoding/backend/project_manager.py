@@ -2,31 +2,57 @@ import os
 import uuid
 import zipfile
 import shutil
+import re
 import docker
 import asyncio
 import time
 import requests
+import threading
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 import json
 import logging
-from runtime_detector import runtime_detector
+from git_manager import git_manager
+from ai_config import ai_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def sanitize_html(content: str) -> str:
+    """Remove stray '>' characters that appear after closing tags (AI generation artifact)."""
+    # Remove stray > after closing tags like </nav>>, </ul>>, </section>>, </footer>>
+    content = re.sub(r'(</\w+>)>+', r'\1', content)
+    # Remove stray > after opening tag closers like id="features">>
+    content = re.sub(r'(">)>+', r'\1', content)
+    # Remove stray > at end of </html>
+    content = re.sub(r'(</html>)>*\s*$', r'\1', content.rstrip())
+    return content
+
 EDITOR_INJECTION_SCRIPT = """
 <script id="__vibe_editor__">
 (function() {
+  console.log('🎨 VibeCoding Editor Script Loaded');
   var hoveredEl = null;
   var selectedEl = null;
   var editMode = false;
 
   window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'set-edit-mode') {
+    if (!e.data || !e.data.type) return;
+    
+    if (e.data.type === 'set-edit-mode') {
+      console.log('📝 Edit mode changed:', e.data.value);
       editMode = e.data.value;
       if (!editMode) { clearHover(); clearSelection(); }
+    } else if (e.data.type === 'update-element-property') {
+      if (selectedEl && e.data.property) {
+        if (e.data.property === 'textContent' || e.data.property === 'innerHTML' || e.data.property === 'innerText') {
+          selectedEl[e.data.property] = e.data.value;
+        } else {
+          selectedEl.style[e.data.property] = e.data.value;
+        }
+      }
     }
   });
 
@@ -60,12 +86,17 @@ EDITOR_INJECTION_SCRIPT = """
 
   document.addEventListener('click', function(e) {
     if (!editMode) return;
+    console.log('🖱️ Element clicked in edit mode:', e.target.tagName);
     e.preventDefault();
     e.stopPropagation();
     var el = e.target;
     if (!el || el.tagName === 'HTML' || el.tagName === 'BODY') return;
     selectedEl = el;
-    window.parent.postMessage({ type: 'element-selected', data: getElementInfo(el) }, '*');
+    var info = getElementInfo(el);
+    info.mouseX = e.clientX;
+    info.mouseY = e.clientY;
+    console.log('📤 Sending element-selected message:', info);
+    window.parent.postMessage({ type: 'element-selected', data: info }, '*');
   }, true);
 
   document.addEventListener('scroll', function() {
@@ -76,15 +107,135 @@ EDITOR_INJECTION_SCRIPT = """
 </script>
 """
 
+def inject_editor_script_into_html(html_content: str) -> str:
+    """Inject the editor script into HTML content for edit mode support."""
+    if not html_content or '__vibe_editor__' in html_content:
+        return html_content
+    
+    # Inject before </body> if exists
+    if '</body>' in html_content.lower():
+        return re.sub(r'</body>', EDITOR_INJECTION_SCRIPT + '\n</body>', html_content, flags=re.IGNORECASE)
+    # Otherwise inject before </html>
+    elif '</html>' in html_content.lower():
+        return re.sub(r'</html>', EDITOR_INJECTION_SCRIPT + '\n</html>', html_content, flags=re.IGNORECASE)
+    # Otherwise append at the end
+    else:
+        return html_content + '\n' + EDITOR_INJECTION_SCRIPT
+
+
 class ProjectManager:
     """Manages container-based code execution and project artifacts"""
     
-    def __init__(self, artifacts_dir: str = "project_artifacts"):
+    DEFAULT_IMAGE = os.environ.get("AGENT_IMAGE", "vibecoding-agent-runtime:latest")
+    DEFAULT_PORT = int(os.environ.get("AGENT_PORT", "8080"))
+    DEFAULT_RUNTIME = os.environ.get("DEFAULT_RUNTIME", "universal")
+
+    def __init__(self, artifacts_dir: str = os.environ.get("ARTIFACTS_DIR", "project_artifacts")):
         self.artifacts_dir = Path(artifacts_dir)
         self.artifacts_dir.mkdir(exist_ok=True)
         self._docker_client = None
+        self._current_user_prompt = ''
         self.running_containers: Dict[str, docker.models.containers.Container] = {}
+        self.log_threads: Dict[str, threading.Thread] = {}
     
+    @staticmethod
+    def _detect_single_file_name(code: str) -> str:
+        """Detect the most appropriate filename for a single-file code snippet.
+        Handles Python, JavaScript, TypeScript, Go, Rust, Ruby, PHP, Java, C#,
+        Shell, CSS, and HTML — no hardcoded assumptions for just two languages."""
+        c = code.strip()
+        cl = c.lower()
+
+        # Shebang detection (shell, python, node, ruby, perl, etc.)
+        if c.startswith('#!'):
+            first_line = c.split('\n', 1)[0].lower()
+            if 'python' in first_line:
+                return 'app.py'
+            if 'node' in first_line:
+                return 'index.js'
+            if 'ruby' in first_line:
+                return 'app.rb'
+            if 'perl' in first_line:
+                return 'app.pl'
+            return 'run.sh'
+
+        # HTML detection (most reliable — check first)
+        if '<html' in cl or '<!doctype html' in cl:
+            return 'index.html'
+
+        # TypeScript (must check before JavaScript since TS is superset)
+        if any(k in c for k in ['interface ', ': string', ': number', ': boolean',
+                                  'type Props', 'React.FC<']):
+            if any(k in c for k in ['React', 'jsx', 'tsx', 'render(', 'Component']):
+                return 'App.tsx'
+            return 'index.ts'
+
+        # JSX / React detection
+        if any(k in c for k in ['React', 'useState', 'useEffect', 'jsx', 'createRoot',
+                                  'ReactDOM', 'Component', '<div', 'className=']):
+            return 'App.jsx' if any(k in c for k in ['export default', 'function App']) else 'index.jsx'
+
+        # JavaScript detection
+        if any(k in c for k in ['const ', 'let ', 'var ', 'function ', 'require(',
+                                  'module.exports', 'export default', 'export const',
+                                  'import ', '=>', 'async ', 'console.log']):
+            # More specific: is it a server?
+            if any(k in c for k in ['express', 'createServer', 'listen(', 'app.get(',
+                                      'app.post(', 'fastify', 'koa']):
+                return 'server.js'
+            return 'index.js'
+
+        # Python detection
+        if any(k in c for k in ['import ', 'from ', 'def ', 'class ', 'print(',
+                                  'if __name__', 'flask', 'fastapi', 'django']):
+            return 'app.py'
+
+        # Go detection
+        if 'package main' in c or 'func main()' in c or 'import "fmt"' in c:
+            return 'main.go'
+
+        # Rust detection
+        if 'fn main()' in c or 'use std::' in c or 'impl ' in c:
+            return 'main.rs'
+
+        # Java detection
+        if 'public class ' in c or 'public static void main' in c:
+            return 'Main.java'
+
+        # C# detection
+        if 'namespace ' in c and ('class ' in c or 'static void Main' in c):
+            return 'Program.cs'
+
+        # Ruby detection
+        if 'require ' in c and ('end' in c or 'def ' in c) and 'puts' in c:
+            return 'app.rb'
+
+        # PHP detection
+        if '<?php' in c or '<?=' in c:
+            return 'index.php'
+
+        # CSS detection
+        if any(k in c for k in ['{', '}']) and any(k in c for k in [
+            'color:', 'margin:', 'padding:', 'display:', 'font-', 'background'
+        ]):
+            return 'styles.css'
+
+        # JSON detection
+        if (c.startswith('{') and c.endswith('}')) or (c.startswith('[') and c.endswith(']')):
+            try:
+                import json as _json
+                _json.loads(c)
+                return 'data.json'
+            except Exception:
+                pass
+
+        # Markdown detection
+        if c.startswith('# ') or c.startswith('## '):
+            return 'README.md'
+
+        # Default fallback — still app.py, but now only as true last resort
+        return 'app.py'
+
     @property
     def docker_client(self):
         """Lazy load Docker client on first access"""
@@ -97,12 +248,108 @@ class ProjectManager:
                 logger.warning("Preview functionality will be disabled")
                 return None
         return self._docker_client
+    
+    def _build_runtime_image(self, image_name: str) -> bool:
+        """Build the runtime image from Dockerfile"""
+        try:
+            dockerfile_path = Path(__file__).parent / "docker" / "agent-runtime.Dockerfile"
+            if not dockerfile_path.exists():
+                logger.error(f"❌ Dockerfile not found at {dockerfile_path}")
+                return False
+            
+            logger.info(f"🏗️ Building image {image_name} from {dockerfile_path}...")
+            # Use the docker/ folder as context
+            image, build_logs = self.docker_client.images.build(
+                path=str(dockerfile_path.parent),
+                dockerfile=dockerfile_path.name,
+                tag=image_name,
+                rm=True
+            )
+            logger.info(f"✅ Successfully built {image_name}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to build image: {e}")
+            return False
+
+    def _ensure_image_exists(self, image_name: str) -> bool:
+        """Check if image exists, build if it's the standard runtime"""
+        if self.docker_client is None:
+            return False
+            
+        try:
+            self.docker_client.images.get(image_name)
+            return True
+        except docker.errors.ImageNotFound:
+            if "vibecoding-agent-runtime" in image_name:
+                return self._build_runtime_image(image_name)
+            return False
+        except Exception as e:
+            logger.error(f"Error checking image: {e}")
+            return False
+
+    def _inject_editor_into_workspace(self, version_dir: Path):
+        """Inject editor script into all HTML files in the workspace for edit mode support."""
+        try:
+            # Find all HTML files recursively
+            html_files = list(version_dir.rglob("*.html"))
+            
+            if not html_files:
+                logger.debug(f"No HTML files found in {version_dir}")
+                return
+            
+            logger.info(f"🔧 Injecting editor script into {len(html_files)} HTML file(s)")
+            
+            for html_file in html_files:
+                try:
+                    # Read the HTML file
+                    with open(html_file, 'r', encoding='utf-8') as f:
+                        html_content = f.read()
+                    
+                    # Remove old editor script if present (to avoid duplicates)
+                    if '__vibe_editor__' in html_content:
+                        logger.debug(f"Removing old editor script from {html_file.name}")
+                        # Remove the old script tag
+                        html_content = re.sub(
+                            r'<script id="__vibe_editor__">.*?</script>',
+                            '',
+                            html_content,
+                            flags=re.DOTALL
+                        )
+                    
+                    # Inject the editor script
+                    modified_html = inject_editor_script_into_html(html_content)
+                    
+                    # Write back to file
+                    with open(html_file, 'w', encoding='utf-8') as f:
+                        f.write(modified_html)
+                    
+                    logger.info(f"✅ Injected editor script into {html_file.name}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to inject editor into {html_file.name}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to inject editor scripts: {e}")
+
+    def _stream_container_logs(self, container, container_name: str):
+        """Stream container logs to console in a separate thread"""
+        try:
+            logger.info(f"📋 Starting log stream for {container_name}")
+            for log_line in container.logs(stream=True, follow=True):
+                try:
+                    decoded_line = log_line.decode('utf-8').strip()
+                    if decoded_line:
+                        logger.info(f"[{container_name}] {decoded_line}")
+                except Exception as e:
+                    logger.debug(f"Error decoding log line: {e}")
+        except Exception as e:
+            logger.debug(f"Log streaming ended for {container_name}: {e}")
         
     def generate_project_id(self) -> str:
         """Generate unique project ID"""
         return str(uuid.uuid4())[:8]
     
-    def create_project_directory(self, project_id: str) -> Path:
+    def create_project_directory(self, project_id: str, metadata: dict = None) -> Path:
         """Create project directory with version subdirectories"""
         project_dir = self.artifacts_dir / project_id
         project_dir.mkdir(exist_ok=True)
@@ -112,15 +359,18 @@ class ProjectManager:
         versions_dir.mkdir(exist_ok=True)
         
         # Create project metadata
-        metadata = {
+        project_meta = {
             "project_id": project_id,
+            "name": metadata.get("name") if metadata else f"Project {project_id[:8]}",
+            "description": metadata.get("description") if metadata else "",
+            "owner_id": metadata.get("owner_id") if metadata else None,
             "created_at": datetime.now().isoformat(),
             "versions": [],
             "current_version": None
         }
         
         with open(project_dir / "metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
+            json.dump(project_meta, f, indent=2)
         
         return project_dir
     
@@ -133,7 +383,7 @@ class ProjectManager:
         # Generate version ID
         version_id = f"v{len(list(project_dir.glob('versions/*'))) + 1:03d}"
         version_dir = project_dir / "versions" / version_id
-        version_dir.mkdir(exist_ok=True)
+        version_dir.mkdir(parents=True, exist_ok=True)
         
         # Check if code contains file markers
         import re
@@ -171,13 +421,14 @@ class ProjectManager:
                 
                 logger.info(f"  ✅ Saved: {filename}")
                 
-                # Detect runtime from first file if not detected yet
+                # Set universal defaults
                 if runtime_name is None:
-                    runtime_name, runtime_config = runtime_detector.detect(file_content)
+                    runtime_name = self.DEFAULT_RUNTIME
+                    runtime_config = {'image': self.DEFAULT_IMAGE, 'port': self.DEFAULT_PORT}
                 
-                # Set main file (first Python/JS/HTML file)
+                # Set main file
                 if main_file_path is None:
-                    if filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx')):
+                    if filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx', '.go', '.rs', '.java')):
                         main_file_path = file_path
             
             # If no main file found, use first file
@@ -185,9 +436,10 @@ class ProjectManager:
                 filename = (matches[0].group(1) or matches[0].group(2) or matches[0].group(3)).strip()
                 main_file_path = version_dir / filename
         else:
-            # Single file - use auto-detection
-            runtime_name, runtime_config = runtime_detector.detect(code)
-            filename = runtime_detector.get_filename(runtime_name)
+            # Single file - use universal defaults
+            runtime_name = "universal"
+            runtime_config = {'image': self.DEFAULT_IMAGE, 'port': self.DEFAULT_PORT}
+            filename = self._detect_single_file_name(code)
             
             logger.info(f"📄 Single file detected")
             logger.info(f"🔍 Detected runtime: {runtime_name}")
@@ -231,9 +483,799 @@ class ProjectManager:
         # Automatically create ZIP after saving
         self.create_project_zip(project_id)
         
+        # Sync to git workspace for version control
+        try:
+            git_manager.sync_workspace(project_id, version_dir)
+            # Auto-commit the new version
+            git_manager.auto_commit_version(project_id, version_id, prompt)
+        except Exception as e:
+            logger.error(f"Failed to sync or commit git workspace: {e}")
+
         logger.info(f"✅ Saved version {version_id} for project {project_id}")
         return version_id, main_file_path
+
+    def archive_workspace_to_version(self, project_id: str, prompt: str = "Chat Session Snapshot") -> str:
+        """Create a permanent version folder from the current workspace state."""
+        project_dir = self.artifacts_dir / project_id
+        workspace_dir = project_dir / "workspace"
+        
+        if not workspace_dir.exists():
+            return "v000"
+
+        # 1. Determine next version ID
+        versions_dir = project_dir / "versions"
+        versions_dir.mkdir(exist_ok=True)
+        version_id = f"v{len(list(versions_dir.iterdir())) + 1:03d}"
+        version_dir = versions_dir / version_id
+        version_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 2. Copy files (excluding .git)
+        import shutil
+        for item in workspace_dir.iterdir():
+            if item.name == ".git":
+                continue
+            if item.is_dir():
+                shutil.copytree(item, version_dir / item.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, version_dir / item.name)
+        
+        # 3. Save metadata
+        metadata = {
+            "version_id": version_id,
+            "prompt": prompt,
+            "created_at": datetime.now().isoformat(),
+            "is_archive": True
+        }
+        with open(version_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+            
+        # Update project metadata
+        self._update_project_metadata(project_id, version_id, prompt)
+        
+        logger.info(f"📁 Archived workspace to version {version_id}")
+        return version_id
+
+    def get_workspace_files(self, project_id: str, max_files: int = 20, max_chars_per_file: int = 2000) -> dict:
+        """Get all files from the workspace as a dictionary {filepath: content}
+        
+        Args:
+            project_id: Project identifier
+            max_files: Maximum number of files to return (to avoid token overflow)
+            max_chars_per_file: Maximum characters per file (to avoid token overflow)
+        """
+        project_dir = self.artifacts_dir / project_id
+        workspace_dir = project_dir / "workspace"
+        
+        if not workspace_dir.exists():
+            return {}
+        
+        files = {}
+        file_count = 0
+        
+        # Directories to skip (common large/binary directories)
+        skip_dirs = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache'}
+        # Files to skip (internal system files)
+        skip_files = {'metadata.json'}
+        
+        for file_path in sorted(workspace_dir.rglob('*')):
+            if file_count >= max_files:
+                break
+            
+            # Skip if any parent directory is in skip_dirs
+            if any(part in skip_dirs for part in file_path.parts):
+                continue
+            
+            # Skip internal system files
+            if file_path.name in skip_files:
+                continue
+            
+            try:
+                # Use exists() first to avoid symlink issues, then check if it's a file
+                if file_path.exists() and file_path.is_file():
+                    rel_path = str(file_path.relative_to(workspace_dir)).replace('\\', '/')
+                    content = file_path.read_text(encoding='utf-8')
+                    
+                    # Truncate large files
+                    if len(content) > max_chars_per_file:
+                        content = content[:max_chars_per_file] + f"\n... [truncated, {len(content) - max_chars_per_file} more chars]"
+                    
+                    files[rel_path] = content
+                    file_count += 1
+            except (OSError, UnicodeDecodeError, PermissionError) as e:
+                # Skip files that can't be accessed (symlinks, binary files, permission issues)
+                logger.debug(f"Skipping {file_path}: {e}")
+                continue
+        
+        return files
+
+    def _ensure_workspace_metadata(self, project_id: str, workspace_dir: Path, commit_hash: str):
+        """Write metadata.json only if it doesn't exist or needs updating."""
+        metadata_file = workspace_dir / "metadata.json"
+        if metadata_file.exists():
+            try:
+                with open(metadata_file) as f:
+                    meta = json.load(f)
+                meta["commit_hash"] = commit_hash
+                with open(metadata_file, 'w') as f:
+                    json.dump(meta, f, indent=2)
+                return
+            except Exception:
+                pass
+        # Create fresh metadata
+        has_py = any(workspace_dir.rglob('*.py'))
+        has_pkg = any(workspace_dir.rglob('package.json'))
+        metadata = {
+            "runtime": "multi-stack" if (has_py and has_pkg) else ("python" if has_py else "node" if has_pkg else "universal"),
+            "docker_image": "vibecoding-agent-runtime:latest",
+            "port": 80,
+            "additional_ports": [],
+            "created_at": datetime.now().isoformat(),
+            "commit_hash": commit_hash
+        }
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+    def apply_patch_response(self, project_id: str, code: str) -> Tuple[bool, list]:
+        """
+        Parse and apply PATCH hunks from AI response.
+        Returns (any_applied: bool, patched_files: list) or (any_applied: bool, patched_files: list, failed_hunks: dict)
+        """
+        import difflib
+        workspace_dir = self.artifacts_dir / project_id / "workspace"
+
+        # ── Check for frozen file violations BEFORE applying patches ──────
+        frozen_files = self.get_frozen_files(project_id)
+        if frozen_files:
+            # Extract target files from PATCH blocks
+            patch_targets = re.findall(r'//\s*PATCH:\s*([^\n<]+)', code)
+            patch_targets = [f.strip() for f in patch_targets]
+            
+            # Check if any patch targets are frozen
+            frozen_violations = [f for f in patch_targets if f in frozen_files]
+            if frozen_violations:
+                logger.error(f"❌ Cannot apply patches: frozen files detected: {frozen_violations}")
+                return False, []
+
+        # ── Normalize malformed AI output before parsing ──────────────────
+        # Fix: "// PATCH: index.html <<<SEARCH" → "// PATCH: index.html\n<<<SEARCH"
+        code = re.sub(r'(//\s*PATCH:\s*[^\n<]+?)\s*(<<<+\s*SEARCH)', r'\1\n\2', code)
+        # Fix: git-style "<<<<<<< SEARCH" → "<<<SEARCH"
+        code = re.sub(r'<{4,7}\s*SEARCH', '<<<SEARCH', code)
+        # Fix: git-style ">>>>>>> REPLACE" → "<<<REPLACE"
+        code = re.sub(r'>{4,7}\s*REPLACE', '<<<REPLACE', code)
+        # Fix: "=======" separator between search/replace → ">>>\n<<<REPLACE"
+        code = re.sub(r'={4,7}', '>>>\n<<<REPLACE', code)
+        # Fix: missing >>> between SEARCH content and <<<REPLACE
+        code = re.sub(
+            r'(<<<SEARCH\n(?:(?!>>>|<<<).)*?)\n(<<<REPLACE)',
+            r'\1\n>>>\n\2', code, flags=re.DOTALL
+        )
+        # Fix: ">>><<<REPLACE" or ">>> <<<REPLACE" (missing newline between close and open)
+        code = re.sub(r'>>>\s*<<<REPLACE', '>>>\n<<<REPLACE', code)
+        # Fix: "<<<REPLACE" immediately followed by content on same line → add newline
+        code = re.sub(r'(<<<REPLACE)([^\n])', r'\1\n\2', code)
+        # Fix: "<<<SEARCH" immediately followed by content on same line → add newline
+        code = re.sub(r'(<<<SEARCH)([^\n])', r'\1\n\2', code)
+        # Fix: content immediately followed by ">>>" without newline → add newline
+        code = re.sub(r'([^\n])(>>>)', r'\1\n\2', code)
+        # Fix: "// PATCH: file.ext" immediately followed by next PATCH block (missing close >>>)
+        code = re.sub(r'(<<<REPLACE\n(?:(?!>>>|<<<PATCH).)*?)\n(//\s*PATCH:)', r'\1\n>>>\n\2', code, flags=re.DOTALL)
+        # Fix: last <<<REPLACE block missing closing >>>
+        if '<<<REPLACE' in code:
+            last_replace_idx = code.rfind('<<<REPLACE')
+            after_last = code[last_replace_idx:]
+            if '>>>' not in after_last:
+                code = code.rstrip() + '\n>>>'
+
+        # ── Auto-infer // PATCH: filename when headers are missing ──────
+        if '<<<SEARCH' in code and not re.search(r'//\s*PATCH:\s*', code):
+            logger.info("🔍 Detected <<<SEARCH blocks without // PATCH: headers — auto-inferring filenames")
+            search_blocks = re.findall(r'<<<SEARCH\n(.*?)\n>>>', code, re.DOTALL)
+            inferred_file = None
+
+            for search_text in search_blocks:
+                search_trimmed = search_text.strip()
+                if not search_trimmed:
+                    continue
+                first_line = search_trimmed.split('\n')[0].strip()
+                if not first_line:
+                    continue
+
+                best_match = None
+                for fpath in workspace_dir.rglob('*'):
+                    if fpath.is_dir() or '.git' in fpath.parts:
+                        continue
+                    try:
+                        content = fpath.read_text(encoding='utf-8', errors='ignore')
+                    except Exception:
+                        continue
+                    if first_line in content:
+                        rel = str(fpath.relative_to(workspace_dir))
+                        if search_trimmed in content:
+                            best_match = rel
+                            break
+                        if best_match is None:
+                            best_match = rel
+
+                if best_match:
+                    inferred_file = best_match
+                    break
+
+            if inferred_file:
+                logger.info(f"🔍 Inferred target file: {inferred_file}")
+                patched_code = ""
+                remaining = code
+                first_search = True
+                while '<<<SEARCH' in remaining:
+                    pre, _, rest = remaining.partition('<<<SEARCH')
+                    if first_search or '\n// PATCH:' not in pre:
+                        patched_code += pre + f"// PATCH: {inferred_file}\n<<<SEARCH"
+                    else:
+                        patched_code += pre + '<<<SEARCH'
+                    remaining = rest
+                    first_search = False
+                patched_code += remaining
+                code = patched_code
+            else:
+                logger.warning("⚠️ Could not infer target file for <<<SEARCH blocks")
+                return False, []
+
+        patch_block_re = re.compile(
+            r'//\s*PATCH:\s*([^\n<]+)\n\s*<<<SEARCH\n(.*?)\n\s*>>>\n\s*<<<REPLACE\n(.*?)\n\s*>>>',
+            re.DOTALL
+        )
+        matches = list(patch_block_re.finditer(code))
+        if not matches:
+            if '// PATCH:' in code or '//PATCH:' in code or '<<<SEARCH' in code:
+                logger.warning("⚠️ Found PATCH/SEARCH markers but no hunks could be parsed after normalization")
+                logger.debug(f"Normalized patch text (first 500 chars):\n{code[:500]}")
+            return False, []
+
+        import tempfile as _tempfile
+
+        def _detect_line_sep(text):
+            crlf = text.count('\r\n')
+            lf = text.count('\n') - crlf
+            return '\r\n' if (crlf > 0 and crlf >= lf) else '\n'
+
+        def _validate_syntax(content, fpath):
+            suffix = fpath.suffix.lower()
+            if suffix == '.py':
+                try:
+                    compile(content, str(fpath), 'exec')
+                    return True, None
+                except SyntaxError as e:
+                    return False, f"line {e.lineno}: {e.msg}"
+            if suffix == '.json':
+                try:
+                    json.loads(content)
+                    return True, None
+                except json.JSONDecodeError as e:
+                    return False, f"line {e.lineno}: {e.msg}"
+            return True, None
+
+        def _atomic_write(fpath, content):
+            tmp_fd, tmp_path = _tempfile.mkstemp(dir=str(fpath.parent), suffix='.tmp')
+            try:
+                with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                os.replace(tmp_path, str(fpath))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+        def _match_hunk(content, search_text, replace_text, line_sep):
+            """4-tier matching. Returns (new_content, tier_name) or (None, reason)."""
+            # Tier 1: exact
+            if search_text in content:
+                return content.replace(search_text, replace_text, 1), "exact"
+
+            srch_lines = search_text.splitlines()
+            repl_lines = replace_text.splitlines()
+            cont_lines = content.split(line_sep) if line_sep != '\n' else content.splitlines()
+            trailing = content.endswith(line_sep) or content.endswith('\n')
+
+            def rejoin(lines):
+                joined = line_sep.join(lines)
+                if trailing:
+                    joined = joined.rstrip(line_sep) + line_sep
+                return joined
+
+            # Tier 2: whitespace-normalised
+            def norm(s):
+                return re.sub(r'\s+', ' ', s).strip()
+
+            norm_search = [norm(l) for l in srch_lines]
+            for idx in range(len(cont_lines) - len(srch_lines) + 1):
+                if [norm(l) for l in cont_lines[idx:idx + len(srch_lines)]] == norm_search:
+                    cont_lines[idx:idx + len(srch_lines)] = repl_lines
+                    return rejoin(cont_lines), "whitespace-norm"
+
+            # Tier 3: indent-flexible with relative indent preservation
+            stripped_search = [l.strip() for l in srch_lines]
+            search_base = min(
+                (len(l) - len(l.lstrip()) for l in srch_lines if l.strip()),
+                default=0
+            )
+            for idx in range(len(cont_lines) - len(stripped_search) + 1):
+                window = cont_lines[idx:idx + len(stripped_search)]
+                if [l.strip() for l in window] == stripped_search:
+                    win_base = min(
+                        (len(l) - len(l.lstrip()) for l in window if l.strip()),
+                        default=0
+                    )
+                    delta = win_base - search_base
+                    new_lines = []
+                    for l in repl_lines:
+                        if not l.strip():
+                            new_lines.append(l)
+                        else:
+                            new_indent = max(0, (len(l) - len(l.lstrip())) + delta)
+                            new_lines.append(" " * new_indent + l.lstrip())
+                    cont_lines[idx:idx + len(stripped_search)] = new_lines
+                    return rejoin(cont_lines), f"indent-flex(delta={delta:+d})"
+
+            # Tier 4: fuzzy with variable window (±2 lines)
+            base_win = len(srch_lines)
+            best_score, best_idx, best_size = 0.0, -1, base_win
+            
+            def norm_text(s: str) -> str:
+                # Collapse whitespace for more resilient matching (CSS/HTML often changes formatting).
+                return re.sub(r'\s+', ' ', s).strip()
+
+            search_norm = norm_text(search_text)
+            for size_delta in (0, -1, 1, -2, 2):
+                ws = base_win + size_delta
+                if ws < 1 or ws > len(cont_lines):
+                    continue
+                for idx in range(len(cont_lines) - ws + 1):
+                    window_text = "\n".join(cont_lines[idx:idx + ws])
+                    # Prefer whitespace-normalized ratio for resilient matching.
+                    score = difflib.SequenceMatcher(None, search_norm, norm_text(window_text)).ratio()
+                    if score > best_score:
+                        best_score, best_idx, best_size = score, idx, ws
+            
+            # Strict fuzzy threshold
+            if best_score >= 0.85:
+                cont_lines[best_idx:best_idx + best_size] = repl_lines
+                return rejoin(cont_lines), f"fuzzy(score={best_score:.2f})"
+            
+            # Relaxed fuzzy threshold (second-chance retry)
+            # This helps when the patch search text is "semantically the same" but formatted differently.
+            relaxed_threshold = 0.65
+            if best_score >= relaxed_threshold and best_idx >= 0:
+                window_norm = norm_text("\n".join(cont_lines[best_idx:best_idx + best_size]))
+                anchor_lines = [l.strip() for l in srch_lines if l.strip()][:2]
+                anchor_ok = False
+                for a in anchor_lines:
+                    a_norm = norm_text(a)
+                    if a_norm and a_norm in window_norm:
+                        anchor_ok = True
+                        break
+                # If we couldn't determine anchors, still allow if the score is decent.
+                if anchor_lines == [] or anchor_ok:
+                    cont_lines[best_idx:best_idx + best_size] = repl_lines
+                    return rejoin(cont_lines), f"fuzzy-relaxed(score={best_score:.2f})"
+            
+            return None, f"no-match(best={best_score:.2f})"
+
+        # Group hunks by file for all-or-nothing application per file
+        file_hunks = {}
+        for m in matches:
+            rel_path = m.group(1).strip()
+            rel_path = re.sub(r'[<>]+', '', rel_path).strip()
+            file_hunks.setdefault(rel_path, []).append((m.group(2), m.group(3)))
+
+        patched_files = []
+        failed_hunks = {}  # Track failed hunks per file for AI retry
+        
+        for rel_path, hunks in file_hunks.items():
+            filepath = workspace_dir / rel_path
+            if not filepath.exists():
+                # Fallback: search for the file by basename in the workspace
+                target_name = Path(rel_path).name
+                candidates = [
+                    f for f in workspace_dir.rglob(target_name)
+                    if f.is_file() and '.git' not in f.parts
+                ]
+                if candidates:
+                    filepath = candidates[0]
+                    resolved_rel = str(filepath.relative_to(workspace_dir))
+                    logger.info(f"🔍 Patch target resolved: {rel_path} → {resolved_rel}")
+                    rel_path = resolved_rel
+                else:
+                    logger.warning(f"⚠️ Patch target not found: {rel_path}")
+                    continue
+
+            original = filepath.read_text(encoding='utf-8')
+            line_sep = _detect_line_sep(original)
+            content = original
+            file_failed_hunks = []
+            
+            for hunk_idx, (search_text, replace_text) in enumerate(hunks):
+                new_content, tier = _match_hunk(content, search_text, replace_text, line_sep)
+                
+                if new_content is None:
+                    # Retry mechanism: re-read file from disk and try again
+                    logger.warning(f"⚠️ Hunk {hunk_idx + 1} failed in {rel_path}: {tier} — re-reading file and retrying")
+                    
+                    # Re-read current file state from disk
+                    fresh_content = filepath.read_text(encoding='utf-8')
+                    fresh_line_sep = _detect_line_sep(fresh_content)
+                    
+                    # Retry the hunk with fresh content
+                    new_content, retry_tier = _match_hunk(fresh_content, search_text, replace_text, fresh_line_sep)
+                    
+                    if new_content is None:
+                        # Still failed after retry - track for AI regeneration
+                        logger.warning(f"⚠️ Hunk {hunk_idx + 1} failed again after retry in {rel_path}: {retry_tier} — will request AI fix")
+                        file_failed_hunks.append({
+                            'hunk_number': hunk_idx + 1,
+                            'search': search_text,
+                            'replace': replace_text,
+                            'reason': retry_tier
+                        })
+                        continue
+                    else:
+                        # Retry succeeded
+                        logger.info(f"  ✅ Hunk {hunk_idx + 1} matched after retry in {rel_path}: {retry_tier}")
+                        content = new_content
+                        line_sep = fresh_line_sep
+                else:
+                    logger.info(f"  ✅ Hunk {hunk_idx + 1} matched in {rel_path}: {tier}")
+                    content = new_content
+
+            # Write the file with successfully applied hunks
+            if content != original:
+                is_valid, err = _validate_syntax(content, filepath)
+                if not is_valid:
+                    logger.warning(f"⚠️ Post-patch syntax error in {rel_path}: {err} — skipping file")
+                    continue
+
+                try:
+                    _atomic_write(filepath, content)
+                    logger.info(f"🩹 Patched: {rel_path}")
+                    if rel_path not in patched_files:
+                        patched_files.append(rel_path)
+                except Exception as e:
+                    logger.error(f"❌ Atomic write failed for {rel_path}: {e}")
+                    continue
+            
+            # Track failed hunks for this file
+            if file_failed_hunks:
+                failed_hunks[rel_path] = {
+                    'current_content': filepath.read_text(encoding='utf-8'),
+                    'failed_hunks': file_failed_hunks
+                }
+
+        # If there were failed hunks, return them for AI regeneration
+        if failed_hunks:
+            return len(patched_files) > 0, patched_files, failed_hunks
+
+        return len(patched_files) > 0, patched_files, {}
+
+    def _generate_retry_patch_prompt(self, failed_hunks: dict, original_prompt: str) -> str:
+        """Generate a prompt asking AI to create new patches based on current file state"""
+        prompt_parts = [
+            f"The following patch hunks failed to apply. Please generate NEW patches based on the CURRENT file content below.",
+            f"",
+            f"ORIGINAL USER REQUEST: {original_prompt}",
+            f"",
+        ]
+        
+        for filepath, info in failed_hunks.items():
+            prompt_parts.append(f"FILE: {filepath}")
+            prompt_parts.append(f"CURRENT CONTENT:")
+            prompt_parts.append(f"```")
+            prompt_parts.append(info['current_content'][:5000])  # Limit to avoid token overflow
+            prompt_parts.append(f"```")
+            prompt_parts.append(f"")
+            prompt_parts.append(f"FAILED HUNKS (what we tried to change):")
+            for hunk in info['failed_hunks']:
+                prompt_parts.append(f"  Hunk #{hunk['hunk_number']} - {hunk['reason']}")
+                prompt_parts.append(f"    Tried to find: {hunk['search'][:200]}...")
+                prompt_parts.append(f"    Wanted to replace with: {hunk['replace'][:200]}...")
+            prompt_parts.append(f"")
+        
+        prompt_parts.append(f"Please generate NEW // PATCH: blocks that will work with the CURRENT file content above.")
+        prompt_parts.append(f"Use the <<<SEARCH and <<<REPLACE format with content that EXACTLY matches what's in the current file.")
+        
+        return "\n".join(prompt_parts)
+
+    def update_workspace_from_code(self, project_id: str, code: str, prompt: str, is_incremental: bool = None) -> Tuple[str, Path]:
+        """Update the git workspace directly with new code and commit it."""
+        project_dir = self.artifacts_dir / project_id
+        workspace_dir = project_dir / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure git is initialized
+        if not (workspace_dir / ".git").exists():
+            git_manager.init_repo(project_id)
+            git_manager._run_git_command(project_id, ["config", "user.email", "vibe@engineer.com"])
+            git_manager._run_git_command(project_id, ["config", "user.name", "Vibe Engineer"])
+
+        # Ensure metadata.json is always gitignored (never committed)
+        gitignore_path = workspace_dir / ".gitignore"
+        gitignore_entry = "metadata.json\n"
+        existing_gitignore = gitignore_path.read_text() if gitignore_path.exists() else ""
+        if "metadata.json" not in existing_gitignore:
+            with open(gitignore_path, 'a') as f:
+                f.write(gitignore_entry)
+        # Untrack metadata.json if it was previously committed
+        git_manager._run_git_command(project_id, ["rm", "--cached", "metadata.json", "--ignore-unmatch", "-q"])
+
+        # ── Patch mode: AI returned PATCH hunks — apply surgically ──────
+        has_patches = bool(re.search(r'//\s*PATCH:\s*', code))
+        has_raw_search = (
+            not has_patches
+            and bool(re.search(r'<<<\s*SEARCH', code))
+            and bool(re.search(r'<<<\s*REPLACE', code))
+        )
+        if has_patches or has_raw_search:
+            result = self.apply_patch_response(project_id, code)
+            
+            # Unpack result (handles both 2-tuple and 3-tuple returns)
+            if len(result) == 3:
+                applied, patched_files, failed_hunks = result
+            else:
+                applied, patched_files = result
+                failed_hunks = {}
+            
+            # Check if patches were rejected due to frozen files
+            if not applied and patched_files == []:
+                # Check if it was due to frozen files
+                frozen_files = self.get_frozen_files(project_id)
+                if frozen_files:
+                    patch_targets = re.findall(r'//\s*PATCH:\s*([^\n]+)', code)
+                    patch_targets = [f.strip() for f in patch_targets]
+                    frozen_violations = [f for f in patch_targets if f in frozen_files]
+                    if frozen_violations:
+                        # Raise exception to be caught by main.py
+                        raise ValueError(f"FROZEN_FILES_VIOLATION:{','.join(frozen_violations)}")
+            
+            # If there were failed hunks, ask AI to regenerate patches for current file state
+            if failed_hunks:
+                logger.warning(f"⚠️ {sum(len(v['failed_hunks']) for v in failed_hunks.values())} hunks failed — requesting AI to regenerate patches")
+                
+                # Ask AI to regenerate patches based on current file state
+                retry_prompt = self._generate_retry_patch_prompt(failed_hunks, prompt)
+                
+                try:
+                    from ai_service import ai_service
+                    retry_response = ai_service.call_ai(retry_prompt, temperature=0.1)
+                    
+                    if retry_response:
+                        logger.info("🔄 AI generated retry patches — applying...")
+                        retry_result = self.apply_patch_response(project_id, retry_response)
+                        
+                        if len(retry_result) >= 2:
+                            retry_applied, retry_patched = retry_result[0], retry_result[1]
+                            if retry_applied:
+                                logger.info(f"✅ Retry patches applied to: {', '.join(retry_patched)}")
+                                patched_files.extend([f for f in retry_patched if f not in patched_files])
+                                applied = True
+                except Exception as e:
+                    logger.error(f"❌ Failed to get AI retry patches: {e}")
+            
+            if applied:
+                logger.info(f"🩹 Applied patches to: {', '.join(patched_files)}")
+                # Also handle any FILE: blocks mixed in (new files)
+                file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
+                file_matches = list(re.finditer(file_marker_regex, code))
+                for i, match in enumerate(file_matches):
+                    filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                    start_pos = match.end()
+                    end_pos = file_matches[i + 1].start() if i < len(file_matches) - 1 else len(code)
+                    file_content = code[start_pos:end_pos].strip()
+                    file_path = workspace_dir / filename
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(file_content)
+                    logger.info(f"  📄 Created/updated: {filename}")
+
+                git_manager.add_files(project_id)
+                status = git_manager.get_status(project_id)
+                has_changes = status.get("modified_files") or status.get("added_files") or status.get("deleted_files") or status.get("untracked_files")
+                if has_changes:
+                    git_manager.commit(project_id, f"[Patch] {prompt}")
+                hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
+                commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
+                # Preserve existing metadata
+                self._ensure_workspace_metadata(project_id, workspace_dir, commit_hash)
+                
+                # Trigger container restart to rebuild with new code
+                self._trigger_container_restart(project_id)
+                
+                return commit_hash, workspace_dir / patched_files[0]
+            else:
+                logger.warning("⚠️ Patch parsing found no applicable hunks — returning without writing raw patch text as file")
+                # Do NOT fall through — writing raw patch markers as a file would corrupt the workspace
+                hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
+                commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
+                return commit_hash, workspace_dir
+
+        # Auto-detect incremental mode if not specified
+        if is_incremental is None:
+            skip_dirs = {'node_modules', '.git', '__pycache__', '.venv', 'venv', 'dist', 'build'}
+            existing_file_count = 0
+            try:
+                for f in workspace_dir.rglob('*'):
+                    if any(part in skip_dirs for part in f.parts):
+                        continue
+                    try:
+                        if f.exists() and f.is_file():
+                            existing_file_count += 1
+                    except (OSError, PermissionError):
+                        continue
+            except Exception as e:
+                logger.warning(f"Error counting existing files: {e}")
+                existing_file_count = 0
+            
+            file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
+            generated_file_count = len(re.findall(file_marker_regex, code))
+            
+            if existing_file_count > 0 and generated_file_count > 0:
+                if generated_file_count < existing_file_count * 0.5:
+                    is_incremental = True
+                    logger.info(f"✏️ Auto-detected incremental mode: {generated_file_count} files generated vs {existing_file_count} existing")
+                else:
+                    is_incremental = False
+                    logger.info(f"🔄 Auto-detected full regeneration: {generated_file_count} files generated vs {existing_file_count} existing")
+            else:
+                is_incremental = False
+                logger.info(f"🆕 New project or full generation")
+
+        # If not incremental, clear workspace (except .git)
+        if not is_incremental:
+            logger.info(f"🔄 Full workspace replacement for {project_id}")
+            for item in workspace_dir.iterdir():
+                if item.name != '.git':
+                    if item.is_dir():
+                        import shutil
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+        else:
+            logger.info(f"✏️ Incremental update for {project_id}")
+
+        # 1. Parse code into files and write to workspace
+        file_marker_regex = r'//\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->'
+        matches = list(re.finditer(file_marker_regex, code))
+        
+        # Check for frozen file violations in FILE: markers
+        if matches:
+            frozen_files = self.get_frozen_files(project_id)
+            if frozen_files:
+                generated_files = []
+                for match in matches:
+                    filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                    generated_files.append(filename)
+                
+                frozen_violations = [f for f in generated_files if f in frozen_files]
+                if frozen_violations:
+                    # Remove duplicates
+                    frozen_violations = list(set(frozen_violations))
+                    raise ValueError(f"FROZEN_FILES_VIOLATION:{','.join(frozen_violations)}")
+        
+        main_file_path = None
+        
+        if matches and len(matches) > 0:
+            for i, match in enumerate(matches):
+                filename = (match.group(1) or match.group(2) or match.group(3)).strip()
+                start_pos = match.end()
+                end_pos = matches[i + 1].start() if i < len(matches) - 1 else len(code)
+                file_content = code[start_pos:end_pos].strip()
+                
+                file_path = workspace_dir / filename
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Inject editor script into HTML files
+                if filename.endswith('.html'):
+                    if '</body>' in file_content:
+                        file_content = file_content.replace('</body>', f'{EDITOR_INJECTION_SCRIPT}</body>')
+                    else:
+                        file_content += EDITOR_INJECTION_SCRIPT
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(file_content)
+                
+                logger.info(f"  {'📝 Updated' if is_incremental else '📄 Created'}: {filename}")
+                
+                if main_file_path is None and filename.endswith(('.py', '.js', '.html', '.jsx', '.tsx')):
+                    main_file_path = file_path
+            
+            if main_file_path is None:
+                filename = (matches[0].group(1) or matches[0].group(2) or matches[0].group(3)).strip()
+                main_file_path = workspace_dir / filename
+        else:
+            # Single file
+            filename = self._detect_single_file_name(code)
+            if filename.endswith('.html'):
+                if '</body>' in code:
+                    code = code.replace('</body>', f'{EDITOR_INJECTION_SCRIPT}</body>')
+                else:
+                    code += EDITOR_INJECTION_SCRIPT
+            
+            main_file_path = workspace_dir / filename
+            with open(main_file_path, 'w', encoding='utf-8') as f:
+                f.write(code)
+
+        # 2. Commit the changes
+        git_manager.add_files(project_id)
+        # Check if there are changes to commit
+        status = git_manager.get_status(project_id)
+        has_changes = status.get("modified_files") or status.get("added_files") or status.get("deleted_files") or status.get("untracked_files")
+        
+        if has_changes:
+            commit_msg = f"{'[Incremental] ' if is_incremental else ''}{prompt}"
+            git_manager.commit(project_id, commit_msg)
+        
+        # Get the commit hash to use as version_id/checkpoint_id
+        hash_res = git_manager._run_git_command(project_id, ["rev-parse", "HEAD"])
+        commit_hash = hash_res["stdout"].strip() if hash_res["status"] == "success" else f"commit_{int(time.time())}"
+        
+        logger.info(f"✅ Committed workspace changes: {commit_hash[:8]}")
+        
+        # 3. Create metadata.json for container creation
+        # This is needed for create_container_for_code to work
+        metadata = {
+            "runtime": "universal",
+            "docker_image": "vibecoding-agent-runtime:latest",
+            "port": 80,
+            "additional_ports": [],
+            "created_at": datetime.now().isoformat(),
+            "commit_hash": commit_hash
+        }
+
+        # Detect runtime by walking the full workspace tree (handles multi-stack subdirs)
+        has_py = False
+        has_package_json = False
+        has_requirements = False
+        for root, dirs, fnames in os.walk(workspace_dir):
+            dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '__pycache__', 'venv', 'dist', 'build')]
+            for fname in fnames:
+                if fname.endswith('.py'):
+                    has_py = True
+                if fname == 'package.json':
+                    has_package_json = True
+                if fname == 'requirements.txt':
+                    has_requirements = True
+
+        if has_py and has_package_json:
+            # Multi-stack: backend + frontend — agent handles via nginx
+            metadata["runtime"] = "multi-stack"
+            metadata["port"] = 80
+        elif has_py:
+            metadata["runtime"] = "python"
+            metadata["port"] = 80
+        elif has_package_json:
+            metadata["runtime"] = "node"
+            metadata["port"] = 80
+
+        metadata_file = workspace_dir / "metadata.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        # Trigger container restart to rebuild with new code
+        self._trigger_container_restart(project_id)
+        
+        return commit_hash, main_file_path
     
+    def update_project_metadata(self, project_id: str, metadata: dict):
+        """Update existing project metadata"""
+        project_dir = self.artifacts_dir / project_id
+        metadata_file = project_dir / "metadata.json"
+        
+        if not metadata_file.exists():
+            return False
+            
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        return True
+
     def _update_project_metadata(self, project_id: str, version_id: str, prompt: str):
         """Update project metadata with new version"""
         project_dir = self.artifacts_dir / project_id
@@ -252,11 +1294,121 @@ class ProjectManager:
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
     
+    SUPERVISOR_SOCKET = os.environ.get("SUPERVISOR_SOCKET", "/tmp/supervisor.sock")
+
+    def _send_switch_command(self, container, version_id: str) -> bool:
+        """Send version switch command to supervisor inside container"""
+        try:
+            # Create a Python script to send the command properly via the supervisor socket
+            python_cmd = f"""
+import socket, json, sys
+try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect('{self.SUPERVISOR_SOCKET}')
+        s.send(json.dumps({{'action': 'switch', 'version_id': '{version_id}'}}).encode())
+        print(s.recv(1024).decode())
+except Exception as e:
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+"""
+            exec_result = container.exec_run(
+                ['python3', '-c', python_cmd],
+                demux=True
+            )
+            
+            if exec_result.exit_code == 0:
+                response = exec_result.output[0].decode() if exec_result.output[0] else ""
+                logger.info(f"📨 Supervisor response: {response}")
+                return True
+            else:
+                error = exec_result.output[1].decode() if exec_result.output[1] else ""
+                logger.error(f"❌ Failed to send switch command: {error}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Error sending switch command: {e}")
+            return False
+
+    async def switch_to_workspace(self, project_id: str) -> bool:
+        """Switch the container to run from the workspace directory (Git state)
+        Creates container if it doesn't exist"""
+        container_name = f"vibecoding_{project_id}"
+        
+        if self.docker_client is None:
+            return False
+            
+        try:
+            # Try to get existing container
+            try:
+                container = self.docker_client.containers.get(container_name)
+                if container.status != 'running':
+                    container.start()
+                    await asyncio.sleep(2)
+                    
+                return self._send_switch_command(container, "workspace")
+            except docker.errors.NotFound:
+                # Container doesn't exist, create it
+                logger.info(f"🆕 Container not found, creating for project {project_id}")
+                preview_url = await self.create_container_for_code(project_id, "workspace")
+                return preview_url is not None
+        except Exception as e:
+            logger.error(f"❌ Error switching to workspace: {e}")
+            return False
+    
+    def _trigger_container_restart(self, project_id: str):
+        """Send restart command to supervisor to rebuild with new code"""
+        container_name = f"vibecoding_{project_id}"
+        
+        if container_name not in self.running_containers:
+            logger.debug(f"No running container for {project_id}, skipping restart")
+            return
+        
+        try:
+            container = self.running_containers[container_name]
+            
+            # Create a Python script to send the restart command
+            python_cmd = f"""
+import socket, json, sys
+try:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect('{self.SUPERVISOR_SOCKET}')
+        s.send(json.dumps({{'action': 'restart'}}).encode())
+        print(s.recv(1024).decode())
+except Exception as e:
+    print(f'Error: {{e}}', file=sys.stderr)
+    sys.exit(1)
+"""
+            exec_result = container.exec_run(
+                ['python3', '-c', python_cmd],
+                demux=True
+            )
+            
+            if exec_result.exit_code == 0:
+                logger.info(f"🔄 Triggered container restart for {project_id}")
+            else:
+                error = exec_result.output[1].decode() if exec_result.output and exec_result.output[1] else ""
+                logger.warning(f"⚠️ Container restart command failed: {error}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to trigger container restart: {e}")
+    
     async def create_container_for_code(self, project_id: str, version_id: str) -> Optional[str]:
-        """Create Docker container for code execution using detected runtime"""
+        """Create or reuse Docker container and switch to the specified version"""
         project_dir = self.artifacts_dir / project_id
-        version_dir = project_dir / "versions" / version_id
-        metadata_file = version_dir / "metadata.json"
+        
+        # Handle workspace vs versioned code differently
+        if version_id == "workspace":
+            # For workspace, metadata is in workspace directory
+            version_dir = project_dir / "workspace"
+            metadata_file = version_dir / "metadata.json"
+        else:
+            # For versioned code, metadata is in versions/{version_id}
+            version_dir = project_dir / "versions" / version_id
+            metadata_file = version_dir / "metadata.json"
+        
+        # Inject editor script into all HTML files for edit mode support
+        logger.info(f"🔧 Injecting editor script into workspace: {version_dir}")
+        self._inject_editor_into_workspace(version_dir)
+        logger.info(f"✅ Editor script injection complete")
         
         # Read version metadata to get runtime info
         try:
@@ -264,29 +1416,23 @@ class ProjectManager:
                 metadata = json.load(f)
             
             runtime = metadata.get('runtime', 'static-html')
-            main_file = metadata.get('main_file', metadata.get('filename', 'index.html'))
-            docker_image = metadata.get('docker_image', 'vibecoding-code-executor:latest')
-            port = metadata.get('port', 80)
-            is_multi_file = metadata.get('is_multi_file', False)
+            docker_image = metadata.get('docker_image', 'vibecoding-agent-runtime:latest')
             
-            logger.info(f"🚀 Creating container with runtime: {runtime}")
-            logger.info(f"🐳 Docker image: {docker_image}")
-            logger.info(f"🔌 Port: {port}")
-            logger.info(f"📁 Multi-file: {is_multi_file}")
+            # Support multiple ports
+            primary_port = metadata.get('port', 80)
+            additional_ports = metadata.get('additional_ports', [])
+            all_ports = [primary_port] + [p for p in additional_ports if p != primary_port]
+            
+            logger.info(f"🚀 Switching to version {version_id}")
+            logger.info(f"🔍 Runtime: {runtime}")
+            logger.info(f"🔌 Ports: {all_ports}")
             
         except Exception as e:
             logger.error(f"Failed to read metadata: {e}")
             return None
         
-        # For multi-file projects, mount the entire version directory
-        # For single file, we still need the file to exist
-        if not is_multi_file:
-            code_file = version_dir / main_file
-            if not code_file.exists():
-                logger.error(f"Code file not found: {code_file}")
-                return None
-        
-        container_name = f"vibecoding_{project_id}_{version_id}"
+        # Use project_id only for container name (one container per project)
+        container_name = f"vibecoding_{project_id}"
         
         # Check if Docker is available
         if self.docker_client is None:
@@ -294,54 +1440,127 @@ class ProjectManager:
             logger.error("Please ensure Docker Desktop is installed and running")
             return None
         
+        # Ensure image exists before running
+        if not self._ensure_image_exists(docker_image):
+            logger.error(f"❌ Image {docker_image} not found and could not be built")
+            return None
+        
         try:
-            # Stop and remove existing container if it exists
+            # Check if container already exists
+            existing_container = None
+            
             try:
-                old_container = self.docker_client.containers.get(container_name)
-                old_container.stop()
-                old_container.remove()
-                logger.info(f"Removed old container: {container_name}")
-            except:
-                pass
+                existing_container = self.docker_client.containers.get(container_name)
+                logger.info(f"♻️ Found existing container: {container_name}")
+                
+                # Container exists - send version switch command
+                if existing_container.status != 'running':
+                    existing_container.start()
+                    logger.info(f"▶️ Started stopped container")
+                    # Wait longer for supervisor to be ready after a cold start
+                    await asyncio.sleep(5)
+                
+                # Send switch command to supervisor — retry a few times if just started
+                logger.info(f"📡 Sending switch command to version {version_id}")
+                success = False
+                for attempt in range(3):
+                    success = self._send_switch_command(existing_container, version_id)
+                    if success:
+                        break
+                    logger.warning(f"⚠️ Switch attempt {attempt+1} failed, retrying...")
+                    await asyncio.sleep(2)
+                
+                if success:
+                    logger.info(f"✅ Switched to version {version_id}")
+                    # Trigger container restart to ensure web server picks up injected editor scripts
+                    logger.info(f"🔄 Triggering container restart to reload HTML files")
+                    self._trigger_container_restart(project_id)
+                    await asyncio.sleep(2)  # Wait for restart to complete
+                    container = existing_container
+                else:
+                    logger.warning(f"⚠️ Failed to switch version, recreating container")
+                    existing_container.stop()
+                    existing_container.remove()
+                    existing_container = None
+                
+            except docker.errors.NotFound:
+                logger.info(f"🆕 Creating new container: {container_name}")
             
-            # Create container with detected runtime
-            logger.info(f"🏗️ Building container: {container_name}")
-            
-            container = self.docker_client.containers.run(
-                docker_image,
-                name=container_name,
-                ports={f'{port}/tcp': None},  # Auto-assign host port
-                volumes={
-                    str(version_dir.absolute()): {
-                        'bind': '/app',
-                        'mode': 'rw'
+            # Create new container only if doesn't exist or switch failed
+            if existing_container is None:
+                # Prepare port bindings for all required ports
+                port_bindings = {f'{p}/tcp': None for p in all_ports}
+                
+                # Mount the ENTIRE project directory so all versions are accessible
+                container = self.docker_client.containers.run(
+                    docker_image,
+                    name=container_name,
+                    ports=port_bindings,
+                    volumes={
+                        str(project_dir.absolute()): {
+                            'bind': '/project',
+                            'mode': 'rw'
+                        }
+                    },
+                    working_dir='/app',
+                    detach=True,
+                    remove=False,
+                    environment={
+                        'PYTHONUNBUFFERED': '1',
+                        'PORT': str(primary_port),
+                        'ADDITIONAL_PORTS': ','.join(map(str, additional_ports)),
+                        'INITIAL_VERSION': version_id,
+                        'AI_PROVIDER': ai_config.provider,
+                        'AI_API_KEY': ai_config.api_key,
+                        'AI_API_URL': ai_config.base_url,
+                        'AI_MODEL': ai_config.model,
+                        'BOURNAI_PLATFORM_ID': getattr(ai_config, 'platform_id', ''),
+                        'USER_PROMPT': self._current_user_prompt or '',
                     }
-                },
-                working_dir='/app',
-                detach=True,
-                remove=False,
-                environment={
-                    'PYTHONUNBUFFERED': '1',
-                    'PORT': str(port),
-                }
-            )
+                )
+                
+                logger.info(f"🏗️ Created container with initial version {version_id}")
+                
+                # Wait for supervisor to start
+                await asyncio.sleep(3)
             
             # Store container reference
             self.running_containers[container_name] = container
             
-            # Get assigned host port
+            # Start log streaming in a separate thread
+            log_thread = threading.Thread(
+                target=self._stream_container_logs,
+                args=(container, container_name),
+                daemon=True
+            )
+            log_thread.start()
+            self.log_threads[container_name] = log_thread
+            
+            # Get assigned host port for the primary port
             container.reload()
-            port_bindings = container.ports.get(f'{port}/tcp', [])
-            if not port_bindings:
-                logger.error(f"No port binding found for {port}/tcp")
+            primary_port_bindings = container.ports.get(f'{primary_port}/tcp', [])
+            if not primary_port_bindings:
+                logger.error(f"No port binding found for {primary_port}/tcp")
                 return None
             
-            host_port = port_bindings[0].get('HostPort')
+            host_port = primary_port_bindings[0].get('HostPort')
             if not host_port:
                 logger.error(f"Failed to get host port")
                 return None
             
-            url = f"http://localhost:{host_port}"
+            # Save container port mapping to registry for proxy
+            self._save_container_registry(project_id, host_port)
+            
+            # Use PUBLIC_HOST env var for AWS deployments, fallback to localhost
+            public_host = os.getenv('PUBLIC_HOST', 'http://localhost').rstrip('/')
+            
+            # If using proxy mode, return proxy URL instead of direct port
+            use_proxy = os.getenv('USE_PREVIEW_PROXY', 'true').lower() == 'true'
+            if use_proxy:
+                url = f"{public_host}/app/{project_id}/"
+            else:
+                url = f"{public_host}:{host_port}"
+            
             logger.info(f"✅ Container running at: {url}")
             
             # Wait for server to be ready (check Docker health status)
@@ -387,9 +1606,9 @@ class ProjectManager:
             traceback.print_exc()
             return None
     
-    def stop_container(self, project_id: str, version_id: str):
-        """Stop and remove container"""
-        container_name = f"vibecoding_{project_id}_{version_id}"
+    def stop_container(self, project_id: str, version_id: str = None):
+        """Stop and remove container (version_id is ignored, one container per project)"""
+        container_name = f"vibecoding_{project_id}"
         
         if container_name in self.running_containers:
             try:
@@ -397,6 +1616,11 @@ class ProjectManager:
                 container.stop()
                 container.remove()
                 del self.running_containers[container_name]
+                
+                # Clean up log thread reference (thread will exit automatically)
+                if container_name in self.log_threads:
+                    del self.log_threads[container_name]
+                
                 logger.info(f"Stopped container {container_name}")
             except Exception as e:
                 logger.error(f"Failed to stop container {container_name}: {str(e)}")
@@ -415,16 +1639,40 @@ class ProjectManager:
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in project_dir.rglob('*'):
                     if file_path.is_file():
+                        # Skip huge, problematic folders like node_modules
+                        if "node_modules" in file_path.parts:
+                            continue
                         arcname = file_path.relative_to(project_dir)
                         zipf.write(file_path, arcname)
             
             logger.info(f"Created project ZIP: {zip_path}")
             return zip_path
-            
         except Exception as e:
             logger.error(f"Failed to create ZIP: {str(e)}")
             return None
     
+    async def save_chat_version(self, project_id: str, version_id: str, messages: List[Dict]):
+        """Save chat history for a specific project version"""
+        project_dir = self.artifacts_dir / project_id
+        chats_dir = project_dir / "chats"
+        chats_dir.mkdir(exist_ok=True)
+        
+        chat_file = chats_dir / f"{version_id}.json"
+        with open(chat_file, 'w', encoding='utf-8') as f:
+            json.dump(messages, f, indent=2)
+        return True
+
+    async def get_chat_version(self, project_id: str, version_id: str) -> Optional[List[Dict]]:
+        """Get chat history for a specific project version"""
+        project_dir = self.artifacts_dir / project_id
+        chat_file = project_dir / "chats" / f"{version_id}.json"
+        
+        if not chat_file.exists():
+            return None
+            
+        with open(chat_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
     def get_project_info(self, project_id: str) -> Optional[Dict]:
         """Get project information"""
         project_dir = self.artifacts_dir / project_id
@@ -433,32 +1681,144 @@ class ProjectManager:
         if not metadata_file.exists():
             return None
         
-        with open(metadata_file, 'r') as f:
-            return json.load(f)
+        try:
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            # Fallback for missing fields in legacy projects
+            if "name" not in metadata:
+                metadata["name"] = f"Project {metadata.get('project_id', 'Unknown')[:8]}"
+            if "description" not in metadata:
+                metadata["description"] = ""
+                
+            return metadata
+        except Exception as e:
+            print(f"Error loading metadata for {project_id}: {e}")
+            return None
     
     def get_version_code(self, project_id: str, version_id: str) -> Optional[str]:
         """Get code for specific version"""
         project_dir = self.artifacts_dir / project_id
-        version_dir = project_dir / "versions" / version_id
-        code_file = version_dir / "index.html"
         
-        if not code_file.exists():
+        if version_id == "workspace":
+            version_dir = project_dir / "workspace"
+        else:
+            version_dir = project_dir / "versions" / version_id
+        
+        if not version_dir.exists():
             return None
         
-        with open(code_file, 'r', encoding='utf-8') as f:
-            return f.read()
+        # Try metadata first to find the main file or entrypoint
+        metadata_file = version_dir / "metadata.json"
+        if metadata_file.exists():
+            try:
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
+                main_file = metadata.get('entrypoint') or metadata.get('main_file')
+            except Exception:
+                main_file = None
+            
+            if main_file:
+                code_file = version_dir / main_file
+                if code_file.exists():
+                    with open(code_file, 'r', encoding='utf-8') as f:
+                        return f.read()
+
+        # Final fallback: return the first text-like file found in the root
+        for p in version_dir.iterdir():
+            if p.is_file() and not p.name.startswith(('.', 'metadata.json', 'package-lock.json', 'yarn.lock')):
+                try:
+                    return p.read_text(encoding='utf-8')
+                except Exception:
+                    continue
+        
+        return None
+
+    def get_version_all_files(self, project_id: str, version_id: str) -> Optional[Dict]:
+        """Get ALL files for a specific version as { filepath: content }"""
+        project_dir = self.artifacts_dir / project_id
+        
+        if version_id == "workspace":
+            version_dir = project_dir / "workspace"
+        else:
+            version_dir = project_dir / "versions" / version_id
+        
+        if not version_dir.exists():
+            return None
+        
+        files = {}
+        for file_path in version_dir.rglob('*'):
+            if file_path.is_file() and file_path.name != 'metadata.json':
+                try:
+                    rel_path = str(file_path.relative_to(version_dir)).replace('\\', '/')
+                    files[rel_path] = file_path.read_text(encoding='utf-8')
+                except Exception:
+                    continue
+        
+        return files
+
+    def get_all_versions(self, project_id: str) -> List[Dict]:
+        """Get metadata for all versions of a project, sorted by version_id"""
+        project_dir = self.artifacts_dir / project_id
+        versions_dir = project_dir / "versions"
+        
+        if not versions_dir.exists():
+            return []
+        
+        versions = []
+        for vdir in sorted(versions_dir.iterdir()):
+            if vdir.is_dir():
+                meta_file = vdir / "metadata.json"
+                if meta_file.exists():
+                    try:
+                        with open(meta_file, 'r') as f:
+                            meta = json.load(f)
+                        versions.append(meta)
+                    except Exception:
+                        # Fallback: create basic metadata from directory name
+                        versions.append({
+                            "version_id": vdir.name,
+                            "prompt": "",
+                            "created_at": datetime.fromtimestamp(vdir.stat().st_mtime).isoformat()
+                        })
+                else:
+                    # No metadata file, create basic entry
+                    versions.append({
+                        "version_id": vdir.name,
+                        "prompt": "",
+                        "created_at": datetime.fromtimestamp(vdir.stat().st_mtime).isoformat()
+                    })
+        
+        return versions
     
-    def list_projects(self) -> List[Dict]:
-        """List all projects"""
+    def list_projects(self, owner_id: Optional[int] = None) -> List[Dict]:
+        """List projects, optionally filtered by owner_id"""
         projects = []
         
         for project_dir in self.artifacts_dir.iterdir():
             if project_dir.is_dir():
                 metadata_file = project_dir / "metadata.json"
                 if metadata_file.exists():
-                    with open(metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                    projects.append(metadata)
+                    try:
+                        with open(metadata_file, 'r') as f:
+                            metadata = json.load(f)
+                        
+                        # Fallback for missing fields in legacy projects
+                        if "name" not in metadata:
+                            metadata["name"] = f"Project {metadata.get('project_id', 'Unknown')[:8]}"
+                        if "description" not in metadata:
+                            metadata["description"] = ""
+                        
+                        # Filter by owner_id if specified (STRICT)
+                        if owner_id is not None:
+                            project_owner = metadata.get("owner_id")
+                            # Only show if owner matches
+                            if project_owner != owner_id:
+                                continue
+                            
+                        projects.append(metadata)
+                    except Exception as e:
+                        print(f"Error loading metadata for {project_dir.name}: {e}")
         
         return projects
     
@@ -483,6 +1843,83 @@ class ProjectManager:
                     
         except Exception as e:
             logger.error(f"Failed to cleanup containers: {str(e)}")
+    
+    def get_frozen_files(self, project_id: str) -> List[str]:
+        """Get list of frozen (read-only) files for a project"""
+        project_dir = self.artifacts_dir / project_id
+        frozen_file = project_dir / "frozen_files.json"
+        
+        if not frozen_file.exists():
+            return []
+        
+        try:
+            with open(frozen_file, 'r') as f:
+                data = json.load(f)
+                return data.get("frozen_files", [])
+        except Exception as e:
+            logger.error(f"Error reading frozen files: {e}")
+            return []
+    
+    def set_file_frozen(self, project_id: str, file_path: str, frozen: bool) -> bool:
+        """Set or unset frozen status for a file"""
+        project_dir = self.artifacts_dir / project_id
+        frozen_file = project_dir / "frozen_files.json"
+        
+        # Load existing frozen files
+        frozen_files = self.get_frozen_files(project_id)
+        
+        # Update the list
+        if frozen:
+            if file_path not in frozen_files:
+                frozen_files.append(file_path)
+                logger.info(f"🔒 Froze file: {file_path}")
+        else:
+            if file_path in frozen_files:
+                frozen_files.remove(file_path)
+                logger.info(f"🔓 Unfroze file: {file_path}")
+        
+        # Save updated list
+        try:
+            with open(frozen_file, 'w') as f:
+                json.dump({"frozen_files": frozen_files}, f, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"Error saving frozen files: {e}")
+            return False
+    
+    def is_file_frozen(self, project_id: str, file_path: str) -> bool:
+        """Check if a file is frozen"""
+        frozen_files = self.get_frozen_files(project_id)
+        return file_path in frozen_files
+    
+    def _save_container_registry(self, project_id: str, host_port: str):
+        """Save container port mapping to registry for proxy access"""
+        registry_file = self.artifacts_dir / '.container_registry.json'
+        
+        # Load existing registry
+        registry = {}
+        if registry_file.exists():
+            try:
+                with open(registry_file, 'r') as f:
+                    registry = json.load(f)
+            except Exception:
+                pass
+        
+        # Update registry
+        container_name = f"vibecoding_{project_id}"
+        registry[container_name] = {
+            'project_id': project_id,
+            'port': host_port,
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        # Save registry
+        try:
+            with open(registry_file, 'w') as f:
+                json.dump(registry, f, indent=2)
+            logger.info(f"📝 Saved container registry: {project_id} -> port {host_port}")
+        except Exception as e:
+            logger.error(f"Failed to save container registry: {e}")
 
 # Global project manager instance
 project_manager = ProjectManager()

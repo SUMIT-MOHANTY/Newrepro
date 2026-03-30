@@ -6,7 +6,7 @@ pydantic-settings
 passlib[bcrypt]
 python-jose[cryptography]
 python-multipart
-docling[vlm]
+# docling[vlm]
 httpx
 numpy>=2.0.0
 argon2-cffi

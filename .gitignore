@@ -29,4 +29,6 @@ vibecoding/frontend/package-lock.json
 vibecoding/backend/project_artifacts/60ca73fe/metadata.json
 vibecoding/backend/project_artifacts/60ca73fe/versions/v001/index.html
 vibecoding/backend/project_artifacts/
-vibecoding/frontend/.vite/deps_temp_ed246953/package.json
+vibecoding/frontend/.vite/
+vibecoding/backend/vibecoding_users.db
+vibecoding/frontend/vite.config.js

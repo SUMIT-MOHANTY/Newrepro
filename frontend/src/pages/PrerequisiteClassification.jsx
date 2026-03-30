@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
 import {
     KeyRound, CheckCircle2, Circle, AlertCircle, AlertTriangle, ArrowRight,
     ChevronLeft, Database, Globe, Server,
@@ -126,7 +126,7 @@ const PROCESS_MODE_OPTIONS = [
     {
         id: 'vibe_coding',
         title: 'Vibe Coding',
-        description: 'Redirect to VS Code and use N-Mod Extension with Vibe instructions.',
+        description: 'Automatic project creation and redirection to VibeCoding development environment.',
         enabled: true,
     },
     {
@@ -159,7 +159,8 @@ const inferFieldTypeFromRequirement = (name = '', description = '') => {
     return 'text';
 };
 
-const extractPrerequisitesFromAnalysis = (analysisData) => {
+
+    const extractPrerequisitesFromAnalysis = (analysisData) => {
     if (!analysisData) return [];
 
     // Helper: strip HTML tags and clean up whitespace
@@ -475,6 +476,34 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const navigate = useNavigate();
     const [prerequisites, setPrerequisites] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [showRedirectionConfirmation, setShowRedirectionConfirmation] = useState(false);
+    const [redirectionTarget, setRedirectionTarget] = useState(null);
+
+    const handleConfirmRedirection = async () => {
+        if (!redirectionTarget) return;
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(`${API_ENDPOINTS.VIBECODING_HANDOFF}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ project_token: selectedProjectKey }),
+            });
+            if (res.ok) {
+                const { handoff_token } = await res.json();
+                const sep = redirectionTarget.includes('?') ? '&' : '?';
+                window.location.href = `${redirectionTarget}${sep}handoff_token=${encodeURIComponent(handoff_token)}`;
+                return;
+            }
+        } catch (err) {
+            console.error('Failed to get handoff token:', err);
+        }
+        window.location.href = redirectionTarget;
+    };
+
+    const handleCancelRedirection = () => {
+        setShowRedirectionConfirmation(false);
+        setSubmitting(false);
+    };
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
@@ -1002,7 +1031,15 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 console.error('Task token prefetch failed', prefetchError);
             }
 
-            if (['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
+            if (['vibe_coding'].includes(processMode)) {
+                // Show confirmation before redirecting to VibeCoding
+                const vibeCodingUrl = `${VIBE_WORKSPACE_URL}/a/${selectedProjectKey}?name=${encodeURIComponent(projectName)}&mode=vibe_coding`;
+                setRedirectionTarget(vibeCodingUrl);
+                setShowRedirectionConfirmation(true);
+                return;
+            }
+
+            if (['developer_only', 'ai_assist'].includes(processMode)) {
                 // Redirect immediately without showing the checkmark screen
                 window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
                 return; // Stop execution here so it doesn't clear the submitting state right away
@@ -1540,7 +1577,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <h3 className="text-base font-bold text-app-text-main mb-1">Ready to proceed?</h3>
                             <p className="text-sm text-app-text-muted">
                                 {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
-                                    ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
+                                    ? '🚀 You will be redirected to the VibeCoding development environment.'
                                     : allProvided
                                         ? '✅ All prerequisites confirmed. You can proceed to task creation.'
                                         : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
@@ -1560,12 +1597,46 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                             ) : (
                                 <>{(allProvided || ['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
+                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Proceed to Workspace' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
                             )}
                         </button>
                     </div>
                 </div>
             </div>
+            {/* Redirection Confirmation Modal */}
+            {showRedirectionConfirmation && (
+                <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleCancelRedirection}></div>
+                    <div className="relative z-10 w-full max-w-md bg-app-bg-card rounded-2xl shadow-2xl border border-app-border p-6 animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="h-12 w-12 rounded-xl bg-app-primary-light flex items-center justify-center text-app-primary">
+                                <Sparkles className="h-6 w-6" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-app-text-main">Redirecting to VibeCoding</h3>
+                                <p className="text-xs text-app-text-light">You're about to leave DSuite.</p>
+                            </div>
+                        </div>
+                        <p className="text-sm text-app-text-label leading-relaxed mb-6">
+                            You have selected <strong>Vibe Coding Mode</strong>. This will redirect you to the VibeCoding application for project implementation. Would you like to proceed?
+                        </p>
+                        <div className="flex items-center gap-3 justify-end">
+                            <button
+                                onClick={handleCancelRedirection}
+                                className="px-4 py-2 text-sm font-medium text-app-text-label hover:text-app-text-main transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleConfirmRedirection}
+                                className="px-6 py-2.5 text-sm font-bold text-white bg-app-primary rounded-xl hover:bg-app-primary-hover shadow-lg active:scale-95 transition-all"
+                            >
+                                Proceed to VibeCoding
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

@@ -1,19 +1,65 @@
-from fastapi import FastAPI, HTTPException
+import json
+import hashlib
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, Depends, Request
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 import uuid
 import re as _re
+from datetime import datetime
 from dotenv import load_dotenv
 from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
+from git_manager import git_manager
+from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user, ForgotPasswordRequest, ResetPasswordRequest, forgot_password, reset_password
+from dual_agent_handler import get_dual_agent_handler
+from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
+
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-app = FastAPI(title="Bourtec VibeCoding API")
+# Helper function to log prompts and responses
+def log_ai_interaction(prompt: str, response: str, interaction_type: str = "main"):
+    """Log AI prompts and responses to a text file for testing."""
+    try:
+        log_dir = Path("ai_logs")
+        log_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"ai_log_{timestamp}.txt"
+        
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(f"{'='*80}\n")
+            f.write(f"AI INTERACTION LOG - {interaction_type.upper()}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"{'='*80}\n\n")
+            
+            f.write(f"{'─'*80}\n")
+            f.write(f"PROMPT:\n")
+            f.write(f"{'─'*80}\n")
+            f.write(prompt)
+            f.write(f"\n\n{'─'*80}\n")
+            f.write(f"RESPONSE:\n")
+            f.write(f"{'─'*80}\n")
+            f.write(response)
+            f.write(f"\n\n{'='*80}\n")
+        
+        print(f"📝 Logged AI interaction to: {log_file}")
+    except Exception as e:
+        print(f"Failed to log AI interaction: {e}")
+
+app = FastAPI(title=f"{APP_NAME} API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,6 +68,73 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Create a session with connection pooling and retry logic for proxy requests
+def get_proxy_session():
+    """Create a fresh requests session for each call (no pooling for container connections)"""
+    session = requests.Session()
+    
+    # For local container connections, disable connection pooling to avoid stale connections
+    # when containers are being dynamically started/stopped
+    adapter = HTTPAdapter(
+        pool_connections=1,  # Minimal pooling
+        pool_maxsize=1,      # One connection at a time
+        max_retries=Retry(
+            total=3,  # More retries for containers starting up
+            connect=3,  # Retry on connection failures
+            backoff_factor=0.3,  # Faster backoff (0.3s, 0.6s, 1.2s)
+            status_forcelist=[500, 502, 503, 504],  # Don't retry on 429
+            allowed_methods=["GET", "POST", "PUT", "DELETE", "PATCH"]
+        )
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
+
+def get_or_create_proxy_session():
+    """Return a fresh session for each proxy request to avoid pooling issues"""
+    return get_proxy_session()
+
+async def wait_for_container_ready(base_url: str, max_attempts: int = 5, delay: float = 0.2):
+    """
+    Wait for container to be ready by checking if it responds to requests.
+    This handles the case where containers are dynamically starting.
+    First tries the /health endpoint, then falls back to HEAD request.
+    """
+    import asyncio
+    import time
+    
+    for attempt in range(max_attempts):
+        try:
+            session = get_proxy_session()
+            
+            # First try the health endpoint if available
+            try:
+                health_resp = session.get(f"{base_url}/health", timeout=(2, 5))
+                if health_resp.status_code == 200:
+                    health_data = health_resp.json()
+                    if health_data.get("status") == "healthy":
+                        print(f"✅ Container {base_url} is healthy on attempt {attempt + 1}")
+                        return True
+                    else:
+                        print(f"⏳ Container responding but not healthy yet: {health_data.get('reason', 'unknown')}")
+            except:
+                # Health endpoint not available, try regular HEAD request
+                pass
+            
+            # Fallback to HEAD request
+            resp = session.head(base_url, timeout=(2, 5))  # Quick check
+            if resp.status_code < 500:  # 4xx is fine, means container is responding
+                print(f"✅ Container {base_url} is ready on attempt {attempt + 1}")
+                return True
+        except Exception as e:
+            if attempt < max_attempts - 1:
+                print(f"⏳ Attempt {attempt + 1}/{max_attempts} - Waiting for container to be ready...")
+                await asyncio.sleep(delay)
+                delay *= 1.5  # Exponential backoff
+    
+    return False
 
 class Message(BaseModel):
     role: str
@@ -32,6 +145,8 @@ class GenerateRequest(BaseModel):
     prompt: str
     history: List[Message] = []
     project_id: Optional[str] = None
+    discuss_mode: bool = False
+    images: Optional[List[str]] = None
 
 class GenerateResponse(BaseModel):
     message: str
@@ -40,898 +155,491 @@ class GenerateResponse(BaseModel):
     version_id: Optional[str] = None
     preview_url: Optional[str] = None
     tool_calls_log: Optional[List[dict]] = None
+    suggestions: Optional[List[str]] = None
 
 class ProjectCreateRequest(BaseModel):
+    project_id: Optional[str] = None
     name: Optional[str] = None
+    description: Optional[str] = None
 
 class ProjectResponse(BaseModel):
     project_id: str
-    name: str
+    name: Optional[str] = None
     created_at: str
     versions: List[dict]
     current_version: Optional[str] = None
+    owner_id: Optional[int] = None
 
 class ProjectListResponse(BaseModel):
     projects: List[ProjectResponse]
 
+class GitRequest(BaseModel):
+    project_id: str
+    files: Optional[List[str]] = None
+    message: Optional[str] = None
+    branch_name: Optional[str] = None
+    remote_url: Optional[str] = None
+    remote_name: Optional[str] = "origin"
+    username: Optional[str] = None
+    token: Optional[str] = None
+    chat_version: Optional[int] = None
+    version_id: Optional[str] = None
+
+async def generate_suggestions(message: str, code: str, user_prompt: str) -> List[str]:
+    """Use AI to generate 3 contextual one-liner suggestions based on what was just created."""
+    try:
+        suggestion_prompt = f"""Based on what was just generated, provide exactly 3 short, actionable one-liner suggestions for what the user might want to do next. Each suggestion should be a natural follow-up to enhance or extend what was created.
+
+User's original request: {user_prompt}
+
+What was generated:
+{message[:500]}
+
+Code summary: {"Code was generated" if code else "No code generated"}
+
+Provide ONLY 3 suggestions, one per line, no numbering, no explanations. Each should be a complete sentence that could be sent directly as a prompt. Keep each under 60 characters.
+
+Example format:
+Add a navigation bar with smooth scrolling
+Make the design responsive for mobile
+Add hover animations to the buttons"""
+
+        suggestion_messages = [
+            {"role": "system", "content": "You are a helpful assistant that generates concise, actionable suggestions."},
+            {"role": "user", "content": suggestion_prompt}
+        ]
+        
+        response = ai_config.make_request(suggestion_messages, temperature=0.7)
+        suggestions_text = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
+        
+        # Log the suggestion generation interaction
+        log_ai_interaction(suggestion_prompt, suggestions_text, "suggestion_generation")
+        
+        # Parse suggestions (one per line)
+        suggestions = [s.strip() for s in suggestions_text.strip().split('\n') if s.strip()]
+        # Remove any numbering like "1.", "2.", etc.
+        suggestions = [_re.sub(r'^\d+[\.\)]\s*', '', s) for s in suggestions]
+        # Take only first 3
+        suggestions = suggestions[:3]
+        
+        return suggestions if len(suggestions) == 3 else []
+    except Exception as e:
+        print(f"Failed to generate suggestions: {e}")
+        return []
+
 # AI Configuration is now handled by ai_config.py
 
-SYSTEM_PROMPT = """You are an expert full-stack developer and AI assistant for Bourtec VibeCoding platform.
-Your role is to help users build web applications, components, and interfaces through natural language.
+SYSTEM_PROMPT = MAIN_SYSTEM_PROMPT
 
-🌐 WEB TOOLS AVAILABLE:
-You have access to web tools that you can call dynamically:
-1. **web_search(query)** - Search the web using DuckDuckGo to find documentation, tutorials, examples, API references, or any real-time information.
-2. **fetch_page_content(url)** - Fetch and read the content of any web page to get detailed information, code examples, or documentation.
+# ─── Auth Endpoints ─────────────────────────────────────────────────────────────
+@app.post("/vibecoding/api/auth/signup")
+async def signup(request: SignupRequest):
+    """Register a new user."""
+    return signup_user(request)
 
-Use these tools when:
-- The user asks about a library, API, or tool you're not sure about
-- You need current documentation or latest versions of packages
-- The user asks you to research something before building
-- You need to verify API endpoints, syntax, or best practices
-- The user explicitly asks you to search the web
 
-🚨 CRITICAL RULES - NEVER BREAK THESE:
-1. ALWAYS generate MULTIPLE files with file markers - NEVER just one file
-2. ALWAYS include ALL necessary files (HTML, CSS, JS, config files, etc.)
-3. ALWAYS write ACTUAL CODE in every file - NEVER descriptions or comments only
-4. ALWAYS use file markers: // FILE: path/to/filename.ext
-5. MINIMUM 4 files for any project (main file + templates/components + styles + config)
+@app.post("/vibecoding/api/auth/login")
+async def login(request: LoginRequest):
+    """Login with email and password."""
+    return login_user(request)
 
-CRITICAL: Generate ACTUAL CODE for EVERY FILE, not folder structure descriptions or comments!
 
-FILE MARKER FORMAT:
-Use this EXACT format to separate files:
-// FILE: path/to/filename.ext
+@app.get("/vibecoding/api/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    """Get current authenticated user."""
+    return user
 
-Then immediately write the ACTUAL CODE for that file. NO descriptions, NO folder trees, ONLY CODE.
 
-EXAMPLE - Flask Landing Page:
+@app.get("/vibecoding/api/auth/verify")
+async def verify_token(user: dict = Depends(get_current_user)):
+    """Verify if the current token is valid."""
+    return {"valid": True, "user": user}
 
-// FILE: app.py
-from flask import Flask, render_template
 
-app = Flask(__name__)
+@app.post("/vibecoding/api/auth/forgot-password")
+async def forgot_password_endpoint(request: ForgotPasswordRequest):
+    """Request password reset."""
+    return forgot_password(request)
 
-@app.route('/')
-def home():
-    return render_template('index.html')
 
-@app.route('/about')
-def about():
-    return render_template('about.html')
+@app.post("/vibecoding/api/auth/reset-password")
+async def reset_password_endpoint(request: ResetPasswordRequest):
+    """Reset password using token from email."""
+    return reset_password(request)
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
 
-// FILE: requirements.txt
-Flask==2.3.0
-Werkzeug==2.3.0
+# ─── SSO / Handoff from BRDAnalyzer ─────────────────────────────────────────────
+import hmac as _hmac
+import base64 as _base64
+import time as _time_mod
 
-// FILE: templates/index.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Beautiful Landing Page</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-    <div class="hero">
-        <h1>Welcome to Our Amazing Product</h1>
-        <p>Transform your business with our innovative solution</p>
-        <button class="cta-button">Get Started</button>
-    </div>
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-</body>
-</html>
+HANDOFF_SECRET = os.getenv("HANDOFF_SECRET", "dsuite-vibecoding-handoff-secret-local-dev")
 
-// FILE: templates/about.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>About Us</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-    <h1>About Us</h1>
-    <p>We are a team of passionate developers.</p>
-</body>
-</html>
 
-// FILE: static/css/style.css
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
+def _verify_handoff_token(token_str: str) -> dict:
+    """Verify HMAC-signed handoff token and return payload."""
+    parts = token_str.rsplit(".", 1)
+    if len(parts) != 2:
+        raise ValueError("Malformed handoff token")
+    payload_b64, sig = parts
+    expected_sig = _hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected_sig, sig):
+        raise ValueError("Invalid handoff token signature")
+    padding = 4 - len(payload_b64) % 4
+    if padding != 4:
+        payload_b64 += "=" * padding
+    payload = json.loads(_base64.urlsafe_b64decode(payload_b64))
+    if payload.get("exp", 0) < int(_time_mod.time()):
+        raise ValueError("Handoff token expired")
+    return payload
 
-body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    min-height: 100vh;
-}
 
-.hero {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-    text-align: center;
-    color: white;
-    padding: 20px;
-}
+class SSOHandoffRequest(BaseModel):
+    handoff_token: str
 
-.hero h1 {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-    animation: fadeInUp 1s ease;
-}
 
-.hero p {
-    font-size: 1.5rem;
-    margin-bottom: 2rem;
-    opacity: 0.9;
-}
-
-.cta-button {
-    padding: 15px 40px;
-    font-size: 1.2rem;
-    background: white;
-    color: #667eea;
-    border: none;
-    border-radius: 50px;
-    cursor: pointer;
-    transition: transform 0.3s ease;
-}
-
-.cta-button:hover {
-    transform: scale(1.05);
-}
-
-@keyframes fadeInUp {
-    from {
-        opacity: 0;
-        transform: translateY(30px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-// FILE: static/js/main.js
-document.addEventListener('DOMContentLoaded', function() {
-    const button = document.querySelector('.cta-button');
-    
-    button.addEventListener('click', function() {
-        alert('Welcome! Let\\'s get started!');
-    });
-    
-    // Smooth scroll effect
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-        anchor.addEventListener('click', function (e) {
-            e.preventDefault();
-            const target = document.querySelector(this.getAttribute('href'));
-            if (target) {
-                target.scrollIntoView({ behavior: 'smooth' });
-            }
-        });
-    });
-});
-
-MINIMUM FILES REQUIRED FOR FLASK:
-- app.py (main application)
-- requirements.txt (dependencies)
-- At least 1 HTML template in templates/
-- At least 1 CSS file in static/css/
-- At least 1 JS file in static/js/ (even if simple)
-TOTAL: MINIMUM 5 FILES
-
-EXAMPLE - Django Project:
-
-// FILE: manage.py
-#!/usr/bin/env python
-import os
-import sys
-
-if __name__ == '__main__':
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'myproject.settings')
+@app.post("/vibecoding/api/auth/sso")
+async def sso_handoff(request: SSOHandoffRequest):
+    """
+    Accept a handoff token from BRDAnalyzer, auto-create or login the user,
+    create the project if needed, and return a Vibecoding JWT.
+    """
     try:
-        from django.core.management import execute_from_command_line
-    except ImportError as exc:
-        raise ImportError("Couldn't import Django.") from exc
-    execute_from_command_line(sys.argv)
+        payload = _verify_handoff_token(request.handoff_token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
 
-// FILE: myproject/settings.py
-import os
-from pathlib import Path
+    email = payload.get("email", "").lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Handoff token missing email")
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+    first_name = payload.get("first_name", "")
+    last_name = payload.get("last_name", "")
+    full_name = f"{first_name} {last_name}".strip() or email.split("@")[0]
+    username = email.split("@")[0].replace(".", "_").replace("+", "_").lower()
 
-SECRET_KEY = 'django-insecure-your-secret-key-here'
+    project_token = payload.get("project_token")
+    project_context = payload.get("project_context", {})
 
-DEBUG = True
+    from auth import get_db as get_auth_db, create_jwt_token, hash_password, generate_avatar_color, generate_random_password
 
-ALLOWED_HOSTS = []
-
-INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'myapp',
-]
-
-MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
-
-ROOT_URLCONF = 'myproject.urls'
-
-TEMPLATES = [
-    {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-            ],
-        },
-    },
-]
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
-
-STATIC_URL = '/static/'
-
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-// FILE: myproject/urls.py
-from django.contrib import admin
-from django.urls import path, include
-
-urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('', include('myapp.urls')),
-]
-
-// FILE: myproject/__init__.py
-# Django project initialization
-
-// FILE: myapp/models.py
-from django.db import models
-
-class Post(models.Model):
-    title = models.CharField(max_length=200)
-    content = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return self.title
-
-// FILE: myapp/views.py
-from django.shortcuts import render
-from .models import Post
-
-def home(request):
-    posts = Post.objects.all()
-    return render(request, 'myapp/home.html', {'posts': posts})
-
-def about(request):
-    return render(request, 'myapp/about.html')
-
-// FILE: myapp/urls.py
-from django.urls import path
-from . import views
-
-urlpatterns = [
-    path('', views.home, name='home'),
-    path('about/', views.about, name='about'),
-]
-
-// FILE: myapp/__init__.py
-# App initialization
-
-// FILE: myapp/admin.py
-from django.contrib import admin
-from .models import Post
-
-admin.site.register(Post)
-
-// FILE: myapp/apps.py
-from django.apps import AppConfig
-
-class MyappConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'myapp'
-
-// FILE: myapp/templates/myapp/home.html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Home</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-</head>
-<body>
-    <h1>Welcome to Django</h1>
-    <div class="posts">
-        {% for post in posts %}
-        <div class="post">
-            <h2>{{ post.title }}</h2>
-            <p>{{ post.content }}</p>
-        </div>
-        {% endfor %}
-    </div>
-</body>
-</html>
-
-// FILE: myapp/templates/myapp/about.html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>About</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-</head>
-<body>
-    <h1>About Us</h1>
-    <p>This is a Django application.</p>
-</body>
-</html>
-
-// FILE: myapp/static/css/style.css
-body {
-    font-family: Arial, sans-serif;
-    margin: 0;
-    padding: 20px;
-    background: #f5f5f5;
-}
-
-h1 {
-    color: #333;
-}
-
-.posts {
-    display: grid;
-    gap: 20px;
-}
-
-.post {
-    background: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-// FILE: requirements.txt
-Django==4.2.0
-asgiref==3.7.0
-sqlparse==0.4.4
-
-MINIMUM FILES REQUIRED FOR DJANGO:
-- manage.py
-- myproject/settings.py
-- myproject/urls.py
-- myproject/__init__.py
-- myapp/models.py
-- myapp/views.py
-- myapp/urls.py
-- myapp/__init__.py
-- myapp/admin.py
-- myapp/apps.py
-- At least 1 HTML template
-- At least 1 CSS file
-- requirements.txt
-TOTAL: MINIMUM 13 FILES
-
-EXAMPLE - React Todo App:
-
-// FILE: app.py
-from flask import Flask, render_template
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.route('/about')
-def about():
-    return render_template('about.html')
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
-
-// FILE: requirements.txt
-Flask==2.3.0
-Werkzeug==2.3.0
-
-// FILE: templates/index.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Beautiful Landing Page</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-    <div class="hero">
-        <h1>Welcome to Our Amazing Product</h1>
-        <p>Transform your business with our innovative solution</p>
-        <button class="cta-button">Get Started</button>
-    </div>
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-</body>
-</html>
-
-// FILE: templates/about.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>About Us</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-    <h1>About Us</h1>
-    <p>We are a team of passionate developers.</p>
-</body>
-</html>
-
-// FILE: static/css/style.css
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
-
-body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    min-height: 100vh;
-}
-
-.hero {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-    text-align: center;
-    color: white;
-    padding: 20px;
-}
-
-.hero h1 {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-    animation: fadeInUp 1s ease;
-}
-
-.hero p {
-    font-size: 1.5rem;
-    margin-bottom: 2rem;
-    opacity: 0.9;
-}
-
-.cta-button {
-    padding: 15px 40px;
-    font-size: 1.2rem;
-    background: white;
-    color: #667eea;
-    border: none;
-    border-radius: 50px;
-    cursor: pointer;
-    transition: transform 0.3s ease;
-}
-
-.cta-button:hover {
-    transform: scale(1.05);
-}
-
-@keyframes fadeInUp {
-    from {
-        opacity: 0;
-        transform: translateY(30px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-// FILE: static/js/main.js
-document.addEventListener('DOMContentLoaded', function() {
-    const button = document.querySelector('.cta-button');
-    
-    button.addEventListener('click', function() {
-        alert('Welcome! Let\\'s get started!');
-    });
-    
-    // Smooth scroll effect
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-        anchor.addEventListener('click', function (e) {
-            e.preventDefault();
-            const target = document.querySelector(this.getAttribute('href'));
-            if (target) {
-                target.scrollIntoView({ behavior: 'smooth' });
+    conn = get_auth_db()
+    try:
+        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        if user:
+            user_id = user["id"]
+            user_data = {
+                "id": user["id"],
+                "username": user["username"],
+                "email": user["email"],
+                "full_name": user["full_name"],
+                "avatar_color": user["avatar_color"],
+                "created_at": user["created_at"],
             }
-        });
-    });
-});
+        else:
+            password = generate_random_password()
+            password_hash, salt = hash_password(password)
+            avatar_color = generate_avatar_color(email)
+            from datetime import datetime
+            now = datetime.utcnow().isoformat()
+            base_username = username
+            suffix = 0
+            while conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone():
+                suffix += 1
+                username = f"{base_username}_{suffix}"
+            cursor = conn.execute(
+                """INSERT INTO users (username, email, password_hash, salt, full_name, avatar_color, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (username, email, password_hash, salt, full_name, avatar_color, now, now),
+            )
+            conn.commit()
+            user_id = cursor.lastrowid
+            user_data = {
+                "id": user_id,
+                "username": username,
+                "email": email,
+                "full_name": full_name,
+                "avatar_color": avatar_color,
+                "created_at": now,
+            }
 
-EXAMPLE - React Todo App:
+        token = create_jwt_token({"user_id": user_id, "email": email, "username": username})
+    finally:
+        conn.close()
 
-// FILE: package.json
-{
-  "name": "react-todo-app",
-  "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
-  },
-  "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build"
-  }
-}
+    project_info = None
+    if project_token:
+        existing = project_manager.get_project_info(project_token)
+        if existing:
+            if existing.get("owner_id") is None:
+                existing["owner_id"] = user_id
+            if project_context:
+                existing["brd_context"] = project_context
+            project_manager.update_project_metadata(project_token, existing)
+            project_info = existing
+        else:
+            project_name = project_context.get("project_name") or f"Project {project_token[:8]}"
+            project_manager.create_project_directory(project_token, metadata={
+                "name": project_name,
+                "description": project_context.get("brd_summary", ""),
+                "owner_id": user_id,
+            })
+            new_project = project_manager.get_project_info(project_token)
+            if new_project and project_context:
+                new_project["brd_context"] = project_context
+                project_manager.update_project_metadata(project_token, new_project)
+            project_info = project_manager.get_project_info(project_token)
 
-// FILE: public/index.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Todo App</title>
-</head>
-<body>
-    <div id="root"></div>
-</body>
-</html>
-
-// FILE: src/index.js
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import './index.css';
-import App from './App';
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
-
-// FILE: src/App.js
-import React, { useState } from 'react';
-import './App.css';
-import TodoList from './components/TodoList';
-import AddTodo from './components/AddTodo';
-
-function App() {
-  const [todos, setTodos] = useState([
-    { id: 1, text: 'Learn React', completed: false },
-    { id: 2, text: 'Build Todo App', completed: false }
-  ]);
-
-  const addTodo = (text) => {
-    const newTodo = {
-      id: Date.now(),
-      text: text,
-      completed: false
-    };
-    setTodos([...todos, newTodo]);
-  };
-
-  const toggleTodo = (id) => {
-    setTodos(todos.map(todo =>
-      todo.id === id ? { ...todo, completed: !todo.completed } : todo
-    ));
-  };
-
-  const deleteTodo = (id) => {
-    setTodos(todos.filter(todo => todo.id !== id));
-  };
-
-  return (
-    <div className="App">
-      <h1>My Todo List</h1>
-      <AddTodo onAdd={addTodo} />
-      <TodoList todos={todos} onToggle={toggleTodo} onDelete={deleteTodo} />
-    </div>
-  );
-}
-
-export default App;
-
-// FILE: src/components/TodoList.js
-import React from 'react';
-import TodoItem from './TodoItem';
-
-function TodoList({ todos, onToggle, onDelete }) {
-  return (
-    <div className="todo-list">
-      {todos.map(todo => (
-        <TodoItem
-          key={todo.id}
-          todo={todo}
-          onToggle={onToggle}
-          onDelete={onDelete}
-        />
-      ))}
-    </div>
-  );
-}
-
-export default TodoList;
-
-// FILE: src/components/TodoItem.js
-import React from 'react';
-
-function TodoItem({ todo, onToggle, onDelete }) {
-  return (
-    <div className="todo-item">
-      <input
-        type="checkbox"
-        checked={todo.completed}
-        onChange={() => onToggle(todo.id)}
-      />
-      <span style={{ textDecoration: todo.completed ? 'line-through' : 'none' }}>
-        {todo.text}
-      </span>
-      <button onClick={() => onDelete(todo.id)}>Delete</button>
-    </div>
-  );
-}
-
-export default TodoItem;
-
-// FILE: src/components/AddTodo.js
-import React, { useState } from 'react';
-
-function AddTodo({ onAdd }) {
-  const [text, setText] = useState('');
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (text.trim()) {
-      onAdd(text);
-      setText('');
+    return {
+        "token": token,
+        "user": user_data,
+        "project": project_info,
+        "message": "SSO login successful",
     }
-  };
 
-  return (
-    <form onSubmit={handleSubmit} className="add-todo">
-      <input
-        type="text"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Add new todo..."
-      />
-      <button type="submit">Add</button>
-    </form>
-  );
-}
 
-export default AddTodo;
-
-// FILE: src/App.css
-.App {
-  max-width: 600px;
-  margin: 50px auto;
-  padding: 20px;
-  font-family: Arial, sans-serif;
-}
-
-h1 {
-  text-align: center;
-  color: #333;
-}
-
-.add-todo {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-
-.add-todo input {
-  flex: 1;
-  padding: 10px;
-  border: 2px solid #ddd;
-  border-radius: 5px;
-  font-size: 16px;
-}
-
-.add-todo button {
-  padding: 10px 20px;
-  background: #4CAF50;
-  color: white;
-  border: none;
-  border-radius: 5px;
-  cursor: pointer;
-}
-
-.todo-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  background: #f9f9f9;
-  margin-bottom: 10px;
-  border-radius: 5px;
-}
-
-.todo-item button {
-  margin-left: auto;
-  padding: 5px 10px;
-  background: #f44336;
-  color: white;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-// FILE: src/index.css
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background: #f0f0f0;
-}
-
-CRITICAL RULES:
-1. ALWAYS use file markers: // FILE: path/to/file.ext
-2. Write ACTUAL CODE after each marker, not descriptions
-3. NO folder structure diagrams in the code
-4. NO comments like "# Flask application entry point" as the only content
-5. Every file must have COMPLETE, WORKING code
-6. Include ALL necessary files (HTML, CSS, JS, config files)
-7. Make code production-ready and fully functional
-8. NEVER write folder trees like "flask-landing/ │ ├─ app.py"
-
-IMPORTANT FOR REACT/VUE/ANGULAR APPS:
-For React/Vue/Angular apps, ALSO include a standalone HTML preview file that works without build tools:
-- Create a file: public/preview.html or preview.html
-- Use CDN links for React/Vue/Angular (no build required)
-- Include all components inline or via CDN
-- This allows immediate preview without npm install/build
-
-Example React with Preview:
-```
-// FILE: package.json
-{...}
-
-// FILE: public/index.html
-<!DOCTYPE html>
-<html>
-<head><title>React App</title></head>
-<body><div id="root"></div></body>
-</html>
-
-// FILE: public/preview.html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>React App Preview</title>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <style>
-        /* Include all CSS inline */
-        body { margin: 0; font-family: Arial; }
-        .hero { text-align: center; padding: 50px; }
-    </style>
-</head>
-<body>
-    <div id="root"></div>
-    <script type="text/babel">
-        // Include all React components inline
-        function Hero() {
-            return (
-                <div className="hero">
-                    <h1>Welcome</h1>
-                    <button>Get Started</button>
-                </div>
-            );
-        }
-        
-        function App() {
-            return <Hero />;
-        }
-        
-        ReactDOM.render(<App />, document.getElementById('root'));
-    </script>
-</body>
-</html>
-
-// FILE: src/App.js
-import React from 'react';
-import Hero from './components/Hero';
-function App() {
-    return <Hero />;
-}
-export default App;
-
-// FILE: src/components/Hero.js
-import React from 'react';
-function Hero() {
-    return (
-        <div className="hero">
-            <h1>Welcome</h1>
-            <button>Get Started</button>
-        </div>
-    );
-}
-export default Hero;
-```
-
-This way:
-- preview.html works immediately in browser (no build needed)
-- src/ files are proper React code for development
-- Users can see preview instantly AND have proper React structure
-
-CDN LINKS:
-- NEVER include integrity or crossorigin attributes
-- Use simple CDN links: <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-
-Response format:
-1. Brief explanation (1-2 sentences)
-2. Complete code with file markers
-3. NO folder structure diagrams"""
-
-@app.get("/")
+@app.get("/vibecoding/api")
 async def root():
-    return {"message": "Bourtec VibeCoding API is running"}
+    return {"message": f"{APP_NAME} API is running"}
 
-@app.post("/api/generate", response_model=GenerateResponse)
+@app.post("/vibecoding/api/chat/dual-agent")
+async def dual_agent_chat(request: GenerateRequest):
+    """
+    New endpoint using dual-agent architecture:
+    - Routes to Chat Agent for general questions
+    - Routes to Code Execution Agent (in container) for code generation
+    """
+    try:
+        # Get dual agent handler
+        handler = get_dual_agent_handler()
+        
+        # Convert history to dict format
+        history = [{"role": msg.role, "content": msg.content} for msg in request.history]
+        
+        # Handle the message
+        result = await handler.handle_message(request.prompt, history)
+        
+        if result.get("success"):
+            # Get or create project ID
+            project_id = request.project_id or project_manager.generate_project_id()
+            
+            # Save code version if code was generated
+            version_id = None
+            code = result.get("code")
+            preview_url = result.get("preview_url")
+            
+            if code:
+                code = _preprocess_ai_response(code)
+                version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
+                
+                # Save chat history for the current branch (not commit hash)
+                status = git_manager.get_status(project_id)
+                current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
+                
+                history.append({"role": "user", "content": request.prompt})
+                history.append({"role": "assistant", "content": result.get("message", "")})
+                await project_manager.save_chat_version(project_id, current_branch, history)
+                
+                container_url = await project_manager.create_container_for_code(project_id, "workspace")
+                if container_url:
+                    preview_url = container_url
+            
+            return {
+                "message": result.get("message", ""),
+                "code": code,
+                "project_id": project_id,
+                "version_id": version_id,
+                "preview_url": preview_url,
+                "agent_type": result.get("agent_type"),
+                "tool_calls_log": None
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+def _preprocess_ai_response(text: str) -> str:
+    """Fix mixed AI output where // FILE: headers are used for SEARCH/REPLACE patches.
+
+    Handles three common AI mis-formats:
+    1. "// FILE: path" followed by <<<SEARCH → converted to "// PATCH: path"
+    2. "// FILE: path (Updated)" empty markers → removed entirely
+    3. Duplicate "// FILE: path" blocks where only the last has real content → deduplicated
+    """
+    import re
+
+    # Pass 1: Remove "// FILE: path (Updated)" artifact markers (always empty labels)
+    text = re.sub(r'(?m)^//\s*FILE:\s*[^\n]+?\s*\(Updated\)\s*$', '', text)
+
+    # Pass 2: Convert "// FILE: path" that precede <<<SEARCH into "// PATCH: path"
+    # Walk line-by-line so we can look ahead
+    lines = text.split('\n')
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        file_match = re.match(r'^(//\s*)FILE:\s*(.+)$', line.strip())
+        if file_match:
+            filename = file_match.group(2).strip()
+            # Look ahead past blank lines for <<<SEARCH
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and re.match(r'\s*<<<\s*SEARCH', lines[j]):
+                result.append(f'// PATCH: {filename}')
+            else:
+                result.append(line)
+        else:
+            result.append(line)
+        i += 1
+
+    text = '\n'.join(result)
+
+    # Pass 3: Deduplicate // FILE: markers with the same path (keep last)
+    file_positions = {}
+    for m in re.finditer(r'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]+)', text):
+        path = m.group(1).strip().rstrip(' ->')
+        file_positions.setdefault(path, []).append(m.start())
+
+    remove_ranges = []
+    for path, positions in file_positions.items():
+        if len(positions) > 1:
+            all_occurrences = list(re.finditer(
+                r'(?:(?://|#|<!--)\s*FILE:\s*' + re.escape(path) + r'[^\n]*\n)',
+                text
+            ))
+            for occ in all_occurrences[:-1]:
+                next_file = re.search(r'(?://|#|<!--)\s*FILE:\s*', text[occ.end():])
+                end = occ.end() + next_file.start() if next_file else occ.end()
+                content_between = text[occ.end():end].strip()
+                if not content_between or content_between.startswith('<<<'):
+                    remove_ranges.append((occ.start(), end))
+
+    for start, end in sorted(remove_ranges, reverse=True):
+        text = text[:start] + text[end:]
+
+    return text.strip()
+
+
+@app.post("/vibecoding/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest):
     # Get or create project ID at the start
     project_id = request.project_id or project_manager.generate_project_id()
     
+    def build_vision_message(text: str, image_data_urls: list = None) -> dict:
+        """Build an OpenAI/NVIDIA vision-format message with text + images."""
+        if not image_data_urls:
+            return {"role": "user", "content": text}
+        content = []
+        for data_url in image_data_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": data_url}
+            })
+        content.append({"type": "text", "text": text})
+        return {"role": "user", "content": content}
+
     try:
-        # Build conversation history with system prompt
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # ── Discuss mode: pure conversation, no code generation ──────────
+        if request.discuss_mode:
+            from prompts import CHAT_SYSTEM_PROMPT
+            messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+            for msg in request.history:
+                messages.append({"role": msg.role, "content": msg.content})
+            messages.append(build_vision_message(request.prompt, request.images))
+
+            response = ai_config.make_request(messages)
+            ai_response = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
+            
+            # Log the discuss mode interaction
+            log_ai_interaction(request.prompt, ai_response, "discuss_mode")
+            
+            # Generate suggestions for discuss mode too
+            suggestions = await generate_suggestions(ai_response, "", request.prompt)
+            
+            return GenerateResponse(
+                message=ai_response,
+                code=None,
+                project_id=project_id,
+                version_id=None,
+                preview_url=None,
+                tool_calls_log=None,
+                suggestions=suggestions
+            )
+
+        # Check if there's existing code in the workspace
+        workspace_files = project_manager.get_workspace_files(project_id, max_files=15, max_chars_per_file=1500)
+        has_existing_code = len(workspace_files) > 0
+        
+        # Get frozen files list
+        frozen_files = project_manager.get_frozen_files(project_id)
+        frozen_files_str = "\n".join([f"- {path} (READ-ONLY)" for path in frozen_files]) if frozen_files else "None"
+
+        # Inject BRD project context if available
+        brd_context_str = ""
+        project_meta = project_manager.get_project_info(project_id)
+        if project_meta and project_meta.get("brd_context"):
+            brd = project_meta["brd_context"]
+            parts = []
+            if brd.get("project_name"):
+                parts.append(f"Project Name: {brd['project_name']}")
+            if brd.get("classification"):
+                parts.append(f"Governance Classification: {brd['classification']}")
+            if brd.get("recommendation"):
+                parts.append(f"Governance Recommendation: {brd['recommendation']}")
+            if brd.get("brd_summary"):
+                parts.append(f"BRD Summary: {brd['brd_summary']}")
+            if brd.get("agent_analysis"):
+                parts.append(f"Agent Analysis: {brd['agent_analysis']}")
+            if parts:
+                brd_context_str = "\n\n📄 PROJECT CONTEXT (from BRD Analyzer):\n" + "\n".join(parts) + "\n"
+
+        # Build conversation history with appropriate system prompt
+        if has_existing_code:
+            # Provide context about existing code and let AI decide whether to do incremental or full edit
+            file_list = "\n".join([f"- {path}" for path in workspace_files.keys()])
+            
+            # Format current files for context
+            current_files_str = ""
+            for path, content in workspace_files.items():
+                current_files_str += f"\n\n// FILE: {path}\n{content}"
+            
+            from prompts import INCREMENTAL_EDIT_PROMPT
+            system_prompt = INCREMENTAL_EDIT_PROMPT.replace("{{file_list}}", file_list).replace("{{current_files}}", current_files_str).replace("{{frozen_files}}", frozen_files_str)
+            logger.info(f"📝 Existing codebase detected - AI will decide edit scope")
+        else:
+            system_prompt = SYSTEM_PROMPT.replace("{{frozen_files}}", frozen_files_str)
+            logger.info(f"🆕 New project - full generation mode")
+        
+        from datetime import datetime
+        now = datetime.now()
+        date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
+        messages = [{"role": "system", "content": date_context + system_prompt + brd_context_str}]
         for msg in request.history:
             messages.append({
                 "role": msg.role,
                 "content": msg.content
             })
         
-        # Add current prompt with a strict tool-calling enforcement
-        prompt_with_instructions = request.prompt
-        if any(word in request.prompt.lower() for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
-            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. DO NOT say you cannot browse the web. You HAVE the ability via function calling.)"
-            
-        messages.append({
-            "role": "user",
-            "content": prompt_with_instructions
-        })
+        # Add current prompt with explicit instructions for incremental edits
+        if has_existing_code:
+            # Add a reminder to the user's prompt for incremental edits
+            prompt_with_instructions = f"""{request.prompt}
 
+IMPORTANT: If this is a small change (like changing colors, text, or adding a simple feature), output ONLY the files that need to be modified. Do NOT regenerate the entire codebase."""
+        else:
+            prompt_with_instructions = request.prompt
+        if any(word in request.prompt.lower() for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
+            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. After you have gathered the necessary information about the page, you MUST generate the COMPLETE project code with ALL necessary files using the `// FILE: path/to/file.ext` format. DO NOT just describe the page; build it.)"
+            
+        messages.append(build_vision_message(prompt_with_instructions, request.images))
+
+        # Log just the user prompt (not the entire messages array with system prompt and history)
+        log_prompt = f"User Request: {request.prompt}\n\nWith Instructions: {prompt_with_instructions}"
+        
         # Call AI API with function calling support (web search + page fetch)
         response = await make_request_with_tools(messages)
         
@@ -943,71 +651,62 @@ async def generate_code(request: GenerateRequest):
             ai_response = response["choices"][0]["message"].get("content") or ""
         else:
             raise Exception("Invalid response format from AI API")
+        
+        # Log the main AI interaction
+        log_ai_interaction(log_prompt, ai_response, "main_generation")
 
         # Extract code if present
+        import re as _re
         code = None
-        if "```python" in ai_response:
-            code_start = ai_response.find("```python") + 10
-            code_end = ai_response.find("```", code_start)
-            code = ai_response[code_start:code_end].strip()
-        elif "```html" in ai_response:
-            code_start = ai_response.find("```html") + 7
-            code_end = ai_response.find("```", code_start)
-            code = ai_response[code_start:code_end].strip()
-        elif "```" in ai_response:
-            code_start = ai_response.find("```") + 3
-            code_end = ai_response.find("```", code_start)
-            code = ai_response[code_start:code_end].strip()
         
-        # Validate that code has multiple files with file markers
-        if code:
-            file_marker_count = len(_re.findall(r'//\s*FILE:\s*|#\s*FILE:\s*|<!--\s*FILE:\s*', code))
-            
-            # If less than 3 file markers, regenerate with stronger prompt
-            if file_marker_count < 3:
-                print(f"⚠️ Warning: Only {file_marker_count} files detected. Requesting complete structure...")
-                
-                # Add a follow-up message demanding complete structure
-                messages.append({
-                    "role": "assistant",
-                    "content": ai_response
-                })
-                messages.append({
-                    "role": "user",
-                    "content": f"""Please provide a COMPLETE project structure with ALL necessary files.
-
-REQUIRED:
-- Use file markers: // FILE: path/to/file.ext
-- Include MINIMUM 5 files:
-  1. Main application file
-  2. Configuration/dependencies file (requirements.txt, package.json, etc.)
-  3. At least 2 template/component files
-  4. At least 1 CSS file
-  5. At least 1 JavaScript file (if applicable)
-
-Generate the COMPLETE structure with ACTUAL CODE in every file."""
-                })
-                
-                # Make another API call (without tools for the follow-up)
-                response = ai_config.make_request(messages)
-                if "choices" in response and len(response["choices"]) > 0:
-                    ai_response = response["choices"][0]["message"]["content"]
-                    
-                    # Re-extract code
-                    if "```python" in ai_response:
-                        code_start = ai_response.find("```python") + 10
-                        code_end = ai_response.find("```", code_start)
-                        code = ai_response[code_start:code_end].strip()
-                    elif "```html" in ai_response:
-                        code_start = ai_response.find("```html") + 7
-                        code_end = ai_response.find("```", code_start)
-                        code = ai_response[code_start:code_end].strip()
-                    elif "```" in ai_response:
-                        code_start = ai_response.find("```") + 3
-                        code_end = ai_response.find("```", code_start)
-                        code = ai_response[code_start:code_end].strip()
+        # ── Preprocess: fix mixed AI format (// FILE: + SEARCH/REPLACE) ──
+        # Some models output "// FILE: path" headers for SEARCH/REPLACE blocks
+        # instead of "// PATCH: path". Detect and convert before the main parser.
+        ai_response = _preprocess_ai_response(ai_response)
         
-        # Clean up integrity and crossorigin attributes from CDN links
+        has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
+        has_raw_search_replace = (
+            not has_patch_markers
+            and bool(_re.search(r'<<<\s*SEARCH', ai_response))
+            and bool(_re.search(r'<<<\s*REPLACE', ai_response))
+        )
+        has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
+
+        if has_patch_markers or has_raw_search_replace:
+            code = ai_response
+        elif has_markers:
+            # Extract code ONLY from within markdown fences to avoid including
+            # preamble / epilogue narrative in the preview iframe.
+            fenced_blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
+            fenced_code = "\n\n".join(b.strip() for b in fenced_blocks).strip() if fenced_blocks else ""
+
+            if fenced_code and _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', fenced_code):
+                code = fenced_code
+            else:
+                # Fallback: strip fences, then take only from the first file marker onward.
+                cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response)
+                cleaned = cleaned.replace('```', '')
+                first_marker = _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', cleaned)
+                if first_marker:
+                    code = cleaned[first_marker.start():].strip()
+                else:
+                    code = cleaned.strip()
+        else:
+            # No file markers. Extract all markdown code blocks and join them.
+            blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
+            if blocks:
+                # Universal Code Extraction (Regex)
+                import re
+                code_match = re.search(r"```(?:\w+)?\n?(.*?)\n?```", ai_response, re.DOTALL)
+                if code_match:
+                    code = code_match.group(1).strip()
+                else:
+                    code = "\n\n".join(blocks).strip()
+            elif '<html' in ai_response.lower() or '<!doctype' in ai_response.lower():
+                # Fallback if no markdown but HTML is present
+                code = ai_response.strip()
+        
+        # Clean up integrity/crossorigin attributes and stray patch markers
         if code:
             import re
             # Remove integrity attributes
@@ -1017,50 +716,147 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
             code = re.sub(r'\s+crossorigin="[^"]*"', '', code)
             code = re.sub(r"\s+crossorigin='[^']*'", '', code)
             code = re.sub(r'\s+crossorigin(?=\s|>)', '', code)
+
+            # If this is clearly a full HTML/file output (not patch mode), strip accidental PATCH tokens
+            # that sometimes leak into the generated HTML (e.g. bare "<<<REPLACE" lines).
+            if (not has_patch_markers) and (not has_raw_search_replace):
+                looks_like_html = '<!doctype' in code.lower() or '<html' in code.lower()
+                if looks_like_html and ('<<<REPLACE' in code or '<<<SEARCH' in code):
+                    code = re.sub(r'^\s*(<<<SEARCH|<<<REPLACE|>>>)\s*$', '', code, flags=re.MULTILINE)
+                    code = re.sub(r'\n{3,}', '\n\n', code).strip()
         
         # Initialize message variable
         message = ai_response
         
         # Check if AI returned instructions instead of actual code
-        if code and (
-            not code.strip().startswith(('from', 'import', 'def', 'class', 'app =', '<!DOCTYPE', '<html', 'from flask')) and
+        # (skip this check for patch responses — they never start with code prefixes)
+        is_any_patch = has_patch_markers or has_raw_search_replace
+        if code and not is_any_patch and (
+            not code.strip().startswith((
+                # Python
+                'from', 'import', 'def', 'class', 'app =', 'if __name__',
+                # HTML
+                '<!DOCTYPE', '<!doctype', '<html', '<HTML', '<!--',
+                # JSON / JS objects
+                '{', '[',
+                # JavaScript / TypeScript
+                'const ', 'let ', 'var ', 'function ', 'export ', 'import ',
+                'async ', 'module.', 'require(',
+                # React/JSX
+                'React', 'useState', 'useEffect',
+                # Go
+                'package ', 'func ',
+                # Rust
+                'fn ', 'use ', 'mod ', 'pub ', 'extern ',
+                # Java / C#
+                'public ', 'private ', 'protected ', 'namespace ', 'using ',
+                # Ruby
+                'require ', 'gem ', 'module ',
+                # PHP
+                '<?php', '<?=',
+                # Shell
+                '#!/', '#!',
+                # CSS
+                '@import', '@media', '@keyframes', '@charset',
+                # Comments (code often starts with comments)
+                '//', '/*', '#',
+            )) and
             len(code.strip().split('\n')) < 5
         ):
-            # This looks like instructions, not actual code
             code = None
-            message = ai_response  # Show full response including instructions
+            message = ai_response
 
-        # Clean message (remove code blocks)
+        # Clean message (remove code blocks and patch blocks — show only narrative)
         if code:
-            message = ai_response.split("```")[0].strip()
+            if has_patch_markers:
+                message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
+            elif has_raw_search_replace:
+                message = _re.split(r'<<<\s*SEARCH', ai_response)[0].strip()
+            elif has_markers:
+                # Capture both preamble (before first fence) and epilogue (after last fence)
+                parts = ai_response.split("```")
+                preamble = parts[0].strip()
+                epilogue = parts[-1].strip() if len(parts) >= 3 else ""
+                if epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue):
+                    message = f"{preamble}\n\n{epilogue}".strip()
+                else:
+                    message = preamble
+            else:
+                message = ai_response.split("```")[0].strip()
+            # Remove stray markdown fences from the message portion
+            message = message.replace('```', '').strip()
 
         # Save code version if code was generated
         version_id = None
         preview_url = None
         
         if code:
-            version_id, _ = project_manager.save_code_version(project_id, code, request.prompt)
+            # Use git-based workspace update (auto-detects incremental vs full)
+            try:
+                version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
+            except ValueError as e:
+                # Check if it's a frozen file violation
+                if str(e).startswith("FROZEN_FILES_VIOLATION:"):
+                    frozen_files_str = str(e).split(":", 1)[1]
+                    frozen_list = frozen_files_str.split(",")
+                    # Remove duplicates
+                    frozen_list = list(set(frozen_list))
+                    violation_list = "\n".join([f"  - {f}" for f in frozen_list])
+                    error_message = f"Cannot complete this request. The following files are frozen (read-only) and cannot be modified:\n\n{violation_list}\n\nPlease unfreeze these files if you want to make changes, or rephrase your request to avoid modifying them."
+                    
+                    return GenerateResponse(
+                        message=error_message,
+                        code=None,
+                        project_id=project_id,
+                        version_id=None,
+                        preview_url=None,
+                        tool_calls_log=tool_calls_log,
+                        suggestions=None
+                    )
+                else:
+                    raise
+            
+            # Save chat history for the current branch (not commit hash)
+            try:
+                # Get current branch name
+                status = git_manager.get_status(project_id)
+                current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
+                
+                history = [{"role": msg.role, "content": msg.content} for msg in request.history]
+                history.append({"role": "user", "content": request.prompt})
+                # Always use the AI's message - it should never be empty
+                history.append({"role": "assistant", "content": message})
+                
+                # Save with branch name so it persists across commits in the same branch
+                await project_manager.save_chat_version(project_id, current_branch, history)
+                logger.info(f"💾 Saved chat history to branch: {current_branch}")
+            except Exception as e:
+                print(f"Failed to save chat history: {e}")
             
             # Check if Docker is available before attempting to create container
             if project_manager.docker_client is None:
                 print("⚠️ Docker not available - preview functionality disabled")
-                print("Please ensure Docker Desktop is installed and running")
                 preview_url = None
             else:
-                # Create container for preview
+                # Pass user prompt so the container's ai-agent knows the intent
+                project_manager._current_user_prompt = request.prompt
                 try:
-                    preview_url = await project_manager.create_container_for_code(project_id, version_id)
+                    preview_url = await project_manager.create_container_for_code(project_id, "workspace")
                 except Exception as e:
                     print(f"Failed to create container: {str(e)}")
-                    # Continue without container if it fails
+                    preview_url = None
 
+        # Generate contextual suggestions
+        suggestions = await generate_suggestions(message, code or "", request.prompt)
+        
         return GenerateResponse(
-            message=message if message else "I've generated the code for you!",
+            message=message,  # Always return AI's message directly
             code=code,
             project_id=project_id,
             version_id=version_id,
             preview_url=preview_url,
-            tool_calls_log=tool_calls_log
+            tool_calls_log=tool_calls_log,
+            suggestions=suggestions
         )
 
     except Exception as e:
@@ -1075,54 +871,178 @@ Generate the COMPLETE structure with ACTUAL CODE in every file."""
             project_id=project_id,
             version_id=None,
             preview_url=None,
-            tool_calls_log=None
+            tool_calls_log=None,
+            suggestions=None
         )
 
-@app.get("/api/health")
+@app.get("/vibecoding/api/health")
 async def health_check():
-    return {"status": "healthy"}
+    docker_available = project_manager.docker_client is not None
+    public_host = os.getenv('PUBLIC_HOST', 'http://localhost')
+    return {
+        "status": "healthy",
+        "docker_available": docker_available,
+        "public_host": public_host
+    }
+
+@app.get("/vibecoding/api/projects/{project_id}/container-health")
+async def container_health(project_id: str):
+    """Check if a project's container is healthy and serving HTTP requests."""
+    port = get_container_port(project_id)
+    if not port:
+        return {"healthy": False, "reason": "no_container"}
+
+    # Check Docker container status
+    container_name = f"vibecoding_{project_id}"
+    docker_status = "unknown"
+    try:
+        if project_manager.docker_client:
+            container = project_manager.docker_client.containers.get(container_name)
+            docker_status = container.status
+            if docker_status != "running":
+                return {"healthy": False, "reason": "container_not_running", "docker_status": docker_status}
+    except Exception:
+        return {"healthy": False, "reason": "container_not_found"}
+
+    # First, try the dedicated health endpoint on port 9090
+    try:
+        health_resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+        if health_resp.status_code == 200:
+            health_data = health_resp.json()
+            if health_data.get("status") == "healthy":
+                return {"healthy": True, "docker_status": docker_status, "health_check": "passed"}
+            return {"healthy": False, "reason": "health_check_failed", "docker_status": docker_status}
+    except requests.exceptions.RequestException:
+        # Health endpoint not available, fall back to probing the main app port
+        pass
+
+    # Fallback: Probe the actual app port
+    try:
+        resp = requests.get(f"http://127.0.0.1:{port}/", timeout=3)
+        if resp.status_code < 500:
+            return {"healthy": True, "docker_status": docker_status, "http_status": resp.status_code}
+        return {"healthy": False, "reason": "http_error", "http_status": resp.status_code}
+    except requests.exceptions.ConnectionError:
+        return {"healthy": False, "reason": "connection_refused", "docker_status": docker_status}
+    except requests.exceptions.Timeout:
+        return {"healthy": False, "reason": "timeout", "docker_status": docker_status}
+    except Exception as e:
+        return {"healthy": False, "reason": str(e)}
 
 # Project Management Endpoints
 
-@app.post("/api/projects", response_model=ProjectResponse)
-async def create_project(request: ProjectCreateRequest):
+@app.post("/vibecoding/api/projects", response_model=ProjectResponse)
+async def create_project(request: ProjectCreateRequest, user: dict = Depends(get_current_user)):
     try:
+        user_id = user["id"]
+        
+        # If project_id is provided, check if it exists
+        if request.project_id:
+            project_info = project_manager.get_project_info(request.project_id)
+            if project_info:
+                # Project exists - check ownership
+                if project_info.get("owner_id") is None:
+                    # No owner, claim it for this user
+                    project_info["owner_id"] = user_id
+                    project_manager.update_project_metadata(request.project_id, project_info)
+                    return ProjectResponse(**project_info)
+                elif project_info.get("owner_id") == user_id:
+                    # User owns it, return it
+                    return ProjectResponse(**project_info)
+                else:
+                    # Someone else owns it
+                    raise HTTPException(status_code=403, detail="Access denied")
+            else:
+                # Project doesn't exist with this ID - reject creation with custom ID
+                raise HTTPException(status_code=404, detail="Project not found")
+        
+        # No project_id provided - create new project with generated ID
         project_id = project_manager.generate_project_id()
-        project_dir = project_manager.create_project_directory(project_id)
+        project_manager.create_project_directory(project_id, metadata={
+            "name": request.name,
+            "description": request.description,
+            "owner_id": user_id
+        })
         
         project_info = project_manager.get_project_info(project_id)
-        project_info["name"] = request.name or f"Project {project_id[:8]}"
-        
-        # Update project metadata with name
-        with open(project_dir / "metadata.json", "w") as f:
-            import json
-            json.dump(project_info, f, indent=2)
-        
-        return ProjectResponse(**project_info)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/projects", response_model=ProjectListResponse)
-async def list_projects():
-    try:
-        projects = project_manager.list_projects()
-        return ProjectListResponse(projects=projects)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str):
-    try:
-        project_info = project_manager.get_project_info(project_id)
-        if not project_info:
-            raise HTTPException(status_code=404, detail="Project not found")
         return ProjectResponse(**project_info)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/versions/{version_id}/code")
+@app.get("/vibecoding/api/projects", response_model=ProjectListResponse)
+async def list_projects(user: dict = Depends(get_current_user)):
+    try:
+        user_id = user["id"]
+        projects = project_manager.list_projects(owner_id=user_id)
+        return ProjectListResponse(projects=projects)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vibecoding/api/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        project_info = project_manager.get_project_info(project_id)
+        if not project_info:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Check ownership (Strict)
+        if project_info.get("owner_id") is not None and project_info.get("owner_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
+        return ProjectResponse(**project_info)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vibecoding/api/projects/{project_id}/versions")
+async def list_versions(project_id: str):
+    """List all Git branches for a project (version history shows branches)"""
+    try:
+        # Get branches from Git
+        branches_result = git_manager.list_branches(project_id)
+        
+        if branches_result["status"] != "success":
+            # Fallback to old version system if Git not initialized
+            versions = project_manager.get_all_versions(project_id)
+            return {"versions": versions}
+        
+        # Save current branch
+        current_status = git_manager.get_status(project_id)
+        current_branch = current_status.get("branch", "")
+        
+        versions = []
+        for branch_info in branches_result.get("branches", []):
+            if branch_info["type"] == "local":  # Only show local branches
+                # Temporarily checkout branch to get its latest commit
+                if branch_info["name"] != current_branch:
+                    git_manager.checkout_branch(project_id, branch_info["name"])
+                
+                commits_result = git_manager.get_commit_history(project_id)
+                commits = commits_result.get("commits", [])
+                
+                # Switch back
+                if branch_info["name"] != current_branch and current_branch:
+                    git_manager.checkout_branch(project_id, current_branch)
+                
+                # Format as version for frontend compatibility
+                latest_commit = commits[0] if commits else None
+                versions.append({
+                    "version_id": branch_info["name"],
+                    "prompt": f"Branch: {branch_info['name']}",
+                    "created_at": latest_commit["date"] if latest_commit else "",
+                    "is_branch": True,
+                    "commit_count": len(commits),
+                    "is_current": branch_info["is_current"]
+                })
+        
+        return {"versions": versions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vibecoding/api/projects/{project_id}/versions/{version_id}/code")
 async def get_version_code(project_id: str, version_id: str):
     try:
         code = project_manager.get_version_code(project_id, version_id)
@@ -1134,7 +1054,45 @@ async def get_version_code(project_id: str, version_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/projects/{project_id}/versions/{version_id}/preview")
+@app.get("/vibecoding/api/projects/{project_id}/versions/{version_id}/files")
+async def get_version_files(project_id: str, version_id: str):
+    """Get all files for a specific version (branch or commit)"""
+    try:
+        # Save current branch
+        current_status = git_manager.get_status(project_id)
+        current_branch = current_status.get("branch", "")
+        
+        # If version_id is a branch name, checkout that branch
+        branches_result = git_manager.list_branches(project_id)
+        is_branch = False
+        
+        if branches_result["status"] == "success":
+            branch_names = [b["name"] for b in branches_result.get("branches", []) if b["type"] == "local"]
+            if version_id in branch_names:
+                is_branch = True
+                if version_id != current_branch:
+                    git_manager.checkout_branch(project_id, version_id)
+        
+        # Get files from workspace (current Git state)
+        files = project_manager.get_workspace_files(project_id, max_files=100, max_chars_per_file=100000)
+        
+        # Switch back to original branch
+        if is_branch and version_id != current_branch and current_branch:
+            git_manager.checkout_branch(project_id, current_branch)
+        
+        if files is None or len(files) == 0:
+            # Fallback to old version system
+            files = project_manager.get_version_all_files(project_id, version_id)
+            if files is None:
+                raise HTTPException(status_code=404, detail="Version not found")
+        
+        return {"files": files, "version_id": version_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/projects/{project_id}/versions/{version_id}/preview")
 async def create_preview(project_id: str, version_id: str):
     try:
         # Check if Docker is available
@@ -1143,17 +1101,45 @@ async def create_preview(project_id: str, version_id: str):
                 status_code=503,
                 detail="Docker not available. Please ensure Docker Desktop is installed and running."
             )
+
+        # Check metadata exists before attempting container creation
+        project_dir = project_manager.artifacts_dir / project_id
+        if version_id == "workspace":
+            metadata_file = project_dir / "workspace" / "metadata.json"
+        else:
+            metadata_file = project_dir / "versions" / version_id / "metadata.json"
+
+        if not metadata_file.exists():
+            # No code generated yet — return empty gracefully
+            return {"preview_url": None}
         
-        preview_url = await project_manager.create_container_for_code(project_id, version_id)
+        # Check if version_id is a branch name
+        branches_result = git_manager.list_branches(project_id)
+        is_branch = False
+        
+        if branches_result["status"] == "success":
+            branch_names = [b["name"] for b in branches_result.get("branches", []) if b["type"] == "local"]
+            if version_id in branch_names:
+                is_branch = True
+                # Checkout the branch
+                current_status = git_manager.get_status(project_id)
+                current_branch = current_status.get("branch", "")
+                
+                if version_id != current_branch:
+                    git_manager.checkout_branch(project_id, version_id)
+        
+        # Switch container to workspace (which now reflects the checked out branch)
+        preview_url = await project_manager.create_container_for_code(project_id, "workspace")
+        
         if not preview_url:
-            raise HTTPException(status_code=500, detail="Failed to create preview")
+            return {"preview_url": None}
         return {"preview_url": preview_url}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/projects/{project_id}/versions/{version_id}/preview")
+@app.delete("/vibecoding/api/projects/{project_id}/versions/{version_id}/preview")
 async def stop_preview(project_id: str, version_id: str):
     try:
         project_manager.stop_container(project_id, version_id)
@@ -1161,7 +1147,7 @@ async def stop_preview(project_id: str, version_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/projects/{project_id}/download")
+@app.get("/vibecoding/api/projects/{project_id}/download")
 async def download_project(project_id: str):
     try:
         zip_path = project_manager.create_project_zip(project_id)
@@ -1178,7 +1164,273 @@ async def download_project(project_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/cleanup")
+# Chat Persistence Endpoints
+
+@app.get("/vibecoding/api/projects/{project_id}/chat/{version_id}")
+async def get_chat_history(project_id: str, version_id: str):
+    try:
+        history = await project_manager.get_chat_version(project_id, version_id)
+        if history is None:
+            return {"history": []}
+        return {"history": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/projects/{project_id}/chat/{version_id}")
+async def save_chat_history(project_id: str, version_id: str, request: dict):
+    try:
+        history = request.get("history", [])
+        await project_manager.save_chat_version(project_id, version_id, history)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Git Integration Endpoints
+
+@app.post("/vibecoding/api/git/status")
+async def git_status(request: GitRequest):
+    try:
+        status = git_manager.get_status(request.project_id)
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/init")
+async def git_init(request: GitRequest):
+    try:
+        result = git_manager.init_repo(request.project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/add")
+async def git_add(request: GitRequest):
+    try:
+        result = git_manager.add_files(request.project_id, request.files)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/commit")
+async def git_commit(request: GitRequest):
+    try:
+        if not request.message:
+            raise HTTPException(status_code=400, detail="Commit message is required")
+        result = git_manager.commit(request.project_id, request.message)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/commits")
+async def git_commits(request: GitRequest):
+    try:
+        result = git_manager.get_commit_history(request.project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/branch")
+async def git_branch(request: GitRequest):
+    try:
+        if not request.branch_name:
+            raise HTTPException(status_code=400, detail="Branch name is required")
+        result = git_manager.create_branch(request.project_id, request.branch_name)
+        # Switch container to workspace to reflect the new branch state
+        await project_manager.switch_to_workspace(request.project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/checkout")
+async def git_checkout(request: GitRequest):
+    try:
+        if not request.branch_name:
+            raise HTTPException(status_code=400, detail="Branch name is required")
+        result = git_manager.checkout_branch(request.project_id, request.branch_name)
+        # Switch container to workspace to reflect the checked out branch
+        await project_manager.switch_to_workspace(request.project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/branches")
+async def git_branches(request: GitRequest):
+    try:
+        result = git_manager.list_branches(
+            request.project_id,
+            request.username,
+            request.token
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vibecoding/api/projects/{project_id}/branches")
+async def get_project_branches(project_id: str):
+    """Get all Git branches for a project (for version history UI)"""
+    try:
+        result = git_manager.list_branches(project_id)
+        if result["status"] != "success":
+            return {"branches": []}
+        
+        branches = []
+        for branch_info in result.get("branches", []):
+            if branch_info["type"] == "local":  # Only show local branches
+                # Get commit history for this branch
+                current_status = git_manager.get_status(project_id)
+                current_branch = current_status.get("branch", "")
+                
+                # Temporarily checkout branch to get its commits
+                if branch_info["name"] != current_branch:
+                    git_manager.checkout_branch(project_id, branch_info["name"])
+                
+                commits_result = git_manager.get_commit_history(project_id)
+                commits = commits_result.get("commits", [])
+                
+                # Switch back to original branch
+                if branch_info["name"] != current_branch and current_branch:
+                    git_manager.checkout_branch(project_id, current_branch)
+                
+                branches.append({
+                    "name": branch_info["name"],
+                    "is_current": branch_info["is_current"],
+                    "commit_count": len(commits),
+                    "latest_commit": commits[0] if commits else None
+                })
+        
+        return {"branches": branches}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vibecoding/api/projects/{project_id}/branches/{branch_name}/commits")
+async def get_branch_commits(project_id: str, branch_name: str):
+    """Get all commits for a specific branch (checkpoints in chat)"""
+    try:
+        # Check project exists
+        current_status = git_manager.get_status(project_id)
+        if current_status.get("status") != "success":
+            return {"commits": []}
+
+        current_branch = current_status.get("branch", "")
+
+        # Checkout the requested branch only if it differs and exists
+        switched = False
+        if branch_name != current_branch:
+            checkout_result = git_manager.checkout_branch(project_id, branch_name)
+            if checkout_result["status"] != "success":
+                # Branch doesn't exist yet — return empty gracefully
+                return {"commits": []}
+            switched = True
+
+        # Get commits
+        commits_result = git_manager.get_commit_history(project_id)
+
+        # Switch back to original branch
+        if switched and current_branch:
+            git_manager.checkout_branch(project_id, current_branch)
+
+        return {"commits": commits_result.get("commits", []) if commits_result.get("status") == "success" else []}
+    except Exception as e:
+        logger.warning(f"get_branch_commits error (returning empty): {e}")
+        return {"commits": []}
+
+@app.post("/vibecoding/api/git/remote")
+async def git_remote(request: GitRequest):
+    try:
+        if not request.remote_url:
+            raise HTTPException(status_code=400, detail="Remote URL is required")
+        result = git_manager.add_remote(request.project_id, request.remote_url, request.remote_name)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/push")
+async def git_push(request: GitRequest):
+    try:
+        result = git_manager.push(
+            request.project_id, 
+            request.remote_name, 
+            request.branch_name or "main",
+            request.username,
+            request.token
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/chat/new")
+async def start_new_chat(request: GitRequest):
+    try:
+        project_id = request.project_id
+        if not request.chat_version:
+            raise HTTPException(status_code=400, detail="chat_version is required")
+            
+        # 1. Archive current workspace to a version folder before branching
+        try:
+            prev_v = int(request.chat_version) - 1
+            project_manager.archive_workspace_to_version(project_id, f"Archive of Chat v{prev_v}")
+        except Exception as e:
+            logger.warning(f"Failed to archive workspace: {e}")
+
+        # 2. Create new branch
+        branch_name = f"chat-v{request.chat_version}"
+        
+        workspace_dir = git_manager._get_workspace_dir(project_id)
+        if not (workspace_dir / ".git").exists():
+            git_manager.init_repo(project_id)
+            
+        result = git_manager.create_branch(project_id, branch_name)
+        # Switch container to workspace to reflect the new branch
+        await project_manager.switch_to_workspace(project_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/checkpoint")
+async def git_checkpoint(request: GitRequest):
+    """Switch to a specific version's checkpoint (commit)"""
+    try:
+        project_id = request.project_id
+        version_id = request.version_id
+        
+        if not version_id:
+            raise HTTPException(status_code=400, detail="version_id is required")
+        
+        # First, verify the commit exists in the repository
+        verify_res = git_manager._run_git_command(project_id, ["cat-file", "-t", version_id])
+        if verify_res["status"] != "success" or "commit" not in verify_res["stdout"]:
+            # Commit doesn't exist, try to find it by searching commit messages
+            search_res = git_manager._run_git_command(project_id, ["log", "--all", f"--grep={version_id}", "--pretty=format:%H", "-n", "1"])
+            if search_res["status"] == "success" and search_res["stdout"].strip():
+                version_id = search_res["stdout"].strip()
+            else:
+                return {"status": "error", "message": f"Checkpoint {version_id[:8]} not found in repository"}
+        
+        # Check if there are uncommitted changes
+        status = git_manager.get_status(project_id)
+        has_changes = status.get("modified_files") or status.get("added_files") or status.get("deleted_files") or status.get("untracked_files")
+        
+        if has_changes:
+            # Stash changes so we can restore them later if needed
+            stash_res = git_manager._run_git_command(project_id, ["stash", "push", "-u", "-m", "Auto-stash before checkpoint view"])
+            if stash_res["status"] != "success":
+                # If stash fails, force discard (likely just metadata.json)
+                git_manager._run_git_command(project_id, ["reset", "--hard"])
+                git_manager._run_git_command(project_id, ["clean", "-fd"])
+            
+        # Checkout the commit
+        checkout_res = git_manager.checkout_commit(project_id, version_id)
+        
+        if checkout_res["status"] == "success":
+            # Tell the supervisor to switch the container to the workspace
+            await project_manager.switch_to_workspace(project_id)
+            return checkout_res
+            
+        return {"status": "error", "message": f"Failed to checkout commit: {checkout_res.get('stderr', 'Unknown error')}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/cleanup")
 async def cleanup_containers():
     try:
         # Check if Docker is available
@@ -1190,6 +1442,179 @@ async def cleanup_containers():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/vibecoding/api/projects/{project_id}/frozen-files")
+async def get_frozen_files(project_id: str, user: dict = Depends(get_current_user)):
+    """Get list of frozen files for a project"""
+    try:
+        frozen_files = project_manager.get_frozen_files(project_id)
+        return {"frozen_files": frozen_files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/projects/{project_id}/frozen-files")
+async def set_file_frozen(project_id: str, request: dict, user: dict = Depends(get_current_user)):
+    """Set or unset frozen status for a file"""
+    try:
+        file_path = request.get("file_path")
+        frozen = request.get("frozen", True)
+        
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        
+        success = project_manager.set_file_frozen(project_id, file_path, frozen)
+        
+        if success:
+            return {
+                "success": True,
+                "file_path": file_path,
+                "frozen": frozen,
+                "message": f"File {'frozen' if frozen else 'unfrozen'} successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to update frozen status")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
+
+def get_container_port(project_id: str) -> str:
+    """Get the container port for a project by reading its container info"""
+    try:
+        # Check running containers registry
+        registry_file = ARTIFACTS_DIR / '.container_registry.json'
+        print(f"Looking for registry at: {registry_file}")
+        print(f"Registry exists: {registry_file.exists()}")
+        
+        if registry_file.exists():
+            with open(registry_file, 'r') as f:
+                registry = json.load(f)
+                print(f"Registry contents: {registry}")
+                container_name = f"vibecoding_{project_id}"
+                print(f"Looking for container: {container_name}")
+                if container_name in registry:
+                    return registry[container_name]['port']
+    except Exception as e:
+        print(f"Error reading container registry: {e}")
+    print(f"No port found for project_id: {project_id}")
+    return None
+
+async def proxy_request(target_base: str, request: Request, forward_path: str):
+    """Generic proxy handler with connection pooling"""
+    target_url = target_base + forward_path
+    
+    # Forward query params
+    if request.url.query:
+        target_url += "?" + request.url.query
+    
+    # Forward headers (excluding host and content-length)
+    headers = {}
+    for key, value in request.headers.items():
+        key_lower = key.lower()
+        if key_lower not in ["host", "x-forwarded-for", "x-forwarded-proto", "content-length"]:
+            headers[key] = value
+    
+    # Add referer if not present (helps with iframe requests)
+    has_referer = any(k.lower() == "referer" for k in headers.keys())
+    if not has_referer:
+        headers["referer"] = str(request.base_url)
+    
+    print(f"🔄 Proxying {request.method} to {target_url}")
+    print(f"📋 Headers forwarded: {list(headers.keys())}")
+    print(f"🌐 Request origin: {request.client}, User-Agent: {headers.get('user-agent', 'unknown')}")
+    
+    try:
+        # Read request body
+        body = await request.body()
+        
+        # Wait for container to be ready (in case it's just starting)
+        print(f"⏳ Checking if container is ready at {target_base}...")
+        is_ready = await wait_for_container_ready(target_base, max_attempts=5, delay=0.5)
+        if not is_ready:
+            print(f"⚠️ Container not responding after 5 attempts, attempting request anyway...")
+        
+        # Use session with connection pooling
+        session = get_or_create_proxy_session()
+        
+        print(f"⏳ Attempting connection to {target_url} with timeout (10s connect, 60s read)")
+        resp = session.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            data=body if body else None,
+            allow_redirects=False,
+            timeout=(3, 30)  # 3s connect, 30s read - faster fail for starting containers
+        )
+        
+        print(f"✅ Got response: {resp.status_code} {len(resp.content)} bytes")
+        
+        # Headers to exclude from response (remove iframe/frame options)
+        excluded_headers = [
+            "content-encoding",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "x-frame-options",  # Allow iframe embedding
+            "content-security-policy",  # Allow iframe embedding
+        ]
+        
+        response_headers = {}
+        for name, value in resp.headers.items():
+            if name.lower() not in excluded_headers:
+                response_headers[name] = value
+        
+        # Allow embedding in iframe by setting proper headers
+        response_headers["X-Frame-Options"] = "ALLOWALL"
+        response_headers["Access-Control-Allow-Origin"] = "*"
+        
+        return StreamingResponse(
+            iter([resp.content]),
+            status_code=resp.status_code,
+            headers=response_headers
+        )
+    except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+        error_str = str(e)
+        print(f"❌ Connection error to {target_url}: {error_str}")
+        # Check if it's a protocol error (container not ready)
+        if "ProtocolError" in error_str or "Connection refused" in error_str:
+            print(f"⏳ Container at {target_url} may still be starting up... Retried 5 times")
+            detail = f"Container is starting. Please wait a moment and retry."
+        else:
+            detail = f"Cannot connect to container at {target_url}. Verify container is running."
+        raise HTTPException(status_code=502, detail=detail)
+    except requests.exceptions.Timeout as e:
+        print(f"⏱️ Timeout to {target_url}: {str(e)}")
+        print(f"⏳ Container is slow to respond. It may still be starting.")
+        raise HTTPException(status_code=504, detail=f"Container is slow to respond. Please try again in a moment.")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Proxy error to {target_url}: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
+    except Exception as e:
+        print(f"❌ Unexpected error in proxy: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal proxy error: {str(e)}")
+
+@app.api_route("/vibecoding/app/{token}/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/vibecoding/app/{token}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def route_proxy(token: str, request: Request, path: str = ""):
+    """Route requests to the appropriate container based on project token"""
+    # Get container port for this project
+    port = get_container_port(token)
+    print(f"📌 Proxy request for token {token}: port={port}, path={path or '/'}, client={request.client}")
+    if not port:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project '{token}' not found or container not running"
+        )
+    
+    # Use localhost instead of 127.0.0.1 for better compatibility
+    target = f"http://localhost:{port}"
+    forward_path = "/" + path if path else "/"
+    print(f"🎯 Target container: {target}{forward_path}")
+    return await proxy_request(target, request, forward_path)
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -122,7 +122,7 @@ async def fetch_page_content(url: str, max_length: int = 8000) -> str:
             "Accept-Language": "en-US,en;q=0.5",
         }
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
 
@@ -259,7 +259,7 @@ async def execute_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
 
 async def make_request_with_tools(
     messages: List[Dict[str, Any]],
-    max_tool_rounds: int = 5,
+    max_tool_rounds: int = 10,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -268,8 +268,14 @@ async def make_request_with_tools(
     feed results back, and let the model continue until it produces
     a final text response (no more tool_calls).
 
+    For providers that don't support function calling, falls back to
+    ``ai_config.make_async_request()`` — no provider-specific code here.
+
     Returns the final API response dict with the model's text answer.
     """
+    if not ai_config.supports_function_calling:
+        return await ai_config.make_async_request(messages, **kwargs)
+
     headers = ai_config.get_headers()
 
     # Build payload with tools
@@ -285,7 +291,7 @@ async def make_request_with_tools(
         print(f"\n🤖 AI Request (round {round_num + 1})...")
 
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=300) as client:
                 response = await client.post(
                     ai_config.base_url,
                     headers=headers,
@@ -293,8 +299,12 @@ async def make_request_with_tools(
                 )
                 response.raise_for_status()
                 result = response.json()
+        except httpx.TimeoutException:
+            raise Exception("AI API request timed out after 300 seconds. The generation took too long.")
+        except httpx.HTTPStatusError as e:
+            raise Exception(f"AI API returned error status {e.response.status_code}: {e.response.text}")
         except httpx.HTTPError as e:
-            raise Exception(f"AI API request failed: {str(e)}")
+            raise Exception(f"AI API networking error: {str(e)}")
 
         if "choices" not in result or len(result["choices"]) == 0:
             raise Exception("Invalid response format from AI API")
@@ -336,10 +346,39 @@ async def make_request_with_tools(
             tool_result = await execute_tool_call(tool_name, arguments)
 
             # Log for frontend
+            # IMPORTANT:
+            # The frontend expects `result_preview` to be valid/parseable JSON for some tools.
+            # Previously we truncated the raw JSON string which often broke JSON parsing
+            # (leading to "unavailable" UI). Instead, we reduce the JSON to a small,
+            # valid payload per tool so the frontend can render results cleanly.
+            result_preview = tool_result[:300] + "..." if len(tool_result) > 300 else tool_result
+            try:
+                parsed_tool_result = json.loads(tool_result)
+                if isinstance(parsed_tool_result, dict):
+                    if tool_name == "web_search":
+                        reduced = {
+                            "status": parsed_tool_result.get("status"),
+                            "query": parsed_tool_result.get("query"),
+                            "results_count": parsed_tool_result.get("results_count"),
+                            "results": (parsed_tool_result.get("results") or [])[:10],
+                        }
+                        result_preview = json.dumps(reduced, ensure_ascii=False)
+                    elif tool_name == "fetch_page_content":
+                        reduced = {
+                            "status": parsed_tool_result.get("status"),
+                            "url": parsed_tool_result.get("url"),
+                            "title": parsed_tool_result.get("title"),
+                            "description": parsed_tool_result.get("description"),
+                        }
+                        result_preview = json.dumps(reduced, ensure_ascii=False)
+            except Exception:
+                # If tool_result isn't JSON or reduction fails, fall back to truncated string.
+                pass
+
             tool_call_log.append({
                 "tool": tool_name,
                 "arguments": arguments,
-                "result_preview": tool_result[:300] + "..." if len(tool_result) > 300 else tool_result
+                "result_preview": result_preview,
             })
 
             # Add tool result to conversation
@@ -361,7 +400,7 @@ async def make_request_with_tools(
     payload["stream"] = False
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(
                 ai_config.base_url,
                 headers=headers,
@@ -372,5 +411,9 @@ async def make_request_with_tools(
         if tool_call_log:
             result["_tool_calls_log"] = tool_call_log
         return result
+    except httpx.TimeoutException:
+        raise Exception("AI API final request timed out after 300 seconds.")
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"AI API final request returned status {e.response.status_code}: {e.response.text}")
     except httpx.HTTPError as e:
-        raise Exception(f"AI API final request failed: {str(e)}")
+        raise Exception(f"AI API final networking error: {str(e)}")

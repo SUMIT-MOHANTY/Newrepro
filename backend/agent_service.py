@@ -2082,13 +2082,16 @@ On the following lines, provide a short 1-3 sentence justification."""
 
 # ── Docker Configuration ────────────────────────────────────────────────────
 
-AGENT_RUNTIME_IMAGE = "brd-agent-runtime:v5"
+AGENT_RUNTIME_IMAGE = "vibecoding-agent-runtime:latest"
 AGENT_RUNTIME_DOCKERFILE = os.path.join(
     os.path.dirname(__file__),
+    "..",
+    "vibecoding",
+    "backend",
     "docker",
     "agent-runtime.Dockerfile",
 )
-AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(__file__)
+AGENT_RUNTIME_BUILD_CONTEXT = os.path.dirname(AGENT_RUNTIME_DOCKERFILE)
 DOCKER_BASE_IMAGE = AGENT_RUNTIME_IMAGE
 
 
@@ -13237,7 +13240,7 @@ def _detect_project_stack(container_name: str, deployment_hints: Optional[Dict[s
                 module = relative_main.replace(".py", "").replace("/", ".")
             else:
                 module = "main"
-            stack["start_cmd"] = f"cd {workdir} && uvicorn {module}:app --host 0.0.0.0 --port 8000"
+            stack["start_cmd"] = f"cd {workdir} && uvicorn {module}:app --host 0.0.0.0 --00"
             stack["port"] = 8000
         elif "flask" in req_text:
             stack["start_cmd"] = f"cd {workdir} && flask run --host=0.0.0.0 --port 5000"

@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, Lock, Unlock } from 'lucide-react';
 
 // Helper function to detect filename from code (defined outside component)
 const detectFilename = (code) => {
@@ -48,8 +48,73 @@ const buildTree = (files) => {
   return root;
 };
 
-const FileTree = ({ code, darkMode, onFileSelect, selectedFile }) => {
+const FileTree = ({ code, darkMode, onFileSelect, selectedFile, projectId }) => {
   const [expandedFolders, setExpandedFolders] = useState(new Set(['src']));
+  const [frozenFiles, setFrozenFiles] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  // Fetch frozen files when projectId changes
+  useEffect(() => {
+    if (projectId) {
+      fetchFrozenFiles();
+    }
+  }, [projectId]);
+
+  const fetchFrozenFiles = async () => {
+    if (!projectId) return;
+    
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`http://localhost:8000/vibecoding/api/projects/${projectId}/frozen-files`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setFrozenFiles(data.frozen_files || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch frozen files:', error);
+    }
+  };
+
+  const toggleFileFrozen = async (filePath, e) => {
+    e.stopPropagation();
+    if (!projectId) return;
+    
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const isFrozen = frozenFiles.includes(filePath);
+      
+      const response = await fetch(`http://localhost:8000/vibecoding/api/projects/${projectId}/frozen-files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          file_path: filePath,
+          frozen: !isFrozen
+        })
+      });
+      
+      if (response.ok) {
+        // Update local state
+        if (isFrozen) {
+          setFrozenFiles(frozenFiles.filter(f => f !== filePath));
+        } else {
+          setFrozenFiles([...frozenFiles, filePath]);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to toggle file frozen status:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Parse code to extract file structure
   const fileStructure = useMemo(() => {
@@ -99,19 +164,37 @@ const FileTree = ({ code, darkMode, onFileSelect, selectedFile }) => {
 
     if (node.type === 'file') {
       const isSelected = selectedFile === node.path;
+      const isFrozen = frozenFiles.includes(node.path);
+      const FreezeIcon = isFrozen ? Lock : Unlock;
+      
       return (
         <div
           key={path}
-          onClick={() => onFileSelect(node)}
-          className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-sm ${
+          className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-sm group ${
             isSelected
               ? darkMode ? 'bg-[#37373d] text-white' : 'bg-blue-50 text-blue-600'
               : darkMode ? 'text-[#cccccc] hover:bg-[#2d2d30]' : 'text-gray-700 hover:bg-gray-100'
           }`}
           style={{ paddingLeft: `${level * 12 + 8}px` }}
         >
-          <File className="w-4 h-4 flex-shrink-0" />
-          <span className="truncate">{node.name}</span>
+          <div className="flex items-center gap-2 flex-1" onClick={() => onFileSelect(node)}>
+            <File className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate">{node.name}</span>
+          </div>
+          {projectId && (
+            <button
+              onClick={(e) => toggleFileFrozen(node.path, e)}
+              disabled={loading}
+              className={`p-1 rounded ${
+                isFrozen
+                  ? 'text-yellow-500 hover:text-yellow-600'
+                  : `opacity-0 group-hover:opacity-100 transition-opacity ${darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-600'}`
+              }`}
+              title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
+            >
+              <FreezeIcon className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       );
     }
@@ -160,16 +243,34 @@ const FileTree = ({ code, darkMode, onFileSelect, selectedFile }) => {
 
   // Single file case
   if (fileStructure.type === 'file') {
+    const isFrozen = frozenFiles.includes(fileStructure.path);
+    const FreezeIcon = isFrozen ? Lock : Unlock;
+    
     return (
       <div className="h-full">
         <div
-          onClick={() => onFileSelect(fileStructure)}
-          className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-sm ${
+          className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-sm group ${
             darkMode ? 'bg-[#37373d] text-white' : 'bg-blue-50 text-blue-600'
           }`}
         >
-          <File className="w-4 h-4 flex-shrink-0" />
-          <span className="truncate">{fileStructure.name}</span>
+          <div className="flex items-center gap-2 flex-1" onClick={() => onFileSelect(fileStructure)}>
+            <File className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate">{fileStructure.name}</span>
+          </div>
+          {projectId && (
+            <button
+              onClick={(e) => toggleFileFrozen(fileStructure.path, e)}
+              disabled={loading}
+              className={`p-1 rounded ${
+                isFrozen
+                  ? 'text-yellow-500 hover:text-yellow-600'
+                  : `opacity-0 group-hover:opacity-100 transition-opacity ${darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-600'}`
+              }`}
+              title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
+            >
+              <FreezeIcon className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
     );
