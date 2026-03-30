@@ -17043,14 +17043,13 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             agent["progress"] = 30
             agent["progress_message"] = "Running project..."
             
-            generated_lines = len(generated_code.splitlines())
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"AI generated {generated_lines} lines of build script"
-            })
-            
-
+            try:
+                generated_lines = len(generated_code.splitlines())
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"AI generated {generated_lines} lines of build script"
+                })
             except Exception as log_err:
                 logger.warning(f"[{agent_id}] Failed to log script: {log_err}")
             
@@ -17308,13 +17307,13 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                 # Set to empty so self-review is skipped
                 workspace_tree = ""
             else:
-                file_count = workspace_tree.count('FILE:')
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"📂 Captured {file_count} files from {capture_root}/"
-                })
-                
+                try:
+                    file_count = workspace_tree.count('FILE:')
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"📂 Captured {file_count} files from {capture_root}/"
+                    })
                 except Exception as log_err:
                     logger.warning(f"[{agent_id}] Failed to log workspace: {log_err}")
                 
@@ -17616,20 +17615,23 @@ cd {project_root}
                                         _sanitised_lines.append(_fix_line)
                                 fix_code = '\n'.join(_sanitised_lines)
 
-
-                                            f.write(fix_code)
-                                            f.write("\n\n" + "=" * 80 + "\n")
-                                            f.write("END OF FIX SCRIPT LOG\n")
-                                            f.write("=" * 80 + "\n")
-                                        
-                                        logger.info(f"[{agent_id}] Fix script logged to: {log_filename}")
-                                        agent["output_log"].append({
-                                            "time": datetime.utcnow().isoformat(),
-                                            "type": "info",
-                                            "message": f"📝 Fix script logged to: {log_filename}"
-                                        })
-                                    except Exception as log_err:
-                                        logger.warning(f"[{agent_id}] Failed to log fix script: {log_err}")
+                                # Log the fix script for debugging
+                                # try:
+                                #     log_filename = f"fix_script_{agent_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.sh"
+                                #     with open(log_filename, 'w') as f:
+                                #         f.write(fix_code)
+                                #         f.write("\n\n" + "=" * 80 + "\n")
+                                #         f.write("END OF FIX SCRIPT LOG\n")
+                                #         f.write("=" * 80 + "\n")
+                                    
+                                #     logger.info(f"[{agent_id}] Fix script logged to: {log_filename}")
+                                #     agent["output_log"].append({
+                                #         "time": datetime.utcnow().isoformat(),
+                                #         "type": "info",
+                                #         "message": f"📝 Fix script logged to: {log_filename}"
+                                #     })
+                                # except Exception as log_err:
+                                #     logger.warning(f"[{agent_id}] Failed to log fix script: {log_err}")
                                 
                                 if fix_thought:
                                     agent["output_log"].append({
