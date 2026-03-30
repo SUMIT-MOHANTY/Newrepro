@@ -2846,50 +2846,6 @@ async def _call_ai_for_code(
     # Log prompt size for debugging
     logger.info(f"AI Prompt - System: {len(system_prompt)} chars, User: {len(user_content)} chars")
     logger.debug(f"AI Prompt preview (first 500 chars): {user_content[:500]}...")
-    
-    # CRITICAL: Log full prompt to file for ALL tasks (for debugging)
-    if agent_id and agent_output_log is not None:
-        try:
-            import datetime
-            timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            
-            # Determine task type for filename
-            is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
-            task_type = "bootstrap" if is_bootstrap else "task"
-            log_filename = f"{task_type}_prompt_{agent_id}_{timestamp}.txt"
-            
-            with open(log_filename, 'w', encoding='utf-8') as f:
-                f.write("=" * 80 + "\n")
-                f.write(f"{task_type.upper()} TASK - FULL AI PROMPT LOG\n")
-                f.write("=" * 80 + "\n")
-                f.write(f"Agent ID: {agent_id}\n")
-                f.write(f"Timestamp: {timestamp}\n")
-                f.write(f"Model: {model_name}\n")
-                f.write(f"Project Root: {project_root}\n")
-                f.write("\n" + "=" * 80 + "\n")
-                f.write("SYSTEM PROMPT\n")
-                f.write("=" * 80 + "\n")
-                f.write(system_prompt)
-                f.write("\n\n" + "=" * 80 + "\n")
-                f.write("USER PROMPT\n")
-                f.write("=" * 80 + "\n")
-                f.write(user_content)
-                f.write("\n\n" + "=" * 80 + "\n")
-                f.write("TASK DESCRIPTION (RAW)\n")
-                f.write("=" * 80 + "\n")
-                f.write(task_description)
-                f.write("\n\n" + "=" * 80 + "\n")
-                f.write("END OF PROMPT LOG\n")
-                f.write("=" * 80 + "\n")
-            
-            logger.info(f"[{agent_id}] Prompt logged to: {log_filename}")
-            agent_output_log.append({
-                "time": datetime.datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"📝 Full prompt logged to: {log_filename}"
-            })
-        except Exception as log_err:
-            logger.warning(f"[{agent_id}] Failed to log prompt: {log_err}")
 
     last_err = None
     content = ""
@@ -2944,42 +2900,7 @@ async def _call_ai_for_code(
         logger.info(f"AI Response - Length: {len(content)} chars, Lines: {len(content.splitlines())}")
         logger.debug(f"AI Response preview (first 500 chars): {content[:500]}...")
         
-        # CRITICAL: Log full AI response to file for ALL tasks (for debugging)
-        if agent_id and agent_output_log is not None:
-            try:
-                import datetime
-                timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                
-                # Determine task type for filename
-                is_bootstrap = "bootstrap" in task_description.lower() or "TASK-00" in task_description
-                task_type = "bootstrap" if is_bootstrap else "task"
-                log_filename = f"{task_type}_response_{agent_id}_{timestamp}.txt"
-                
-                with open(log_filename, 'w', encoding='utf-8') as f:
-                    f.write("=" * 80 + "\n")
-                    f.write(f"{task_type.upper()} TASK - FULL AI RESPONSE LOG\n")
-                    f.write("=" * 80 + "\n")
-                    f.write(f"Agent ID: {agent_id}\n")
-                    f.write(f"Timestamp: {timestamp}\n")
-                    f.write(f"Model: {model_name}\n")
-                    f.write(f"Response Length: {len(content)} chars\n")
-                    f.write(f"Response Lines: {len(content.splitlines())}\n")
-                    f.write("\n" + "=" * 80 + "\n")
-                    f.write("RAW AI RESPONSE\n")
-                    f.write("=" * 80 + "\n")
-                    f.write(content)
-                    f.write("\n\n" + "=" * 80 + "\n")
-                    f.write("END OF RESPONSE LOG\n")
-                    f.write("=" * 80 + "\n")
-                
-                logger.info(f"[{agent_id}] Response logged to: {log_filename}")
-                agent_output_log.append({
-                    "time": datetime.datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"📝 Full AI response logged to: {log_filename}"
-                })
-            except Exception as log_err:
-                logger.warning(f"[{agent_id}] Failed to log response: {log_err}")
+
         
         return _clean_ai_code_response(content)
     else:
@@ -3557,19 +3478,7 @@ async def _call_ai_for_self_review(
         stdout_out = exec_result.stdout or ""
         all_passed = exec_result.exit_code == 0
 
-        # Log results
-        try:
-            import datetime as dt
-            timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            log_filename = f"bootstrap_existence_review_{timestamp}.txt"
-            with open(log_filename, "w", encoding="utf-8") as _f:
-                _f.write("BOOTSTRAP EXISTENCE CHECK\n")
-                _f.write("=" * 60 + "\n")
-                _f.write(f"Exit code: {exec_result.exit_code}\n\n")
-                _f.write(stdout_out)
-            logger.info(f"Bootstrap existence review logged to: {log_filename}")
-        except Exception:
-            pass
+
 
         if all_passed:
             logger.info("Bootstrap self-review PASSED — all paths exist")
@@ -3607,6 +3516,13 @@ CRITICAL RULES:
 9. NEVER assume package.json or node_modules exist unless the detected stack is node/react/next/vite
 10. For plain HTML/CSS/JS projects: use node --check for JS syntax; use grep for element/function checks
     DO NOT use eslint — it requires config files that may not exist
+
+CRITICAL FOR FIX SCRIPTS (iterations > 1):
+11. FIX scripts MUST actually MODIFY files on disk using: sed -i, awk, cat > file, echo >> file
+12. After EVERY file modification, verify it was applied: cat file | head -20
+13. Re-run the check command after fixes to verify errors are gone
+14. Output "FIX APPLIED: <description>" for each successful modification
+15. Exit 0 ONLY if fixes were applied AND verification passes
 
 RESPONSE FORMAT:
 Your response must contain shell scripts in this exact format:
@@ -3842,38 +3758,10 @@ Exit code: 0 if pass or skipped, 1 if endpoints fail
         {"role": "user", "content": review_prompt},
     ]
     
-    # Log the prompt
-    try:
-        import datetime as dt
-        timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        task_type = "bootstrap" if is_bootstrap else "task"
-        log_filename = f"{task_type}_shell_review_prompt_{timestamp}.txt"
-        
-        with open(log_filename, 'w', encoding='utf-8') as f:
-            f.write("=" * 80 + "\n")
-            f.write(f"SHELL-BASED SELF-REVIEW PROMPT\n")
-            f.write("=" * 80 + "\n")
-            f.write(f"Timestamp: {timestamp}\n")
-            f.write(f"Agent Type: {agent_type}\n")
-            f.write(f"Container: {container_name}\n")
-            f.write(f"Detected Stack: {_detected_stack.get('summary', 'unknown')}\n")
-            f.write(f"Stack Category: {_stack_category}\n")
-            f.write("\n" + "=" * 80 + "\n")
-            f.write("SYSTEM PROMPT\n")
-            f.write("=" * 80 + "\n")
-            f.write(system_prompt)
-            f.write("\n\n" + "=" * 80 + "\n")
-            f.write("REVIEW PROMPT\n")
-            f.write("=" * 80 + "\n")
-            f.write(review_prompt)
-            f.write("\n")
-        
-        logger.info(f"Shell review prompt logged to: {log_filename}")
-    except Exception as log_err:
-        logger.warning(f"Failed to log shell review prompt: {log_err}")
+
     
     # Execute checks individually with iterations for each
-    max_iterations_per_check = 3
+    max_iterations_per_check = 10
     all_checks_passed = False
     all_check_results = []
 
@@ -4070,24 +3958,73 @@ Output: Test results or "API_TEST: SKIPPED" if no API
             else:
                 # Subsequent iterations — targeted fix script with full context
                 prev_result = check_iterations[-1]
-                check_prompt += f"""CHECK {check_num} FAILED in previous iteration.
+                
+                # Extract actual system errors (not script-generated messages)
+                stderr_content = prev_result['stderr'] or ""
+                stdout_content = prev_result['stdout'] or ""
+                
+                # Extract actual errors using helper function
+                actual_errors = _extract_actual_errors(stdout_content, stderr_content)
+                
+                # Also show full output for context
+                combined_output = f"STDOUT:\n{stdout_content}\n\nSTDERR:\n{stderr_content}"
+                
+                check_prompt += f"""CHECK {check_num} FAILED in iteration {iteration}.
 
 DETECTED STACK: {_detected_stack['summary']}
 
-PREVIOUS RESULT:
+PREVIOUS EXECUTION RESULT:
 Exit Code: {prev_result['exit_code']}
-Output: {prev_result['stdout'][:2000]}
-Errors: {prev_result['stderr'][:2000]}
 
-Generate a FIX script that:
-1. Addresses ONLY the specific issues listed above
-2. Uses sed/awk/cat to modify ONLY the broken parts — never regenerate whole files
-3. For "linter config not found" errors: output "LINTING: PASS (skipped)" and exit 0
-4. For "missing HTML element" errors: add ONLY the missing element to the existing HTML file
-5. For "missing JS function" errors: append ONLY the missing function to the existing JS file
-6. Verifies the fix worked with a quick re-check at the end
+ACTUAL SYSTEM ERRORS (filtered from script output):
+{actual_errors}
 
-Then re-run the verification to confirm the issue is resolved.
+FULL OUTPUT (for context):
+{combined_output[:3000]}
+
+CRITICAL INSTRUCTIONS FOR FIX SCRIPT:
+
+1. ANALYZE THE ACTUAL ERRORS:
+   - Focus on the "ACTUAL SYSTEM ERRORS" section above
+   - These are real compiler/linter errors, not script status messages
+   - Look for file paths, line numbers, and specific error descriptions
+
+2. GENERATE A SCRIPT THAT ACTUALLY MODIFIES FILES:
+   - Use sed -i, awk, or cat > file to WRITE changes to disk
+   - Example for tsconfig.json fix:
+     cat > tsconfig.json << 'EOF'
+     {{
+       "compilerOptions": {{
+         "module": "ESNext",
+         "moduleResolution": "bundler",
+         "target": "ES2020",
+         "strict": true
+       }}
+     }}
+     EOF
+   
+   - Example for adding missing import:
+     sed -i '1i import {{ something }} from "module";' file.ts
+   
+   - Example for fixing syntax error:
+     sed -i 's/const x =/const x = 0;/' file.js
+
+3. VERIFY THE FIX WAS APPLIED:
+   - After each modification, use 'cat file | head -20' to show the file was changed
+   - Re-run the compilation/check command to verify the error is gone
+   - Output "FIX APPLIED: <description>" for each fix
+
+4. HANDLE SPECIFIC ERROR PATTERNS:
+   - "Cannot find module 'X'": Check if X is installed, if not skip gracefully
+   - "tsconfig.json error": Overwrite with a minimal valid config
+   - "Missing closing brace": Use sed to add the brace at the correct line
+   - "Linter config not found": Output "LINTING: PASS (skipped)" and exit 0
+
+5. EXIT CODES:
+   - Exit 0 ONLY if all errors are fixed AND verification passes
+   - Exit 1 if errors remain after fixes
+
+REMEMBER: The script must ACTUALLY MODIFY FILES on disk, not just report what should be fixed.
 """
             
             # Get AI response for this check
@@ -4130,6 +4067,7 @@ Then re-run the verification to confirm the issue is resolved.
             scripts = _extract_shell_scripts(content)
             if not scripts:
                 logger.warning(f"No shell script found in AI response for CHECK {check_num}")
+                logger.warning(f"AI Response preview: {content[:500]}")
                 check_iterations.append({
                     "iteration": iteration + 1,
                     "exit_code": -1,
@@ -4141,6 +4079,12 @@ Then re-run the verification to confirm the issue is resolved.
             
             # Execute the script (use the last script if multiple were generated)
             script = scripts[-1] if len(scripts) > 1 else scripts[0]
+            
+            # Log the script being executed
+            logger.info(f"CHECK {check_num} - Executing script (iteration {iteration + 1}):")
+            logger.info(f"Script preview (first 500 chars):\n{script[:500]}")
+            
+
             
             try:
                 logger.info(f"Executing CHECK {check_num} script...")
@@ -4217,24 +4161,7 @@ Then re-run the verification to confirm the issue is resolved.
     # Generate final report
     final_report = _generate_sequential_check_report(all_check_results, check_status, all_checks_passed)
     
-    # Log final results
-    try:
-        timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"shell_review_results_{timestamp}.txt"
-        
-        with open(log_filename, 'w', encoding='utf-8') as f:
-            f.write("=" * 80 + "\n")
-            f.write("SEQUENTIAL SHELL-BASED SELF-REVIEW RESULTS\n")
-            f.write("=" * 80 + "\n")
-            f.write(f"Final Status: {'PASSED' if all_checks_passed else 'FAILED'}\n")
-            f.write(f"Check Status: {check_status}\n")
-            f.write("=" * 80 + "\n\n")
-            f.write(final_report)
-            f.write("\n")
-        
-        logger.info(f"Shell review results logged to: {log_filename}")
-    except Exception as log_err:
-        logger.warning(f"Failed to log shell review results: {log_err}")
+
     
     return all_checks_passed, final_report
 
@@ -4254,6 +4181,69 @@ def _extract_shell_scripts(content: str) -> List[str]:
             scripts.append(script)
     
     return scripts
+
+
+def _extract_actual_errors(stdout: str, stderr: str) -> str:
+    """
+    Extract actual system errors from script output, filtering out script-generated messages.
+    
+    This helps the AI focus on real compiler/linter errors rather than script status messages.
+    """
+    import re
+    
+    combined = f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
+    
+    # Patterns that indicate script-generated messages (not real errors)
+    script_message_patterns = [
+        r'^\[INFO\].*$',
+        r'^\[ERROR\].*$',
+        r'^\[WARN\].*$',
+        r'^\[FIX\].*$',
+        r'^\[CHECK\].*$',
+        r'^COMPILATION: (PASS|FAIL)$',
+        r'^LINTING: (PASS|FAIL).*$',
+        r'^SYNTAX: (PASS|FAIL).*$',
+        r'^REQUIREMENTS: (PASS|FAIL).*$',
+        r'^API_TEST: (PASS|FAIL|SKIPPED).*$',
+        r'^BOOTSTRAP: (PASS|FAIL).*$',
+        r'^Installing.*dependencies.*$',
+        r'^Running.*check.*$',
+        r'^added \d+ packages.*$',
+        r'^found \d+ vulnerabilities.*$',
+        r'^npm (warn|error) deprecated.*$',
+    ]
+    
+    lines = combined.split('\n')
+    actual_error_lines = []
+    
+    for line in lines:
+        # Skip empty lines
+        if not line.strip():
+            continue
+        
+        # Check if this line matches any script message pattern
+        is_script_message = False
+        for pattern in script_message_patterns:
+            if re.match(pattern, line.strip(), re.IGNORECASE):
+                is_script_message = True
+                break
+        
+        # Keep lines that look like actual errors
+        if not is_script_message:
+            # Keep lines with error indicators
+            if any(indicator in line.lower() for indicator in ['error', 'fail', 'cannot', 'missing', 'not found', 'undefined', 'unexpected']):
+                actual_error_lines.append(line)
+            # Keep lines with file paths and line numbers (compiler errors)
+            elif re.search(r'\.(ts|js|tsx|jsx|py|go|cs|java|rb|php)\(\d+,\d+\):', line):
+                actual_error_lines.append(line)
+            elif re.search(r'\.(ts|js|tsx|jsx|py|go|cs|java|rb|php):\d+:\d+:', line):
+                actual_error_lines.append(line)
+    
+    if actual_error_lines:
+        return '\n'.join(actual_error_lines[:50])  # Limit to 50 most relevant error lines
+    else:
+        # If no specific errors found, return a summary
+        return combined[:3000]  # Return first 3000 chars as fallback
 
 
 def _generate_sequential_check_report(all_check_results: List[Dict], check_status: Dict, all_passed: bool) -> str:
@@ -7100,6 +7090,26 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     "Proceeding to merge to avoid deadlock.",
                     "warning",
                     project_token=project_token,
+                )
+
+            # Ensure working directory is clean before checkout/merge
+            # This prevents "Your local changes would be overwritten" errors
+            status_check = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "status", "--porcelain"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if (status_check.stdout or "").strip():
+                _log_git_agent(
+                    f"Working directory has uncommitted changes before merge. Stashing them.",
+                    "warning",
+                    project_token=project_token,
+                )
+                # Stash any uncommitted changes
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "stash", "push", "-u", "-m", f"Auto-stash before merging {branch}"],
+                    capture_output=True, text=True, timeout=30,
                 )
 
             checkout = subprocess.run(
@@ -15079,6 +15089,30 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 skip_reasons["completed_or_claimed"] += 1
                 continue
             
+            # ═══ CRITICAL: Check if this is a bootstrap task that's already been pushed ═══
+            # Even if the external status isn't "completed" yet, if bootstrap is pushed,
+            # we should never re-run it. This prevents infinite loops.
+            task_id_str = (t.get("task_id") or t.get("external_task_id") or "").strip().upper()
+            task_title_str = (t.get("title") or t.get("taskName") or "").strip().lower()
+            is_bootstrap_task_check = (
+                task_id_str == "TASK-00"
+                or "project bootstrap" in task_title_str
+            )
+            if is_bootstrap_task_check and is_bootstrap_pushed(project_token):
+                logger.info(f"[{agent_id}] Skipping bootstrap task {tid} - already pushed (status={status_lower})")
+                skip_reasons.setdefault("bootstrap_already_pushed", 0)
+                skip_reasons["bootstrap_already_pushed"] += 1
+                
+                # If the task is not marked complete in external system, try to complete it now
+                if not _task_status_is_done(status_lower):
+                    logger.warning(f"[{agent_id}] Bootstrap task {tid} is pushed but not marked complete in NxDune. Attempting to complete it now.")
+                    try:
+                        await _post_task_complete(t, project_token=project_token, task_token=task_token)
+                        logger.info(f"[{agent_id}] Successfully marked bootstrap task {tid} as complete in NxDune")
+                    except Exception as complete_err:
+                        logger.error(f"[{agent_id}] Failed to mark bootstrap task {tid} as complete: {complete_err}")
+                continue
+            
             # ── CRITICAL: Only work on TASK and BUG types ──
             # EPIC, FEATURE, STORY are organizational containers, not implementation units
             # TASK-00 is the bootstrap task (type TASK) and runs first — all others wait for it
@@ -17016,24 +17050,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "message": f"AI generated {generated_lines} lines of build script"
             })
             
-            # CRITICAL: Log full cleaned script to file for ALL tasks (for debugging)
-            try:
-                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                
-                # Determine task type for filename
-                is_bootstrap_task = "bootstrap" in task.get("title", "").lower() or "TASK-00" in str(task.get("id", ""))
-                task_type = "bootstrap" if is_bootstrap_task else "task"
-                log_filename = f"{task_type}_script_{agent_id}_{timestamp}.sh"
-                
-                with open(log_filename, 'w', encoding='utf-8') as f:
-                    f.write(generated_code)
-                
-                logger.info(f"[{agent_id}] Script logged to: {log_filename}")
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"📝 Full cleaned script logged to: {log_filename}"
-                })
+
             except Exception as log_err:
                 logger.warning(f"[{agent_id}] Failed to log script: {log_err}")
             
@@ -17298,36 +17315,6 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                     "message": f"📂 Captured {file_count} files from {capture_root}/"
                 })
                 
-                # CRITICAL: Log full workspace tree to file for ALL tasks (for debugging)
-                try:
-                    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                    
-                    # Determine task type for filename
-                    task_type = "bootstrap" if is_bootstrap_task else "task"
-                    log_filename = f"{task_type}_workspace_{agent_id}_{timestamp}.txt"
-                    
-                    with open(log_filename, 'w', encoding='utf-8') as f:
-                        f.write("=" * 80 + "\n")
-                        f.write(f"{task_type.upper()} TASK - WORKSPACE TREE LOG\n")
-                        f.write("=" * 80 + "\n")
-                        f.write(f"Agent ID: {agent_id}\n")
-                        f.write(f"Timestamp: {timestamp}\n")
-                        f.write(f"Capture Root: {capture_root}\n")
-                        f.write(f"File Count: {file_count}\n")
-                        f.write("\n" + "=" * 80 + "\n")
-                        f.write("WORKSPACE TREE\n")
-                        f.write("=" * 80 + "\n")
-                        f.write(workspace_tree)
-                        f.write("\n\n" + "=" * 80 + "\n")
-                        f.write("END OF WORKSPACE LOG\n")
-                        f.write("=" * 80 + "\n")
-                    
-                    logger.info(f"[{agent_id}] Workspace logged to: {log_filename}")
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"📝 Full workspace tree logged to: {log_filename}"
-                    })
                 except Exception as log_err:
                     logger.warning(f"[{agent_id}] Failed to log workspace: {log_err}")
                 
@@ -17629,26 +17616,7 @@ cd {project_root}
                                         _sanitised_lines.append(_fix_line)
                                 fix_code = '\n'.join(_sanitised_lines)
 
-                                # CRITICAL: Log the fix script to file for debugging
-                                if is_bootstrap_task:
-                                    try:
-                                        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                                        log_filename = f"bootstrap_fix_script_attempt{fix_attempt}_{agent_id}_{timestamp}.sh"
-                                        
-                                        with open(log_filename, 'w', encoding='utf-8') as f:
-                                            f.write("=" * 80 + "\n")
-                                            f.write(f"BOOTSTRAP FIX SCRIPT - ATTEMPT {fix_attempt}/{max_fix_attempts}\n")
-                                            f.write("=" * 80 + "\n")
-                                            f.write(f"Agent ID: {agent_id}\n")
-                                            f.write(f"Timestamp: {timestamp}\n")
-                                            f.write(f"Fix Attempt: {fix_attempt}\n")
-                                            f.write("\n" + "=" * 80 + "\n")
-                                            f.write("ISSUES IDENTIFIED BY SELF-REVIEW\n")
-                                            f.write("=" * 80 + "\n")
-                                            f.write(issues_text)
-                                            f.write("\n\n" + "=" * 80 + "\n")
-                                            f.write("FIX SCRIPT\n")
-                                            f.write("=" * 80 + "\n")
+
                                             f.write(fix_code)
                                             f.write("\n\n" + "=" * 80 + "\n")
                                             f.write("END OF FIX SCRIPT LOG\n")
@@ -17685,34 +17653,7 @@ cd {project_root}
                                     project_token
                                 )
                                 
-                                # CRITICAL: Log the fix script execution result
-                                if is_bootstrap_task:
-                                    try:
-                                        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                                        log_filename = f"bootstrap_fix_result_attempt{fix_attempt}_{agent_id}_{timestamp}.txt"
-                                        
-                                        with open(log_filename, 'w', encoding='utf-8') as f:
-                                            f.write("=" * 80 + "\n")
-                                            f.write(f"BOOTSTRAP FIX EXECUTION RESULT - ATTEMPT {fix_attempt}/{max_fix_attempts}\n")
-                                            f.write("=" * 80 + "\n")
-                                            f.write(f"Agent ID: {agent_id}\n")
-                                            f.write(f"Timestamp: {timestamp}\n")
-                                            f.write(f"Exit Code: {fix_result.get('exit_code')}\n")
-                                            f.write("\n" + "=" * 80 + "\n")
-                                            f.write("STDOUT\n")
-                                            f.write("=" * 80 + "\n")
-                                            f.write(fix_result.get('stdout', ''))
-                                            f.write("\n\n" + "=" * 80 + "\n")
-                                            f.write("STDERR\n")
-                                            f.write("=" * 80 + "\n")
-                                            f.write(fix_result.get('stderr', ''))
-                                            f.write("\n\n" + "=" * 80 + "\n")
-                                            f.write("END OF FIX RESULT LOG\n")
-                                            f.write("=" * 80 + "\n")
-                                        
-                                        logger.info(f"[{agent_id}] Fix result logged to: {log_filename}")
-                                    except Exception as log_err:
-                                        logger.warning(f"[{agent_id}] Failed to log fix result: {log_err}")
+
                                 
                                 if fix_result.get("exit_code") == 0:
                                     agent["output_log"].append({
@@ -17733,53 +17674,92 @@ cd {project_root}
                                     })
                                     break  # Can't fix, exit loop
                             else:
-                                # Max attempts reached
-                                logger.error(f"[{agent_id}] Self-review failed after {max_fix_attempts} attempts")
+                                # Max attempts reached - handover to master agent instead of blocking
+                                logger.warning(f"[{agent_id}] Self-review failed after {max_fix_attempts} attempts - handing over to master agent")
                                 
-                                # Broadcast BLOCKED - couldn't fix it
+                                # Prepare detailed context for master agent
+                                failure_context = {
+                                    "agent_id": agent_id,
+                                    "task_id": str(task.get("id", "")),
+                                    "task_title": task.get("title", ""),
+                                    "attempts": max_fix_attempts,
+                                    "review_feedback": review_feedback,
+                                    "workspace_tree": workspace_tree[:5000],  # Include workspace context
+                                    "project_root": project_root,
+                                    "container_name": container_name,
+                                    "timestamp": datetime.utcnow().isoformat()
+                                }
+                                
+                                # Post detailed comment to task for master agent review
+                                try:
+                                    handover_message = f"""🔄 SELF-REVIEW FAILED - HANDOVER TO MASTER AGENT
+
+**Agent:** {agent_id}
+**Attempts:** {max_fix_attempts}
+**Status:** Self-review validation failed after multiple fix attempts
+
+**Issues Identified:**
+{review_feedback[:1000]}
+
+**Context:**
+- Project Root: {project_root}
+- Container: {container_name}
+- Workspace has been prepared but code quality checks failed
+
+**Required Action:**
+Master agent should:
+1. Review the complete project context and task requirements
+2. Analyze why the self-review checks are failing
+3. Determine if this is a false positive or genuine issue
+4. Provide guidance on resolution approach
+5. Either fix the issues or reassign with detailed instructions
+
+**Next Steps:**
+This task has been released back to the queue for master agent coordination.
+Agent {agent_id} will proceed to next available task.
+"""
+                                    await _post_task_message(task, handover_message, project_token=project_token, task_token=task_token)
+                                    logger.info(f"[{agent_id}] Posted handover message to task {task.get('id')}")
+                                except Exception as msg_err:
+                                    logger.warning(f"[{agent_id}] Failed to post handover message: {msg_err}")
+                                
+                                # Broadcast to master agent for coordination
                                 try:
                                     from database import SessionLocal
                                     import agent_communication_service as _comm
                                     _db = SessionLocal()
                                     try:
-                                        needs_hint = review_feedback[:200] if review_feedback else "unknown issue"
                                         await _comm.send_message(
                                             db=_db,
                                             project_token=project_token or "",
                                             from_agent=agent_id,
-                                            message=f"🚫 BLOCKED: Self-review failed after {max_fix_attempts} attempts. Issues: {needs_hint}",
-                                            msg_type="BLOCKED",
+                                            message=f"🔄 HANDOVER: Self-review failed after {max_fix_attempts} attempts. Task {task.get('id')} needs master review.",
+                                            msg_type="HANDOVER",
                                             related_task_id=str(task.get("id", "")),
-                                            payload={"self_review_failed": True, "issues": review_feedback, "attempts": max_fix_attempts}
+                                            payload=failure_context
                                         )
                                     finally:
                                         _db.close()
                                 except Exception as _comm_err:
-                                    logger.debug(f"[{agent_id}] Could not broadcast blocked state: {_comm_err}")
+                                    logger.debug(f"[{agent_id}] Could not broadcast handover: {_comm_err}")
                                 
-                                # DO NOT PUSH - self-review failed
+                                # Log the handover
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
-                                    "type": "error",
-                                    "message": f"❌ ABORTING: Self-review failed after {max_fix_attempts} fix attempts. NOT pushing broken code."
+                                    "type": "warning",
+                                    "message": f"🔄 Self-review failed after {max_fix_attempts} attempts. Task handed over to master agent for review. Proceeding to next task."
                                 })
                                 
-                                # CRITICAL: Mark agent as BLOCKED to prevent picking up new tasks
-                                agent["status"] = "error"
-                                agent["blocked"] = True
-                                agent["blocked_reason"] = f"Self-review failed after {max_fix_attempts} attempts"
+                                # DO NOT mark agent as blocked - allow it to continue with next task
+                                agent["status"] = "idle"
                                 agent["progress"] = 0
                                 agent["current_task"] = None
                                 
-                                logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
+                                logger.info(f"[{agent_id}] Task handed over to master agent. Agent will pick next task.")
                                 
-                                return {
-                                    "success": False,
-                                    "agent_id": agent_id,
-                                    "error": f"Self-review failed after {max_fix_attempts} attempts: {review_feedback[:200]}",
-                                    "tasks_completed": 0,
-                                    "duration": time.time() - start_time,
-                                }
+                                # Break from self-review loop and continue to next task
+                                # Don't return - let the agent continue its execution loop
+                                break
                         
                     except Exception as eval_err:
                         agent["output_log"].append({
@@ -17791,28 +17771,44 @@ cd {project_root}
                 
                 # Only proceed to push if self-review PASSED
                 if not passed_review:
+                    # Self-review did not pass - handover to master agent
+                    logger.warning(f"[{agent_id}] Self-review did not pass - handing over to master agent")
+                    
+                    handover_message = f"""🔄 SELF-REVIEW DID NOT PASS - HANDOVER TO MASTER AGENT
+
+**Agent:** {agent_id}
+**Status:** Self-review validation incomplete
+
+**Review Feedback:**
+{review_feedback[:1000]}
+
+**Required Action:**
+Master agent should review this task and determine next steps.
+
+**Next Steps:**
+Agent {agent_id} will proceed to next available task.
+"""
+                    try:
+                        await _post_task_message(task, handover_message, project_token=project_token, task_token=task_token)
+                    except Exception as msg_err:
+                        logger.warning(f"[{agent_id}] Failed to post handover message: {msg_err}")
+                    
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
-                        "type": "error",
-                        "message": "❌ Cannot push code - self-review did not pass"
+                        "type": "warning",
+                        "message": "🔄 Self-review did not pass. Task handed over to master agent. Proceeding to next task."
                     })
                     
-                    # CRITICAL: Mark agent as BLOCKED to prevent picking up new tasks
-                    agent["status"] = "error"
-                    agent["blocked"] = True
-                    agent["blocked_reason"] = "Self-review did not pass"
+                    # DO NOT mark agent as blocked - allow it to continue with next task
+                    agent["status"] = "idle"
                     agent["progress"] = 0
                     agent["current_task"] = None
                     
-                    logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
+                    logger.info(f"[{agent_id}] Task handed over to master agent. Agent will pick next task.")
                     
-                    return {
-                        "success": False,
-                        "agent_id": agent_id,
-                        "error": f"Self-review failed: {review_feedback[:200]}",
-                        "tasks_completed": 0,
-                        "duration": time.time() - start_time,
-                    }
+                    # Continue to next task instead of returning error
+                    # The agent execution loop will pick up the next task
+                    continue  # Continue the main agent loop
 
             # ═════════════════════════════════════════════════════════
             # MARK CHECKLIST ITEMS COMPLETE
@@ -18383,6 +18379,16 @@ cd {project_root}
                                     )
                                     bootstrap_signal_sent = True
                                     repo_base_branch = effective_branch
+                                    
+                                    # Update progress to 100% for bootstrap task immediately after success
+                                    await _post_task_progress(task, 100, "Bootstrap completed successfully", task_token=task_token)
+                                    agent["progress"] = 100
+                                    agent["progress_message"] = "Bootstrap completed successfully"
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": "API: progress 100% - Bootstrap task completed"
+                                    })
                                 
                                 # Capture actual file tree from container and store as canonical spec
                                 try:
@@ -20929,6 +20935,159 @@ Focus on fixing the specific issues identified rather than starting over.
     return recovery_prompt
 
 
+async def _master_analyze_self_review_failure(
+    agent_id: str,
+    task: Dict[str, Any],
+    review_feedback: str,
+    attempts: int,
+    workspace_tree: str,
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Master Agent analyzes self-review failure using AI to determine:
+    1. Is this a false positive or genuine issue?
+    2. What is the root cause?
+    3. What specific guidance should be given to the next agent?
+    
+    Returns detailed analysis with actionable recovery plan.
+    """
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
+    
+    if not llm_gateway.check_api_key():
+        return {
+            "is_false_positive": False,
+            "root_cause": "API key not configured for analysis",
+            "recovery_plan": "Review self-review feedback manually",
+            "confidence": 0.0,
+            "detailed_guidance": "Master agent could not analyze due to missing API configuration"
+        }
+    
+    # Get task context
+    task_title = task.get("title", "Unknown task")
+    task_description = task.get("description", "")[:1000]
+    tech_spec = task.get("_tech_spec", "")[:1000]
+    
+    # Detect if this is a bootstrap task
+    task_title_lower = task_title.lower()
+    task_desc_lower = task_description.lower()
+    is_bootstrap = (
+        "bootstrap" in task_title_lower or 
+        "task-00" in task_title_lower or
+        "structure only" in task_desc_lower or
+        "placeholder" in task_desc_lower
+    )
+    
+    prompt = f"""You are the Master Agent analyzing a self-review failure.
+
+CONTEXT:
+- Agent: {agent_id}
+- Task: {task_title}
+- Attempts Made: {attempts}
+- Is Bootstrap Task: {is_bootstrap}
+
+TASK DESCRIPTION:
+{task_description}
+
+TECHNICAL SPECIFICATION:
+{tech_spec if tech_spec else "Not provided"}
+
+SELF-REVIEW FEEDBACK (Why it failed):
+{review_feedback[:2000]}
+
+WORKSPACE STRUCTURE:
+{workspace_tree[:1500]}
+
+ANALYSIS REQUIRED:
+1. **Is this a false positive?**
+   - For bootstrap tasks: Are the failures about syntax/linting on intentionally empty files?
+   - For implementation tasks: Are the checks appropriate for the task type?
+   
+2. **What is the root cause?**
+   - Missing files or directories?
+   - Syntax errors in code?
+   - Linting issues?
+   - Missing functionality?
+   - Incorrect file locations?
+   - Configuration issues?
+   
+3. **What specific guidance should the next agent receive?**
+   - Exact files that need to be created/fixed
+   - Specific code patterns to implement
+   - Configuration changes needed
+   - Dependencies to install
+
+4. **Confidence level** (0.0 to 1.0)
+   - How confident are you in this analysis?
+
+Return ONLY valid JSON:
+{{
+  "is_false_positive": false,
+  "root_cause": "Detailed explanation of what went wrong and where",
+  "specific_failures": [
+    "Specific failure 1 with file/line details",
+    "Specific failure 2 with file/line details"
+  ],
+  "recovery_plan": "High-level recovery strategy",
+  "detailed_guidance": "Step-by-step instructions for the next agent including exact file paths, code patterns, and verification steps",
+  "confidence": 0.0,
+  "recommended_action": "fix_and_reassign or skip_self_review or break_down_task"
+}}
+"""
+    
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": "You are an expert software architect and code reviewer. Analyze self-review failures to provide actionable guidance for agents."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=url,
+            api_key=key,
+            model=model_name,
+            timeout=90.0,
+            temperature=0.2
+        )
+        
+        if content:
+            content = content.replace("```json", "").replace("```", "").strip()
+            start_idx = content.find("{")
+            end_idx = content.rfind("}")
+            if start_idx != -1 and end_idx != -1:
+                content = content[start_idx:end_idx + 1]
+                analysis = json.loads(content)
+                return analysis
+        
+        return {
+            "is_false_positive": False,
+            "root_cause": "Failed to analyze - no response from AI",
+            "specific_failures": [],
+            "recovery_plan": "Review self-review feedback manually",
+            "detailed_guidance": "Master agent could not generate guidance",
+            "confidence": 0.0,
+            "recommended_action": "fix_and_reassign"
+        }
+    except Exception as e:
+        logger.warning(f"[Master Agent] Self-review failure analysis failed: {e}")
+        return {
+            "is_false_positive": False,
+            "root_cause": f"Analysis error: {str(e)[:100]}",
+            "specific_failures": [],
+            "recovery_plan": "Review self-review feedback manually",
+            "detailed_guidance": f"Master agent encountered error during analysis: {str(e)[:200]}",
+            "confidence": 0.0,
+            "recommended_action": "fix_and_reassign"
+        }
+
+
 async def _master_notify_agent_failure(
     agent_id: str,
     task: Optional[Dict[str, Any]],
@@ -21369,11 +21528,270 @@ async def _master_supervisor_loop(
                     continue
                 available_tasks.append(task)
             
+            # Log supervisor status every iteration
+            _log_master_agent(
+                f"📊 Supervisor Check #{iteration}: {len(idle_agents)} idle agent(s), {len(available_tasks)} available task(s)",
+                project_token=project_token,
+            )
+            
+            if idle_agents and available_tasks:
+                _log_master_agent(
+                    f"🔍 Idle agents: {[a['id'] for a in idle_agents]}, Available tasks: {[t.get('title', 'Untitled')[:30] for t in available_tasks[:3]]}",
+                    project_token=project_token,
+                )
+            
             # Agent self-assignment ensures they opt-in sequentially.
             # Active assignment is only done when an agent is idle for too long (see failure/idle handling below)
             
             # Check for failed/stuck agents using dedicated function
             failed_agents = await _master_detect_agent_failures(project_token=project_token)
+            
+            # ═══ HANDOVER MESSAGE HANDLING ═══
+            # Check for HANDOVER messages from agents that failed self-review
+            try:
+                from database import SessionLocal
+                import agent_communication_service as _comm
+                _db = SessionLocal()
+                try:
+                    handover_messages = _comm.get_messages(
+                        _db, 
+                        project_token or "", 
+                        msg_type="HANDOVER", 
+                        unresolved_only=True
+                    )
+                    
+                    if handover_messages:
+                        _log_master_agent(
+                            f"📨 Found {len(handover_messages)} unresolved HANDOVER message(s)",
+                            project_token=project_token,
+                        )
+                    
+                    for handover_msg in handover_messages:
+                        from_agent = handover_msg.get("from_agent")
+                        related_task_id = handover_msg.get("related_task_id")
+                        payload = handover_msg.get("payload", {})
+                        
+                        _log_master_agent(
+                            f"🔄 Processing HANDOVER from {from_agent} for task {related_task_id}",
+                            project_token=project_token,
+                        )
+                        
+                        # Find the task
+                        handover_task = None
+                        for task in external_tasks:
+                            tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                            if tid == related_task_id:
+                                handover_task = task
+                                break
+                        
+                        if handover_task:
+                            # ═══ AI-POWERED MASTER AGENT ANALYSIS ═══
+                            _log_master_agent(
+                                f"🔍 Analyzing self-review failure with AI for task {related_task_id}",
+                                project_token=project_token,
+                            )
+                            
+                            # Perform AI analysis of the self-review failure
+                            failure_analysis = await _master_analyze_self_review_failure(
+                                agent_id=from_agent,
+                                task=handover_task,
+                                review_feedback=payload.get('review_feedback', 'No feedback available'),
+                                attempts=payload.get('attempts', 0),
+                                workspace_tree=payload.get('workspace_tree', ''),
+                                project_token=project_token,
+                            )
+                            
+                            # Build detailed master analysis message
+                            is_false_positive = failure_analysis.get('is_false_positive', False)
+                            root_cause = failure_analysis.get('root_cause', 'Unknown')
+                            specific_failures = failure_analysis.get('specific_failures', [])
+                            recovery_plan = failure_analysis.get('recovery_plan', 'Review and retry')
+                            detailed_guidance = failure_analysis.get('detailed_guidance', '')
+                            confidence = failure_analysis.get('confidence', 0.0)
+                            recommended_action = failure_analysis.get('recommended_action', 'fix_and_reassign')
+                            
+                            # Format specific failures list
+                            failures_text = "\n".join([f"   - {f}" for f in specific_failures]) if specific_failures else "   - See review feedback below"
+                            
+                            master_analysis = f"""🤖 MASTER AGENT ANALYSIS - SELF-REVIEW FAILURE
+
+**Original Agent:** {from_agent}
+**Failed Attempts:** {payload.get('attempts', 'unknown')}
+**Analysis Confidence:** {confidence:.0%}
+**False Positive:** {"⚠️ YES - Self-review may be too strict" if is_false_positive else "❌ NO - Genuine issues found"}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 ROOT CAUSE ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{root_cause}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔍 SPECIFIC FAILURES IDENTIFIED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{failures_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 RECOVERY PLAN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{recovery_plan}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📝 DETAILED GUIDANCE FOR NEXT AGENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{detailed_guidance}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 ORIGINAL SELF-REVIEW FEEDBACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{payload.get('review_feedback', 'No feedback available')[:1000]}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔄 NEXT STEPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**Recommended Action:** {recommended_action}
+**Status:** Task will be reassigned with master agent guidance
+**Project Context:**
+   - Project Root: {payload.get('project_root', 'unknown')}
+   - Container: {payload.get('container_name', 'unknown')}
+
+⚠️ **IMPORTANT FOR NEXT AGENT:**
+Read the "DETAILED GUIDANCE" section above carefully before starting work.
+Follow the specific instructions to avoid repeating the same failures.
+"""
+                            
+                            # Post master analysis to task
+                            try:
+                                await _post_task_message(
+                                    handover_task, 
+                                    master_analysis, 
+                                    project_token=project_token, 
+                                    task_token=task_token
+                                )
+                                _log_master_agent(
+                                    f"✅ Posted AI-powered master analysis to task {related_task_id}",
+                                    project_token=project_token,
+                                )
+                            except Exception as post_err:
+                                _log_master_agent(
+                                    f"⚠️ Failed to post master analysis: {post_err}",
+                                    level="warning",
+                                    project_token=project_token,
+                                )
+                            
+                            # Update task description with master guidance
+                            try:
+                                current_description = handover_task.get("description", "")
+                                
+                                # Check if master guidance already exists
+                                if "🤖 MASTER AGENT GUIDANCE" not in current_description:
+                                    updated_description = f"""{current_description}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 MASTER AGENT GUIDANCE (Added after self-review failure)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ **CRITICAL:** Previous agent failed self-review {payload.get('attempts', 0)} times.
+
+**Root Cause:** {root_cause[:300]}
+
+**What You Must Do:**
+{detailed_guidance[:800]}
+
+**Specific Issues to Address:**
+{failures_text[:500]}
+
+**Verification:** After completing the task, ensure:
+1. All files mentioned in the guidance exist and are correct
+2. Code compiles/runs without syntax errors
+3. All required functionality is implemented
+4. Self-review checks will pass
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+                                    
+                                    # Update task description via API
+                                    task_id = _normalize_task_id(handover_task)
+                                    if task_id:
+                                        from task_service import task_service
+                                        await task_service.update_task({
+                                            "task_id": int(task_id),
+                                            "description": updated_description
+                                        }, task_token=task_token)
+                                        
+                                        _log_master_agent(
+                                            f"✅ Updated task {task_id} description with master guidance",
+                                            project_token=project_token,
+                                        )
+                            except Exception as update_err:
+                                _log_master_agent(
+                                    f"⚠️ Failed to update task description: {update_err}",
+                                    level="warning",
+                                    project_token=project_token,
+                                )
+                            
+                            # Unassign task so it can be picked up by another agent with guidance
+                            try:
+                                task_id = _normalize_task_id(handover_task)
+                                if task_id:
+                                    # Check if task is currently assigned
+                                    current_assignee = handover_task.get("assignee")
+                                    if current_assignee:
+                                        from task_service import task_service
+                                        await task_service.unassign_task({
+                                            "task_id": int(task_id),
+                                            "username": current_assignee
+                                        }, task_token=task_token)
+                                        
+                                        _log_master_agent(
+                                            f"✅ Unassigned task {task_id} for reassignment with guidance",
+                                            project_token=project_token,
+                                        )
+                                        
+                                        await _post_task_message(
+                                            handover_task,
+                                            f"🔄 Master Agent: Task unassigned and ready for reassignment with detailed guidance above.",
+                                            project_token=project_token,
+                                            task_token=task_token,
+                                        )
+                            except Exception as unassign_err:
+                                _log_master_agent(
+                                    f"⚠️ Failed to unassign task: {unassign_err}",
+                                    level="warning",
+                                    project_token=project_token,
+                                )
+                            
+                            # Mark handover message as resolved
+                            try:
+                                await _comm.resolve_blocker(
+                                    _db,
+                                    project_token or "",
+                                    handover_msg.get("id"),
+                                    "M_agent_01"
+                                )
+                                _log_master_agent(
+                                    f"✅ Marked HANDOVER message as resolved",
+                                    project_token=project_token,
+                                )
+                            except Exception as resolve_err:
+                                logger.warning(f"Failed to resolve handover message: {resolve_err}")
+                        else:
+                            _log_master_agent(
+                                f"⚠️ Could not find task {related_task_id} for HANDOVER message",
+                                level="warning",
+                                project_token=project_token,
+                            )
+                        
+                        total_interventions += 1
+                        
+                finally:
+                    _db.close()
+            except Exception as handover_err:
+                _log_master_agent(
+                    f"⚠️ Error processing HANDOVER messages: {handover_err}",
+                    level="warning",
+                    project_token=project_token,
+                )
+            # ═══ END HANDOVER MESSAGE HANDLING ═══
             
             for failure_info in failed_agents:
                 agent_id = failure_info["agent_id"]

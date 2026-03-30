@@ -522,11 +522,22 @@ def _build_project_context(
             "weighted_score": gov_response.weighted_score,
         }
     
-    # Get latest document analysis
+    # Get document analysis for this specific project
+    # First try to find a document that has this project_token in its analysis_result
+    token_pattern = f'%"project_token": "{project_token}"%'
     document = db.query(Document).filter(
         Document.owner_id == user_id,
-        Document.analysis_result.isnot(None)
+        Document.analysis_result.isnot(None),
+        Document.analysis_result.like(token_pattern)
     ).order_by(Document.upload_date.desc()).first()
+    
+    # Fallback to latest document if no project-specific document found
+    if not document:
+        logger.warning(f"No document found with project_token {project_token}, using latest document")
+        document = db.query(Document).filter(
+            Document.owner_id == user_id,
+            Document.analysis_result.isnot(None)
+        ).order_by(Document.upload_date.desc()).first()
     
     if document and document.analysis_result:
         try:
