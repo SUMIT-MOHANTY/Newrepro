@@ -15912,10 +15912,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     tasks_completed = 0
     all_results = []
 
-    container_name = f"{agent_id}_{uuid.uuid4().hex[:8]}"
-    container_created = False
-    
-    # Use bootstrap branch as base if available (DB first, then in-memory, then fallback)
+    # Container will be created per task (not reused across tasks)
+    # This ensures clean isolation and proper cleanup
     bootstrap_state = state.get("repo_bootstrap", {})
     repo_base_branch = get_bootstrap_branch(project_token) or bootstrap_state.get("source_branch") or "main"
     bootstrap_role = "none"
@@ -16067,6 +16065,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     try:
         # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
         while task is not None:
+            # ── CREATE FRESH CONTAINER FOR EACH TASK ────────────────
+            # Generate unique container name for this task
+            container_name = f"{agent_id}_{uuid.uuid4().hex[:8]}"
+            container_created = False
+            
             tasks_completed += 1
             started_by_name = normalize_agent_name(agent_id, agent.get("name"))
             task["status"] = "in_progress"
@@ -16208,12 +16211,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "message": f"{'═' * 50}"
             })
             
-            # Show assignment reason (affinity vs fresh pick)
+            # Show assignment reason
             task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
             assignment_reason = "self-selected from available tasks"
-            if tasks_completed > 1:
-                assignment_reason = "agent affinity (continuing in same container)"
-            elif task.get("assigned_agent") == agent_id:
+            if task.get("assigned_agent") == agent_id:
                 assignment_reason = "pre-assigned by master supervisor"
             
             agent["output_log"].append({
@@ -16241,418 +16242,368 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             start_time = time.time()
 
-            # ── Docker container (create only on first iteration) ────
-            if not container_created:
-                docker_available = await asyncio.to_thread(_check_docker_available)
-                if not docker_available:
-                    raise ValueError("Docker is not available. Make sure Docker Desktop is running.")
+            # ── CREATE DOCKER CONTAINER FOR THIS TASK ────────────────
+            # Each task gets a fresh container for clean isolation
+            docker_available = await asyncio.to_thread(_check_docker_available)
+            if not docker_available:
+                raise ValueError("Docker is not available. Make sure Docker Desktop is running.")
 
-                agent["progress"] = 10
-                agent["progress_message"] = f"Initializing environment: {container_name}"
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"Creating persistent environment: {container_name}"
-                })
+            agent["progress"] = 10
+            agent["progress_message"] = f"Initializing environment: {container_name}"
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"Creating fresh container for task: {container_name}"
+            })
 
-                container_result = await asyncio.to_thread(_create_persistent_container, container_name)
-                if not container_result["success"]:
-                    raise ValueError(f"Failed to create container: {container_result['error']}")
-                container_created = True
+            container_result = await asyncio.to_thread(_create_persistent_container, container_name)
+            if not container_result["success"]:
+                raise ValueError(f"Failed to create container: {container_result['error']}")
+            container_created = True
 
-                agent["output_log"].append({
-                    "time": datetime.utcnow().isoformat(),
-                    "type": "info",
-                    "message": f"Environment '{container_name}' is running with /workspace/ ready"
-                })
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"✅ Container '{container_name}' created with /workspace/ ready"
+            })
 
                 # ── BOOTSTRAP COORDINATION: Determine if this agent should bootstrap ────
-                if use_git:
-                    # Check if this is a bootstrap task
-                    is_bootstrap_task = (
-                        (task.get("task_id") or task.get("external_task_id") or "").strip().upper() == "TASK-00"
-                        or "project bootstrap" in (task.get("title") or task.get("taskName") or "").strip().lower()
+            if use_git:
+                # Check if this is a bootstrap task
+                is_bootstrap_task = (
+                    (task.get("task_id") or task.get("external_task_id") or "").strip().upper() == "TASK-00"
+                    or "project bootstrap" in (task.get("title") or task.get("taskName") or "").strip().lower()
+                )
+                
+                if is_bootstrap_task:
+                    # This agent is the bootstrap agent - clone and create initial structure
+                    first_branch = force_branch if force_branch else _branch_name_for_task(task)
+                    agent["progress"] = 15
+                    agent["progress_message"] = f"Bootstrap: Cloning repo & creating branch: {first_branch}"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"🏗️ BOOTSTRAP AGENT: Cloning {agent['git_repo_url']} to create initial structure..."
+                    })
+
+                    git_result = await asyncio.to_thread(
+                        _setup_git_in_container, container_name,
+                        agent["git_repo_url"], agent.get("git_token", ""), first_branch
                     )
+                    if not git_result["success"]:
+                        raise ValueError(f"Git setup failed: {git_result['error']}")
+
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"✅ Bootstrap repo cloned. Working on branch: {first_branch}"
+                    })
+
+                    repo_base_branch = git_result.get("default_branch") or repo_base_branch
                     
-                    if is_bootstrap_task:
-                        # This agent is the bootstrap agent - clone and create initial structure
-                        first_branch = force_branch if force_branch else _branch_name_for_task(task)
-                        agent["progress"] = 15
-                        agent["progress_message"] = f"Bootstrap: Cloning repo & creating branch: {first_branch}"
+                    # Mark this agent as bootstrap owner
+                    bootstrap_info = await _coordinate_repo_bootstrap(
+                        agent=agent,
+                        agent_id=agent_id,
+                        repo_url=agent.get("git_repo_url") or "",
+                        container_name=container_name,
+                        local_branch=first_branch,
+                        needs_bootstrap=True,  # Force bootstrap mode
+                        project_token=project_token,
+                        current_task=task,
+                    )
+                    bootstrap_role = bootstrap_info.get("role", "none")
+                    if bootstrap_info.get("base_branch"):
+                        repo_base_branch = bootstrap_info["base_branch"]
+                    
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"🏗️ Bootstrap role confirmed. Other agents will wait for push to {first_branch}"
+                    })
+                else:
+                    # This is a regular agent - bootstrap already completed, clone from bootstrap branch
+                    agent["progress"] = 15
+                    agent["progress_message"] = "Discovering bootstrap branch..."
+                    
+                    # ── INTELLIGENT BOOTSTRAP BRANCH DISCOVERY (3-layer, no hardcoding) ──
+                    # Layer 1: Persistent DB (survives server restarts)
+                    bootstrap_branch = get_bootstrap_branch(project_token)
+                    if bootstrap_branch:
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
                             "type": "info",
-                            "message": f"🏗️ BOOTSTRAP AGENT: Cloning {agent['git_repo_url']} to create initial structure..."
+                            "message": f"✅ Bootstrap branch from DB: {bootstrap_branch}"
                         })
-
-                        git_result = await asyncio.to_thread(
-                            _setup_git_in_container, container_name,
-                            agent["git_repo_url"], agent.get("git_token", ""), first_branch
-                        )
-                        if not git_result["success"]:
-                            raise ValueError(f"Git setup failed: {git_result['error']}")
-
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"✅ Bootstrap repo cloned. Working on branch: {first_branch}"
-                        })
-
-                        repo_base_branch = git_result.get("default_branch") or repo_base_branch
-                        
-                        # Mark this agent as bootstrap owner
-                        bootstrap_info = await _coordinate_repo_bootstrap(
-                            agent=agent,
-                            agent_id=agent_id,
-                            repo_url=agent.get("git_repo_url") or "",
-                            container_name=container_name,
-                            local_branch=first_branch,
-                            needs_bootstrap=True,  # Force bootstrap mode
-                            project_token=project_token,
-                            current_task=task,
-                        )
-                        bootstrap_role = bootstrap_info.get("role", "none")
-                        if bootstrap_info.get("base_branch"):
-                            repo_base_branch = bootstrap_info["base_branch"]
-                        
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"🏗️ Bootstrap role confirmed. Other agents will wait for push to {first_branch}"
-                        })
-                    else:
-                        # This is a regular agent - bootstrap already completed, clone from bootstrap branch
-                        agent["progress"] = 15
-                        agent["progress_message"] = "Discovering bootstrap branch..."
-                        
-                        # ── INTELLIGENT BOOTSTRAP BRANCH DISCOVERY (3-layer, no hardcoding) ──
-                        # Layer 1: Persistent DB (survives server restarts)
-                        bootstrap_branch = get_bootstrap_branch(project_token)
+                    
+                    # Layer 2: In-memory project state
+                    if not bootstrap_branch:
+                        state = _ensure_project_state(project_token)
+                        bootstrap_state = state.get("repo_bootstrap", {})
+                        bootstrap_branch = bootstrap_state.get("source_branch")
                         if bootstrap_branch:
+                            # Persist to DB for future use
+                            set_bootstrap_branch(project_token, bootstrap_branch)
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
                                 "type": "info",
-                                "message": f"✅ Bootstrap branch from DB: {bootstrap_branch}"
+                                "message": f"✅ Bootstrap branch from in-memory state: {bootstrap_branch} (now persisted to DB)"
                             })
+                    
+                    # Layer 3: Smart remote detection — query ALL remote branches and find
+                    # the one that matches the bootstrap task pattern (no hardcoded names)
+                    if not bootstrap_branch:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "warning",
+                            "message": "⚠️ Bootstrap branch not in DB or state. Detecting from remote branches..."
+                        })
                         
-                        # Layer 2: In-memory project state
-                        if not bootstrap_branch:
-                            state = _ensure_project_state(project_token)
-                            bootstrap_state = state.get("repo_bootstrap", {})
-                            bootstrap_branch = bootstrap_state.get("source_branch")
-                            if bootstrap_branch:
-                                # Persist to DB for future use
-                                set_bootstrap_branch(project_token, bootstrap_branch)
-                                agent["output_log"].append({
-                                    "time": datetime.utcnow().isoformat(),
-                                    "type": "info",
-                                    "message": f"✅ Bootstrap branch from in-memory state: {bootstrap_branch} (now persisted to DB)"
-                                })
+                        git_url = agent.get("git_repo_url", "")
+                        git_token = agent.get("git_token", "")
                         
-                        # Layer 3: Smart remote detection — query ALL remote branches and find
-                        # the one that matches the bootstrap task pattern (no hardcoded names)
+                        if git_url:
+                            auth_url = _build_git_auth_url(git_url, git_token) if git_token else git_url
+                            
+                            try:
+                                # List ALL remote branches
+                                ls_remote = subprocess.run(
+                                    ["git", "ls-remote", "--heads", auth_url],
+                                    capture_output=True, text=True, timeout=30,
+                                )
+                                if ls_remote.returncode == 0 and ls_remote.stdout.strip():
+                                    remote_branches = []
+                                    for line in ls_remote.stdout.strip().splitlines():
+                                        # Format: <sha>\trefs/heads/<branch_name>
+                                        parts = line.split("\t")
+                                        if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+                                            branch_name_candidate = parts[1].replace("refs/heads/", "")
+                                            remote_branches.append(branch_name_candidate)
+                                    
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": f"🔍 Found {len(remote_branches)} remote branches: {', '.join(remote_branches[:10])}"
+                                    })
+                                    
+                                    # Smart pattern matching: find the branch that was created by
+                                    # the bootstrap task. Bootstrap tasks create branches with
+                                    # patterns like "feature/TASK-00-*", "*bootstrap*", "*scaffold*"
+                                    bootstrap_patterns = [
+                                        "task-00", "task_00", "bootstrap", "scaffold",
+                                        "initial-structure", "project-setup", "project_setup"
+                                    ]
+                                    
+                                    for branch_candidate in remote_branches:
+                                        branch_lower = branch_candidate.lower()
+                                        for pattern in bootstrap_patterns:
+                                            if pattern in branch_lower:
+                                                bootstrap_branch = branch_candidate
+                                                agent["output_log"].append({
+                                                    "time": datetime.utcnow().isoformat(),
+                                                    "type": "info",
+                                                    "message": f"✅ Detected bootstrap branch from remote: {bootstrap_branch} (matched pattern: '{pattern}')"
+                                                })
+                                                # Persist to DB
+                                                set_bootstrap_branch(project_token, bootstrap_branch)
+                                                break
+                                        if bootstrap_branch:
+                                            break
+                            except Exception as e:
+                                logger.warning(f"Failed to list remote branches: {e}")
+                        
                         if not bootstrap_branch:
+                            # Before failing hard, wait a moment and retry once
+                            # (in case there's a tiny race condition with DB commit)
                             agent["output_log"].append({
                                 "time": datetime.utcnow().isoformat(),
                                 "type": "warning",
-                                "message": "⚠️ Bootstrap branch not in DB or state. Detecting from remote branches..."
+                                "message": "⚠️ Bootstrap branch not found. Waiting 2s and retrying..."
                             })
+                            await asyncio.sleep(2)
                             
-                            git_url = agent.get("git_repo_url", "")
-                            git_token = agent.get("git_token", "")
-                            
-                            if git_url:
-                                auth_url = _build_git_auth_url(git_url, git_token) if git_token else git_url
-                                
-                                try:
-                                    # List ALL remote branches
-                                    ls_remote = subprocess.run(
-                                        ["git", "ls-remote", "--heads", auth_url],
-                                        capture_output=True, text=True, timeout=30,
-                                    )
-                                    if ls_remote.returncode == 0 and ls_remote.stdout.strip():
-                                        remote_branches = []
-                                        for line in ls_remote.stdout.strip().splitlines():
-                                            # Format: <sha>\trefs/heads/<branch_name>
-                                            parts = line.split("\t")
-                                            if len(parts) == 2 and parts[1].startswith("refs/heads/"):
-                                                branch_name_candidate = parts[1].replace("refs/heads/", "")
-                                                remote_branches.append(branch_name_candidate)
-                                        
-                                        agent["output_log"].append({
-                                            "time": datetime.utcnow().isoformat(),
-                                            "type": "info",
-                                            "message": f"🔍 Found {len(remote_branches)} remote branches: {', '.join(remote_branches[:10])}"
-                                        })
-                                        
-                                        # Smart pattern matching: find the branch that was created by
-                                        # the bootstrap task. Bootstrap tasks create branches with
-                                        # patterns like "feature/TASK-00-*", "*bootstrap*", "*scaffold*"
-                                        bootstrap_patterns = [
-                                            "task-00", "task_00", "bootstrap", "scaffold",
-                                            "initial-structure", "project-setup", "project_setup"
-                                        ]
-                                        
-                                        for branch_candidate in remote_branches:
-                                            branch_lower = branch_candidate.lower()
-                                            for pattern in bootstrap_patterns:
-                                                if pattern in branch_lower:
-                                                    bootstrap_branch = branch_candidate
-                                                    agent["output_log"].append({
-                                                        "time": datetime.utcnow().isoformat(),
-                                                        "type": "info",
-                                                        "message": f"✅ Detected bootstrap branch from remote: {bootstrap_branch} (matched pattern: '{pattern}')"
-                                                    })
-                                                    # Persist to DB
-                                                    set_bootstrap_branch(project_token, bootstrap_branch)
-                                                    break
-                                            if bootstrap_branch:
-                                                break
-                                except Exception as e:
-                                    logger.warning(f"Failed to list remote branches: {e}")
-                            
-                            if not bootstrap_branch:
-                                # Before failing hard, wait a moment and retry once
-                                # (in case there's a tiny race condition with DB commit)
+                            # Retry DB lookup
+                            bootstrap_branch = get_bootstrap_branch(project_token)
+                            if bootstrap_branch:
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
-                                    "type": "warning",
-                                    "message": "⚠️ Bootstrap branch not found. Waiting 2s and retrying..."
+                                    "type": "info",
+                                    "message": f"✅ Bootstrap branch found on retry: {bootstrap_branch}"
                                 })
-                                await asyncio.sleep(2)
-                                
-                                # Retry DB lookup
+                        
+                        if not bootstrap_branch:
+                            # Bootstrap was flagged as pushed but the branch name is not yet
+                            # recorded — this is a race condition where the bootstrap agent
+                            # set the "pushed" flag slightly before it persisted the branch
+                            # name.  Poll for up to 10 minutes instead of failing hard, so
+                            # non-bootstrap agents simply wait rather than crash-and-retry.
+                            agent["status"] = "waiting"
+                            agent["progress_message"] = "⏳ Waiting for bootstrap agent to persist branch name..."
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "warning",
+                                "message": (
+                                    "⏳ Bootstrap was marked as pushed but branch name is not yet "
+                                    "available. Waiting for bootstrap agent to finish persisting "
+                                    "state (will retry every 10s, timeout 10 min)..."
+                                )
+                            })
+
+                            # Broadcast waiting status so the UI shows a meaningful message
+                            try:
+                                from database import SessionLocal
+                                import agent_communication_service as _comm_bs
+                                _db_bs = SessionLocal()
+                                try:
+                                    await _comm_bs.send_message(
+                                        db=_db_bs,
+                                        project_token=project_token or "",
+                                        from_agent=agent_id,
+                                        message=(
+                                            f"⏳ {agent_id} is waiting for bootstrap branch name "
+                                            f"before starting '{task.get('title', 'task')}'"
+                                        ),
+                                        msg_type="INFO",
+                                    )
+                                finally:
+                                    _db_bs.close()
+                            except Exception:
+                                pass
+
+                            _branch_wait_start = time.time()
+                            _branch_wait_timeout = 600  # 10 minutes
+                            while not bootstrap_branch:
+                                await asyncio.sleep(10)
+                                _branch_waited = int(time.time() - _branch_wait_start)
+
+                                # Re-try all three discovery layers on each iteration
                                 bootstrap_branch = get_bootstrap_branch(project_token)
+                                if not bootstrap_branch:
+                                    _bst_state = _ensure_project_state(project_token).get("repo_bootstrap", {})
+                                    bootstrap_branch = _bst_state.get("source_branch")
+                                    if bootstrap_branch:
+                                        set_bootstrap_branch(project_token, bootstrap_branch)
+                                if not bootstrap_branch and git_url:
+                                    try:
+                                        _auth_url2 = _build_git_auth_url(git_url, agent.get("git_token", "")) if agent.get("git_token") else git_url
+                                        _ls2 = subprocess.run(
+                                            ["git", "ls-remote", "--heads", _auth_url2],
+                                            capture_output=True, text=True, timeout=30,
+                                        )
+                                        if _ls2.returncode == 0 and _ls2.stdout.strip():
+                                            for _line2 in _ls2.stdout.strip().splitlines():
+                                                _parts2 = _line2.split("\t")
+                                                if len(_parts2) == 2 and _parts2[1].startswith("refs/heads/"):
+                                                    _cand2 = _parts2[1].replace("refs/heads/", "")
+                                                    for _pat2 in bootstrap_patterns:
+                                                        if _pat2 in _cand2.lower():
+                                                            bootstrap_branch = _cand2
+                                                            set_bootstrap_branch(project_token, bootstrap_branch)
+                                                            break
+                                                if bootstrap_branch:
+                                                    break
+                                    except Exception:
+                                        pass
+
                                 if bootstrap_branch:
                                     agent["output_log"].append({
                                         "time": datetime.utcnow().isoformat(),
                                         "type": "info",
-                                        "message": f"✅ Bootstrap branch found on retry: {bootstrap_branch}"
+                                        "message": f"✅ Bootstrap branch now available after {_branch_waited}s wait: {bootstrap_branch}"
                                     })
-                            
-                            if not bootstrap_branch:
-                                # Bootstrap was flagged as pushed but the branch name is not yet
-                                # recorded — this is a race condition where the bootstrap agent
-                                # set the "pushed" flag slightly before it persisted the branch
-                                # name.  Poll for up to 10 minutes instead of failing hard, so
-                                # non-bootstrap agents simply wait rather than crash-and-retry.
-                                agent["status"] = "waiting"
-                                agent["progress_message"] = "⏳ Waiting for bootstrap agent to persist branch name..."
-                                agent["output_log"].append({
-                                    "time": datetime.utcnow().isoformat(),
-                                    "type": "warning",
-                                    "message": (
-                                        "⏳ Bootstrap was marked as pushed but branch name is not yet "
-                                        "available. Waiting for bootstrap agent to finish persisting "
-                                        "state (will retry every 10s, timeout 10 min)..."
+                                    break
+
+                                if _branch_waited >= _branch_wait_timeout:
+                                    error_msg = (
+                                        f"Cannot determine bootstrap branch after waiting {_branch_waited}s. "
+                                        "Bootstrap was marked as pushed but no branch name was persisted "
+                                        "in DB, in-memory state, or found on remote. "
+                                        "Check bootstrap agent logs or reset bootstrap state."
                                     )
-                                })
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "error",
+                                        "message": f"❌ {error_msg}"
+                                    })
+                                    raise ValueError(error_msg)
 
-                                # Broadcast waiting status so the UI shows a meaningful message
-                                try:
-                                    from database import SessionLocal
-                                    import agent_communication_service as _comm_bs
-                                    _db_bs = SessionLocal()
-                                    try:
-                                        await _comm_bs.send_message(
-                                            db=_db_bs,
-                                            project_token=project_token or "",
-                                            from_agent=agent_id,
-                                            message=(
-                                                f"⏳ {agent_id} is waiting for bootstrap branch name "
-                                                f"before starting '{task.get('title', 'task')}'"
-                                            ),
-                                            msg_type="INFO",
-                                        )
-                                    finally:
-                                        _db_bs.close()
-                                except Exception:
-                                    pass
+                                if _branch_waited % 60 == 0:
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "info",
+                                        "message": f"⏳ Still waiting for bootstrap branch... ({_branch_waited}s elapsed)"
+                                    })
 
-                                _branch_wait_start = time.time()
-                                _branch_wait_timeout = 600  # 10 minutes
-                                while not bootstrap_branch:
-                                    await asyncio.sleep(10)
-                                    _branch_waited = int(time.time() - _branch_wait_start)
+                            agent["status"] = "running"
+                            agent["progress_message"] = f"Bootstrap branch resolved: {bootstrap_branch}"
+                    
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"✅ Bootstrap pushed to {bootstrap_branch}! Now cloning..."
+                    })
+                    
+                    # Clone the repo
+                    first_branch = force_branch if force_branch else _branch_name_for_task(task)
+                    agent["progress"] = 20
+                    agent["progress_message"] = f"Cloning from bootstrap branch: {bootstrap_branch}"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Cloning {agent['git_repo_url']} and checking out {bootstrap_branch}..."
+                    })
 
-                                    # Re-try all three discovery layers on each iteration
-                                    bootstrap_branch = get_bootstrap_branch(project_token)
-                                    if not bootstrap_branch:
-                                        _bst_state = _ensure_project_state(project_token).get("repo_bootstrap", {})
-                                        bootstrap_branch = _bst_state.get("source_branch")
-                                        if bootstrap_branch:
-                                            set_bootstrap_branch(project_token, bootstrap_branch)
-                                    if not bootstrap_branch and git_url:
-                                        try:
-                                            _auth_url2 = _build_git_auth_url(git_url, agent.get("git_token", "")) if agent.get("git_token") else git_url
-                                            _ls2 = subprocess.run(
-                                                ["git", "ls-remote", "--heads", _auth_url2],
-                                                capture_output=True, text=True, timeout=30,
-                                            )
-                                            if _ls2.returncode == 0 and _ls2.stdout.strip():
-                                                for _line2 in _ls2.stdout.strip().splitlines():
-                                                    _parts2 = _line2.split("\t")
-                                                    if len(_parts2) == 2 and _parts2[1].startswith("refs/heads/"):
-                                                        _cand2 = _parts2[1].replace("refs/heads/", "")
-                                                        for _pat2 in bootstrap_patterns:
-                                                            if _pat2 in _cand2.lower():
-                                                                bootstrap_branch = _cand2
-                                                                set_bootstrap_branch(project_token, bootstrap_branch)
-                                                                break
-                                                    if bootstrap_branch:
-                                                        break
-                                        except Exception:
-                                            pass
+                    git_result = await asyncio.to_thread(
+                        _setup_git_in_container, container_name,
+                        agent["git_repo_url"], agent.get("git_token", ""), bootstrap_branch
+                    )
+                    if not git_result["success"]:
+                        raise ValueError(f"Git setup failed: {git_result['error']}")
 
-                                    if bootstrap_branch:
-                                        agent["output_log"].append({
-                                            "time": datetime.utcnow().isoformat(),
-                                            "type": "info",
-                                            "message": f"✅ Bootstrap branch now available after {_branch_waited}s wait: {bootstrap_branch}"
-                                        })
-                                        break
+                    # Create new branch from bootstrap branch
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"Creating new branch {first_branch} from {bootstrap_branch}..."
+                    })
+                    
+                    checkout_result = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name, "git", "checkout", "-b", first_branch],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if checkout_result.returncode != 0:
+                        raise ValueError(f"Failed to create branch {first_branch}: {checkout_result.stderr}")
 
-                                    if _branch_waited >= _branch_wait_timeout:
-                                        error_msg = (
-                                            f"Cannot determine bootstrap branch after waiting {_branch_waited}s. "
-                                            "Bootstrap was marked as pushed but no branch name was persisted "
-                                            "in DB, in-memory state, or found on remote. "
-                                            "Check bootstrap agent logs or reset bootstrap state."
-                                        )
-                                        agent["output_log"].append({
-                                            "time": datetime.utcnow().isoformat(),
-                                            "type": "error",
-                                            "message": f"❌ {error_msg}"
-                                        })
-                                        raise ValueError(error_msg)
-
-                                    if _branch_waited % 60 == 0:
-                                        agent["output_log"].append({
-                                            "time": datetime.utcnow().isoformat(),
-                                            "type": "info",
-                                            "message": f"⏳ Still waiting for bootstrap branch... ({_branch_waited}s elapsed)"
-                                        })
-
-                                agent["status"] = "running"
-                                agent["progress_message"] = f"Bootstrap branch resolved: {bootstrap_branch}"
-                        
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"✅ Bootstrap pushed to {bootstrap_branch}! Now cloning..."
-                        })
-                        
-                        # Clone the repo
-                        first_branch = force_branch if force_branch else _branch_name_for_task(task)
-                        agent["progress"] = 20
-                        agent["progress_message"] = f"Cloning from bootstrap branch: {bootstrap_branch}"
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"Cloning {agent['git_repo_url']} and checking out {bootstrap_branch}..."
-                        })
-
-                        git_result = await asyncio.to_thread(
-                            _setup_git_in_container, container_name,
-                            agent["git_repo_url"], agent.get("git_token", ""), bootstrap_branch
-                        )
-                        if not git_result["success"]:
-                            raise ValueError(f"Git setup failed: {git_result['error']}")
-
-                        # Create new branch from bootstrap branch
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"Creating new branch {first_branch} from {bootstrap_branch}..."
-                        })
-                        
-                        checkout_result = subprocess.run(
-                            ["docker", "exec", "-w", "/workspace", container_name, "git", "checkout", "-b", first_branch],
-                            capture_output=True, text=True, timeout=15,
-                        )
-                        if checkout_result.returncode != 0:
-                            raise ValueError(f"Failed to create branch {first_branch}: {checkout_result.stderr}")
-
-                        agent["output_log"].append({
-                            "time": datetime.utcnow().isoformat(),
-                            "type": "info",
-                            "message": f"✅ Working on new branch: {first_branch} (based on {bootstrap_branch})"
-                        })
-                        
-                        # Broadcast success
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"✅ Working on new branch: {first_branch} (based on {bootstrap_branch})"
+                    })
+                    
+                    # Broadcast success
+                    try:
+                        from database import SessionLocal
+                        import agent_communication_service as _comm
+                        _db = SessionLocal()
                         try:
-                            from database import SessionLocal
-                            import agent_communication_service as _comm
-                            _db = SessionLocal()
-                            try:
-                                await _comm.send_message(
-                                    db=_db,
-                                    project_token=project_token or "",
-                                    from_agent=agent_id,
-                                    message=f"✅ Cloned from bootstrap branch '{bootstrap_branch}' and created working branch '{first_branch}'",
-                                    msg_type="INFO",
-                                )
-                            finally:
-                                _db.close()
-                        except Exception:
-                            pass
-                        
-                        repo_base_branch = bootstrap_branch
+                            await _comm.send_message(
+                                db=_db,
+                                project_token=project_token or "",
+                                from_agent=agent_id,
+                                message=f"✅ Cloned from bootstrap branch '{bootstrap_branch}' and created working branch '{first_branch}'",
+                                msg_type="INFO",
+                            )
+                        finally:
+                            _db.close()
+                    except Exception:
+                        pass
+                    
+                    repo_base_branch = bootstrap_branch
 
-            # ── Create task-specific git branch (for 2nd+ tasks) ─────
+            # ── Set branch name for this task ─────────────────────────
             branch_name = None
             if use_git:
                 branch_name = force_branch if force_branch else _branch_name_for_task(task)
-                if tasks_completed > 1:
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"🔄 Container reuse: Continuing in existing container '{container_name}' (task #{tasks_completed})"
-                    })
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"📦 Skipping repo clone — code already present from previous task"
-                    })
-                    # Reset any stale index (merge conflicts from previous task)
-                    subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "merge", "--abort"],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "reset", "--hard", "HEAD"],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    # Switch back to repo base branch and create a new task branch.
-                    subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "fetch", "origin"],
-                        capture_output=True, text=True, timeout=120,
-                    )
-                    # Checkout bootstrap branch as base
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"Using base branch: {repo_base_branch} (from bootstrap)"
-                    })
-                    subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "checkout", "-B", repo_base_branch, f"origin/{repo_base_branch}"],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    # Create new task branch from bootstrap branch
-                    subprocess.run(
-                        ["docker", "exec", "-w", "/workspace", container_name,
-                         "git", "checkout", "-B", branch_name],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    agent["output_log"].append({
-                        "time": datetime.utcnow().isoformat(),
-                        "type": "info",
-                        "message": f"Created branch: {branch_name} (from {repo_base_branch})"
-                    })
 
             # ── Structure Validation Before Code Generation ────────────
             agent["progress"] = 14
@@ -18937,6 +18888,36 @@ Be extremely specific. Every field name must be exact. This is the single source
                 })
 
             # ═════════════════════════════════════════════════════════
+            # DESTROY CONTAINER AFTER TASK COMPLETION
+            # Each task gets a fresh container, so destroy after completion
+            # ═════════════════════════════════════════════════════════
+            
+            # Stop heartbeat for this task
+            try:
+                if _heartbeat_task is not None:
+                    _heartbeat_task.cancel()
+                    _heartbeat_task = None
+                import agent_contract_store as _cs
+                await _cs.release_all_locks(project_token or "", agent_id)
+            except Exception:
+                pass
+            
+            # Destroy the container for this task
+            if container_created:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"🗑️ Destroying container '{container_name}' after task completion..."
+                })
+                await asyncio.to_thread(_destroy_container, container_name)
+                container_created = False
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"✅ Container '{container_name}' destroyed successfully"
+                })
+            
+            # ═════════════════════════════════════════════════════════
             # AGENT AFFINITY DISABLED: Each agent does ONE task then stops
             # This allows parallel execution - other agents can pick up remaining tasks
             # ═════════════════════════════════════════════════════════
@@ -18944,23 +18925,9 @@ Be extremely specific. Every field name must be exact. This is the single source
 
         # ── END OF WHILE LOOP ────────────────────────────────────────
 
-        # Stop heartbeat and release all file locks
-        try:
-            if _heartbeat_task is not None:
-                _heartbeat_task.cancel()
-            import agent_contract_store as _cs
-            await _cs.release_all_locks(project_token or "", agent_id)
-        except Exception:
-            pass
-
-        # Destroy container after all tasks are done
-        if container_created:
-            await asyncio.to_thread(_destroy_container, container_name)
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"Environment '{container_name}' destroyed."
-            })
+        # Note: Container cleanup now happens inside the loop after each task
+        # Heartbeat and locks are also released per task
+        # No additional cleanup needed here
 
         total_elapsed = round(time.time() - total_start, 1)
         
@@ -19085,7 +19052,17 @@ Be extremely specific. Every field name must be exact. This is the single source
 
         # Clean up container on error
         if container_created:
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"🗑️ Cleaning up container '{container_name}' after error..."
+            })
             await asyncio.to_thread(_destroy_container, container_name)
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"✅ Container '{container_name}' destroyed"
+            })
 
         # Release any claimed IDs
         if task:
