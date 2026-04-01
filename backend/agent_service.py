@@ -1290,6 +1290,13 @@ CRITICAL PATH RULES:
 - Verification checks MUST use the FULL relative path (e.g., src/components/App.jsx NOT App.jsx)
 - NEVER create duplicate files at both subdirectory AND root level
 
+CRITICAL TEST FILE LOCATION RULES:
+- Test files (.test.tsx, .test.ts, .test.js, .spec.tsx, .spec.ts, .spec.js) MUST be in tests/components/ OR tests/utils/ OR tests/integration/
+- NEVER create test files inside src/components/ - tests go in tests/ directory only
+- Example CORRECT placement: tests/components/Header.test.tsx
+- Example WRONG placement: src/components/Header.test.tsx (DO NOT DO THIS)
+- This rule applies to ALL test files regardless of framework (Jest, Vitest, Mocha, etc.)
+
 CRITICAL: PYTHON PACKAGE STRUCTURE:
 - For Python projects, EVERY directory that is a Python package MUST contain __init__.py
 - This includes: backend/apps/*/ , backend/apps/*/*/, backend/config/, backend/apps/*/tests/
@@ -1338,6 +1345,9 @@ mkdir -p <dir2>
 mkdir -p <dir3>/<nested>/<deep>
 
 # Step 2: Create ALL files as EMPTY placeholders (use FULL relative paths from canonical tree)
+# CRITICAL: Test files (.test.tsx, .test.ts, etc.) go in tests/components/ NOT src/components/
+# Example: touch tests/components/Header.test.tsx (CORRECT)
+# Example: touch src/components/Header.test.tsx (WRONG - DO NOT DO THIS)
 touch <dir1>/<file1>
 touch <dir1>/<subdir>/<file2>
 touch <dir2>/<file3>
@@ -1387,6 +1397,8 @@ Print [CREATED] and [CHECK] messages
 NEVER use 'cp' or 'mv' to copy files to root directory
 Verification checks MUST use the FULL subdirectory path (src/App.jsx NOT App.jsx)
 Adapt to whatever tech stack the canonical tree specifies — do NOT assume any specific framework
+TEST FILES MUST GO IN tests/ DIRECTORY: Test files (.test.tsx, .test.ts, .spec.tsx, etc.) MUST be created ONLY in tests/components/, tests/utils/, or tests/integration/ - NEVER in src/components/ or any src/ subdirectory
+NEVER create .test.tsx, .test.ts, .test.js, .spec.tsx, .spec.ts, .spec.js files inside src/ directory
 """
 
 # CRITICAL: Keep scripts compact (<300 lines) to avoid AI token-limit truncation.
@@ -5607,6 +5619,7 @@ async def _create_merge_fix_task(
     project_token: Optional[str],
     task_token: Optional[str],
     preferred_agent_id: Optional[str] = None,
+    fix_depth: int = 1,
 ) -> Optional[str]:
     from task_service import task_service
 
@@ -5667,169 +5680,427 @@ async def _create_merge_fix_task(
     return task_id
 
 
-async def _run_git_manager_tests_with_ai(container_name: str, branch: str, project_token: Optional[str] = None) -> Dict[str, Any]:
-    summary = _collect_repo_summary(container_name)
-    plan = await _call_ai_for_test_plan(summary)
-    if not plan:
-        plan = _heuristic_test_plan(summary)
+def _probe_container_toolchain(container_name: str) -> Dict[str, Any]:
+    """
+    Detect which language runtimes and syntax checkers are actually available
+    inside the container right now.  Returns a dict of capability flags.
 
-    install_cmds = plan.get("install") or []
-    test_cmds = plan.get("tests") or []
-    if not test_cmds:
-        _log_git_agent("No test commands detected. Skipping tests.", project_token=project_token)
-        return {"ok": True, "failures": [], "details": []}
+    Every check is independent — a missing binary just sets the flag to False.
+    Nothing here can raise; all errors are silently swallowed so the caller
+    always gets a usable dict.
 
+    Probed capabilities
+    ───────────────────
+    has_python3       python3 binary present
+    has_node          node binary present
+    node_version      semver string e.g. "20.11.0" (empty string if absent)
+    has_tsc           TypeScript compiler (tsc) present
+    has_ruby          ruby binary present
+    has_go            go binary present
+    has_rustc         rustc binary present
+    has_php           php binary present
+    has_java          javac binary present
+    has_bash          sh/bash always True in any Docker container
+    has_pyyaml        python3 yaml module importable
+    has_tomllib       python3 tomllib / tomli module importable (TOML)
+    has_perl          perl binary present (used for generic regex checks)
+    """
+    tools: Dict[str, Any] = {
+        "has_python3": False,
+        "has_node": False,
+        "node_version": "",
+        "has_tsc": False,
+        "has_ruby": False,
+        "has_go": False,
+        "has_rustc": False,
+        "has_php": False,
+        "has_java": False,
+        "has_bash": True,          # always present in Docker
+        "has_pyyaml": False,
+        "has_tomllib": False,
+        "has_perl": False,
+    }
+
+    def _which(binary: str) -> bool:
+        try:
+            r = subprocess.run(
+                ["docker", "exec", container_name, "sh", "-c", f"which {binary} 2>/dev/null"],
+                capture_output=True, text=True, timeout=8,
+            )
+            return r.returncode == 0 and bool((r.stdout or "").strip())
+        except Exception:
+            return False
+
+    def _python_import(module: str) -> bool:
+        try:
+            r = subprocess.run(
+                ["docker", "exec", container_name,
+                 "python3", "-c", f"import {module}"],
+                capture_output=True, text=True, timeout=8,
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    tools["has_python3"] = _which("python3")
+    tools["has_node"] = _which("node")
+    tools["has_perl"] = _which("perl")
+    tools["has_ruby"] = _which("ruby")
+    tools["has_go"] = _which("go")
+    tools["has_rustc"] = _which("rustc")
+    tools["has_php"] = _which("php")
+    tools["has_java"] = _which("javac")
+
+    # tsc may live in node_modules/.bin — check both PATH and local
+    if tools["has_node"]:
+        try:
+            tsc_check = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "sh", "-c",
+                 "tsc --version 2>/dev/null || ./node_modules/.bin/tsc --version 2>/dev/null || npx --no-install tsc --version 2>/dev/null"],
+                capture_output=True, text=True, timeout=12,
+            )
+            tools["has_tsc"] = tsc_check.returncode == 0 and "Version" in (tsc_check.stdout or "")
+        except Exception:
+            pass
+
+        # Node version string
+        try:
+            ver = subprocess.run(
+                ["docker", "exec", container_name, "node", "--version"],
+                capture_output=True, text=True, timeout=8,
+            )
+            tools["node_version"] = (ver.stdout or "").strip().lstrip("v")
+        except Exception:
+            pass
+
+    if tools["has_python3"]:
+        tools["has_pyyaml"] = _python_import("yaml")
+        # tomllib is stdlib in Python ≥ 3.11; tomli is the backport
+        tools["has_tomllib"] = _python_import("tomllib") or _python_import("tomli")
+
+    return tools
+
+
+def _get_changed_files_in_merge(container_name: str) -> List[str]:
+    """
+    Return files changed between HEAD~1 and HEAD (i.e. the merge commit).
+    Falls back to all tracked files if the history is too shallow.
+    """
+    try:
+        res = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "diff", "--name-only", "HEAD~1", "HEAD"],
+            capture_output=True, text=True, timeout=20,
+        )
+        files = [f.strip() for f in (res.stdout or "").splitlines() if f.strip()]
+        if files:
+            return files
+    except Exception:
+        pass
+
+    # Shallow history fallback — list all tracked files
+    try:
+        res = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "ls-files"],
+            capture_output=True, text=True, timeout=20,
+        )
+        return [f.strip() for f in (res.stdout or "").splitlines() if f.strip()]
+    except Exception:
+        return []
+
+
+async def _run_git_manager_tests_with_ai(
+    container_name: str,
+    branch: str,
+    project_token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Dynamic post-merge structural validator.
+
+    Philosophy
+    ──────────
+    The git manager container is a shared, bare git environment.  It has no
+    node_modules, no virtualenv, no .env, no running services.  Running
+    `npm install` / `npm test` / `pytest` here produces false failures that
+    block correct agent work from ever reaching agent/integration.
+
+    Instead we:
+      1. Probe which language runtimes are actually present in the container.
+      2. Run only the syntax / parse checks those runtimes enable — never
+         install anything, never execute application code.
+      3. Always scan for git conflict markers regardless of stack.
+      4. Adapt automatically: a Node project gets JS/TS checks; a Python
+         project gets py_compile; a Go project gets `go vet`; etc.
+
+    Checks performed (all merge-specific — things the agent's own tests
+    cannot catch because they happen inside the merge commit itself)
+    ──────────────────────────────────────────────────────────────────
+    ① Conflict marker scan          — every changed file, all stacks
+    ② Python syntax (py_compile)    — if python3 available
+    ③ JSON parse (json.tool)        — if python3 available
+    ④ YAML parse (PyYAML)           — if python3 + PyYAML available
+    ⑤ TOML parse (tomllib/tomli)    — if python3 + tomllib available
+    ⑥ JS/TS parse (node --check)    — if node available, for .js/.cjs/.mjs
+    ⑦ TypeScript type-check         — if tsc available (noEmit, no install)
+    ⑧ Ruby syntax (ruby -c)         — if ruby available
+    ⑨ Go vet                        — if go available
+    ⑩ Rust syntax (rustc --edition) — if rustc available
+    ⑪ PHP lint (php -l)             — if php available
+    ⑫ Shell script lint (sh -n)     — always (sh is always present)
+    """
+    failures: List[str] = []
+    details: List[Dict[str, str]] = []
+
+    # ── Probe toolchain ───────────────────────────────────────────────────────
+    tools = _probe_container_toolchain(container_name)
+    available = [k.replace("has_", "") for k, v in tools.items() if k.startswith("has_") and v]
     _log_git_agent(
-        f"Running installs: {', '.join(install_cmds) if install_cmds else 'none'}",
-        project_token=project_token
+        f"Post-merge structural validation for {branch}. "
+        f"Available checkers: {', '.join(available) or 'conflict-markers only'}.",
+        project_token=project_token,
     )
-    install_res = await _run_commands_in_container(container_name, install_cmds)
-    if install_res.get("exit_code", 0) != 0:
-        stderr = (install_res.get("stderr") or "")
-        stdout = (install_res.get("stdout") or "")
-        combined = f"{stdout}\n{stderr}".lower()
-        # Keep merge flow resilient: missing toolchains in the merge container
-        # should not drop already-produced branch work.
-        if "not found" in combined or "command not found" in combined:
-            _log_git_agent(
-                f"Install skipped (toolchain missing): {install_res.get('cmd')}\n{stderr}",
-                "warning",
-                project_token=project_token
+
+    # ── Collect changed files ─────────────────────────────────────────────────
+    changed_files = _get_changed_files_in_merge(container_name)
+    _log_git_agent(
+        f"Checking {len(changed_files)} changed file(s) in merge commit.",
+        project_token=project_token,
+    )
+
+    # Helper: run a single shell command in the container and return (ok, output)
+    def _check(cmd: str, timeout: int = 20) -> tuple[bool, str]:
+        try:
+            r = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "sh", "-c", cmd],
+                capture_output=True, text=True, timeout=timeout,
             )
-            _log_git_agent(
-                "Proceeding without test gate for this merge to avoid dropping branch changes.",
-                "warning",
-                project_token=project_token
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            return r.returncode == 0, out
+        except Exception as exc:
+            return True, f"(check skipped: {exc})"  # skipped ≠ failed
+
+    def _ext(files: List[str], *exts: str) -> List[str]:
+        return [f for f in files if any(f.endswith(e) for e in exts)]
+
+    def _record_errors(label: str, cmd_label: str, errors: List[str]) -> None:
+        if errors:
+            msg = f"{label}: " + " | ".join(errors[:3])
+            _log_git_agent(msg, "error", project_token=project_token)
+            failures.append(label)
+            details.append({"cmd": cmd_label, "tail": msg})
+
+    # ── ① Conflict marker scan — universal ───────────────────────────────────
+    conflicted: List[str] = []
+    for fpath in changed_files:
+        try:
+            ok, out = _check(
+                f"grep -lP '<{{7}}|>{{7}}' {shlex.quote(fpath)} 2>/dev/null || true",
+                timeout=8,
             )
-            return {"ok": True, "failures": [], "details": []}
-        _log_git_agent(
-            f"Install failed: {install_res.get('cmd')}\n{install_res.get('stderr')}",
-            "warning",
-            project_token=project_token
-        )
-        _log_git_agent(
-            "Proceeding without test gate for this merge (install failure).",
-            "warning",
-            project_token=project_token
-        )
-        return {"ok": True, "failures": [], "details": []}
+            if out.strip():
+                conflicted.append(fpath)
+        except Exception:
+            pass
+    _record_errors("conflict-markers", "conflict-marker-scan",
+                   [f for f in conflicted])
 
-    test_failures: List[str] = []
-    failure_details: List[Dict[str, str]] = []
+    # ── ② Python syntax ───────────────────────────────────────────────────────
+    if tools["has_python3"]:
+        py_files = _ext(changed_files, ".py")
+        py_errors: List[str] = []
+        for fpath in py_files[:40]:
+            ok, out = _check(f"python3 -m py_compile {shlex.quote(fpath)} 2>&1", timeout=12)
+            if not ok:
+                py_errors.append(f"{fpath}: {out[:200]}")
+        _record_errors("python-syntax", "py_compile", py_errors)
 
-    for cmd in test_cmds:
-        _log_git_agent(f"Running tests: {cmd}", project_token=project_token)
-        test_res = await _run_commands_in_container(container_name, [cmd])
-        if test_res.get("exit_code", 0) == 0:
-            continue
-
-        # ── Detect import/dependency errors vs code errors ────────────
-        combined_output = (test_res.get("stdout", "") + "\n" + test_res.get("stderr", ""))
-        import_error_patterns = [
-            "ImportError", "ModuleNotFoundError", "No module named",
+    # ── ③ JSON parse ──────────────────────────────────────────────────────────
+    if tools["has_python3"]:
+        # Exclude auto-generated lock files — they're huge and always valid
+        _SKIP_JSON = {"package-lock.json", "yarn.lock"}
+        json_files = [
+            f for f in _ext(changed_files, ".json")
+            if not any(f.endswith(s) for s in _SKIP_JSON)
         ]
-        is_import_error = any(pat in combined_output for pat in import_error_patterns)
-
-        if is_import_error:
-            # Try to extract and install missing modules before AI fix
-            missing_modules = _re.findall(
-                r"(?:No module named|ModuleNotFoundError:.*?)['\"]?([^'\"\s]+)['\"]?",
-                combined_output,
+        json_errors: List[str] = []
+        for fpath in json_files[:30]:
+            # Use single quotes for outer shell command, shlex.quote handles the filepath
+            ok, out = _check(
+                f"python3 -c 'import json; json.load(open(\"{fpath}\"))' 2>&1",
+                timeout=10,
             )
-            if "no module named pytest" in combined_output.lower() and "pytest" not in missing_modules:
-                missing_modules.append("pytest")
-            if missing_modules:
-                unique_modules = list(dict.fromkeys(missing_modules))[:5]
-                pip_cmd = f"pip install {' '.join(unique_modules)} 2>/dev/null || true"
-                _log_git_agent(
-                    f"Import errors detected. Auto-installing: {', '.join(unique_modules)}",
-                    project_token=project_token,
-                )
-                await _run_commands_in_container(container_name, [pip_cmd])
+            if not ok:
+                json_errors.append(f"{fpath}: {out[:200]}")
+        _record_errors("json-syntax", "json.load", json_errors)
 
-                # Re-run the test after installing
-                test_res = await _run_commands_in_container(container_name, [cmd])
-                if test_res.get("exit_code", 0) == 0:
-                    _log_git_agent(
-                        f"Tests passed after installing dependencies: {', '.join(unique_modules)}",
-                        project_token=project_token,
+    # ── ④ YAML parse ──────────────────────────────────────────────────────────
+    if tools["has_pyyaml"]:
+        yaml_files = _ext(changed_files, ".yml", ".yaml")
+        yaml_errors: List[str] = []
+        for fpath in yaml_files[:30]:
+            ok, out = _check(
+                f"python3 -c 'import yaml; "
+                f"[yaml.safe_load(d) for d in yaml.safe_load_all(open(\"{fpath}\"))]' 2>&1",
+                timeout=10,
+            )
+            if not ok:
+                yaml_errors.append(f"{fpath}: {out[:200]}")
+        _record_errors("yaml-syntax", "yaml.safe_load", yaml_errors)
+
+    # ── ⑤ TOML parse ──────────────────────────────────────────────────────────
+    if tools["has_tomllib"]:
+        toml_files = _ext(changed_files, ".toml")
+        toml_errors: List[str] = []
+        for fpath in toml_files[:20]:
+            ok, out = _check(
+                f"python3 -c '"
+                f"import sys; "
+                f"m = __import__(\"tomllib\", fromlist=[]) if sys.version_info >= (3,11) "
+                f"else __import__(\"tomli\", fromlist=[]); "
+                f"m.load(open(\"{fpath}\", \"rb\"))' 2>&1",
+                timeout=10,
+            )
+            if not ok:
+                toml_errors.append(f"{fpath}: {out[:200]}")
+        _record_errors("toml-syntax", "tomllib.load", toml_errors)
+
+    # ── ⑥ JavaScript parse (node --check) ────────────────────────────────────
+    if tools["has_node"]:
+        js_files = _ext(changed_files, ".js", ".cjs", ".mjs")
+        js_errors: List[str] = []
+        for fpath in js_files[:40]:
+            ok, out = _check(f"node --check {shlex.quote(fpath)} 2>&1", timeout=12)
+            if not ok:
+                js_errors.append(f"{fpath}: {out[:200]}")
+        _record_errors("js-syntax", "node --check", js_errors)
+
+    # ── ⑦ TypeScript type-check (tsc --noEmit) ───────────────────────────────
+    # Only run if tsc is present AND a tsconfig exists — noEmit means no output
+    # files are written, and we don't need node_modules for a syntax-only pass
+    # (tsc can parse without resolving all types if --skipLibCheck is set).
+    if tools["has_tsc"]:
+        tsconfig_check, _ = _check("test -f tsconfig.json && echo yes || echo no")
+        has_tsconfig = "yes" in tsconfig_check or False
+        ts_files = _ext(changed_files, ".ts", ".tsx")
+
+        if ts_files and has_tsconfig:
+            _log_git_agent("Running tsc --noEmit --skipLibCheck for TypeScript files.", project_token=project_token)
+            tsc_cmd = (
+                "tsc --noEmit --skipLibCheck --pretty false 2>&1 || "
+                "./node_modules/.bin/tsc --noEmit --skipLibCheck --pretty false 2>&1"
+            )
+            ok, out = _check(tsc_cmd, timeout=60)
+            if not ok:
+                # Filter out lines that are purely missing-module errors
+                # (those are environment issues, not merge issues)
+                real_errors = [
+                    ln for ln in (out or "").splitlines()
+                    if ln.strip()
+                    and "Cannot find module" not in ln
+                    and "Could not find a declaration file" not in ln
+                    and "error TS2307" not in ln   # module-not-found
+                    and "error TS2792" not in ln   # cannot-find-module
+                ]
+                if real_errors:
+                    _record_errors(
+                        "typescript-errors",
+                        "tsc --noEmit",
+                        ["\n".join(real_errors[:10])],
                     )
-                    continue
-                # Update combined output for further analysis
-                combined_output = (test_res.get("stdout", "") + "\n" + test_res.get("stderr", ""))
-
-        # ── AI Auto-fix loop (only for non-import code errors) ────────
-        fixed = False
-        for iteration in range(1, MAX_FIX_ITERATIONS + 1):
-            issues_report = _bulletproof_detect_issues_from_output(
-                test_res.get("stdout", ""),
-                test_res.get("stderr", ""),
-                test_res.get("exit_code", 1),
-            )
-            issues = issues_report.get("issues") or []
-            if not issues:
-                tail = (test_res.get("stderr") or test_res.get("stdout") or "")[-500:]
-                issues = [f"TEST FAILURE: {tail}"]
-
-            # Log the actual issues for debugging
-            issues_summary = "; ".join(str(i)[:200] for i in issues[:3])
-            _log_git_agent(
-                f"AI fix iteration {iteration} for {cmd}: {issues_summary}",
-                project_token=project_token
-            )
-            try:
-                fix_code, thought = await _bulletproof_call_ai_for_fix(
-                    task_description=f"Fix failing tests after merge on {GIT_INTEGRATION_BRANCH}.",
-                    agent_type="validator",
-                    issues=issues,
-                    previous_output=(test_res.get("stdout", "") + "\n" + test_res.get("stderr", "")),
-                    iteration=iteration,
-                    builder_crashed=False,
+        elif ts_files and not has_tsconfig:
+            # No tsconfig — fall back to individual file parse via node
+            ts_errors: List[str] = []
+            for fpath in ts_files[:30]:
+                # node can't check .ts natively, but we can catch obvious
+                # syntax errors by stripping types with a trivial sed and
+                # running node --check on the result
+                ok, out = _check(
+                    f"sed 's/:\\s*[A-Za-z<>\\[\\]|&?]*//g; s/<[^>]*>//g' "
+                    f"{shlex.quote(fpath)} | node --input-type=module --check 2>&1 || true",
+                    timeout=15,
                 )
-                await asyncio.to_thread(
-                    _exec_script_in_container, container_name, fix_code, f"git_fix_{iteration}"
-                )
-            except Exception as fix_err:
-                _log_git_agent(f"AI fix failed: {fix_err}", "error", project_token=project_token)
-                break
+                # node --check on stripped TS is best-effort; only fail on
+                # unmistakable parse errors (SyntaxError)
+                if "SyntaxError" in out:
+                    ts_errors.append(f"{fpath}: {out[:200]}")
+            _record_errors("typescript-syntax", "node(stripped-ts)", ts_errors)
 
-            # Re-run test command
-            test_res = await _run_commands_in_container(container_name, [cmd])
-            if test_res.get("exit_code", 0) == 0:
-                _commit_if_dirty(container_name, f"Auto-fix after tests ({branch})")
-                fixed = True
-                break
+    # ── ⑧ Ruby syntax ────────────────────────────────────────────────────────
+    if tools["has_ruby"]:
+        rb_files = _ext(changed_files, ".rb", ".rake", ".gemspec")
+        rb_errors: List[str] = []
+        for fpath in rb_files[:30]:
+            ok, out = _check(f"ruby -c {shlex.quote(fpath)} 2>&1", timeout=10)
+            if not ok:
+                rb_errors.append(f"{fpath}: {out[:200]}")
+        _record_errors("ruby-syntax", "ruby -c", rb_errors)
 
-        if not fixed:
-            # Tests still failing after auto-fix attempts — record and let
-            # the caller decide whether to allow the merge.
-            _log_git_agent(
-                f"⚠️ Tests still failing after fixes: {cmd}",
-                "warning",
-                project_token=project_token,
+    # ── ⑨ Go vet ─────────────────────────────────────────────────────────────
+    if tools["has_go"]:
+        go_files = _ext(changed_files, ".go")
+        if go_files:
+            # vet the whole module — individual file vet misses cross-file issues
+            ok, out = _check("go vet ./... 2>&1", timeout=60)
+            if not ok:
+                _record_errors("go-vet", "go vet ./...", [out[:400]])
+
+    # ── ⑩ Rust syntax ────────────────────────────────────────────────────────
+    if tools["has_rustc"]:
+        rs_files = _ext(changed_files, ".rs")
+        rs_errors: List[str] = []
+        for fpath in rs_files[:20]:
+            ok, out = _check(
+                f"rustc --edition 2021 --emit=metadata --crate-type lib "
+                f"-o /tmp/rs_check_{uuid.uuid4().hex[:6]} {shlex.quote(fpath)} 2>&1",
+                timeout=30,
             )
-            test_failures.append(cmd)
-            tail = (test_res.get("stderr") or test_res.get("stdout") or "")[-800:]
-            failure_details.append({"cmd": cmd, "tail": tail})
-            # We still commit local fixes so logs reflect what was tried,
-            # but the overall gate result will be False.
-            _commit_if_dirty(container_name, f"Push with test warnings ({branch})")
+            if not ok and "error" in out.lower():
+                rs_errors.append(f"{fpath}: {out[:300]}")
+        _record_errors("rust-syntax", "rustc --emit=metadata", rs_errors)
 
-    # Gate result: only pass when no test command ultimately failed.
-    if test_failures:
+    # ── ⑪ PHP lint ───────────────────────────────────────────────────────────
+    if tools["has_php"]:
+        php_files = _ext(changed_files, ".php")
+        php_errors: List[str] = []
+        for fpath in php_files[:30]:
+            ok, out = _check(f"php -l {shlex.quote(fpath)} 2>&1", timeout=10)
+            if not ok:
+                php_errors.append(f"{fpath}: {out[:200]}")
+        _record_errors("php-syntax", "php -l", php_errors)
+
+    # ── ⑫ Shell script lint ───────────────────────────────────────────────────
+    sh_files = _ext(changed_files, ".sh", ".bash")
+    sh_errors: List[str] = []
+    for fpath in sh_files[:20]:
+        ok, out = _check(f"sh -n {shlex.quote(fpath)} 2>&1", timeout=8)
+        if not ok:
+            sh_errors.append(f"{fpath}: {out[:200]}")
+    _record_errors("shell-syntax", "sh -n", sh_errors)
+
+    # ── Result ────────────────────────────────────────────────────────────────
+    if failures:
         _log_git_agent(
-            f"Test gate failed for {branch}: {', '.join(test_failures)}",
+            f"Structural validation failed for {branch}: {', '.join(failures)}",
             "error",
             project_token=project_token,
         )
-        return {"ok": False, "failures": test_failures, "details": failure_details}
+        return {"ok": False, "failures": failures, "details": details}
 
+    _log_git_agent(
+        f"✅ Structural validation passed for {branch} "
+        f"({len(changed_files)} file(s) checked across "
+        f"{len(available)} checker(s)).",
+        project_token=project_token,
+    )
     return {"ok": True, "failures": [], "details": []}
 
 
 async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Optional[str],
                              source_agent: str, task_title: str,
-                             project_token: Optional[str] = None) -> None:
+                             project_token: Optional[str] = None,
+                             fix_depth: int = 0) -> None:
     if not branch or not repo_url:
         return
     branch = branch.strip()
@@ -5852,6 +6123,7 @@ async def _enqueue_git_merge(branch: str, repo_url: Optional[str], token: Option
         "source_agent": source_agent,
         "task_title": task_title,
         "project_token": project_token,
+        "fix_depth": fix_depth,
     })
     _log_git_agent(
         f"Queued merge: {branch} (from {source_agent}, task '{task_title}')"
@@ -6540,6 +6812,98 @@ def _normalize_ai_merged_content(content: str) -> str:
     return merged.strip()
 
 
+def _build_merge_agent_context(
+    project_token: Optional[str],
+    source_agent: Optional[str],
+    source_branch: str,
+) -> str:
+    """
+    Build a rich context block for the AI merge resolver describing:
+    - What the source agent was tasked to do and which files it touched
+    - What every other completed agent did (task title, branch, files, signatures)
+    - Which task is currently being integrated (integration branch history)
+
+    This gives the AI full situational awareness so it can make semantically
+    correct merge decisions rather than syntactic line-picking.
+    """
+    try:
+        state = _ensure_project_state(project_token)
+        ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
+        if not ledger:
+            return ""
+
+        lines: List[str] = ["=" * 70, "GIT MANAGER — FULL AGENT WORK CONTEXT", "=" * 70]
+
+        # ── Source agent detail ────────────────────────────────────────────────
+        source_entries = [
+            e for e in ledger.values()
+            if e.agent_id == (source_agent or "") and e.branch_name == source_branch
+        ]
+        if not source_entries:
+            # Fall back: any entry from this agent
+            source_entries = [e for e in ledger.values() if e.agent_id == (source_agent or "")]
+
+        if source_entries:
+            se = source_entries[-1]
+            lines.append(f"\nSOURCE BRANCH BEING MERGED: {source_branch}")
+            lines.append(f"  Agent   : {se.agent_id}")
+            lines.append(f"  Task    : {se.task_title}")
+            lines.append(f"  Status  : {se.status}")
+            if se.files_written:
+                lines.append(f"  Files touched by this agent ({len(se.files_written)}):")
+                for f in se.files_written[:20]:
+                    lines.append(f"    - {f}")
+        else:
+            lines.append(f"\nSOURCE BRANCH BEING MERGED: {source_branch}")
+            lines.append(f"  Agent   : {source_agent or 'unknown'}")
+            lines.append(f"  (No ledger entry found for this agent/branch)")
+
+        # ── All other completed agents ─────────────────────────────────────────
+        peer_entries = [
+            e for e in ledger.values()
+            if e.status == "done" and e.agent_id != (source_agent or "")
+        ]
+        if peer_entries:
+            lines.append(f"\nOTHER COMPLETED AGENTS ALREADY IN INTEGRATION ({len(peer_entries)}):")
+            for e in peer_entries[-10:]:
+                lines.append(f"\n  [{e.agent_id}] Task: '{e.task_title}'")
+                lines.append(f"    Branch  : {e.branch_name}")
+                lines.append(f"    Merged  : {'yes' if e.merged else 'pending'}")
+                if e.files_written:
+                    flist = ", ".join(e.files_written[:8])
+                    if len(e.files_written) > 8:
+                        flist += f" (+{len(e.files_written) - 8} more)"
+                    lines.append(f"    Files   : {flist}")
+
+        # ── In-progress agents (not yet done) ─────────────────────────────────
+        active_entries = [e for e in ledger.values() if e.status in ("claimed", "in_progress")]
+        if active_entries:
+            lines.append(f"\nIN-PROGRESS AGENTS (work not yet merged):")
+            for e in active_entries:
+                lines.append(f"  [{e.agent_id}] Task: '{e.task_title}' — branch: {e.branch_name}")
+
+        lines += [
+            "",
+            "=" * 70,
+            "MERGE RESOLUTION RULES DERIVED FROM CONTEXT:",
+            "1. The SOURCE BRANCH contains the new work being integrated.",
+            "2. The INTEGRATION BRANCH contains work from all previously merged agents.",
+            "3. Preserve ALL functionality from both sides — do not drop any feature.",
+            "4. For shared config/lock files (package.json, package-lock.json,",
+            "   requirements.txt, pyproject.toml): merge dependency lists from both",
+            "   sides — never discard a dependency added by either agent.",
+            "5. For code files: keep all exports, functions, routes, classes from both.",
+            "6. If there are duplicate definitions, prefer the source branch version",
+            "   for files the source agent owns, integration branch for the rest.",
+            "=" * 70,
+        ]
+
+        return "\n".join(lines)
+    except Exception as ctx_err:
+        logger.warning(f"_build_merge_agent_context failed: {ctx_err}")
+        return ""
+
+
 async def _call_ai_for_merge_resolution(
     *,
     file_path: str,
@@ -6549,45 +6913,60 @@ async def _call_ai_for_merge_resolution(
     source_branch: str,
     source_agent: Optional[str],
     task_title: str,
+    agent_context: str = "",
 ) -> str:
     if not llm_gateway.check_api_key():
         return ""
 
+    context_block = f"\n\n{agent_context}\n" if agent_context.strip() else ""
+
     prompt = f"""You are resolving a git merge conflict for a software repository.
 Return ONLY the final merged file content for `{file_path}`.
 Do not wrap the answer in markdown fences. Do not explain your reasoning.
-
+{context_block}
 Merge context:
-- Source branch being merged: {source_branch}
-- Source agent: {source_agent or "unknown"}
-- Task title: {task_title or "unknown"}
+- File being resolved  : {file_path}
+- Source branch merged : {source_branch}
+- Source agent         : {source_agent or "unknown"}
+- Task title           : {task_title or "unknown"}
 
 Rules:
-1. Preserve behavior from both versions whenever they are compatible.
-2. Prefer the target/integration branch structure if the source branch is incomplete.
-3. Remove all conflict markers.
-4. Keep imports, typing, and formatting valid.
-5. If this is a code file, ensure the file is syntactically valid.
+1. Preserve ALL behaviour from both versions — never silently drop a function,
+   export, route, dependency, or configuration key.
+2. For lock files (package-lock.json, yarn.lock): choose the SOURCE BRANCH
+   version wholesale — it is the most recent dependency snapshot.
+3. For dependency manifests (package.json, requirements.txt, pyproject.toml):
+   merge the dependency lists from BOTH sides, keeping the higher version where
+   the same package appears in both.
+4. Remove ALL git conflict markers (<<<<<<, =======, >>>>>>>).
+5. Keep imports, typing, and formatting valid.
+6. If this is a code file, ensure the file is syntactically valid after merge.
+7. When in doubt about which side to prefer, prefer the SOURCE BRANCH version
+   for files the source agent is known to own (see context above).
 
-BASE VERSION:
+BASE VERSION (common ancestor):
 <<<BASE
-{base_content[:12000]}
+{base_content[:10000]}
 BASE>>>
 
-SOURCE BRANCH VERSION:
+SOURCE BRANCH VERSION (new work being merged in):
 <<<OURS
-{ours_content[:12000]}
+{ours_content[:10000]}
 OURS>>>
 
-INTEGRATION BRANCH VERSION:
+INTEGRATION BRANCH VERSION (previously merged agents):
 <<<THEIRS
-{theirs_content[:12000]}
+{theirs_content[:10000]}
 THEIRS>>>"""
 
     messages = [
         {
             "role": "system",
-            "content": "You are an expert git merge assistant. Output only merged file contents.",
+            "content": (
+                "You are an expert git merge assistant with full knowledge of the project's "
+                "agent architecture. Your sole output is the merged file content — no explanations, "
+                "no markdown fences, no conflict markers."
+            ),
         },
         {"role": "user", "content": prompt},
     ]
@@ -6595,12 +6974,54 @@ THEIRS>>>"""
     try:
         content = await llm_gateway.call_llm_and_extract(
             messages=messages,
-            timeout=90.0
+            timeout=120.0,
         )
         return _normalize_ai_merged_content(content)
     except Exception as e:
         logger.error(f"AI merge resolution failed: {e}")
         return ""
+
+
+def _force_resolve_lockfile(
+    container_name: str,
+    file_path: str,
+    source_branch: str,
+) -> bool:
+    """
+    For auto-generated lock files (package-lock.json, yarn.lock, poetry.lock,
+    Pipfile.lock, pnpm-lock.yaml) that have merge conflicts, take the source
+    branch version wholesale.  These files are always regenerated on install
+    anyway, so keeping the source side is the safest choice.
+    Returns True if the file was handled, False if it should go to AI.
+    """
+    _LOCK_FILES = {
+        "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+        "poetry.lock", "Pipfile.lock", "composer.lock",
+        "Gemfile.lock", "go.sum",
+    }
+    basename = os.path.basename(file_path)
+    if basename not in _LOCK_FILES:
+        return False
+
+    # Checkout the source-branch version of the file (stage 2 = ours)
+    checkout = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "checkout", "--theirs", file_path],
+        capture_output=True, text=True, timeout=20,
+    )
+    if checkout.returncode != 0:
+        # Fallback: try ours
+        subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "git", "checkout", "--ours", file_path],
+            capture_output=True, text=True, timeout=20,
+        )
+    subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "add", file_path],
+        capture_output=True, text=True, timeout=10,
+    )
+    return True
 
 
 async def _resolve_conflicts_with_ai(
@@ -6617,76 +7038,151 @@ async def _resolve_conflicts_with_ai(
         return True
 
     _log_git_agent(
-        f"Attempting AI merge resolution for {len(unresolved)} file(s): {', '.join(unresolved[:5])}",
+        f"AI merge resolver — {len(unresolved)} file(s): {', '.join(unresolved[:5])}",
         project_token=project_token,
     )
 
-    for file_path in unresolved:
-        base_content = _read_merge_stage_file(container_name, file_path, 1)
-        ours_content = _read_merge_stage_file(container_name, file_path, 2)
-        theirs_content = _read_merge_stage_file(container_name, file_path, 3)
-
-        merged = await _call_ai_for_merge_resolution(
-            file_path=file_path,
-            base_content=base_content,
-            ours_content=ours_content,
-            theirs_content=theirs_content,
-            source_branch=source_branch,
-            source_agent=source_agent,
-            task_title=task_title,
-        )
-        if not merged:
-            _log_git_agent(
-                f"AI merge returned empty content for {file_path}",
-                "error",
-                project_token=project_token,
-            )
-            return False
-
-        if not _write_workspace_file_to_container(container_name, file_path, merged + "\n"):
-            _log_git_agent(
-                f"Failed to write AI-merged file {file_path} into the merge container",
-                "error",
-                project_token=project_token,
-            )
-            return False
-
-        valid, validation_error = _validate_ai_merged_file(container_name, file_path)
-        if not valid:
-            _log_git_agent(
-                f"AI merge validation failed for {file_path}: {validation_error}",
-                "error",
-                project_token=project_token,
-            )
-            return False
-
-        subprocess.run(
-            ["docker", "exec", "-w", "/workspace", container_name, "git", "add", file_path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
-    remaining = subprocess.run(
-        ["docker", "exec", "-w", "/workspace", container_name, "git", "diff", "--name-only", "--diff-filter=U"],
-        capture_output=True,
-        text=True,
-        timeout=20,
+    # Build full project context ONCE — reused for every file in this merge
+    agent_context = _build_merge_agent_context(
+        project_token=project_token,
+        source_agent=source_agent,
+        source_branch=source_branch,
     )
-    unresolved_after = [f.strip() for f in (remaining.stdout or "").splitlines() if f.strip()]
-    if unresolved_after:
+    if agent_context:
         _log_git_agent(
-            f"AI merge left unresolved conflicts: {', '.join(unresolved_after[:5])}",
+            f"Built agent context block ({len(agent_context)} chars) for AI merge",
+            project_token=project_token,
+        )
+
+    all_succeeded = True
+
+    for file_path in unresolved:
+        # ── Fast-path: auto-generated lock files ──────────────────────────
+        if _force_resolve_lockfile(container_name, file_path, source_branch):
+            _log_git_agent(
+                f"Lock file {file_path} resolved by taking source-branch version.",
+                project_token=project_token,
+            )
+            continue
+
+        # ── AI resolution with per-file retry (up to 2 attempts) ──────────
+        resolved = False
+        last_error = ""
+        for attempt in range(1, 3):  # attempt 1, then 1 retry
+            base_content  = _read_merge_stage_file(container_name, file_path, 1)
+            ours_content  = _read_merge_stage_file(container_name, file_path, 2)
+            theirs_content = _read_merge_stage_file(container_name, file_path, 3)
+
+            if not ours_content and not theirs_content:
+                # Both sides are empty / missing — nothing to merge, skip
+                _log_git_agent(
+                    f"Both sides of {file_path} are empty — skipping AI merge.",
+                    "warning",
+                    project_token=project_token,
+                )
+                subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name, "git", "add", file_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                resolved = True
+                break
+
+            if attempt == 2:
+                # Second attempt: read live conflicted file for extra context
+                live_conflict = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "cat", file_path],
+                    capture_output=True, text=True, timeout=15,
+                )
+                extra = live_conflict.stdout or ""
+                _log_git_agent(
+                    f"Retrying AI merge for {file_path} (attempt 2) — "
+                    f"live conflicted file is {len(extra)} chars",
+                    "warning",
+                    project_token=project_token,
+                )
+
+            merged = await _call_ai_for_merge_resolution(
+                file_path=file_path,
+                base_content=base_content,
+                ours_content=ours_content,
+                theirs_content=theirs_content,
+                source_branch=source_branch,
+                source_agent=source_agent,
+                task_title=task_title,
+                agent_context=agent_context,
+            )
+
+            if not merged:
+                last_error = "AI returned empty content"
+                _log_git_agent(
+                    f"AI merge attempt {attempt} returned empty for {file_path}",
+                    "warning",
+                    project_token=project_token,
+                )
+                continue
+
+            if not _write_workspace_file_to_container(container_name, file_path, merged + "\n"):
+                last_error = "failed to write AI-merged file into container"
+                _log_git_agent(
+                    f"Failed to write AI-merged {file_path} (attempt {attempt})",
+                    "warning",
+                    project_token=project_token,
+                )
+                continue
+
+            valid, validation_error = _validate_ai_merged_file(container_name, file_path)
+            if not valid:
+                last_error = validation_error
+                _log_git_agent(
+                    f"AI merge validation failed for {file_path} (attempt {attempt}): {validation_error}",
+                    "warning",
+                    project_token=project_token,
+                )
+                continue
+
+            # All checks passed — stage the file
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name, "git", "add", file_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            _log_git_agent(
+                f"AI resolved {file_path} (attempt {attempt}).",
+                project_token=project_token,
+            )
+            resolved = True
+            break
+
+        if not resolved:
+            _log_git_agent(
+                f"AI could not resolve {file_path} after 2 attempts: {last_error}",
+                "error",
+                project_token=project_token,
+            )
+            all_succeeded = False
+
+    # Final check for any remaining conflict markers
+    remaining = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "diff", "--name-only", "--diff-filter=U"],
+        capture_output=True, text=True, timeout=20,
+    )
+    still_unresolved = [f.strip() for f in (remaining.stdout or "").splitlines() if f.strip()]
+    if still_unresolved:
+        _log_git_agent(
+            f"AI merge — {len(still_unresolved)} file(s) still unresolved: "
+            f"{', '.join(still_unresolved[:5])}",
             "error",
             project_token=project_token,
         )
         return False
 
+    resolved_count = len(unresolved) - len(still_unresolved)
     _log_git_agent(
-        f"AI merge resolution succeeded for {len(unresolved)} file(s).",
+        f"AI merge resolution complete — {resolved_count}/{len(unresolved)} file(s) resolved.",
         project_token=project_token,
     )
-    return True
+    return all_succeeded
 
 
 def _filter_merge_conflict_files(conflict_files: List[str]) -> List[str]:
@@ -7092,8 +7588,10 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     project_token=project_token,
                 )
 
-            # Ensure working directory is clean before checkout/merge
+            # Ensure working directory is clean before checkout/merge.
             # This prevents "Your local changes would be overwritten" errors
+            # which are the most common cause of merge failures in the shared
+            # container (a previous merge attempt may have left a dirty state).
             status_check = subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
                  "git", "status", "--porcelain"],
@@ -7101,16 +7599,39 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             )
             if (status_check.stdout or "").strip():
                 _log_git_agent(
-                    f"Working directory has uncommitted changes before merge. Stashing them.",
+                    f"Working directory has uncommitted changes before merge — cleaning.",
                     "warning",
                     project_token=project_token,
                 )
-                # Stash any uncommitted changes
-                subprocess.run(
+                # Try stash first (preserves changes for debugging)
+                stash_res = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name,
                      "git", "stash", "push", "-u", "-m", f"Auto-stash before merging {branch}"],
                     capture_output=True, text=True, timeout=30,
                 )
+                if stash_res.returncode != 0:
+                    # Stash failed (e.g. conflicted state from a previous merge attempt).
+                    # Hard-reset to guarantee a clean working tree.
+                    _log_git_agent(
+                        f"Stash failed — hard-resetting working tree to ensure clean state.",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "merge", "--abort"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "checkout", "--", "."],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "clean", "-fd"],
+                        capture_output=True, text=True, timeout=30,
+                    )
 
             checkout = subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
@@ -7132,13 +7653,55 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 capture_output=True, text=True, timeout=60,
             )
             if merge.returncode != 0:
+                merge_err_text = (merge.stderr or merge.stdout or "").lower()
+
+                # ── "local changes would be overwritten" ──────────────────────
+                # git refused to start the merge because tracked files in the
+                # working tree differ from HEAD.  This happens when a previous
+                # merge attempt on the shared container left a dirty state that
+                # the stash/reset above could not fully clean (e.g. a file that
+                # was added to the index but not committed).  Hard-reset the
+                # index and working tree, then retry the merge once.
+                if "would be overwritten by merge" in merge_err_text or \
+                   "please commit your changes or stash them" in merge_err_text:
+                    _log_git_agent(
+                        f"Merge pre-empted by dirty working tree for {branch} — "
+                        f"force-cleaning and retrying.",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "reset", "--hard", "HEAD"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "clean", "-fd"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    merge = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "git", "merge", "--no-ff", "--allow-unrelated-histories",
+                         f"origin/{branch}"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if merge.returncode == 0:
+                        # Recovery succeeded — fall through to push
+                        _log_git_agent(
+                            f"Merge succeeded after force-clean for {branch}.",
+                            project_token=project_token,
+                        )
+                    else:
+                        merge_err_text = (merge.stderr or merge.stdout or "").lower()
+
                 conflict_list = subprocess.run(
                     ["docker", "exec", "-w", "/workspace", container_name,
                      "git", "diff", "--name-only", "--diff-filter=U"],
                     capture_output=True, text=True, timeout=20,
                 )
                 files = [f.strip() for f in (conflict_list.stdout or "").splitlines() if f.strip()]
-                if not files:
+                if merge.returncode != 0 and not files:
                     _log_git_agent(
                         f"Merge failed for {branch}: {merge.stderr or merge.stdout}",
                         "error",
@@ -7150,6 +7713,7 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     )
                     return
 
+            if merge.returncode != 0 and files:
                 initial_conflicts = _filter_merge_conflict_files(files)
 
                 if initial_conflicts:
@@ -7258,57 +7822,89 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     )
                     return
 
-            try:
-                tests_result = await _run_git_manager_tests_with_ai(container_name, branch, project_token=project_token)
-            except Exception as test_err:
-                _log_git_agent(
-                    f"Test runner error after merging {branch}: {str(test_err)[:200]}",
-                    "error",
-                    project_token=project_token,
-                )
-                tests_result = {"ok": False, "failures": ["test runner error"], "details": []}
-            if not tests_result.get("ok"):
-                fix_agent_id = _pick_fix_agent_id(project_token)
-                detail_lines = []
-                for entry in tests_result.get("details") or []:
-                    cmd = entry.get("cmd") or ""
-                    tail = entry.get("tail") or ""
-                    if cmd or tail:
-                        detail_lines.append(f"Command: {cmd}\n{tail}")
-                details_blob = "\n\n".join(detail_lines).strip()
-                description = "\n".join(
-                    part for part in [
-                        f"Merge tests failed for branch {branch}.",
-                        f"Task: {task_title or 'unknown'}.",
-                        f"Failures: {', '.join(tests_result.get('failures') or [])}.",
-                        "",
-                        details_blob,
-                    ]
-                    if part
-                )
-                await _create_merge_fix_task(
-                    title=f"Fix: Merge test failures for {branch}",
-                    description=description,
-                    project_token=project_token,
-                    task_token=get_project_task_token(project_token),
-                    preferred_agent_id=fix_agent_id,
-                )
-                _log_git_agent(
-                    f"❌ Tests/validation failed after merge for {branch}. Aborting merge and leaving "
-                    f"{GIT_INTEGRATION_BRANCH} at last known-good state.",
-                    "error",
-                    project_token=project_token,
-                )
-                # Mark integration as blocked so only fix tasks are allowed until it is green again.
-                try:
-                    import context_manager as ctx_mgr
-                    live_mem = ctx_mgr.get_live_memory(project_token or "")
-                    live_mem.set_integration_blocked(True)
-                except Exception:
-                    pass
+            # ── Structural validation (conflict markers / syntax / JSON) ──────
+            # We do NOT run npm install / npm test / pytest here.
+            # The agent already validated its own code in its own container.
+            # This gate only catches things that the merge itself could break.
+            #
+            # Doom-loop guard: fix tasks for fix tasks never spawn further fix
+            # tasks.  We detect this by checking whether the branch name itself
+            # looks like a generated fix branch (contains "fix-merge-test").
+            is_fix_branch = "fix-merge-test" in branch or "fix-merge" in branch
+            fix_depth = int(item.get("fix_depth") or 0)
 
-                # Do not push this broken merge; retry loop will end and container will be destroyed.
-                return
+            tests_result: Dict[str, Any] = {"ok": True, "failures": [], "details": []}
+            try:
+                tests_result = await _run_git_manager_tests_with_ai(
+                    container_name, branch, project_token=project_token
+                )
+            except Exception as test_err:
+                # A crash in the validator must NEVER block the merge.
+                # Log it and let the merge proceed.
+                _log_git_agent(
+                    f"Structural validator crashed for {branch} — "
+                    f"treating as passed to avoid dropping branch: {str(test_err)[:300]}",
+                    "warning",
+                    project_token=project_token,
+                )
+                tests_result = {"ok": True, "failures": [], "details": []}
+
+            if not tests_result.get("ok"):
+                if is_fix_branch or fix_depth >= 1:
+                    # This is already a fix branch — do NOT create another fix
+                    # task.  Log the failure and push the merge anyway so code
+                    # is never permanently dropped.
+                    _log_git_agent(
+                        f"⚠️ Structural issues found in fix branch {branch} "
+                        f"(depth={fix_depth}) — pushing merge anyway to prevent "
+                        f"doom loop. Manual review recommended.",
+                        "warning",
+                        project_token=project_token,
+                    )
+                    # Fall through to push below
+                else:
+                    fix_agent_id = _pick_fix_agent_id(project_token)
+                    detail_lines = []
+                    for entry in tests_result.get("details") or []:
+                        cmd = entry.get("cmd") or ""
+                        tail = entry.get("tail") or ""
+                        if cmd or tail:
+                            detail_lines.append(f"Check: {cmd}\n{tail}")
+                    details_blob = "\n\n".join(detail_lines).strip()
+                    description = "\n".join(
+                        part for part in [
+                            f"Post-merge structural validation failed for branch {branch}.",
+                            f"Task: {task_title or 'unknown'}.",
+                            f"Issues: {', '.join(tests_result.get('failures') or [])}.",
+                            "",
+                            details_blob,
+                        ]
+                        if part
+                    )
+                    # Pass fix_depth so the fix branch inherits depth=1 and
+                    # won't spawn a further fix task if it also has issues.
+                    await _create_merge_fix_task(
+                        title=f"Fix: Merge structural issues for {branch}",
+                        description=description,
+                        project_token=project_token,
+                        task_token=get_project_task_token(project_token),
+                        preferred_agent_id=fix_agent_id,
+                        fix_depth=fix_depth + 1,
+                    )
+                    _log_git_agent(
+                        f"❌ Structural validation failed after merge for {branch}. "
+                        f"Aborting merge and leaving "
+                        f"{GIT_INTEGRATION_BRANCH} at last known-good state.",
+                        "error",
+                        project_token=project_token,
+                    )
+                    try:
+                        import context_manager as ctx_mgr
+                        live_mem = ctx_mgr.get_live_memory(project_token or "")
+                        live_mem.set_integration_blocked(True)
+                    except Exception:
+                        pass
+                    return
 
             push = subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
@@ -15098,13 +15694,33 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 task_id_str == "TASK-00"
                 or "project bootstrap" in task_title_str
             )
-            if is_bootstrap_task_check and is_bootstrap_pushed(project_token):
-                logger.info(f"[{agent_id}] Skipping bootstrap task {tid} - already pushed (status={status_lower})")
-                skip_reasons.setdefault("bootstrap_already_pushed", 0)
-                skip_reasons["bootstrap_already_pushed"] += 1
-                
+
+            # FIX: Double-check bootstrap status using multiple indicators
+            # 1. Check persistent bootstrap_pushed flag
+            # 2. Check if task is in completed_tasks list
+            # 3. Check if task status is already done
+            bootstrap_pushed_flag = is_bootstrap_pushed(project_token)
+            completed_tasks_list = state.get("completed_tasks", [])
+            task_already_completed_locally = any(
+                (_task_identity(completed) == tid)
+                for completed in completed_tasks_list
+                if isinstance(completed, dict)
+            )
+            task_done_externally = _task_status_is_done(status_lower)
+
+            # If ANY indicator shows bootstrap is done, skip it
+            if is_bootstrap_task_check and (bootstrap_pushed_flag or task_already_completed_locally or task_done_externally):
+                if bootstrap_pushed_flag:
+                    logger.info(f"[{agent_id}] Skipping bootstrap task {tid} - already pushed (status={status_lower})")
+                elif task_already_completed_locally:
+                    logger.info(f"[{agent_id}] Skipping bootstrap task {tid} - already in completed tasks list")
+                else:
+                    logger.info(f"[{agent_id}] Skipping bootstrap task {tid} - externally marked as done (status={status_lower})")
+                skip_reasons.setdefault("bootstrap_already_done", 0)
+                skip_reasons["bootstrap_already_done"] += 1
+
                 # If the task is not marked complete in external system, try to complete it now
-                if not _task_status_is_done(status_lower):
+                if not task_done_externally:
                     logger.warning(f"[{agent_id}] Bootstrap task {tid} is pushed but not marked complete in NxDune. Attempting to complete it now.")
                     try:
                         await _post_task_complete(t, project_token=project_token, task_token=task_token)
@@ -15133,14 +15749,20 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             )
 
             # ═══ CRITICAL FIX: Never re-run bootstrap if it's already completed ═══
+            # Use the same multi-indicator check as above for consistency
             if is_bootstrap_task:
-                # Check if bootstrap was already completed
-                if is_bootstrap_pushed(project_token):
-                    logger.info(f"[{agent_id}] Bootstrap task {tid} already completed - skipping")
+                # Check if bootstrap was already completed using multiple indicators
+                bootstrap_done = (
+                    is_bootstrap_pushed(project_token)
+                    or task_already_completed_locally
+                    or task_done_externally
+                )
+                if bootstrap_done:
+                    logger.info(f"[{agent_id}] Bootstrap task {tid} already completed - skipping (pushed={is_bootstrap_pushed(project_token)}, local={task_already_completed_locally}, external={task_done_externally})")
                     skip_reasons.setdefault("bootstrap_already_done", 0)
                     skip_reasons["bootstrap_already_done"] += 1
                     continue
-                
+
                 # Bootstrap task has no dependencies - it's always first
                 logger.info(f"[{agent_id}] Bootstrap task {tid} selected - will create project structure")
             else:
