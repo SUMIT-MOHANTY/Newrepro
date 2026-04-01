@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { ChevronRight, ChevronDown, File, Folder, FolderOpen, Lock, Unlock } from 'lucide-react';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+
 // Helper function to detect filename from code (defined outside component)
 const detectFilename = (code) => {
   if (!code) return 'code.txt';
@@ -65,7 +67,7 @@ const FileTree = ({ code, darkMode, onFileSelect, selectedFile, projectId }) => 
     
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:8000/vibecoding/api/projects/${projectId}/frozen-files`, {
+      const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/frozen-files`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -89,7 +91,7 @@ const FileTree = ({ code, darkMode, onFileSelect, selectedFile, projectId }) => 
       const token = localStorage.getItem('token');
       const isFrozen = frozenFiles.includes(filePath);
       
-      const response = await fetch(`http://localhost:8000/vibecoding/api/projects/${projectId}/frozen-files`, {
+      const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/frozen-files`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

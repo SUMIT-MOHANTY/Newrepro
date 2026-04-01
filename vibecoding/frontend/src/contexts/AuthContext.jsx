@@ -3,7 +3,7 @@ import axios from 'axios';
 
 // Vibecoding backend routes are mounted under `/vibecoding/api/*`
 // (can be overridden via VITE_API_BASE_URL)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
 
 const AuthContext = createContext(null);
 
@@ -94,7 +94,7 @@ export function AuthProvider({ children }) {
       email,
       password,
     });
-    
+
     const { token: newToken, user: userData } = response.data;
     localStorage.setItem('vibecoding_token', newToken);
     setToken(newToken);
@@ -118,7 +118,7 @@ export function AuthProvider({ children }) {
       setToken(newToken);
       setUser(userData);
     }
-    
+
     return response.data;
   }, []);
 

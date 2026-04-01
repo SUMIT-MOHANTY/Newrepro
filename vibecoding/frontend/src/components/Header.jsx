@@ -5,7 +5,7 @@ import { Button } from './ui/button';
 import bourntecLogo from '../../assets/bourntec_logo.png';
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
 
 const Header = ({
   chatVersion,

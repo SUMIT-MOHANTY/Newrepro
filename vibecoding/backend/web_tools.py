@@ -302,7 +302,14 @@ async def make_request_with_tools(
         except httpx.TimeoutException:
             raise Exception("AI API request timed out after 300 seconds. The generation took too long.")
         except httpx.HTTPStatusError as e:
-            raise Exception(f"AI API returned error status {e.response.status_code}: {e.response.text}")
+            # Safely read response before accessing .text
+            try:
+                if not getattr(e.response, "_content_read", False):
+                    await e.response.aread()
+                error_body = e.response.text
+            except Exception:
+                error_body = "(Could not read error response)"
+            raise Exception(f"AI API returned error status {e.response.status_code}: {error_body}")
         except httpx.HTTPError as e:
             raise Exception(f"AI API networking error: {str(e)}")
 
@@ -414,6 +421,13 @@ async def make_request_with_tools(
     except httpx.TimeoutException:
         raise Exception("AI API final request timed out after 300 seconds.")
     except httpx.HTTPStatusError as e:
-        raise Exception(f"AI API final request returned status {e.response.status_code}: {e.response.text}")
+        # Safely read response before accessing .text
+        try:
+            if not getattr(e.response, "_content_read", False):
+                await e.response.aread()
+            error_body = e.response.text
+        except Exception:
+            error_body = "(Could not read error response)"
+        raise Exception(f"AI API final request returned status {e.response.status_code}: {error_body}")
     except httpx.HTTPError as e:
         raise Exception(f"AI API final networking error: {str(e)}")

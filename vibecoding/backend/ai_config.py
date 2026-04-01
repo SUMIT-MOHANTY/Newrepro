@@ -124,7 +124,14 @@ class BaseProvider(ABC):
         except httpx.TimeoutException:
             raise Exception(f"{self.name} request timed out.")
         except httpx.HTTPStatusError as e:
-            raise Exception(f"{self.name} returned status {e.response.status_code}: {e.response.text}")
+            # For streaming responses, we must read the content before accessing .text
+            try:
+                if not getattr(e.response, "_content_read", False):
+                    await e.response.aread()
+                error_body = e.response.text
+            except Exception:
+                error_body = "(Could not read error response)"
+            raise Exception(f"{self.name} returned status {e.response.status_code}: {error_body}")
         except httpx.HTTPError as e:
             raise Exception(f"{self.name} networking error: {e}")
 

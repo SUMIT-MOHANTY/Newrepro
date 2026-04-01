@@ -285,9 +285,12 @@ function Workspace({ user, logout, isAuthenticated }) {
           // Parse into file tree
           const fileTree = parseCodeToFiles(fullCode);
 
-          setPreviewCode(fullCode);
           setFullCode(fullCode);
           setFileTree(fileTree);
+          
+          // Determine best initial preview code (usually index.html)
+          const indexFile = filesMap['index.html'] || filesMap['index.jsx'] || Object.values(filesMap)[0];
+          setPreviewCode(indexFile || '');
 
           // Select first file
           const findFirstFile = (items) => {
@@ -448,6 +451,10 @@ function Workspace({ user, logout, isAuthenticated }) {
         containerLoadExpectedRef.current = true;
         setIsContainerLoading(true);
         setPreviewUrl(previewResp.data.preview_url);
+        // Only auto-switch if not in code view
+        if (activeView !== 'code') {
+          setActiveView('preview');
+        }
         startContainerRetry(previewResp.data.preview_url);
       }
 
@@ -885,7 +892,9 @@ function Workspace({ user, logout, isAuthenticated }) {
           }
         } else {
           setFullCode(fullCodeContent); // Store full code
-          setPreviewCode(fullCodeContent);
+          const tempFiles = parseCodeToFiles(fullCodeContent);
+          const firstHtml = tempFiles.find(f => f.name.endsWith('.html'))?.content || fullCodeContent;
+          setPreviewCode(firstHtml);
           setIframeKey(prev => prev + 1); // Force iframe refresh
 
           // Parse code to build file tree
@@ -962,13 +971,18 @@ function Workspace({ user, logout, isAuthenticated }) {
         containerLoadExpectedRef.current = true;
         setIsContainerLoading(true);
         setPreviewUrl(response.data.preview_url);
-        setActiveView('preview');
+        // Only auto-switch to preview if user is NOT currently in code view
+        if (activeView !== 'code') {
+          setActiveView('preview');
+        }
         // Start retry loop imperatively — bypasses React batching issues
         startContainerRetry(response.data.preview_url);
       } else if (response.data.code) {
         // No container URL, use inline preview
         setPreviewUrl('');
-        setActiveView('preview');
+        if (activeView !== 'code') {
+          setActiveView('preview');
+        }
       }
 
       // Reload branch commits to show new checkpoint in version history
@@ -1942,7 +1956,7 @@ Please suggest improvements or modifications for this element.`;
 
                     {/* Container / Checkpoint loader overlay */}
                     {(isCheckpointLoading || (isContainerLoading && previewUrl)) && (
-                      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#0A0A0F]/95 backdrop-blur-sm">
+                      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#0A0A0F]/60 backdrop-blur-sm">
                         {/* Animated rings */}
                         <div className="relative flex items-center justify-center mb-8">
                           <div className="absolute w-24 h-24 rounded-full border-2 border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
@@ -2181,7 +2195,9 @@ Please suggest improvements or modifications for this element.`;
                       {/* Code Content */}
                       <div className="flex-1 py-4 px-4 overflow-x-auto custom-scrollbar bg-[#0A0A0F] min-w-0">
                         <pre className="text-sm font-mono leading-relaxed text-gray-300">
-                          <code key={selectedFile?._loadedAt || selectedFile?.path || 'preview'}>{selectedFile?.content || previewCode}</code>
+                          <code key={selectedFile?._loadedAt || selectedFile?.path || 'empty'}>
+                            {selectedFile?.content || (fileTree.length > 0 ? "Select a file to view its code" : "No files generated yet")}
+                          </code>
                         </pre>
                       </div>
                     </div>

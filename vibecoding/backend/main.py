@@ -1,19 +1,21 @@
 import json
 import hashlib
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Depends, Request
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
-from typing import List, Optional
+import asyncio
 import os
 import uuid
 import re as _re
 from datetime import datetime
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, Response
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
 from dotenv import load_dotenv
+
 from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
@@ -23,7 +25,6 @@ from dual_agent_handler import get_dual_agent_handler
 from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
 
 import logging
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,6 @@ async def wait_for_container_ready(base_url: str, max_attempts: int = 5, delay: 
     This handles the case where containers are dynamically starting.
     First tries the /health endpoint, then falls back to HEAD request.
     """
-    import asyncio
     import time
     
     for attempt in range(max_attempts):
@@ -135,6 +135,164 @@ async def wait_for_container_ready(base_url: str, max_attempts: int = 5, delay: 
                 delay *= 1.5  # Exponential backoff
     
     return False
+
+# ─── Container Proxy Endpoint ──────────────────────────────────────────────────
+def get_warming_up_html():
+    """Returns the 'Warming up' HTML with meta-refresh."""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="refresh" content="3">
+        <title>Preview Warming Up</title>
+        <style>
+            body {{
+                background: #0f172a;
+                color: white;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }}
+            .loader {{
+                width: 48px;
+                height: 48px;
+                border: 3px solid #FFF;
+                border-bottom-color: transparent;
+                border-radius: 50%;
+                display: inline-block;
+                box-sizing: border-box;
+                animation: rotation 1s linear infinite;
+                margin-bottom: 20px;
+            }}
+            @keyframes rotation {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            .text {{ text-align: center; color: rgba(255,255,255,0.8); }}
+            progress {{ width: 200px; height: 4px; accent-color: #a855f7; border-radius: 2px; margin-top: 15px; border: none; background: rgba(255,255,255,0.1); }}
+        </style>
+    </head>
+    <body>
+        <span class="loader"></span>
+        <div class="text">
+            <h2 style="margin: 0 0 8px 0;">Preview is Warming Up...</h2>
+            <p style="margin: 0; opacity: 0.7;">Container is starting in the background.</p>
+            <progress></progress>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.api_route("/vibecoding/app/{project_token}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"], include_in_schema=False, response_class=HTMLResponse)
+@app.api_route("/vibecoding/app/{project_token}/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"], include_in_schema=False, response_class=HTMLResponse)
+async def container_proxy(project_token: str, path: str = "", request: Request = None):
+    """
+    Generic proxy that routes traffic to the specific Docker container for a project.
+    This allows the frontend to use a single persistent URL while containers use ephemeral ports.
+    """
+    # Forward query parameters
+    query_params = request.scope.get("query_string", b"").decode()
+    
+    # 1. First, check if the container is even ready (has a port)
+    port = get_container_port(project_token)
+    if not port:
+        # If it's a main page request, return Warming Up instead of 404
+        if not path or path.endswith((".html", "/")):
+            logger.info(f"🏘️ Container for {project_token} not registered yet. Returning 'Warming up' HTML.")
+            return HTMLResponse(content=get_warming_up_html())
+        raise HTTPException(status_code=404, detail=f"Container for {project_token} not found or not running.")
+
+    target_base = f"http://127.0.0.1:{port}"
+    target_url = f"{target_base}/{path}"
+    if query_params:
+        target_url += f"?{query_params}"
+
+    # Prepare headers — exclude hop-by-hop and connection-management headers
+    excluded_outgoing = ["host", "content-length", "connection", "keep-alive", "proxy-connection", "upgrade"]
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_outgoing}
+    headers["accept-encoding"] = "identity"  # Prefer uncompressed for stable proxying
+    
+    # 1. First, wait for container to be ready (Pre-flight)
+    is_ready = await wait_for_container_ready(target_base, max_attempts=15, delay=1.0)
+    if not is_ready:
+        print(f"⚠️ Container {target_base} still not responding after 15s. Proceeding anyway.")
+
+    # 2. Proxy request with internal retries to avoid "Connection Reset" JSON in iframe
+    max_retries = 5
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            session = get_proxy_session()
+            body = await request.body()
+            
+            print(f"🔄 Proxying {request.method} to {target_url} (attempt {attempt + 1})")
+            resp = session.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                data=body if body else None,
+                allow_redirects=False,
+                timeout=(5, 30)
+            )
+            
+            # Prepare response headers
+            excluded_response = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "x-frame-options", "content-security-policy"]
+            response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_response}
+            
+            # Allow iframe embedding
+            response_headers["X-Frame-Options"] = "ALLOWALL"
+            response_headers["Access-Control-Allow-Origin"] = "*"
+
+            # Handle content
+            final_content = resp.content
+            encoding = resp.headers.get("content-encoding", "").lower()
+            if "gzip" in encoding:
+                import gzip as _gzip
+                try:
+                    final_content = _gzip.decompress(final_content)
+                except Exception:
+                    pass
+
+            response_headers["content-length"] = str(len(final_content))
+            media_type = resp.headers.get("content-type", "")
+
+            return StreamingResponse(
+                iter([final_content]),
+                status_code=resp.status_code,
+                headers=response_headers,
+                media_type=media_type
+            )
+
+        except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+            last_error = e
+            error_msg = str(e).lower()
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 0.5
+                print(f"⏳ Connection error (attempt {attempt + 1}): {error_msg}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                continue
+            break
+        except Exception as e:
+            last_error = e
+            break
+
+    # 3. If we're here, all retries failed. 
+    # To avoid showing raw JSON error to user, return a friendly "Warming up" HTML 
+    # ONLY if it's likely a main page request (no path or html-like path)
+    if not path or path.endswith((".html", "/")):
+        logger.info(f"🏘️ Proxy failed. Returning 'Warming up' HTML instead of JSON error.")
+        return HTMLResponse(content=get_warming_up_html(), status_code=200)
+
+    # For assets/API calls that failed, return the 502 as before
+    logger.error(f"❌ Final proxy failure for {target_url}: {last_error}")
+    raise HTTPException(status_code=502, detail=f"Proxy error: {str(last_error)}")
+
 
 class Message(BaseModel):
     role: str
@@ -228,8 +386,6 @@ Add hover animations to the buttons"""
         return []
 
 # AI Configuration is now handled by ai_config.py
-
-SYSTEM_PROMPT = MAIN_SYSTEM_PROMPT
 
 # ─── Auth Endpoints ─────────────────────────────────────────────────────────────
 @app.post("/vibecoding/api/auth/signup")
@@ -525,7 +681,7 @@ def _preprocess_ai_response(text: str) -> str:
 
 
 @app.post("/vibecoding/api/generate", response_model=GenerateResponse)
-async def generate_code(request: GenerateRequest):
+async def generate_code(request: GenerateRequest, background_tasks: BackgroundTasks):
     # Get or create project ID at the start
     project_id = request.project_id or project_manager.generate_project_id()
     
@@ -581,276 +737,156 @@ async def generate_code(request: GenerateRequest):
         # Inject BRD project context if available
         brd_context_str = ""
         project_meta = project_manager.get_project_info(project_id)
-        if project_meta and project_meta.get("brd_context"):
-            brd = project_meta["brd_context"]
+        brd_data = project_meta.get("brd_context") if project_meta else None
+        
+        if brd_data:
             parts = []
-            if brd.get("project_name"):
-                parts.append(f"Project Name: {brd['project_name']}")
-            if brd.get("classification"):
-                parts.append(f"Governance Classification: {brd['classification']}")
-            if brd.get("recommendation"):
-                parts.append(f"Governance Recommendation: {brd['recommendation']}")
-            if brd.get("brd_summary"):
-                parts.append(f"BRD Summary: {brd['brd_summary']}")
-            if brd.get("agent_analysis"):
-                parts.append(f"Agent Analysis: {brd['agent_analysis']}")
+            if brd_data.get("project_name"):
+                parts.append(f"Project Name: {brd_data['project_name']}")
+            if brd_data.get("classification"):
+                parts.append(f"Governance Classification: {brd_data['classification']}")
+            if brd_data.get("recommendation"):
+                parts.append(f"Governance Recommendation: {brd_data['recommendation']}")
+            if brd_data.get("brd_summary"):
+                parts.append(f"BRD Summary: {brd_data['brd_summary']}")
+            if brd_data.get("agent_analysis"):
+                parts.append(f"Agent Analysis: {brd_data['agent_analysis']}")
             if parts:
                 brd_context_str = "\n\n📄 PROJECT CONTEXT (from BRD Analyzer):\n" + "\n".join(parts) + "\n"
 
         # Build conversation history with appropriate system prompt
-        if has_existing_code:
-            # Provide context about existing code and let AI decide whether to do incremental or full edit
-            file_list = "\n".join([f"- {path}" for path in workspace_files.keys()])
-            
-            # Format current files for context
-            current_files_str = ""
-            for path, content in workspace_files.items():
-                current_files_str += f"\n\n// FILE: {path}\n{content}"
-            
-            from prompts import INCREMENTAL_EDIT_PROMPT
-            system_prompt = INCREMENTAL_EDIT_PROMPT.replace("{{file_list}}", file_list).replace("{{current_files}}", current_files_str).replace("{{frozen_files}}", frozen_files_str)
-            logger.info(f"📝 Existing codebase detected - AI will decide edit scope")
-        else:
-            system_prompt = SYSTEM_PROMPT.replace("{{frozen_files}}", frozen_files_str)
-            logger.info(f"🆕 New project - full generation mode")
+        from prompts import get_dynamic_system_prompt
+        
+        # Determine extra directives based on current user prompt intent
+        extra_directives = ""
+        p_lower = request.prompt.lower()
+        if any(word in p_lower for word in ['redesign', 'premium', 'modernize', 'professional', 'ux', 'ui']):
+            extra_directives = "🎯 DESIGN UPGRADE: The user wants a premium, modern, or OS-like redesign. Use deep glassmorphism, subtle micro-animations on hover, and custom layouts that fill the entire screen. Ensure it is RESPONSIVE and mobile-ready."
+        elif any(word in p_lower for word in ['simple', 'clean', 'minimalist']):
+            extra_directives = "🎯 DESIGN DIRECTIVE: Create a clean, minimalist, but high-fidelity 'Apple-style' UI. High contrast, precise typography (Inter), and plenty of whitespace while still feeling complete."
+
+        # Pass in all data to the dynamic prompt factory
+        system_prompt = get_dynamic_system_prompt(
+            mode="edit" if has_existing_code else "generate",
+            frozen_files=frozen_files_str,
+            file_list="\n".join([f"- {path}" for path in workspace_files.keys()]) if has_existing_code else "",
+            current_files="".join([f"\n\n// FILE: {path}\n{content}" for path, content in workspace_files.items()]) if has_existing_code else "",
+            brd_context=brd_data,
+            extra_directives=extra_directives
+        )
         
         from datetime import datetime
         now = datetime.now()
         date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
-        messages = [{"role": "system", "content": date_context + system_prompt + brd_context_str}]
+        messages = [{"role": "system", "content": date_context + system_prompt}]
         for msg in request.history:
-            messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
+            messages.append({"role": msg.role, "content": msg.content})
         
-        # Add current prompt with explicit instructions for incremental edits
+        prompt_with_instructions = request.prompt
         if has_existing_code:
-            # Add a reminder to the user's prompt for incremental edits
-            prompt_with_instructions = f"""{request.prompt}
-
-IMPORTANT: If this is a small change (like changing colors, text, or adding a simple feature), output ONLY the files that need to be modified. Do NOT regenerate the entire codebase."""
-        else:
-            prompt_with_instructions = request.prompt
-        if any(word in request.prompt.lower() for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
-            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. After you have gathered the necessary information about the page, you MUST generate the COMPLETE project code with ALL necessary files using the `// FILE: path/to/file.ext` format. DO NOT just describe the page; build it.)"
+            prompt_with_instructions = f"{request.prompt}\n\nIMPORTANT: If this is a small change, output ONLY the files that need to be modified. Do NOT regenerate the entire codebase."
+        
+        if any(word in p_lower for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
+            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. After you have gathered information, generate the COMPLETE project code with ALL necessary files.)"
             
         messages.append(build_vision_message(prompt_with_instructions, request.images))
 
-        # Log just the user prompt (not the entire messages array with system prompt and history)
-        log_prompt = f"User Request: {request.prompt}\n\nWith Instructions: {prompt_with_instructions}"
-        
-        # Call AI API with function calling support (web search + page fetch)
+        # Log AI request
+        log_prompt = f"User Request: {request.prompt}"
         response = await make_request_with_tools(messages)
-        
-        # Extract tool calls log if any tools were used
         tool_calls_log = response.pop("_tool_calls_log", None)
         
-        # Extract AI response
         if "choices" in response and len(response["choices"]) > 0:
             ai_response = response["choices"][0]["message"].get("content") or ""
         else:
             raise Exception("Invalid response format from AI API")
         
-        # Log the main AI interaction
         log_ai_interaction(log_prompt, ai_response, "main_generation")
 
-        # Extract code if present
+        # Extract code
         import re as _re
-        code = None
-        
-        # ── Preprocess: fix mixed AI format (// FILE: + SEARCH/REPLACE) ──
-        # Some models output "// FILE: path" headers for SEARCH/REPLACE blocks
-        # instead of "// PATCH: path". Detect and convert before the main parser.
         ai_response = _preprocess_ai_response(ai_response)
         
         has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
-        has_raw_search_replace = (
-            not has_patch_markers
-            and bool(_re.search(r'<<<\s*SEARCH', ai_response))
-            and bool(_re.search(r'<<<\s*REPLACE', ai_response))
-        )
+        has_raw_search_replace = (not has_patch_markers and bool(_re.search(r'<<<\s*SEARCH', ai_response)) and bool(_re.search(r'<<<\s*REPLACE', ai_response)))
         has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
 
+        code = None
         if has_patch_markers or has_raw_search_replace:
             code = ai_response
         elif has_markers:
-            # Extract code ONLY from within markdown fences to avoid including
-            # preamble / epilogue narrative in the preview iframe.
             fenced_blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
             fenced_code = "\n\n".join(b.strip() for b in fenced_blocks).strip() if fenced_blocks else ""
-
             if fenced_code and _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', fenced_code):
                 code = fenced_code
             else:
-                # Fallback: strip fences, then take only from the first file marker onward.
-                cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response)
-                cleaned = cleaned.replace('```', '')
+                cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response).replace('```', '')
                 first_marker = _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', cleaned)
-                if first_marker:
-                    code = cleaned[first_marker.start():].strip()
-                else:
-                    code = cleaned.strip()
+                code = cleaned[first_marker.start():].strip() if first_marker else cleaned.strip()
         else:
-            # No file markers. Extract all markdown code blocks and join them.
             blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
             if blocks:
-                # Universal Code Extraction (Regex)
                 import re
                 code_match = re.search(r"```(?:\w+)?\n?(.*?)\n?```", ai_response, re.DOTALL)
-                if code_match:
-                    code = code_match.group(1).strip()
-                else:
-                    code = "\n\n".join(blocks).strip()
+                code = code_match.group(1).strip() if code_match else "\n\n".join(blocks).strip()
             elif '<html' in ai_response.lower() or '<!doctype' in ai_response.lower():
-                # Fallback if no markdown but HTML is present
                 code = ai_response.strip()
-        
-        # Clean up integrity/crossorigin attributes and stray patch markers
-        if code:
-            import re
-            # Remove integrity attributes
-            code = re.sub(r'\s+integrity="[^"]*"', '', code)
-            code = re.sub(r"\s+integrity='[^']*'", '', code)
-            # Remove crossorigin attributes
-            code = re.sub(r'\s+crossorigin="[^"]*"', '', code)
-            code = re.sub(r"\s+crossorigin='[^']*'", '', code)
-            code = re.sub(r'\s+crossorigin(?=\s|>)', '', code)
 
-            # If this is clearly a full HTML/file output (not patch mode), strip accidental PATCH tokens
-            # that sometimes leak into the generated HTML (e.g. bare "<<<REPLACE" lines).
-            if (not has_patch_markers) and (not has_raw_search_replace):
-                looks_like_html = '<!doctype' in code.lower() or '<html' in code.lower()
-                if looks_like_html and ('<<<REPLACE' in code or '<<<SEARCH' in code):
-                    code = re.sub(r'^\s*(<<<SEARCH|<<<REPLACE|>>>)\s*$', '', code, flags=re.MULTILINE)
-                    code = re.sub(r'\n{3,}', '\n\n', code).strip()
-        
-        # Initialize message variable
+        # Extract message 
         message = ai_response
-        
-        # Check if AI returned instructions instead of actual code
-        # (skip this check for patch responses — they never start with code prefixes)
-        is_any_patch = has_patch_markers or has_raw_search_replace
-        if code and not is_any_patch and (
-            not code.strip().startswith((
-                # Python
-                'from', 'import', 'def', 'class', 'app =', 'if __name__',
-                # HTML
-                '<!DOCTYPE', '<!doctype', '<html', '<HTML', '<!--',
-                # JSON / JS objects
-                '{', '[',
-                # JavaScript / TypeScript
-                'const ', 'let ', 'var ', 'function ', 'export ', 'import ',
-                'async ', 'module.', 'require(',
-                # React/JSX
-                'React', 'useState', 'useEffect',
-                # Go
-                'package ', 'func ',
-                # Rust
-                'fn ', 'use ', 'mod ', 'pub ', 'extern ',
-                # Java / C#
-                'public ', 'private ', 'protected ', 'namespace ', 'using ',
-                # Ruby
-                'require ', 'gem ', 'module ',
-                # PHP
-                '<?php', '<?=',
-                # Shell
-                '#!/', '#!',
-                # CSS
-                '@import', '@media', '@keyframes', '@charset',
-                # Comments (code often starts with comments)
-                '//', '/*', '#',
-            )) and
-            len(code.strip().split('\n')) < 5
-        ):
-            code = None
-            message = ai_response
-
-        # Clean message (remove code blocks and patch blocks — show only narrative)
         if code:
             if has_patch_markers:
                 message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
             elif has_raw_search_replace:
                 message = _re.split(r'<<<\s*SEARCH', ai_response)[0].strip()
             elif has_markers:
-                # Capture both preamble (before first fence) and epilogue (after last fence)
                 parts = ai_response.split("```")
                 preamble = parts[0].strip()
                 epilogue = parts[-1].strip() if len(parts) >= 3 else ""
-                if epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue):
-                    message = f"{preamble}\n\n{epilogue}".strip()
-                else:
-                    message = preamble
+                message = f"{preamble}\n\n{epilogue}".strip() if (epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue)) else preamble
             else:
                 message = ai_response.split("```")[0].strip()
-            # Remove stray markdown fences from the message portion
             message = message.replace('```', '').strip()
 
-        # Save code version if code was generated
+        # Save and Prepare Response
         version_id = None
         preview_url = None
         
         if code:
-            # Use git-based workspace update (auto-detects incremental vs full)
             try:
                 version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
             except ValueError as e:
-                # Check if it's a frozen file violation
                 if str(e).startswith("FROZEN_FILES_VIOLATION:"):
                     frozen_files_str = str(e).split(":", 1)[1]
-                    frozen_list = frozen_files_str.split(",")
-                    # Remove duplicates
-                    frozen_list = list(set(frozen_list))
-                    violation_list = "\n".join([f"  - {f}" for f in frozen_list])
-                    error_message = f"Cannot complete this request. The following files are frozen (read-only) and cannot be modified:\n\n{violation_list}\n\nPlease unfreeze these files if you want to make changes, or rephrase your request to avoid modifying them."
-                    
-                    return GenerateResponse(
-                        message=error_message,
-                        code=None,
-                        project_id=project_id,
-                        version_id=None,
-                        preview_url=None,
-                        tool_calls_log=tool_calls_log,
-                        suggestions=None
-                    )
-                else:
-                    raise
+                    violation_list = "\n".join([f"  - {f}" for f in list(set(frozen_files_str.split(",")))])
+                    error_message = f"Cannot complete this request. The following files are frozen:\n\n{violation_list}\n\nPlease unfreeze them if you want to make changes."
+                    return GenerateResponse(message=error_message, code=None, project_id=project_id, version_id=None, preview_url=None, tool_calls_log=tool_calls_log, suggestions=None)
+                raise
             
-            # Save chat history for the current branch (not commit hash)
+            # Save chat history
             try:
-                # Get current branch name
                 status = git_manager.get_status(project_id)
                 current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
-                
                 history = [{"role": msg.role, "content": msg.content} for msg in request.history]
                 history.append({"role": "user", "content": request.prompt})
-                # Always use the AI's message - it should never be empty
                 history.append({"role": "assistant", "content": message})
-                
-                # Save with branch name so it persists across commits in the same branch
                 await project_manager.save_chat_version(project_id, current_branch, history)
-                logger.info(f"💾 Saved chat history to branch: {current_branch}")
             except Exception as e:
                 print(f"Failed to save chat history: {e}")
             
-            # Check if Docker is available before attempting to create container
-            if project_manager.docker_client is None:
-                print("⚠️ Docker not available - preview functionality disabled")
-                preview_url = None
-            else:
-                # Pass user prompt so the container's ai-agent knows the intent
+            # Final Response setup
+            preview_url = project_manager.get_preview_url(project_id)
+            if project_manager.docker_client:
                 project_manager._current_user_prompt = request.prompt
-                try:
-                    preview_url = await project_manager.create_container_for_code(project_id, "workspace")
-                except Exception as e:
-                    print(f"Failed to create container: {str(e)}")
-                    preview_url = None
+                background_tasks.add_task(project_manager.create_container_for_code, project_id, "workspace")
+                logger.info(f"🚀 Started container for {project_id} in background")
+            else:
+                preview_url = None
 
-        # Generate contextual suggestions
         suggestions = await generate_suggestions(message, code or "", request.prompt)
         
         return GenerateResponse(
-            message=message,  # Always return AI's message directly
+            message=message,
             code=code,
             project_id=project_id,
             version_id=version_id,
@@ -860,13 +896,21 @@ IMPORTANT: If this is a small change (like changing colors, text, or adding a si
         )
 
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logger.error(f"Error in generate_code: {str(e)}")
         import traceback
         traceback.print_exc()
         
-        # Return error response with valid project_id
+        # Determine a user-friendly error message based on the type of error
+        error_msg = str(e)
+        user_friendly_msg = "An unexpected error occurred while generating your project. Please try again or refine your prompt."
+        
+        if "NameError" in error_msg:
+            user_friendly_msg = "A technical error occurred (Reference Error). Our team has been notified. Please try again in 1 minute."
+        elif "HTTPException" in error_msg:
+            user_friendly_msg = f"System error: {error_msg}. Please check your inputs or project settings."
+            
         return GenerateResponse(
-            message=f"I encountered an error: {str(e)}. Please try again or rephrase your request.",
+            message=user_friendly_msg,
             code=None,
             project_id=project_id,
             version_id=None,
@@ -1172,8 +1216,25 @@ async def get_chat_history(project_id: str, version_id: str):
         history = await project_manager.get_chat_version(project_id, version_id)
         if history is None:
             return {"history": []}
-        return {"history": history}
+            
+        # Sanitize history to remove raw code markers if any leaked in
+        sanitized_history = []
+        import re
+        for msg in history:
+            content = msg.get("content", "")
+            if msg.get("role") == "assistant" and content:
+                # Split at markers
+                parts = re.split(r'(?i)//\s*FILE:|#\s*FILE:|<!--\s*FILE:|//\s*PATCH:', content)
+                clean_content = parts[0].strip()
+                # If we cleaned everything out but there's metadata suggesting code was there, show a clean message
+                if not clean_content and (len(parts) > 1 or msg.get("versionId")):
+                    clean_content = "The codebase was updated."
+                msg["content"] = clean_content
+            sanitized_history.append(msg)
+            
+        return {"history": sanitized_history}
     except Exception as e:
+        logger.error(f"Error getting chat history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/vibecoding/api/projects/{project_id}/chat/{version_id}")
@@ -1485,136 +1546,91 @@ def get_container_port(project_id: str) -> str:
         # Check running containers registry
         registry_file = ARTIFACTS_DIR / '.container_registry.json'
         print(f"Looking for registry at: {registry_file}")
-        print(f"Registry exists: {registry_file.exists()}")
         
         if registry_file.exists():
             with open(registry_file, 'r') as f:
                 registry = json.load(f)
-                print(f"Registry contents: {registry}")
                 container_name = f"vibecoding_{project_id}"
-                print(f"Looking for container: {container_name}")
                 if container_name in registry:
                     return registry[container_name]['port']
     except Exception as e:
         print(f"Error reading container registry: {e}")
-    print(f"No port found for project_id: {project_id}")
     return None
 
-async def proxy_request(target_base: str, request: Request, forward_path: str):
-    """Generic proxy handler with connection pooling"""
-    target_url = target_base + forward_path
+
+
+
+# ─── Catch-all Proxy for Absolute Assets ──────────────────────────────────────
+# CRITICAL: This MUST stay at the very end of the file to avoid intercepting other routes
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"], include_in_schema=False)
+async def asset_fallback_proxy(path: str, request: Request):
+    """
+    Handles requests for absolute paths (e.g. /assets/foo.js) by using the Referer 
+    header to determine which container the request belongs to.
+    """
+    referer = request.headers.get("referer", "")
+    if not referer:
+        # We don't log here to avoid noise from direct hits, but assets MUST have referer
+        raise HTTPException(status_code=404)
+
+    # Check if referer is one of our app proxy URLs
+    # Matches both /vibecoding/app/{token}/ AND /app/{token}/
+    match = _re.search(r'/(?:vibecoding/)?app/([a-zA-Z0-9_-]+)/', referer)
+    if not match:
+        raise HTTPException(status_code=404)
+
+    project_token = match.group(1)
     
-    # Forward query params
-    if request.url.query:
-        target_url += "?" + request.url.query
+    # Get container port for this project
+    port = get_container_port(project_token)
+    if not port:
+        raise HTTPException(status_code=404)
+
+    target_url = f"http://127.0.0.1:{port}/{path}"
+    query_params = request.scope.get("query_string", b"").decode()
+    if query_params:
+        target_url += f"?{query_params}"
     
-    # Forward headers (excluding host and content-length)
-    headers = {}
-    for key, value in request.headers.items():
-        key_lower = key.lower()
-        if key_lower not in ["host", "x-forwarded-for", "x-forwarded-proto", "content-length"]:
-            headers[key] = value
-    
-    # Add referer if not present (helps with iframe requests)
-    has_referer = any(k.lower() == "referer" for k in headers.keys())
-    if not has_referer:
-        headers["referer"] = str(request.base_url)
-    
-    print(f"🔄 Proxying {request.method} to {target_url}")
-    print(f"📋 Headers forwarded: {list(headers.keys())}")
-    print(f"🌐 Request origin: {request.client}, User-Agent: {headers.get('user-agent', 'unknown')}")
-    
+    # Force no-gzip for assets as well to avoid compression issues in proxy
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in ["host", "content-length"]}
+    headers["accept-encoding"] = "identity"
+
     try:
-        # Read request body
-        body = await request.body()
-        
-        # Wait for container to be ready (in case it's just starting)
-        print(f"⏳ Checking if container is ready at {target_base}...")
-        is_ready = await wait_for_container_ready(target_base, max_attempts=5, delay=0.5)
-        if not is_ready:
-            print(f"⚠️ Container not responding after 5 attempts, attempting request anyway...")
-        
-        # Use session with connection pooling
-        session = get_or_create_proxy_session()
-        
-        print(f"⏳ Attempting connection to {target_url} with timeout (10s connect, 60s read)")
+        session = get_proxy_session()
         resp = session.request(
             method=request.method,
             url=target_url,
             headers=headers,
-            data=body if body else None,
+            data=await request.body(),
             allow_redirects=False,
-            timeout=(3, 30)  # 3s connect, 30s read - faster fail for starting containers
+            timeout=(5, 30)
         )
         
-        print(f"✅ Got response: {resp.status_code} {len(resp.content)} bytes")
-        
-        # Headers to exclude from response (remove iframe/frame options)
-        excluded_headers = [
-            "content-encoding",
-            "content-length",
-            "transfer-encoding",
-            "connection",
-            "x-frame-options",  # Allow iframe embedding
-            "content-security-policy",  # Allow iframe embedding
-        ]
-        
-        response_headers = {}
-        for name, value in resp.headers.items():
-            if name.lower() not in excluded_headers:
-                response_headers[name] = value
-        
-        # Allow embedding in iframe by setting proper headers
-        response_headers["X-Frame-Options"] = "ALLOWALL"
-        response_headers["Access-Control-Allow-Origin"] = "*"
+        # Decompress if necessary
+        body = resp.content
+        encoding = resp.headers.get("content-encoding", "").lower()
+        if "gzip" in encoding:
+            import gzip as _gzip
+            try:
+                body = _gzip.decompress(body)
+                print(f"📦 Decompressed gzipped asset: {len(resp.content)} → {len(body)} bytes")
+            except Exception as e:
+                print(f"⚠️ Gzipped asset decompression failed: {e}")
+
+        excluded_headers = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive"]
+        response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
+        response_headers["content-length"] = str(len(body))
         
         return StreamingResponse(
-            iter([resp.content]),
-            status_code=resp.status_code,
-            headers=response_headers
+            iter([body]), 
+            status_code=resp.status_code, 
+            headers=response_headers,
+            media_type=resp.headers.get("content-type")
         )
-    except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
-        error_str = str(e)
-        print(f"❌ Connection error to {target_url}: {error_str}")
-        # Check if it's a protocol error (container not ready)
-        if "ProtocolError" in error_str or "Connection refused" in error_str:
-            print(f"⏳ Container at {target_url} may still be starting up... Retried 5 times")
-            detail = f"Container is starting. Please wait a moment and retry."
-        else:
-            detail = f"Cannot connect to container at {target_url}. Verify container is running."
-        raise HTTPException(status_code=502, detail=detail)
-    except requests.exceptions.Timeout as e:
-        print(f"⏱️ Timeout to {target_url}: {str(e)}")
-        print(f"⏳ Container is slow to respond. It may still be starting.")
-        raise HTTPException(status_code=504, detail=f"Container is slow to respond. Please try again in a moment.")
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Proxy error to {target_url}: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
     except Exception as e:
-        print(f"❌ Unexpected error in proxy: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal proxy error: {str(e)}")
-
-@app.api_route("/vibecoding/app/{token}/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-@app.api_route("/vibecoding/app/{token}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def route_proxy(token: str, request: Request, path: str = ""):
-    """Route requests to the appropriate container based on project token"""
-    # Get container port for this project
-    port = get_container_port(token)
-    print(f"📌 Proxy request for token {token}: port={port}, path={path or '/'}, client={request.client}")
-    if not port:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Project '{token}' not found or container not running"
-        )
-    
-    # Use localhost instead of 127.0.0.1 for better compatibility
-    target = f"http://localhost:{port}"
-    forward_path = "/" + path if path else "/"
-    print(f"🎯 Target container: {target}{forward_path}")
-    return await proxy_request(target, request, forward_path)
+        print(f"❌ Fallback proxy error for {target_url}: {e}")
+        raise HTTPException(status_code=404)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

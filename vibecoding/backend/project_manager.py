@@ -1551,15 +1551,8 @@ except Exception as e:
             # Save container port mapping to registry for proxy
             self._save_container_registry(project_id, host_port)
             
-            # Use PUBLIC_HOST env var for AWS deployments, fallback to localhost
-            public_host = os.getenv('PUBLIC_HOST', 'http://localhost').rstrip('/')
-            
-            # If using proxy mode, return proxy URL instead of direct port
-            use_proxy = os.getenv('USE_PREVIEW_PROXY', 'true').lower() == 'true'
-            if use_proxy:
-                url = f"{public_host}/app/{project_id}/"
-            else:
-                url = f"{public_host}:{host_port}"
+            # If using proxy mode, construct the proxy URL based on the API base
+            url = self.get_preview_url(project_id, host_port)
             
             logger.info(f"✅ Container running at: {url}")
             
@@ -1920,6 +1913,26 @@ except Exception as e:
             logger.info(f"📝 Saved container registry: {project_id} -> port {host_port}")
         except Exception as e:
             logger.error(f"Failed to save container registry: {e}")
+
+    def get_preview_url(self, project_id, direct_port=None):
+        """Construct the preview URL deterministically based on env config"""
+        # If using proxy mode, construct the proxy URL based on the API base
+        use_proxy = os.getenv('USE_PREVIEW_PROXY', 'true').lower() == 'true'
+        if use_proxy:
+            # Use VITE_API_BASE_URL if available as it represents the backend's public endpoint
+            api_base = os.getenv('VITE_API_BASE_URL', '').rstrip('/')
+            if api_base:
+                return f"{api_base}/app/{project_id}/"
+            else:
+                # Fallback to PUBLIC_HOST if VITE_API_BASE_URL is not set
+                public_host = os.getenv('PUBLIC_HOST', 'http://localhost').rstrip('/')
+                # Default backend port if not set
+                backend_port = os.getenv('BACKEND_PORT', '8000')
+                return f"{public_host}:{backend_port}/vibecoding/app/{project_id}/"
+        else:
+            public_host = os.getenv('PUBLIC_HOST', 'http://localhost').rstrip('/')
+            port = direct_port or os.getenv('DEFAULT_CONTAINER_PORT', '80')
+            return f"{public_host}:{port}"
 
 # Global project manager instance
 project_manager = ProjectManager()

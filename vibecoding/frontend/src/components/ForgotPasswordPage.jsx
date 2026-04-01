@@ -2,7 +2,7 @@ import { useState } from 'react';
 import axios from 'axios';
 import { Zap, Mail, ArrowLeft, Check } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
 
 export default function ForgotPasswordPage({ onBackToLogin }) {
   const [email, setEmail] = useState('');
