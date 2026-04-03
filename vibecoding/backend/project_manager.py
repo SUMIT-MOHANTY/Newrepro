@@ -33,7 +33,7 @@ def sanitize_html(content: str) -> str:
 EDITOR_INJECTION_SCRIPT = """
 <script id="__vibe_editor__">
 (function() {
-  console.log('🎨 VibeCoding Editor Script Loaded');
+  console.log('📝 VibeCoding Editor Script Loaded');
   var hoveredEl = null;
   var selectedEl = null;
   var editMode = false;
@@ -587,6 +587,23 @@ class ProjectManager:
                 continue
         
         return files
+
+    def get_all_workspace_paths(self, project_id: str) -> List[str]:
+        """Get all file paths in the workspace recursively for context mapping."""
+        workspace_dir = self.artifacts_dir / project_id / "workspace"
+        if not workspace_dir.exists():
+            return []
+        
+        paths = []
+        skip_dirs = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache'}
+        
+        for file_path in sorted(workspace_dir.rglob('*')):
+            if any(part in skip_dirs for part in file_path.parts):
+                continue
+            if file_path.is_file():
+                rel_path = str(file_path.relative_to(workspace_dir)).replace('\\', '/')
+                paths.append(rel_path)
+        return paths
 
     def _ensure_workspace_metadata(self, project_id: str, workspace_dir: Path, commit_hash: str):
         """Write metadata.json only if it doesn't exist or needs updating."""

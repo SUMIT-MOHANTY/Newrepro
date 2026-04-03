@@ -197,19 +197,21 @@ const ChatInput = ({
             disabled={disabled}
             onClick={() => fileInputRef.current?.click()}
             className={cn(
-              'flex items-center gap-1 h-6 px-2 text-xs hover:bg-transparent',
-              darkMode ? '!text-gray-400 hover:!text-gray-300' : '!text-gray-500 hover:!text-gray-600',
-              selectedImages.length > 0 && '!text-purple-500'
+              'flex items-center gap-1.5 h-7 px-2.5 text-xs font-bold transition-all rounded-lg',
+              darkMode 
+                ? 'text-gray-400 hover:text-gray-200 hover:bg-white/5' 
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100',
+              selectedImages.length > 0 && (darkMode ? 'text-purple-400 bg-purple-500/10' : 'text-purple-600 bg-purple-50')
             )}
           >
             {selectedImages.length > 0 ? (
               <>
-                <ImageIcon className="w-3.5 h-3.5" />
+                <ImageIcon className="w-4 h-4" />
                 <span>{selectedImages.length} image{selectedImages.length > 1 ? 's' : ''}</span>
               </>
             ) : (
               <>
-                <Plus className="w-3.5 h-3.5" />
+                <Plus className="w-4 h-4" />
                 <span>Attach</span>
               </>
             )}
@@ -221,16 +223,16 @@ const ChatInput = ({
             disabled={disabled}
             title={discussMode ? 'Discuss mode enabled - Click to disable' : 'Discuss mode disabled - Click to enable'}
             className={cn(
-              'flex items-center gap-1.5 h-6 px-2.5 rounded-full text-xs font-medium transition-all border',
+              'flex items-center gap-1.5 h-7 px-3 rounded-full text-xs font-bold transition-all border shadow-sm',
               discussMode
-                ? 'bg-blue-500/15 border-blue-500/40 text-blue-400 hover:bg-blue-500/25'
-                : darkMode
-                  ? 'bg-white/5 border-white/10 text-gray-500 hover:text-gray-300 hover:bg-white/10'
-                  : 'bg-gray-100 border-gray-200 text-gray-400 hover:text-gray-600',
-              disabled && 'opacity-40 cursor-not-allowed'
+                ? (darkMode ? 'bg-blue-600/20 border-blue-500/40 text-blue-400' : 'bg-blue-50 border-blue-200 text-blue-600')
+                : (darkMode 
+                    ? 'bg-white/5 border-white/10 text-gray-400 hover:text-gray-200 hover:bg-white/10' 
+                    : 'bg-gray-50 border-gray-300 text-gray-600 hover:text-gray-900 hover:bg-gray-100'),
+              disabled && 'opacity-40 cursor-not-allowed shadow-none'
             )}
           >
-            <MessageSquare className="w-3 h-3" />
+            <MessageSquare className="w-3.5 h-3.5" />
             <span>Discuss</span>
           </button>
         </div>

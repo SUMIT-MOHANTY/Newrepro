@@ -77,6 +77,23 @@ def init_db():
             updated_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            container_id TEXT,
+            role TEXT NOT NULL,
+            content TEXT,
+            code TEXT,
+            version_id TEXT,
+            timestamp TEXT NOT NULL,
+            suggestions TEXT,
+            tool_calls TEXT,
+            image_paths TEXT,
+            metadata TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_project_id ON messages(project_id)")
     conn.commit()
     
     # Add reset_token columns if they don't exist (migration for existing databases)

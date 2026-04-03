@@ -13,6 +13,8 @@ import GitPanel from './components/GitPanel';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
+import FileTree from './components/FileTree';
+import CodePreview from './components/CodePreview';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
 
@@ -102,6 +104,9 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [currentProjectId, setCurrentProjectId] = useState(urlProjectId || null);
   const [chatVersion, setChatVersion] = useState(1);
   const [messages, setMessages] = useState([]);
+  const [lastMessageId, setLastMessageId] = useState(null);
+  const [verificationStatus, setVerificationStatus] = useState(null); // 'checking', 'completed', 'failed'
+  const [verificationDetails, setVerificationDetails] = useState(null);
   const [branches, setBranches] = useState([]);
   const [currentBranch, setCurrentBranch] = useState('main');
   const [branchCommits, setBranchCommits] = useState([]);
@@ -114,6 +119,10 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [fullCode, setFullCode] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
   const [activeView, setActiveView] = useState('preview');
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem('vibecoding_dark_mode');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
   const [copied, setCopied] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -139,12 +148,72 @@ function Workspace({ user, logout, isAuthenticated }) {
     prevProjectIdRef.current = currentProjectId;
   }, [currentProjectId]);
 
-  // Fetch frozen files when project changes
+  // Sync dark mode with document and localStorage
+  useEffect(() => {
+    localStorage.setItem('vibecoding_dark_mode', JSON.stringify(darkMode));
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+      document.documentElement.setAttribute('data-theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  }, [darkMode]);
+
+  // Fetch messages and frozen files when project changes
   useEffect(() => {
     if (currentProjectId) {
+      fetchMessages();
       fetchFrozenFiles();
     }
   }, [currentProjectId]);
+
+  // Polling for verification status
+  useEffect(() => {
+    if (lastMessageId && verificationStatus === 'checking') {
+      const pollVerification = async () => {
+        try {
+          const token = localStorage.getItem('vibecoding_token');
+          const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          
+          const latestMsg = response.data.messages?.find(m => m.id === lastMessageId);
+          if (latestMsg?.metadata?.verification) {
+            const v = latestMsg.metadata.verification;
+            if (v.status === 'completed') {
+              setVerificationStatus('completed');
+              setVerificationDetails(v);
+              setMessages(response.data.messages); // Sync full data
+            } else if (v.status === 'error') {
+              setVerificationStatus('failed');
+              setVerificationDetails(v);
+            }
+          }
+        } catch (e) {
+          console.error('Polling error:', e);
+        }
+      };
+
+      const interval = setInterval(pollVerification, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [lastMessageId, verificationStatus, currentProjectId]);
+
+  const fetchMessages = async () => {
+    if (!currentProjectId) return;
+    try {
+      const token = localStorage.getItem('vibecoding_token');
+      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (response.data.messages) {
+        setMessages(response.data.messages);
+      }
+    } catch (error) {
+      console.error('Failed to fetch messages:', error);
+    }
+  };
 
   const fetchFrozenFiles = async () => {
     if (!currentProjectId) return;
@@ -604,25 +673,6 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   };
 
-  // Save chat history whenever messages change
-  useEffect(() => {
-    const saveChat = async () => {
-      if (messages.length > 0 && currentProjectId === prevProjectIdRef.current) {
-        try {
-          // Save to backend only
-          await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/chat/v${chatVersion}`, {
-            history: messages
-          });
-        } catch (err) {
-          console.error("Failed to save chat to backend:", err);
-        }
-      }
-    };
-
-    if (messages.length > 0) {
-      saveChat();
-    }
-  }, [messages, currentProjectId, chatVersion]);
 
   // Reload iframe when previewUrl changes — single effect, no about:blank trick
   // When a container previewUrl arrives, wait 3s for container to fully boot,
@@ -801,16 +851,21 @@ function Workspace({ user, logout, isAuthenticated }) {
       return;
     }
 
+    // Protection against double submissions
+    if (loading) return;
+    setLoading(true);
+
     const userMessage = {
       role: 'user',
       content: input,
       images: imageDataUrls.length > 0 ? imageDataUrls : undefined,
       timestamp: new Date().toISOString()
     };
+    
+    // Add user message to state immediately for UX
     setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
     setInput('');
-    setLoading(true);
 
     try {
       const payload = {
@@ -831,10 +886,24 @@ function Workspace({ user, logout, isAuthenticated }) {
         versionId: response.data.version_id,
         toolCalls: response.data.tool_calls_log || null,
         suggestions: response.data.suggestions || null,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        id: response.data.message_id
       };
 
       setMessages(prev => [...prev, aiMessage]);
+      setLastMessageId(response.data.message_id);
+      
+      if (response.data.code) {
+          setVerificationStatus('checking');
+      }
+
+      const { project_id, version_id } = response.data;
+      if (project_id && project_id !== currentProjectId) {
+        // This triggers fetchMessages() in useEffect, which will sync the entire history
+        setCurrentProjectId(project_id);
+      }
+
+      setLoading(false);
 
       if (response.data.code) {
         const fullCodeContent = response.data.code;
@@ -1325,6 +1394,23 @@ Please suggest improvements or modifications for this element.`;
     setEditPrompt('');
     setLoading(true);
 
+    // Persist user message to DB
+    try {
+      const token = localStorage.getItem('vibecoding_token');
+      if (currentProjectId) {
+        await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+          id: `msg_e_${Date.now()}`,
+          role: 'user',
+          content: editMessage.content,
+          timestamp: editMessage.timestamp
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }
+    } catch (error) {
+      console.error('Failed to persist edit message:', error);
+    }
+
     try {
       const response = await axios.post(`${API_BASE_URL}/api/generate`, {
         prompt: editMessage.content,
@@ -1630,7 +1716,7 @@ Please suggest improvements or modifications for this element.`;
       .icon { font-size:3rem; margin-bottom:1rem; }
       h2 { color:#e5e7eb; font-size:1.1rem; margin:0 0 0.5rem; }
       p { font-size:0.85rem; margin:0; }
-    </style></head><body><div><div class="icon">⏳</div><h2>Starting container preview...</h2><p>Your app is being deployed. The preview will appear shortly.</p></div></body></html>`;
+    </style></head><body><div><div class="icon">⏳</div><h2>Starting your application...</h2><p>Your app is being prepared. The preview will appear shortly.</p></div></body></html>`;
   };
 
   // pollUntilReady is handled directly via startContainerRetry above
@@ -1692,10 +1778,12 @@ Please suggest improvements or modifications for this element.`;
   };
 
   return (
-    <div className="h-screen flex flex-col bg-[#0A0A0F] text-white">
+    <div className={`h-screen flex flex-col transition-colors ${darkMode ? 'bg-[#0A0A0F] text-white' : 'bg-gray-100 text-gray-900'}`}>
       <Header
         chatVersion={`v${chatVersion}`}
         user={user}
+        darkMode={darkMode}
+        setDarkMode={setDarkMode}
         showUserMenu={showUserMenu}
         setShowUserMenu={setShowUserMenu}
         projects={projects}
@@ -1744,15 +1832,17 @@ Please suggest improvements or modifications for this element.`;
         {/* Right Panel - Preview/Code */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {/* View Tabs */}
-          <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#0F0F14] sticky top-0 z-10">
+          <div className={`h-12 border-b flex items-center justify-between px-4 sticky top-0 z-10 ${
+            darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
+          }`}>
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveView('preview')}
                 className={`${activeView === 'preview'
-                    ? 'bg-white/10 text-white'
-                    : 'text-white hover:bg-white/5'
+                    ? darkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900'
+                    : darkMode ? 'text-white hover:bg-white/5' : 'text-gray-600 hover:bg-gray-100'
                   }`}
               >
                 <Eye className="w-4 h-4 inline mr-2" />
@@ -1763,8 +1853,8 @@ Please suggest improvements or modifications for this element.`;
                 size="sm"
                 onClick={() => setActiveView('code')}
                 className={`${activeView === 'code'
-                    ? 'bg-white/10 text-white'
-                    : 'text-white hover:bg-white/5'
+                    ? darkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900'
+                    : darkMode ? 'text-white hover:bg-white/5' : 'text-gray-600 hover:bg-gray-100'
                   }`}
               >
                 <Code className="w-4 h-4 inline mr-2" />
@@ -1776,12 +1866,16 @@ Please suggest improvements or modifications for this element.`;
             {previewCode && activeView === 'preview' && (
               <div className="flex items-center gap-2">
                 {/* Screen Size Selector */}
-                <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5">
+                <div className={`flex items-center gap-1 px-2 py-1 rounded-lg transition-colors ${
+                  darkMode ? 'bg-white/5' : 'bg-gray-200'
+                }`}>
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('mobile')}
-                    className={`h-8 w-8 ${screenSize === 'mobile' ? 'bg-white/20 text-white' : 'text-white'
+                    className={`h-8 w-8 transition-colors ${screenSize === 'mobile' 
+                        ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900' 
+                        : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
                       }`}
                     title="Mobile (375px)"
                   >
@@ -1793,7 +1887,9 @@ Please suggest improvements or modifications for this element.`;
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('tablet')}
-                    className={`h-8 w-8 ${screenSize === 'tablet' ? 'bg-white/20 text-white' : 'text-white'
+                    className={`h-8 w-8 transition-colors ${screenSize === 'tablet' 
+                        ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900' 
+                        : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
                       }`}
                     title="Tablet (768px)"
                   >
@@ -1805,7 +1901,9 @@ Please suggest improvements or modifications for this element.`;
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('desktop')}
-                    className={`h-8 w-8 ${screenSize === 'desktop' ? 'bg-white/20 text-white' : 'text-white'
+                    className={`h-8 w-8 transition-colors ${screenSize === 'desktop' 
+                        ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900' 
+                        : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
                       }`}
                     title="Desktop (100%)"
                   >
@@ -1822,9 +1920,11 @@ Please suggest improvements or modifications for this element.`;
                   variant={editMode ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => setEditMode(!editMode)}
-                  className={`${editMode
+                  className={`transition-colors ${editMode
                       ? 'bg-purple-600 text-white hover:bg-purple-700'
-                      : 'bg-white/5 hover:bg-white/10 text-white'
+                      : darkMode 
+                        ? 'bg-white/5 hover:bg-white/10 text-white' 
+                        : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
                     }`}
                   title="Edit Mode - Click elements to edit"
                 >
@@ -1834,16 +1934,33 @@ Please suggest improvements or modifications for this element.`;
                   {editMode ? 'Editing' : 'Edit'}
                 </Button>
 
-                <div className="h-6 w-px bg-white/10" />
+                <div className={`h-6 w-px transition-colors ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
 
                 <Button
                   size="icon"
                   onClick={handleRefresh}
-                  className="!bg-white/5 hover:!bg-white/10 !text-white !border-0"
+                  className={`!border-0 ${
+                    darkMode ? '!bg-white/5 hover:!bg-white/10 !text-white' : '!bg-gray-200 hover:!bg-gray-300 !text-gray-700'
+                  }`}
                   title="Refresh Preview"
                 >
                   <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                 </Button>
+
+                {previewUrl && (
+                  <Button
+                    size="icon"
+                    onClick={() => window.open(previewUrl, '_blank')}
+                    className={`!border-0 ${
+                      darkMode ? '!bg-white/5 hover:!bg-white/10 !text-white' : '!bg-gray-200 hover:!bg-gray-300 !text-gray-700'
+                    }`}
+                    title="Open in new tab"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </Button>
+                )}
                 {/* <Button
                   variant="ghost"
                   size="sm"
@@ -1890,15 +2007,17 @@ Please suggest improvements or modifications for this element.`;
           </div>
 
           {/* Content Area */}
-          <div className="flex-1 relative bg-[#0A0A0F] overflow-hidden min-h-0 flex flex-col">
+          <div className={`flex-1 relative overflow-hidden min-h-0 flex flex-col transition-colors ${
+            darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
+          }`}>
             {!previewCode ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mx-auto mb-4">
                     <Sparkles className="w-10 h-10 text-purple-400" />
                   </div>
-                  <h3 className="text-xl font-semibold mb-2">No Preview Yet</h3>
-                  <p className="text-gray-400">Start chatting to generate your app</p>
+                  <h3 className={`text-xl font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>No Preview Yet</h3>
+                  <p className={darkMode ? 'text-gray-400' : 'text-gray-500'}>Start chatting to generate your app</p>
                 </div>
               </div>
             ) : activeView === 'preview' ? (
@@ -1908,7 +2027,7 @@ Please suggest improvements or modifications for this element.`;
                 {editMode && (
                   <div className="flex-shrink-0 bg-purple-600/20 border-b border-purple-500/30 px-4 py-2">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-sm text-purple-200">
+                      <div className={`flex items-center gap-2 text-sm ${darkMode ? 'text-purple-200' : 'text-purple-700'}`}>
                         <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                         </svg>
@@ -1926,11 +2045,10 @@ Please suggest improvements or modifications for this element.`;
                   </div>
                 )}
 
-                {/* Preview iframe with responsive sizing */}
-                {/* The iframe source NEVER changes when toggle edit mode.
-                    Editor script is always injected into srcDoc; it stays dormant until activated. */}
                 <div
-                  className={`flex-1 relative flex items-center justify-center bg-[#0A0A0F]`}
+                  className={`flex-1 relative flex items-center justify-center transition-colors ${
+                    darkMode ? 'bg-[#0A0A0F]' : 'bg-gray-200'
+                  }`}
                 >
                   <div
                     className={`h-full transition-all duration-300 relative ${screenSize === 'mobile' ? 'w-[375px]' :
@@ -1955,8 +2073,10 @@ Please suggest improvements or modifications for this element.`;
                     />
 
                     {/* Container / Checkpoint loader overlay */}
-                    {(isCheckpointLoading || (isContainerLoading && previewUrl)) && (
-                      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#0A0A0F]/60 backdrop-blur-sm">
+                    {(isCheckpointLoading || (isContainerLoading && previewUrl && (verificationStatus !== 'completed' && verificationStatus !== 'failed'))) && (
+                      <div className={`absolute inset-0 z-20 flex flex-col items-center justify-center backdrop-blur-sm ${
+                        darkMode ? 'bg-[#0A0A0F]/60' : 'bg-white/60'
+                      }`}>
                         {/* Animated rings */}
                         <div className="relative flex items-center justify-center mb-8">
                           <div className="absolute w-24 h-24 rounded-full border-2 border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
@@ -1987,11 +2107,11 @@ Please suggest improvements or modifications for this element.`;
                         </div>
 
                         {/* Text */}
-                        <p className="text-white font-semibold text-base mb-1 tracking-wide">
-                          {isCheckpointLoading ? 'Loading checkpoint' : 'Starting your app'}
-                        </p>
-                        <p className="text-gray-400 text-sm">
-                          {isCheckpointLoading ? 'Restoring files from commit...' : 'Waiting for your app to be ready...'}
+                        <h3 className={`text-lg font-semibold mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                          {verificationStatus === 'checking' ? 'Verifying deployment' : isCheckpointLoading ? 'Restoring session snapshot' : 'Activating live instance'}
+                        </h3>
+                        <p className={`text-xs ${darkMode ? 'text-[#858585]' : 'text-gray-400'}`}>
+                          {verificationStatus === 'checking' ? 'Checking for errors & matching expectations...' : isCheckpointLoading ? 'Rebuilding environment...' : 'Preparing business preview...'}
                         </p>
 
                         {/* Animated dots progress */}
@@ -2091,11 +2211,17 @@ Please suggest improvements or modifications for this element.`;
 
                 {/* Edit Prompt Panel */}
                 {editMode && selectedElement && (
-                  <div className="absolute bottom-0 left-0 right-0 z-30 border-t border-white/10 bg-[#0F0F14]/95 backdrop-blur-sm p-4 shadow-2xl">
+                  <div className={`absolute bottom-0 left-0 right-0 z-30 border-t backdrop-blur-sm p-4 shadow-2xl transition-colors ${
+                    darkMode 
+                      ? 'border-white/10 bg-[#0F0F14]/95 text-white' 
+                      : 'border-gray-200 bg-white/95 text-gray-900'
+                  }`}>
                     <div className="max-w-4xl mx-auto">
                       <div className="mb-2 flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-sm text-gray-400">
-                          <span className="px-2 py-0.5 rounded bg-purple-600/20 text-purple-300 font-mono text-xs">
+                        <div className={`flex items-center gap-2 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          <span className={`px-2 py-0.5 rounded font-mono text-xs ${
+                            darkMode ? 'bg-purple-600/20 text-purple-300' : 'bg-purple-100 text-purple-700'
+                          }`}>
                             {selectedElement.tagName?.toLowerCase()}
                             {selectedElement.id && `#${selectedElement.id}`}
                             {selectedElement.className && `.${selectedElement.className.split(' ')[0]}`}
@@ -2109,7 +2235,7 @@ Please suggest improvements or modifications for this element.`;
                             setSelectedElement(null);
                             setEditPrompt('');
                           }}
-                          className="h-8 w-8 text-gray-400 hover:text-white"
+                          className={`h-8 w-8 transition-colors ${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-900'}`}
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -2127,19 +2253,23 @@ Please suggest improvements or modifications for this element.`;
                             }
                           }}
                           placeholder={`Edit this ${selectedElement.tagName?.toLowerCase()}... (e.g., "change color to blue", "make text bigger")`}
-                          className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors"
+                          className={`w-full border rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors ${
+                            darkMode 
+                              ? 'bg-white/5 border-white/10 text-white placeholder:text-gray-600' 
+                              : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'
+                          }`}
                           autoFocus
                         />
                         <Button
                           size="icon"
                           onClick={handleElementEdit}
                           disabled={!editPrompt.trim()}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 shadow-lg"
                         >
                           <Send className="w-4 h-4" />
                         </Button>
                       </div>
-                      <div className="mt-2 text-xs text-gray-500">
+                      <div className={`mt-2 text-xs transition-colors ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                         Selected: {selectedElement.textContent?.substring(0, 50)}
                         {selectedElement.textContent?.length > 50 && '...'}
                       </div>
@@ -2150,26 +2280,38 @@ Please suggest improvements or modifications for this element.`;
             ) : (
               <div className="flex-1 flex min-h-0 overflow-hidden">
                 {/* File Tree Sidebar */}
-                <div className="w-64 border-r border-white/10 bg-[#0F0F14] flex flex-col">
-                  <div className="p-3 border-b border-white/10">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                <div className={`w-64 border-r flex flex-col transition-colors ${
+                  darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
+                }`}>
+                  <div className={`p-3 border-b ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+                    <div className={`flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${
+                      darkMode ? 'text-gray-400' : 'text-gray-500'
+                    }`}>
                       <Folder className="w-4 h-4" />
                       <span>Files</span>
                       <span className="ml-auto text-gray-500">{fileTree.length}</span>
                     </div>
                   </div>
                   <div className="flex-1 overflow-y-auto p-2">
-                    {renderFileTreeWithFreeze(fileTree)}
+                    <FileTree
+                      code={fullCode}
+                      darkMode={darkMode}
+                      onFileSelect={(file) => setSelectedFile(file)}
+                      selectedFile={selectedFile?.path}
+                      projectId={currentProjectId}
+                    />
                   </div>
                 </div>
 
                 {/* Code Editor */}
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden min-w-0">
                   {/* File Header */}
-                  <div className="px-4 py-2 border-b border-white/10 bg-[#0F0F14] flex items-center justify-between">
+                  <div className={`px-4 py-2 border-b flex items-center justify-between transition-colors ${
+                    darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
+                  }`}>
                     <div className="flex items-center gap-2">
-                      <File className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-300">
+                      <File className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                      <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                         {selectedFile?.name || 'No file selected'}
                       </span>
                     </div>
@@ -2181,10 +2323,14 @@ Please suggest improvements or modifications for this element.`;
                   </div>
 
                   {/* Code Content */}
-                  <div className="flex-1 overflow-auto min-h-0 custom-scrollbar">
+                  <div className={`flex-1 overflow-auto min-h-0 custom-scrollbar transition-colors ${
+                    darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
+                  }`}>
                     <div className="flex min-h-full" key={selectedFile?._loadedAt || selectedFile?.path || 'no-file'}>
                       {/* Line Numbers */}
-                      <div className="py-4 px-3 select-none bg-[#0A0A0F] text-gray-600 border-r border-white/10">
+                      <div className={`py-4 px-3 select-none border-r transition-colors ${
+                        darkMode ? 'bg-[#0A0A0F] text-gray-600 border-white/10' : 'bg-gray-50 text-gray-400 border-gray-200'
+                      }`}>
                         <pre className="text-xs font-mono leading-relaxed text-right">
                           {(selectedFile?.content || previewCode).split('\n').map((_, idx) => (
                             <div key={idx}>{idx + 1}</div>
@@ -2193,8 +2339,10 @@ Please suggest improvements or modifications for this element.`;
                       </div>
 
                       {/* Code Content */}
-                      <div className="flex-1 py-4 px-4 overflow-x-auto custom-scrollbar bg-[#0A0A0F] min-w-0">
-                        <pre className="text-sm font-mono leading-relaxed text-gray-300">
+                      <div className={`flex-1 py-4 px-4 overflow-x-auto custom-scrollbar min-w-0 transition-colors ${
+                        darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
+                      }`}>
+                        <pre className={`text-sm font-mono leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-800'}`}>
                           <code key={selectedFile?._loadedAt || selectedFile?.path || 'empty'}>
                             {selectedFile?.content || (fileTree.length > 0 ? "Select a file to view its code" : "No files generated yet")}
                           </code>
@@ -2215,7 +2363,7 @@ Please suggest improvements or modifications for this element.`;
           input={input}
           setInput={setInput}
           onSend={handleSend}
-          darkMode={true}
+          darkMode={darkMode}
           codeVersions={branchCommits}
           selectedVersion={null}
           onLoadVersion={async (commitHash) => {
@@ -2239,9 +2387,10 @@ Please suggest improvements or modifications for this element.`;
             // Get suggestions from the last assistant message, or use defaults
             const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant');
             return lastAssistantMsg?.suggestions || [
-              'Create a beautiful landing page with gradient background',
-              'Build a todo app with Flask backend',
-              'Create a calculator app'
+              'Generate a clear business case and project roadmap',
+              'Create an executive dashboard for key performance metrics',
+              'Analyze requirements and propose a high-level architecture',
+              'Build a responsive prototype for a customer-facing app'
             ];
           })()}
           discussMode={discussMode}
@@ -2253,7 +2402,7 @@ Please suggest improvements or modifications for this element.`;
       <GitPanel
         isVisible={showGitPanel}
         onClose={() => setShowGitPanel(false)}
-        darkMode={true}
+        darkMode={darkMode}
         projectId={currentProjectId}
       />
 

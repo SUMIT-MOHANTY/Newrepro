@@ -13,7 +13,8 @@ from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, R
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
+import httpx
 from dotenv import load_dotenv
 
 from ai_config import ai_config
@@ -29,6 +30,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+# Helper function to get AI client for verification
+def get_ai_client():
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(
+        api_key=ai_config.api_key,
+        base_url=ai_config.base_url
+    )
 
 # Helper function to log prompts and responses
 def log_ai_interaction(prompt: str, response: str, interaction_type: str = "main"):
@@ -97,13 +106,6 @@ def get_or_create_proxy_session():
     """Return a fresh session for each proxy request to avoid pooling issues"""
     return get_proxy_session()
 
-async def wait_for_container_ready(base_url: str, max_attempts: int = 5, delay: float = 0.2):
-    """
-    Wait for container to be ready by checking if it responds to requests.
-    This handles the case where containers are dynamically starting.
-    First tries the /health endpoint, then falls back to HEAD request.
-    """
-    import time
     
     for attempt in range(max_attempts):
         try:
@@ -306,10 +308,26 @@ class GenerateRequest(BaseModel):
     discuss_mode: bool = False
     images: Optional[List[str]] = None
 
+class MessagePersistenceRequest(BaseModel):
+    id: str
+    role: str
+    content: Optional[str] = None
+    code: Optional[str] = None
+    version_id: Optional[str] = None
+    timestamp: str
+    suggestions: Optional[List[str]] = None
+    tool_calls: Optional[List[dict]] = None
+    images: Optional[List[str]] = None
+
 class GenerateResponse(BaseModel):
     message: str
     code: Optional[str] = None
     project_id: str
+    version_id: Optional[str] = None
+    preview_url: Optional[str] = None
+    tool_calls_log: Optional[List[dict]] = None
+    suggestions: Optional[List[str]] = None
+    message_id: Optional[str] = None
     version_id: Optional[str] = None
     preview_url: Optional[str] = None
     tool_calls_log: Optional[List[dict]] = None
@@ -680,6 +698,35 @@ def _preprocess_ai_response(text: str) -> str:
     return text.strip()
 
 
+@app.post("/vibecoding/api/projects/{project_id}/messages")
+async def save_project_message(project_id: str, request: MessagePersistenceRequest, user: dict = Depends(get_current_user)):
+    """Persist a single user or assistant message to the project's chat history"""
+    from auth import get_db
+    conn = get_db()
+    try:
+        # Get current container ID for logging if not provided
+        container_id = None
+        project_info = project_manager.get_project_info(project_id)
+        if project_info:
+            container_id = project_info.get("container_id")
+
+        conn.execute(
+            """INSERT OR REPLACE INTO messages 
+               (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (request.id, project_id, container_id, request.role, request.content, request.code, 
+             request.version_id, request.timestamp, 
+             json.dumps(request.suggestions) if request.suggestions else None,
+             json.dumps(request.tool_calls) if request.tool_calls else None,
+             json.dumps(request.images) if request.images else None,
+             None)
+        )
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
 @app.post("/vibecoding/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest, background_tasks: BackgroundTasks):
     # Get or create project ID at the start
@@ -698,16 +745,43 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         content.append({"type": "text", "text": text})
         return {"role": "user", "content": content}
 
+    from auth import get_db
+    import uuid
+    import json
+    import time
+    from datetime import datetime
+    
+    # Autonomously persist user message immediately
+    try:
+        user_msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO messages 
+               (id, project_id, role, content, timestamp, image_paths)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_msg_id, project_id, "user", request.prompt, datetime.now().isoformat(),
+             json.dumps(request.images) if request.images else None)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to auto-save user message: {e}")
+
     try:
         # ── Discuss mode: pure conversation, no code generation ──────────
         if request.discuss_mode:
             from prompts import CHAT_SYSTEM_PROMPT
-            messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+            from datetime import datetime
+            
+            now = datetime.now()
+            date_label = f"CURRENT DATE & TIME: {now.strftime('%A, %B %d, %Y %H:%M:%S')}\n\n"
+            
+            messages = [{"role": "system", "content": date_label + CHAT_SYSTEM_PROMPT}]
             for msg in request.history:
                 messages.append({"role": msg.role, "content": msg.content})
             messages.append(build_vision_message(request.prompt, request.images))
 
-            response = ai_config.make_request(messages)
+            response = await ai_config.make_async_request(messages)
             ai_response = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
             
             # Log the discuss mode interaction
@@ -716,6 +790,30 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             # Generate suggestions for discuss mode too
             suggestions = await generate_suggestions(ai_response, "", request.prompt)
             
+            # Autonomously persist assistant message in discuss mode
+            try:
+                from auth import get_db
+                import uuid
+                import time
+                msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+                project_info = project_manager.get_project_info(project_id)
+                container_id = project_info.get("container_id") if project_info else None
+                
+                conn = get_db()
+                conn.execute(
+                    """INSERT INTO messages 
+                       (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (msg_id, project_id, container_id, "assistant", ai_response, None, None,
+                     datetime.now().isoformat(), 
+                     json.dumps(suggestions) if suggestions else None,
+                     None, None, None)
+                )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to auto-save discuss message: {e}")
+
             return GenerateResponse(
                 message=ai_response,
                 code=None,
@@ -726,9 +824,28 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 suggestions=suggestions
             )
 
-        # Check if there's existing code in the workspace
-        workspace_files = project_manager.get_workspace_files(project_id, max_files=15, max_chars_per_file=1500)
+        # Get existing code in the workspace - Increased limits for better full-stack context
+        workspace_files = project_manager.get_workspace_files(project_id, max_files=100, max_chars_per_file=4000)
         has_existing_code = len(workspace_files) > 0
+
+        # Identify "Chat" intent for short/simple prompts or greetings to keep context light
+        simple_chat_words = {'hi', 'hello', 'hey', 'yo', 'sup', 'how are you', 'howdy', 'greeting', 'thanks', 'thank you'}
+        p_clean = request.prompt.strip().lower().strip('?!.')
+        is_simple_intent = p_clean in simple_chat_words or (len(p_clean) < 12 and not any(c in p_clean for c in ['/', '.', '<', '>', '{', '}']))
+        
+        # If simple intent, we skip the heavy file content to avoid "over-engineering" the response,
+        # but we KEEP the project tree/structure so the AI still knows "where" it is.
+        if is_simple_intent:
+            workspace_files = {} # Keep codebase light
+        
+        # Get full project structure (all paths recursively) to help with architectural understanding
+        all_paths = project_manager.get_all_workspace_paths(project_id)
+        project_tree_str = "\n".join([f"- {p}" for p in all_paths]) if all_paths else "No files yet"
+        
+        # Detect architecture/stack
+        project_info = project_manager.get_project_info(project_id) or {}
+        runtime = project_info.get("runtime", "universal")
+        arch_type = f"Architecture Detect: {runtime.upper()} project structure."
         
         # Get frozen files list
         frozen_files = project_manager.get_frozen_files(project_id)
@@ -767,12 +884,12 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
 
         # Pass in all data to the dynamic prompt factory
         system_prompt = get_dynamic_system_prompt(
-            mode="edit" if has_existing_code else "generate",
+            mode="chat" if (request.discuss_mode or is_simple_intent) else ("edit" if has_existing_code else "generate"),
             frozen_files=frozen_files_str,
-            file_list="\n".join([f"- {path}" for path in workspace_files.keys()]) if has_existing_code else "",
-            current_files="".join([f"\n\n// FILE: {path}\n{content}" for path, content in workspace_files.items()]) if has_existing_code else "",
+            file_list=project_tree_str,
+            current_files="".join([f"\n\n// FILE: {path}\n{content}" for path, content in workspace_files.items()]) if (has_existing_code and not is_simple_intent) else "",
             brd_context=brd_data,
-            extra_directives=extra_directives
+            extra_directives=f"{arch_type}\n{extra_directives}" if not is_simple_intent else ""
         )
         
         from datetime import datetime
@@ -786,9 +903,6 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         if has_existing_code:
             prompt_with_instructions = f"{request.prompt}\n\nIMPORTANT: If this is a small change, output ONLY the files that need to be modified. Do NOT regenerate the entire codebase."
         
-        if any(word in p_lower for word in ['search', 'web', 'internet', 'look up', 'fetch', 'url', 'http']):
-            prompt_with_instructions += "\n\n(IMPORTANT: Use your `web_search` or `fetch_page_content` tool to fulfill this request. After you have gathered information, generate the COMPLETE project code with ALL necessary files.)"
-            
         messages.append(build_vision_message(prompt_with_instructions, request.images))
 
         # Log AI request
@@ -800,6 +914,10 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             ai_response = response["choices"][0]["message"].get("content") or ""
         else:
             raise Exception("Invalid response format from AI API")
+        
+        # Fallback for empty responses, especially common during safety filtering or confusion with simple greetings
+        if not ai_response.strip() and is_simple_intent:
+            ai_response = "Hello! I'm here to help you build or refine your project. What would you like to work on first?"
         
         log_ai_interaction(log_prompt, ai_response, "main_generation")
 
@@ -846,7 +964,40 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 message = f"{preamble}\n\n{epilogue}".strip() if (epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue)) else preamble
             else:
                 message = ai_response.split("```")[0].strip()
-            message = message.replace('```', '').strip()
+        message = message.replace('```', '').strip()
+
+        # Generate suggestions before persistence
+        suggestions = await generate_suggestions(message, code or "", request.prompt)
+
+        # ── Persistence: Save AI response to DB ──────────
+        try:
+            from auth import get_db
+            import uuid
+            import json
+            import time
+            msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+            
+            # Get current container ID for logging
+            project_info = project_manager.get_project_info(project_id)
+            container_id = project_info.get("container_id") if project_info else None
+            
+            conn = get_db()
+            conn.execute(
+                """INSERT INTO messages 
+                   (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, project_id, container_id, "assistant", message, code, 
+                 None, # version_id will be updated after git commit if needed
+                 datetime.now().isoformat(), 
+                 json.dumps(suggestions) if suggestions else None,
+                 json.dumps(tool_calls_log) if tool_calls_log else None,
+                 None,
+                 None)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to auto-save AI response: {e}")
 
         # Save and Prepare Response
         version_id = None
@@ -880,11 +1031,21 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 project_manager._current_user_prompt = request.prompt
                 background_tasks.add_task(project_manager.create_container_for_code, project_id, "workspace")
                 logger.info(f"🚀 Started container for {project_id} in background")
+                
+                # Kick off verification background task
+                if code and preview_url:
+                    background_tasks.add_task(
+                        verify_generated_preview, 
+                        project_id, 
+                        msg_id, 
+                        preview_url, 
+                        request.prompt, 
+                        code
+                    )
             else:
                 preview_url = None
-
-        suggestions = await generate_suggestions(message, code or "", request.prompt)
         
+        # Return unified response
         return GenerateResponse(
             message=message,
             code=code,
@@ -892,7 +1053,8 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             version_id=version_id,
             preview_url=preview_url,
             tool_calls_log=tool_calls_log,
-            suggestions=suggestions
+            suggestions=suggestions,
+            message_id=msg_id
         )
 
     except Exception as e:
@@ -1419,6 +1581,41 @@ async def git_push(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/vibecoding/api/projects/{project_id}/messages")
+async def get_project_messages(project_id: str):
+    from auth import get_db
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE project_id = ? ORDER BY timestamp ASC",
+            (project_id,)
+        ).fetchall()
+        
+        messages = []
+        for row in rows:
+            msg = dict(row)
+            # Parse JSON fields
+            for field in ["suggestions", "tool_calls", "image_paths", "metadata"]:
+                if msg.get(field):
+                    try:
+                        msg[field] = json.loads(msg[field])
+                    except:
+                        pass
+            
+            # Map image_paths to images for frontend compatibility
+            if "image_paths" in msg:
+                msg["images"] = msg.pop("image_paths")
+            
+            # Match frontend format
+            if msg.get("role") == "assistant":
+                msg["code"] = msg.get("code")
+            messages.append(msg)
+            
+        return {"messages": messages}
+    finally:
+        conn.close()
+
+
 @app.post("/vibecoding/api/chat/new")
 async def start_new_chat(request: GitRequest):
     try:
@@ -1512,6 +1709,43 @@ async def get_frozen_files(project_id: str, user: dict = Depends(get_current_use
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- Summarization Endpoint for CXO Reports ---
+class SummaryRequest(BaseModel):
+    content: str
+    code: Optional[str] = None
+
+@app.post("/vibecoding/api/summarize")
+async def summarize_changes(request: SummaryRequest, user=Depends(get_current_user)):
+    try:
+        # Create a targeted prompt for a CXO summary
+        prompt = f"""Summarize the following code updates into a single professional, justifiable paragraph for a CXO or Business Analyst. 
+Focus on the strategic impact and functional achievements. Use a sophisticated, outcome-oriented tone.
+Do NOT use technical jargon. Highlight what was understood and how it was functionally executed.
+
+CONTENT: {request.content[:1000]}
+CODE SNIPPET: {request.code[:2000] if request.code else "No code provided"}
+
+SUMMARY:"""
+        
+        messages = [
+            {"role": "system", "content": "You are a professional business strategist and product manager. Your job is to translate technical code changes into business-value summaries for non-technical leadership."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = ai_config.make_request(messages)
+        
+        if "choices" in response and len(response["choices"]) > 0:
+            summary = response["choices"][0]["message"].get("content", "").strip()
+            # Remove any intro text if LLM was chatty
+            if ":" in summary and len(summary.split(":")[0]) < 20:
+                summary = ":".join(summary.split(":")[1:]).strip()
+        else:
+            summary = "The requested updates were implemented successfully to ensure system stability and performance."
+            
+        return {"summary": summary}
+    except Exception as e:
+        logger.error(f"Summarization error: {e}")
+        return {"summary": "Modifications completed based on your specific requirements."}
 @app.post("/vibecoding/api/projects/{project_id}/frozen-files")
 async def set_file_frozen(project_id: str, request: dict, user: dict = Depends(get_current_user)):
     """Set or unset frozen status for a file"""

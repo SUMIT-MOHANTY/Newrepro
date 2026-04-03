@@ -144,18 +144,31 @@ class AIAgent:
         if not os.path.isabs(explicit):
             explicit = os.path.abspath(explicit)
 
+        # 1. If explicit path exists and has files, use it (highest priority)
         if os.path.exists(explicit) and os.listdir(explicit):
             os.chdir(explicit)
             return explicit
 
+        # 2. Check for version-specific overrides
         for env_var in ('CURRENT_VERSION', 'INITIAL_VERSION'):
             version = os.environ.get(env_var)
-            if version:
-                versioned = os.path.join(self.config.versions_dir, version)
-                if os.path.exists(versioned):
-                    os.chdir(versioned)
-                    return versioned
+            if not version:
+                continue
+                
+            # If version is specifically 'workspace', we don't look in versions/
+            if version == 'workspace':
+                workspace_dir = os.path.join(self.config.project_dir, 'workspace')
+                if os.path.exists(workspace_dir):
+                    os.chdir(workspace_dir)
+                    return workspace_dir
+                continue
 
+            versioned = os.path.join(self.config.versions_dir, version)
+            if os.path.exists(versioned):
+                os.chdir(versioned)
+                return versioned
+
+        # 3. Last resort: use newest version if available
         if os.path.exists(self.config.versions_dir):
             versions = sorted(os.listdir(self.config.versions_dir))
             if versions:
@@ -163,15 +176,9 @@ class AIAgent:
                 os.chdir(latest)
                 return latest
 
+        # 4. Fallback to whatever we have
         os.chdir(explicit)
         return explicit
-
-    # ------------------------------------------------------------------
-    # Logging
-    # ------------------------------------------------------------------
-
-    def log(self, emoji: str, message: str):
-        print(f"{emoji} {message}", flush=True)
 
     # ------------------------------------------------------------------
     # Core AI call — single reusable method
@@ -705,8 +712,7 @@ FILE WRITES (CRITICAL — use instead of echo/cat for creating or updating files
 - file_writes entries are applied BEFORE setup commands run.
 
 
-NGINX GATEWAY RULE:
-- If you provide `nginx_config`, do NOT add `nginx` to the `processes` list.
+- If you provide `nginx_config`, you MUST add `nginx` to the `processes` list as the `primary` process.
 - Use `nginx_config` as the primary gateway on port 80.
 - Ensure `nginx_config` contains ONLY `server { ... }` blocks (no `http {` or `events {`).
 - Redirect/Proxy internal backend requests from the frontend to their respective background ports (e.g. 8080).
@@ -1385,6 +1391,34 @@ RULES:
     # Log-line classifiers
     # ------------------------------------------------------------------
 
+    def log(self, emoji: str, msg: str, color: str = "") -> None:
+        """Central logging with duplicate suppression for high-frequency messages."""
+        if not hasattr(self, '_last_log'):
+            self._last_log = None
+            self._last_log_time = 0
+            self._dup_count = 0
+
+        current_time = time.time()
+        log_key = f"{emoji} {msg}"
+        
+        # Suppress identical messages within a 10-second window, unless it's the first repeat
+        if log_key == self._last_log and (current_time - self._last_log_time) < 10:
+            self._dup_count += 1
+            if self._dup_count == 1:
+                # Still log once or twice, but then quiet down
+                pass
+            else:
+                return
+
+        self._last_log = log_key
+        self._last_log_time = current_time
+        self._dup_count = 0
+
+        timestamp = time.strftime("%H:%M:%S")
+        prefix = f"[{timestamp}] {emoji} "
+        print(f"{prefix}{msg}")
+        sys.stdout.flush()
+
     def _is_error_line(self, line: str) -> bool:
         lower = line.lower()
         
@@ -1551,12 +1585,28 @@ RULES:
 
         return output_lines, error_flag
 
-    def _monitor_runtime(self, process, success_patterns: list) -> tuple:
+    def _monitor_background_processes(self, background_pids: list) -> Optional[str]:
+        """Check all background processes for crashes and return an error message if any died."""
+        for bg in background_pids:
+            if bg.poll() is not None:
+                # Process died — get its name/type if possible
+                name = getattr(bg, '_vibe_name', 'background process')
+                rc = bg.returncode
+                # We can't easily read its whole stdout now because it's piped and might be empty
+                # but poll() != None is enough to trigger a fix cycle
+                return f"Background process [{name}] exited unexpectedly with code {rc}"
+        return None
+
+    def _monitor_runtime(self, process, success_patterns: list, background_pids: list = None) -> tuple:
         """
         Continuously drains and monitors a process after it has successfully started.
         Maintains real-time log streaming and checks for runtime errors.
+        Now also monitors background processes for crashes.
         """
-        self.log("👁️", "Entering runtime monitoring mode...")
+        # Reduced noise: Only log 'Entering runtime' once per session if possible
+        if not getattr(self, '_already_monitoring', False):
+            self.log("👁️", "Entering runtime monitoring mode...")
+            self._already_monitoring = True
         
         # Retrieve the queue state from the process (stored by _monitor_process)
         qinfo = getattr(process, '_q_info', None)
@@ -1569,6 +1619,15 @@ RULES:
         runtime_error = False
         
         while True:
+            # 1. Check background processes for health
+            if background_pids:
+                bg_err = self._monitor_background_processes(background_pids)
+                if bg_err:
+                    self.log("🚨", bg_err)
+                    runtime_lines.append(f"\nCRITICAL: {bg_err}\n")
+                    runtime_error = True
+                    break
+
             try:
                 # Use a slightly longer timeout for idle runtime
                 item = q.get(timeout=float(os.environ.get('POLL_INTERVAL', '0.05')))
@@ -1605,6 +1664,14 @@ RULES:
             filepath = Path(self.workspace) / rel_path
             try:
                 filepath.parent.mkdir(parents=True, exist_ok=True)
+                
+                # PERSISTENT FIX: Strip '---' or other common LLM garbage if they are on a line by themselves
+                lines = content.splitlines()
+                cleaned_lines = [line for line in lines if line.strip() != "---"]
+                content = "\n".join(cleaned_lines)
+                if lines and lines[-1] == "" and not content.endswith("\n"):
+                    content += "\n"
+
                 filepath.write_text(content, encoding="utf-8")
                 self.log("📄", f"Wrote {rel_path} ({len(content)} chars)")
                 written += 1
@@ -1743,12 +1810,40 @@ RULES:
         primary_proc     = next((p for p in processes if p.get("type") == "primary"), None)
 
         if not primary_proc:
-            self.log("❌", "AI returned no primary process")
-            self.log("💡", f"Processes found: {[p.get('type') for p in processes]}")
-            self.log("💡", "The AI must return exactly ONE process with type='primary'")
-            return False
+            # SAFETY FALLBACK: If AI provided nginx_config but forgot to add nginx as primary process
+            if nginx_config:
+                self.log("🔧", "No primary process found, but nginx_config is present. Using nginx as primary.")
+                primary_proc = {
+                    "name": "nginx-gateway",
+                    "command": "nginx -g 'daemon off;'",
+                    "type": "primary",
+                    "ready_signal": None
+                }
+            else:
+                self.log("❌", "AI returned no primary process")
+                self.log("💡", f"Processes found: {[p.get('type') for p in processes]}")
+                self.log("💡", "The AI must return exactly ONE process with type='primary'")
+                return False
 
         run_command      = primary_proc.get("command", "")
+        
+        # PERSISTENT FIX: Auto-inject build steps if AI forgot them for React/Node projects
+        frontend_dir = Path(self.workspace) / "frontend"
+        if not any("npm install" in p.get("command", "") for p in setup_procs):
+            if (frontend_dir / "package.json").exists():
+                self.log("🔧", "Injected missing npm install for frontend")
+                setup_procs.insert(0, {"name": "auto-install", "command": "npm --prefix frontend install", "type": "setup"})
+            elif (Path(self.workspace) / "package.json").exists():
+                self.log("🔧", "Injected missing npm install for project")
+                setup_procs.insert(0, {"name": "auto-install", "command": "npm install", "type": "setup"})
+
+        if not any("npm run build" in p.get("command", "") for p in setup_procs):
+            if (frontend_dir / "package.json").exists():
+                self.log("🔧", "Injected missing npm run build for frontend")
+                setup_procs.append({"name": "auto-build", "command": "npm --prefix frontend run build", "type": "setup"})
+            elif (Path(self.workspace) / "package.json").exists():
+                self.log("🔧", "Injected missing npm run build for project")
+                setup_procs.append({"name": "auto-build", "command": "npm run build", "type": "setup"})
         # background_pids already initialized earlier
 
         for proc in setup_procs:
@@ -1810,10 +1905,13 @@ RULES:
                 # (Handle case where AI might give location blocks only)
                 if "location" in nginx_config and "server {" not in nginx_config:
                     self.log("🔧", "Wrapping location blocks in a default server block")
-                    nginx_config = "server {\n    listen 80;\n    server_name localhost;\n" + nginx_config + "\n}"
+                    nginx_config = f"server {{\n    listen {self.config.port};\n    server_name localhost;\n" + nginx_config + "\n}"
+                
+                # Also replace any hardcoded 'listen 80;' with the dynamic port if the user's config has it
+                nginx_config = nginx_config.replace("listen 80;", f"listen {self.config.port};")
 
                 # Inject health endpoint if not already present
-                if "/health" not in nginx_config:
+                if "/health" not in nginx_config and f"location /health" not in nginx_config:
                     self.log("🏥", "Injecting /health endpoint into nginx config")
                     health_location = """
     # Health check endpoint
@@ -1864,13 +1962,25 @@ RULES:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )
+            bg._vibe_name = name
             background_pids.append(bg)
+
+            # Drainage thread to prevent pipe deadlock
+            def _drain_bg(process, name):
+                try:
+                    for line in iter(process.stdout.readline, ''):
+                        if os.environ.get('POLL_DEBUG'):
+                            print(f"[{name}] {line}", end="", flush=True)
+                finally:
+                    process.stdout.close()
+            
+            Thread(target=_drain_bg, args=(bg, name), daemon=True).start()
 
             # Wait for ready_signal before continuing
             if ready_signal:
                 wait_start = time.time()
                 bg_timeout = self.config.bg_ready_timeout
-                self.log("⏳", f"Waiting for [{name}] ready signal (log or port)...")
+                self.log("⏳", f"Waiting for [{name}] ready signal (port)...")
                 
                 # Extract port for background process monitoring
                 bg_port = None
@@ -1878,23 +1988,15 @@ RULES:
                 if p_match: bg_port = int(p_match.group(1))
 
                 while time.time() - wait_start < bg_timeout:
-                    # Smart check 1: Port is open
+                    # Smart check: Port is open
                     if bg_port and self._check_port_open(bg_port):
                         self.log("✅", f"[{name}] port {bg_port} is open")
                         break
                     
-                    # Smart check 2: Log matching
-                    if bg.stdout is not None:
-                        line = bg.stdout.readline()
-                        if line:
-                            print(line, end="", flush=True)
-                            if self._is_success_line(line, [ready_signal]):
-                                self.log("✅", f"[{name}] ready signal detected")
-                                break
                     if bg.poll() is not None:
-                        self.log("⚠️", f"[{name}] exited early")
+                        self.log("⚠️", f"[{name}] exited early with code {bg.returncode}")
                         break
-                    time.sleep(0.1)
+                    time.sleep(0.5)
 
         # ── Phase 3: Primary process with self-healing ─────────────────────
         files_content  = self.scan_project_files()
@@ -1964,7 +2066,8 @@ RULES:
                         self.log("✅", "Project is running successfully!")
 
                         # Keep draining stdout forever — no more blind waiting
-                        runtime_lines, runtime_error = self._monitor_runtime(process, success_patterns)
+                        # PASS background_pids for monitoring
+                        runtime_lines, runtime_error = self._monitor_runtime(process, success_patterns, background_pids)
 
                         if runtime_error:
                             self.log("🚨", "Runtime error detected — invoking AI fix...")

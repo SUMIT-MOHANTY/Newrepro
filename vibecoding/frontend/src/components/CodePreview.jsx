@@ -1,7 +1,6 @@
-import React, { useRef } from 'react';
-import { Eye, Code, Copy, Check, RefreshCw, Download, Sparkles } from 'lucide-react';
+import React, { useRef, useEffect, useState } from 'react';
+import { Eye, Code, Copy, Check, RefreshCw, Download, Sparkles, ExternalLink } from 'lucide-react';
 import { Button } from './ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { cn } from '@/lib/utils';
 import {
   Select,
@@ -242,7 +241,7 @@ const CodePreview = ({
           width: '100%'
         }}
       >
-        <div className="flex bg-[#2d2d30] p-1 rounded-lg">
+        <div className={cn("flex p-1 rounded-lg", darkMode ? "bg-[#2d2d30]" : "bg-gray-200")}>
           <Button
             onClick={() => setActiveTab('preview')}
             variant="ghost"
@@ -251,7 +250,9 @@ const CodePreview = ({
               'rounded-md text-xs h-8 px-3 transition-all',
               activeTab === 'preview'
                 ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-[#858585] hover:text-white hover:bg-white/5'
+                : darkMode 
+                  ? 'text-[#858585] hover:text-white hover:bg-white/5'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-black/5'
             )}
             disabled={!previewCode}
           >
@@ -266,7 +267,9 @@ const CodePreview = ({
               'rounded-md text-xs h-8 px-3 transition-all',
               activeTab === 'code'
                 ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-[#858585] hover:text-white hover:bg-white/5'
+                : darkMode 
+                  ? 'text-[#858585] hover:text-white hover:bg-white/5'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-black/5'
             )}
             disabled={!previewCode}
           >
@@ -423,6 +426,20 @@ const CodePreview = ({
                   >
                     <RefreshCw className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} />
                   </Button>
+                  {containerPreviewUrl && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => window.open(containerPreviewUrl, '_blank')}
+                      className={cn(
+                        'h-8 w-8',
+                        darkMode ? 'hover:bg-white/10' : 'hover:bg-black/10'
+                      )}
+                      title="Open in New Tab"
+                    >
+                      <ExternalLink className={`w-4 h-4 ${darkMode ? 'text-[#cccccc]' : 'text-gray-600'}`} />
+                    </Button>
+                  )}
                 </div>
 
                 {/* URL Input */}

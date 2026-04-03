@@ -53,27 +53,34 @@ const ChatPanel = ({
   const [width, setWidth] = React.useState(384); // Default 96 tailwind class is 384px
   const isResizing = useRef(false);
 
+  const handleMouseMove = React.useCallback((e) => {
+    if (!isResizing.current) return;
+    
+    // Use requestAnimationFrame for smoother UI updates
+    requestAnimationFrame(() => {
+      if (!isResizing.current) return;
+      // Calculate new width: viewport width - mouse X position
+      let newWidth = window.innerWidth - e.clientX;
+      if (newWidth < 300) newWidth = 300; // min width
+      if (newWidth > 1200) newWidth = 1200; // increased max width for better large-screen experience
+      setWidth(newWidth);
+    });
+  }, []);
+
   const startResizing = React.useCallback((e) => {
     isResizing.current = true;
     document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none'; // Prevent text selection everywhere during drag
+    document.body.style.userSelect = 'none';
+    document.body.classList.add('resizing-active'); // Add class to body to handle global pointer-events
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', stopResizing);
-  }, []);
-
-  const handleMouseMove = React.useCallback((e) => {
-    if (!isResizing.current) return;
-    // Calculate new width: viewport width - mouse X position
-    let newWidth = window.innerWidth - e.clientX;
-    if (newWidth < 300) newWidth = 300; // min width
-    if (newWidth > 800) newWidth = 800; // max width
-    setWidth(newWidth);
-  }, []);
+  }, [handleMouseMove]);
 
   const stopResizing = React.useCallback(() => {
     isResizing.current = false;
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    document.body.classList.remove('resizing-active');
     document.removeEventListener('mousemove', handleMouseMove);
     document.removeEventListener('mouseup', stopResizing);
   }, [handleMouseMove]);
@@ -92,7 +99,7 @@ const ChatPanel = ({
         onMouseDown={startResizing}
       />
       {/* Chat Header */}
-      <div className={`flex-shrink-0 flex items-center justify-between px-4 py-3 border-b ${darkMode ? 'border-white/10' : 'border-gray-200'
+      <div className={`flex-shrink-0 flex items-center justify-between px-4 h-14 border-b ${darkMode ? 'border-white/10' : 'border-gray-200'
         }`}>
         <div className="flex items-center gap-2">
           <div className={cn(
@@ -105,11 +112,11 @@ const ChatPanel = ({
             <span className={cn(
               'text-sm font-semibold block',
               darkMode ? 'text-white' : 'text-gray-900'
-            )}>VibeCoding Assistant</span>
+            )}>Vibe Assistant</span>
             <span className={cn(
               'text-xs',
               darkMode ? 'text-gray-400' : 'text-gray-500'
-            )}>{inferredCheckpointCount} checkpoints</span>
+            )}>{inferredCheckpointCount} session snapshots</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -170,7 +177,7 @@ const ChatPanel = ({
                     onClick={() => setInput(suggestions[suggestionIndex])}
                     className={`w-full text-left px-4 py-4 h-auto rounded-xl text-sm transition-all duration-500 flex items-start ${darkMode
                       ? 'bg-white/5 hover:bg-white/10 text-gray-200 border border-white/10 hover:border-purple-500/50'
-                      : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 hover:border-blue-300'
+                      : 'bg-white hover:bg-gray-50 text-gray-900 border border-gray-200 hover:border-blue-400 shadow-sm'
                       }`}
                   >
                     <div className="flex items-center gap-3 w-full">

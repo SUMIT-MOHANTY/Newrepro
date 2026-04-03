@@ -193,3 +193,13 @@ select:focus {
   vertical-align: middle;
   animation: blink 1s infinite;
 }
+
+/* Global Fix for resizing issues (pointer-events-none on iframes) */
+body.resizing-active iframe {
+  pointer-events: none !important;
+}
+
+body.resizing-active {
+  cursor: col-resize !important;
+  user-select: none !important;
+}

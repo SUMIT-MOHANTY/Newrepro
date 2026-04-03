@@ -278,7 +278,7 @@ class OpenAIProvider(BaseProvider):
         }
 
     def get_payload(self, messages, **kwargs):
-        return {
+        payload = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
@@ -287,6 +287,13 @@ class OpenAIProvider(BaseProvider):
             "presence_penalty": kwargs.get("presence_penalty", self.presence_penalty),
             "stream": kwargs.get("stream", self.stream),
         }
+        
+        # Enable tool calling if supported and provided
+        if self.supports_function_calling and "tools" in kwargs and kwargs["tools"]:
+            payload["tools"] = kwargs["tools"]
+            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
+            
+        return payload
 
     def parse_sse_chunk(self, line):
         try:

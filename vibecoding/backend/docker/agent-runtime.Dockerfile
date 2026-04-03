@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     nginx \
     lsof \
+    rsync \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -32,10 +33,11 @@ COPY supervisor.py /usr/local/bin/supervisor.py
 COPY ai-agent.py /usr/local/bin/ai-agent.py
 COPY codegen.py /usr/local/bin/codegen.py
 COPY health_server.py /usr/local/bin/health_server.py
+COPY vibe-fix-all.py /usr/local/bin/vibe-fix-all.py
 
 # Fix line endings (Windows CRLF → Unix LF) and make executable
-RUN sed -i 's/\r$//' /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py /usr/local/bin/health_server.py && \
-    chmod +x /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py /usr/local/bin/health_server.py
+RUN sed -i 's/\r$//' /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py /usr/local/bin/health_server.py /usr/local/bin/vibe-fix-all.py && \
+    chmod +x /usr/local/bin/supervisor.py /usr/local/bin/ai-agent.py /usr/local/bin/codegen.py /usr/local/bin/health_server.py /usr/local/bin/vibe-fix-all.py
 
 # Install absolute essentials for the Agent's own AI communication + common Python web frameworks
 RUN pip3 install --no-cache-dir --default-timeout=1000 --retries 10 \

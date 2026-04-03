@@ -242,7 +242,7 @@ class VersionSupervisor:
             else:
                 self.start_version(init_v)
         elif prompt:
-            self.log("🎨", "Found USER_PROMPT. Triggering Stage 1 Codegen...")
+            self.log("📝", "Found USER_PROMPT. Triggering Stage 1 Codegen...")
             threading.Thread(
                 target=lambda: subprocess.run(["python3", "/usr/local/bin/codegen.py"]), 
                 daemon=True

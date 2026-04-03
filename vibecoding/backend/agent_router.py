@@ -19,18 +19,14 @@ class AgentRouter:
         """
         from ai_config import ai_config
         
-        # Guard for very short greetings/greetings
-        greetings = ['hi', 'hello', 'hey', 'thanks', 'thank you']
-        if message.lower().strip() in greetings:
-            return 'chat', 1.0
+        prompt = f"""Analyze the following user message and classify it into ONE of two categories:
 
-        prompt = f"""Classify the following user message into ONE of two categories:
-1. 'CODE': If the user is asking to build, create, generate, modify, implement, fix, debug, repair, update, or troubleshoot a project, app, software, script, or application. This includes requests to fix broken applications, debug errors, or resolve issues.
-2. 'CHAT': If the user is asking a general question, seeking an explanation, or just having a conversation without needing code changes.
+1. 'CODE': If the user is EXPLICITLY asking to build, create, generate, modify, implement, fix, debug, repair, update, or troubleshoot a project, software, script, or application.
+2. 'CHAT': If the user is JUST greeting you (e.g., 'Hi', 'Hello'), asking a general question, seeking an explanation, or having a casual conversation without explicit code instructions.
 
 USER MESSAGE: "{message}"
 
-Return ONLY the word 'CODE' or 'CHAT'. No other text."""
+Return ONLY the word 'CODE' or 'CHAT'. No other text. If the message is ambiguous or purely conversational, choose 'CHAT'."""
 
         try:
             # Using a very low max_tokens for speed
