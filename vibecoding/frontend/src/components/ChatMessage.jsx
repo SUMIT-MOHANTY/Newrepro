@@ -9,7 +9,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 
 // Extract functional summary from content (business logic context)
 const extractFunctionalSummary = (content) => {
-  if (!content) return 'Synthesizing requirements and implementing your request...';
+  if (!content) return '';
 
   // Extract everything before the first file marker or code block
   let summary = content.split(/(?:\/\/|#|<!--)\s*FILE:/i)[0];
@@ -20,12 +20,12 @@ const extractFunctionalSummary = (content) => {
   }
 
   // Clean up any trailing headers that might define the technical section
-  summary = summary.replace(/###?\s*(Updates?|Technicals?|Implementation|Code).*$/i, '');
+  summary = summary.replace(/###?\s*(Updates?|Technicals?|Implementation|Code|Changes|Files).*$/i, '');
 
-  const clean = summary.trim();
-  if (clean.length < 10) return 'Successfully implemented your requested changes with a focus on functional stability.';
+  // Strip common generic success messages that aren't useful as summaries
+  summary = summary.replace(/^(Done|Success|Updated|Changes applied|Implemented|Successfully implemented)[!.]*\s*(Your request has been incorporated|The changes are complete|your requested changes with a focus on functional stability)[!.]*/i, '');
 
-  return clean;
+  return summary.trim();
 };
 
 // Extract file structure from code — deduped and cleaned
@@ -259,9 +259,20 @@ const ChatMessage = ({
 
   const isUser = message.role === 'user';
   const [msgVersion, setMsgVersion] = useState(null);
-  const [aiSummary, setAiSummary] = useState(summaryCache.get(message.id) || '');
+  // Normalise summary from multiple possible fields (DB snake_case or Frontend camelCase)
+  const initialSummary = message.summary || message.ai_summary || summaryCache.get(message.id) || '';
+  const [aiSummary, setAiSummary] = useState(initialSummary);
+  const [showOriginal, setShowOriginal] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [relativeTime, setRelativeTime] = useState(getRelativeTime(message.timestamp));
+
+  // Keep aiSummary in sync with message props (CRITICAL for immediate reflection after API response)
+  useEffect(() => {
+    const currentSummary = message.summary || message.ai_summary;
+    if (currentSummary && currentSummary !== aiSummary) {
+      setAiSummary(currentSummary);
+    }
+  }, [message.summary, message.ai_summary]);
 
   // Update relative time periodically (every minute)
   useEffect(() => {
@@ -272,46 +283,18 @@ const ChatMessage = ({
     return () => clearInterval(interval);
   }, [message.timestamp]);
 
-  // Fetch AI summary for assistant messages with code
-  useEffect(() => {
-    if (!isUser && message.code && !aiSummary && !isSummarizing) {
-      const fetchSummary = async () => {
-        setIsSummarizing(true);
-        try {
-          const token = localStorage.getItem('vibecoding_token');
-          const response = await fetch(`${API_BASE_URL}/api/summarize`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-              content: message.content,
-              code: message.code
-            })
-          });
-          if (response.ok) {
-            const data = await response.json();
-            setAiSummary(data.summary);
-            summaryCache.set(message.id, data.summary);
-          }
-        } catch (error) {
-          console.error('Failed to fetch summary:', error);
-        } finally {
-          setIsSummarizing(false);
-        }
-      };
-      fetchSummary();
-    }
-  }, [message.id, message.code]);
+  // AI Summary is now provided by the backend automatically when messages are fetched.
+  // The frontend no longer needs to call /api/summarize manually.
 
   // Find the commit that matches this message's versionId (commit hash)
+  // Ensure we check both versionId and version_id for compatibility
   useEffect(() => {
-    if (message.versionId && codeVersions) {
-      const commit = codeVersions.find(c => c.hash === message.versionId);
+    const vId = message.versionId || message.version_id;
+    if (vId && codeVersions) {
+      const commit = codeVersions.find(c => c.hash === vId);
       if (commit) setMsgVersion(commit);
     }
-  }, [message.versionId, codeVersions]);
+  }, [message.versionId, message.version_id, codeVersions]);
 
 
   // Function to clean message content for non-technical users
@@ -329,12 +312,13 @@ const ChatMessage = ({
     // Usually these are inside the // FILE: sections we already split, 
     // but just in case they aren't, we can do some extra cleaning
     cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
-      // If the code block is very long (more than 10 lines), it's probably file content
       if (match.split('\n').length > 10) return '';
-      // If it contains markers, it's definitely file content
       if (match.includes('// FILE:')) return '';
       return match;
     });
+
+    // 4. Strip common technical placeholders and generic success messages
+    cleaned = cleaned.replace(/^(Done|Success|Updated|Changes applied|Implemented|Successfully implemented)[!.]*\s*(Your request has been incorporated|The changes are complete|your requested changes with a focus on functional stability)[!.]*/i, '');
 
     return cleaned.trim();
   };
@@ -354,12 +338,24 @@ const ChatMessage = ({
     }
   }
 
-  // The descriptive title the user likes
-  const successTitle = "Done! Your request has been incorporated.";
+  const successTitle = "Implementation complete";
+  const availableSummary = aiSummary || functionalSummary;
 
-  const finalContent = (!isUser && !markdownContent?.trim() && !functionalSummary?.trim() && (message.code || message.versionId))
-    ? successTitle
-    : markdownContent;
+  // Decide what to show as the primary content
+  let finalContent = markdownContent;
+  const hasCodeOrVersion = message.code || message.versionId || message.version_id;
+  
+  if (!isUser && hasCodeOrVersion) {
+    // If we have a curated AI summary, use it as the primary content to avoid boilerplates.
+    if (aiSummary) {
+      finalContent = aiSummary;
+    } else if (!finalContent?.trim() || finalContent === functionalSummary || finalContent.length < 5) {
+      finalContent = functionalSummary || successTitle;
+    }
+  }
+
+  // Only show the internal summary box if we have a summary that isn't already the main content.
+  const showSummaryBox = isSummarizing || (availableSummary && finalContent !== availableSummary && finalContent !== aiSummary);
 
   return (
     <div className="message-item">
@@ -403,8 +399,45 @@ const ChatMessage = ({
             {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
-            <div className="text-sm leading-relaxed whitespace-pre-wrap break-words markdown-body overflow-x-hidden">
-              <ReactMarkdown
+            {/* Chat Content */}
+            {!isUser && aiSummary && !showOriginal && hasCodeOrVersion ? (
+              <div className="flex flex-col gap-3 py-1">
+                <div className="flex items-center gap-2 text-xs font-semibold text-blue-500/80 uppercase tracking-wider">
+                  <Sparkles className="w-3 h-3" />
+                  <span>Agent Outcome Summary</span>
+                </div>
+                <p className={cn(
+                  "text-[0.95rem] leading-relaxed font-medium italic",
+                  darkMode ? "text-blue-100/90" : "text-blue-900/90"
+                )}>
+                  {aiSummary}
+                </p>
+                <button
+                  onClick={() => setShowOriginal(true)}
+                  className={cn(
+                    "w-fit text-[10px] font-medium uppercase tracking-tighter opacity-40 hover:opacity-100 transition-opacity flex items-center gap-1 mt-1",
+                    darkMode ? "text-gray-400" : "text-gray-600"
+                  )}
+                >
+                  <ChevronDown className="w-2.5 h-2.5" />
+                  View Raw AI Log
+                </button>
+              </div>
+            ) : (
+              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words markdown-body overflow-x-hidden">
+                {!isUser && aiSummary && showOriginal && hasCodeOrVersion && (
+                  <button
+                    onClick={() => setShowOriginal(false)}
+                    className={cn(
+                      "mb-3 text-[10px] font-medium uppercase tracking-tighter opacity-60 hover:opacity-100 transition-opacity flex items-center gap-1",
+                      darkMode ? "text-blue-400" : "text-blue-600"
+                    )}
+                  >
+                    <Sparkles className="w-2.5 h-2.5" />
+                    Back to Summary
+                  </button>
+                )}
+                <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
                   p: ({ node, ...props }) => <div className="mb-3 last:mb-0 break-words" {...props} />,
@@ -455,10 +488,11 @@ const ChatMessage = ({
                   hr: ({ node, ...props }) => <hr className="my-4 border-white/10 dark:border-white/10 border-black/10" {...props} />
                 }}
               >
-                {finalContent}
+                {showOriginal ? message.content : finalContent}
               </ReactMarkdown>
             </div>
-            {message.code && (
+          )}
+          {message.code && (
               <>
                 {/* File Structure Display */}
                 {(() => {
@@ -466,25 +500,27 @@ const ChatMessage = ({
                   if (fileStructure.length === 0) return null;
                   return (
                     <div className={`mt-3 ${message.role === 'user' ? '' : ''}`}>
-                      <div className={`mt-3 overflow-hidden rounded-2xl border transition-all duration-500 group/insights ${darkMode
+                      {showSummaryBox && (
+                        <div className={`mt-3 overflow-hidden rounded-2xl border transition-all duration-500 group/insights ${darkMode
                           ? 'bg-gradient-to-br from-purple-500/10 via-purple-500/5 to-transparent border-purple-500/20 shadow-[0_4px_20px_rgba(168,85,247,0.1)]'
                           : 'bg-gradient-to-br from-blue-50/80 via-white to-white border-blue-100 shadow-[0_4px_15px_rgba(59,130,246,0.05)]'
-                        }`}>
-                        <div className="p-4 px-5">
-                          {isSummarizing ? (
-                            <div className="space-y-2">
-                              <div className={`h-3 w-3/4 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                              <div className={`h-3 w-full rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                              <div className={`h-3 w-1/2 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                            </div>
-                          ) : (
-                            <p className={`text-sm leading-relaxed font-medium transition-colors ${darkMode ? 'text-gray-300 group-hover/insights:text-white' : 'text-gray-700 group-hover/insights:text-gray-900'
-                              }`}>
-                              {aiSummary || functionalSummary}
-                            </p>
-                          )}
+                          }`}>
+                          <div className="p-4 px-5">
+                            {isSummarizing ? (
+                              <div className="space-y-2">
+                                <div className={`h-3 w-3/4 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                                <div className={`h-3 w-full rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                                <div className={`h-3 w-1/2 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                              </div>
+                            ) : (
+                              <p className={`text-sm leading-relaxed font-medium transition-colors ${darkMode ? 'text-gray-300 group-hover/insights:text-white' : 'text-gray-700 group-hover/insights:text-gray-900'
+                                }`}>
+                                {aiSummary || functionalSummary}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                      </div>
+                      )}
 
                       <details className="group">
                         <summary className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest cursor-pointer select-none mb-2 ${message.role === 'user' ? 'text-white/60' : 'text-gray-500'
@@ -521,34 +557,22 @@ const ChatMessage = ({
                 })()}
 
                 {/* Code Generated Badge */}
-                <div className={`mt-3 pt-3 border-t flex items-center justify-between ${message.role === 'user'
+                <div className={`mt-3 pt-3 border-t flex items-center justify-end ${message.role === 'user'
                   ? 'border-white/20'
                   : darkMode ? 'border-white/10' : 'border-gray-200'
                   }`}>
-                  <div className={`flex items-center gap-2 text-xs font-medium ${message.role === 'user'
-                    ? 'text-white/80'
-                    : darkMode ? 'text-gray-500' : 'text-gray-500'
-                    }`}>
-                    <CheckCircle2 className={`w-4 h-4 ${darkMode ? 'text-green-500/70' : 'text-green-600'}`} />
-                    <span>Update complete</span>
-                  </div>
-                  {(msgVersion || message.versionId) && (
+                  {(msgVersion || message.versionId || message.version_id) && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => onLoadVersion(msgVersion?.hash || message.versionId)}
-                      className={`text-xs px-3 py-1.5 h-auto rounded-lg font-bold transition-all shadow-sm ${selectedVersion === (msgVersion?.hash || message.versionId)
-                        ? darkMode
-                          ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-purple-500/20'
-                          : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-500/20'
-                        : message.role === 'user'
-                          ? 'text-white/90 hover:bg-white/10 border border-white/20'
-                          : darkMode
-                            ? '!text-gray-200 !bg-white/5 !border !border-white/10 hover:!bg-white/10 hover:!border-white/20'
-                            : 'text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 hover:border-gray-300'
+                      onClick={() => onLoadVersion(msgVersion?.hash || message.versionId || message.version_id)}
+                      className={`text-xs px-3 py-1.5 h-auto rounded-lg font-bold transition-all shadow-sm ${selectedVersion === (msgVersion?.hash || message.versionId || message.version_id)
+                        ? (darkMode ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'bg-blue-50 text-blue-600 border border-blue-200')
+                        : (darkMode ? 'bg-white/5 text-gray-400 hover:text-white border border-white/10 hover:border-white/20' : 'bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200')
                         }`}
                     >
-                      {selectedVersion === (msgVersion?.hash || message.versionId) ? 'Active Version' : 'View Version'}
+                      <History className="w-3.5 h-3.5 mr-2 opacity-70" />
+                      {selectedVersion === (msgVersion?.hash || message.versionId || message.version_id) ? 'Active Version' : 'View Version'}
                     </Button>
                   )}
                 </div>

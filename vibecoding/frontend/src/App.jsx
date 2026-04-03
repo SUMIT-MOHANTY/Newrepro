@@ -177,7 +177,7 @@ function Workspace({ user, logout, isAuthenticated }) {
           const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
             headers: { Authorization: `Bearer ${token}` }
           });
-          
+
           const latestMsg = response.data.messages?.find(m => m.id === lastMessageId);
           if (latestMsg?.metadata?.verification) {
             const v = latestMsg.metadata.verification;
@@ -356,7 +356,7 @@ function Workspace({ user, logout, isAuthenticated }) {
 
           setFullCode(fullCode);
           setFileTree(fileTree);
-          
+
           // Determine best initial preview code (usually index.html)
           const indexFile = filesMap['index.html'] || filesMap['index.jsx'] || Object.values(filesMap)[0];
           setPreviewCode(indexFile || '');
@@ -771,8 +771,8 @@ function Workspace({ user, logout, isAuthenticated }) {
           <div
             key={item.path}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors group ${selectedFile?.path === item.path
-                ? 'bg-white/10 text-white'
-                : 'text-gray-400 hover:bg-white/5 hover:text-white'
+              ? 'bg-white/10 text-white'
+              : 'text-gray-400 hover:bg-white/5 hover:text-white'
               }`}
             style={{ paddingLeft: `${12 + level * 16}px` }}
           >
@@ -785,8 +785,8 @@ function Workspace({ user, logout, isAuthenticated }) {
                 onClick={(e) => toggleFileFrozen(item.path, e)}
                 disabled={freezeLoading}
                 className={`p-1 rounded flex-shrink-0 ${isFrozen
-                    ? 'text-yellow-500 hover:text-yellow-600'
-                    : 'opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-300'
+                  ? 'text-yellow-500 hover:text-yellow-600'
+                  : 'opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-300'
                   }`}
                 title={isFrozen ? 'File is frozen (read-only)' : 'Click to freeze file'}
               >
@@ -829,8 +829,8 @@ function Workspace({ user, logout, isAuthenticated }) {
             key={item.path}
             onClick={() => setSelectedFile(item)}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${selectedFile?.path === item.path
-                ? 'bg-white/10 text-white'
-                : 'text-gray-400 hover:bg-white/5 hover:text-white'
+              ? 'bg-white/10 text-white'
+              : 'text-gray-400 hover:bg-white/5 hover:text-white'
               }`}
             style={{ paddingLeft: `${12 + level * 16}px` }}
           >
@@ -861,7 +861,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       images: imageDataUrls.length > 0 ? imageDataUrls : undefined,
       timestamp: new Date().toISOString()
     };
-    
+
     // Add user message to state immediately for UX
     setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
@@ -884,6 +884,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         content: response.data.message,
         code: response.data.code,
         versionId: response.data.version_id,
+        summary: response.data.summary,
         toolCalls: response.data.tool_calls_log || null,
         suggestions: response.data.suggestions || null,
         timestamp: new Date().toISOString(),
@@ -892,9 +893,9 @@ function Workspace({ user, logout, isAuthenticated }) {
 
       setMessages(prev => [...prev, aiMessage]);
       setLastMessageId(response.data.message_id);
-      
+
       if (response.data.code) {
-          setVerificationStatus('checking');
+        setVerificationStatus('checking');
       }
 
       const { project_id, version_id } = response.data;
@@ -1832,17 +1833,16 @@ Please suggest improvements or modifications for this element.`;
         {/* Right Panel - Preview/Code */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {/* View Tabs */}
-          <div className={`h-12 border-b flex items-center justify-between px-4 sticky top-0 z-10 ${
-            darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
-          }`}>
+          <div className={`h-12 border-b flex items-center justify-between px-4 sticky top-0 z-10 ${darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
+            }`}>
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveView('preview')}
                 className={`${activeView === 'preview'
-                    ? darkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900'
-                    : darkMode ? 'text-white hover:bg-white/5' : 'text-gray-600 hover:bg-gray-100'
+                  ? darkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900'
+                  : darkMode ? 'text-white hover:bg-white/5' : 'text-gray-600 hover:bg-gray-100'
                   }`}
               >
                 <Eye className="w-4 h-4 inline mr-2" />
@@ -1853,8 +1853,8 @@ Please suggest improvements or modifications for this element.`;
                 size="sm"
                 onClick={() => setActiveView('code')}
                 className={`${activeView === 'code'
-                    ? darkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900'
-                    : darkMode ? 'text-white hover:bg-white/5' : 'text-gray-600 hover:bg-gray-100'
+                  ? darkMode ? 'bg-white/10 text-white' : 'bg-gray-200 text-gray-900'
+                  : darkMode ? 'text-white hover:bg-white/5' : 'text-gray-600 hover:bg-gray-100'
                   }`}
               >
                 <Code className="w-4 h-4 inline mr-2" />
@@ -1866,16 +1866,15 @@ Please suggest improvements or modifications for this element.`;
             {previewCode && activeView === 'preview' && (
               <div className="flex items-center gap-2">
                 {/* Screen Size Selector */}
-                <div className={`flex items-center gap-1 px-2 py-1 rounded-lg transition-colors ${
-                  darkMode ? 'bg-white/5' : 'bg-gray-200'
-                }`}>
+                <div className={`flex items-center gap-1 px-2 py-1 rounded-lg transition-colors ${darkMode ? 'bg-white/5' : 'bg-gray-200'
+                  }`}>
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('mobile')}
-                    className={`h-8 w-8 transition-colors ${screenSize === 'mobile' 
-                        ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900' 
-                        : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
+                    className={`h-8 w-8 transition-colors ${screenSize === 'mobile'
+                      ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900'
+                      : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
                       }`}
                     title="Mobile (375px)"
                   >
@@ -1887,9 +1886,9 @@ Please suggest improvements or modifications for this element.`;
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('tablet')}
-                    className={`h-8 w-8 transition-colors ${screenSize === 'tablet' 
-                        ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900' 
-                        : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
+                    className={`h-8 w-8 transition-colors ${screenSize === 'tablet'
+                      ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900'
+                      : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
                       }`}
                     title="Tablet (768px)"
                   >
@@ -1901,9 +1900,9 @@ Please suggest improvements or modifications for this element.`;
                     variant="ghost"
                     size="icon"
                     onClick={() => setScreenSize('desktop')}
-                    className={`h-8 w-8 transition-colors ${screenSize === 'desktop' 
-                        ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900' 
-                        : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
+                    className={`h-8 w-8 transition-colors ${screenSize === 'desktop'
+                      ? darkMode ? 'bg-white/20 text-white' : 'bg-gray-300 text-gray-900'
+                      : darkMode ? 'text-white hover:bg-white/10' : 'text-gray-600 hover:bg-gray-300'
                       }`}
                     title="Desktop (100%)"
                   >
@@ -1921,10 +1920,10 @@ Please suggest improvements or modifications for this element.`;
                   size="sm"
                   onClick={() => setEditMode(!editMode)}
                   className={`transition-colors ${editMode
-                      ? 'bg-purple-600 text-white hover:bg-purple-700'
-                      : darkMode 
-                        ? 'bg-white/5 hover:bg-white/10 text-white' 
-                        : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+                    ? 'bg-purple-600 text-white hover:bg-purple-700'
+                    : darkMode
+                      ? 'bg-white/5 hover:bg-white/10 text-white'
+                      : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
                     }`}
                   title="Edit Mode - Click elements to edit"
                 >
@@ -1939,9 +1938,8 @@ Please suggest improvements or modifications for this element.`;
                 <Button
                   size="icon"
                   onClick={handleRefresh}
-                  className={`!border-0 ${
-                    darkMode ? '!bg-white/5 hover:!bg-white/10 !text-white' : '!bg-gray-200 hover:!bg-gray-300 !text-gray-700'
-                  }`}
+                  className={`!border-0 ${darkMode ? '!bg-white/5 hover:!bg-white/10 !text-white' : '!bg-gray-200 hover:!bg-gray-300 !text-gray-700'
+                    }`}
                   title="Refresh Preview"
                 >
                   <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -1951,9 +1949,8 @@ Please suggest improvements or modifications for this element.`;
                   <Button
                     size="icon"
                     onClick={() => window.open(previewUrl, '_blank')}
-                    className={`!border-0 ${
-                      darkMode ? '!bg-white/5 hover:!bg-white/10 !text-white' : '!bg-gray-200 hover:!bg-gray-300 !text-gray-700'
-                    }`}
+                    className={`!border-0 ${darkMode ? '!bg-white/5 hover:!bg-white/10 !text-white' : '!bg-gray-200 hover:!bg-gray-300 !text-gray-700'
+                      }`}
                     title="Open in new tab"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2007,9 +2004,8 @@ Please suggest improvements or modifications for this element.`;
           </div>
 
           {/* Content Area */}
-          <div className={`flex-1 relative overflow-hidden min-h-0 flex flex-col transition-colors ${
-            darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
-          }`}>
+          <div className={`flex-1 relative overflow-hidden min-h-0 flex flex-col transition-colors ${darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
+            }`}>
             {!previewCode ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
@@ -2046,14 +2042,13 @@ Please suggest improvements or modifications for this element.`;
                 )}
 
                 <div
-                  className={`flex-1 relative flex items-center justify-center transition-colors ${
-                    darkMode ? 'bg-[#0A0A0F]' : 'bg-gray-200'
-                  }`}
+                  className={`flex-1 relative flex items-center justify-center transition-colors ${darkMode ? 'bg-[#0A0A0F]' : 'bg-gray-200'
+                    }`}
                 >
                   <div
                     className={`h-full transition-all duration-300 relative ${screenSize === 'mobile' ? 'w-[375px]' :
-                        screenSize === 'tablet' ? 'w-[768px]' :
-                          'w-full'
+                      screenSize === 'tablet' ? 'w-[768px]' :
+                        'w-full'
                       }`}
                     style={{
                       boxShadow: screenSize !== 'desktop' ? (editMode ? '0 0 0 1px rgba(0,0,0,0.1)' : '0 0 0 1px rgba(255,255,255,0.1)') : 'none'
@@ -2074,9 +2069,8 @@ Please suggest improvements or modifications for this element.`;
 
                     {/* Container / Checkpoint loader overlay */}
                     {(isCheckpointLoading || (isContainerLoading && previewUrl && (verificationStatus !== 'completed' && verificationStatus !== 'failed'))) && (
-                      <div className={`absolute inset-0 z-20 flex flex-col items-center justify-center backdrop-blur-sm ${
-                        darkMode ? 'bg-[#0A0A0F]/60' : 'bg-white/60'
-                      }`}>
+                      <div className={`absolute inset-0 z-20 flex flex-col items-center justify-center backdrop-blur-sm ${darkMode ? 'bg-[#0A0A0F]/60' : 'bg-white/60'
+                        }`}>
                         {/* Animated rings */}
                         <div className="relative flex items-center justify-center mb-8">
                           <div className="absolute w-24 h-24 rounded-full border-2 border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
@@ -2211,17 +2205,15 @@ Please suggest improvements or modifications for this element.`;
 
                 {/* Edit Prompt Panel */}
                 {editMode && selectedElement && (
-                  <div className={`absolute bottom-0 left-0 right-0 z-30 border-t backdrop-blur-sm p-4 shadow-2xl transition-colors ${
-                    darkMode 
-                      ? 'border-white/10 bg-[#0F0F14]/95 text-white' 
-                      : 'border-gray-200 bg-white/95 text-gray-900'
-                  }`}>
+                  <div className={`absolute bottom-0 left-0 right-0 z-30 border-t backdrop-blur-sm p-4 shadow-2xl transition-colors ${darkMode
+                    ? 'border-white/10 bg-[#0F0F14]/95 text-white'
+                    : 'border-gray-200 bg-white/95 text-gray-900'
+                    }`}>
                     <div className="max-w-4xl mx-auto">
                       <div className="mb-2 flex items-center justify-between">
                         <div className={`flex items-center gap-2 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                          <span className={`px-2 py-0.5 rounded font-mono text-xs ${
-                            darkMode ? 'bg-purple-600/20 text-purple-300' : 'bg-purple-100 text-purple-700'
-                          }`}>
+                          <span className={`px-2 py-0.5 rounded font-mono text-xs ${darkMode ? 'bg-purple-600/20 text-purple-300' : 'bg-purple-100 text-purple-700'
+                            }`}>
                             {selectedElement.tagName?.toLowerCase()}
                             {selectedElement.id && `#${selectedElement.id}`}
                             {selectedElement.className && `.${selectedElement.className.split(' ')[0]}`}
@@ -2253,11 +2245,10 @@ Please suggest improvements or modifications for this element.`;
                             }
                           }}
                           placeholder={`Edit this ${selectedElement.tagName?.toLowerCase()}... (e.g., "change color to blue", "make text bigger")`}
-                          className={`w-full border rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors ${
-                            darkMode 
-                              ? 'bg-white/5 border-white/10 text-white placeholder:text-gray-600' 
-                              : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'
-                          }`}
+                          className={`w-full border rounded-lg px-4 py-3 pr-12 text-sm focus:outline-none focus:border-purple-500/50 transition-colors ${darkMode
+                            ? 'bg-white/5 border-white/10 text-white placeholder:text-gray-600'
+                            : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'
+                            }`}
                           autoFocus
                         />
                         <Button
@@ -2280,13 +2271,11 @@ Please suggest improvements or modifications for this element.`;
             ) : (
               <div className="flex-1 flex min-h-0 overflow-hidden">
                 {/* File Tree Sidebar */}
-                <div className={`w-64 border-r flex flex-col transition-colors ${
-                  darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
-                }`}>
+                <div className={`w-64 border-r flex flex-col transition-colors ${darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
+                  }`}>
                   <div className={`p-3 border-b ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
-                    <div className={`flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${
-                      darkMode ? 'text-gray-400' : 'text-gray-500'
-                    }`}>
+                    <div className={`flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-500'
+                      }`}>
                       <Folder className="w-4 h-4" />
                       <span>Files</span>
                       <span className="ml-auto text-gray-500">{fileTree.length}</span>
@@ -2306,9 +2295,8 @@ Please suggest improvements or modifications for this element.`;
                 {/* Code Editor */}
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden min-w-0">
                   {/* File Header */}
-                  <div className={`px-4 py-2 border-b flex items-center justify-between transition-colors ${
-                    darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
-                  }`}>
+                  <div className={`px-4 py-2 border-b flex items-center justify-between transition-colors ${darkMode ? 'border-white/10 bg-[#0F0F14]' : 'border-gray-200 bg-gray-50'
+                    }`}>
                     <div className="flex items-center gap-2">
                       <File className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
                       <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
@@ -2323,14 +2311,12 @@ Please suggest improvements or modifications for this element.`;
                   </div>
 
                   {/* Code Content */}
-                  <div className={`flex-1 overflow-auto min-h-0 custom-scrollbar transition-colors ${
-                    darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
-                  }`}>
+                  <div className={`flex-1 overflow-auto min-h-0 custom-scrollbar transition-colors ${darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
+                    }`}>
                     <div className="flex min-h-full" key={selectedFile?._loadedAt || selectedFile?.path || 'no-file'}>
                       {/* Line Numbers */}
-                      <div className={`py-4 px-3 select-none border-r transition-colors ${
-                        darkMode ? 'bg-[#0A0A0F] text-gray-600 border-white/10' : 'bg-gray-50 text-gray-400 border-gray-200'
-                      }`}>
+                      <div className={`py-4 px-3 select-none border-r transition-colors ${darkMode ? 'bg-[#0A0A0F] text-gray-600 border-white/10' : 'bg-gray-50 text-gray-400 border-gray-200'
+                        }`}>
                         <pre className="text-xs font-mono leading-relaxed text-right">
                           {(selectedFile?.content || previewCode).split('\n').map((_, idx) => (
                             <div key={idx}>{idx + 1}</div>
@@ -2339,9 +2325,8 @@ Please suggest improvements or modifications for this element.`;
                       </div>
 
                       {/* Code Content */}
-                      <div className={`flex-1 py-4 px-4 overflow-x-auto custom-scrollbar min-w-0 transition-colors ${
-                        darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
-                      }`}>
+                      <div className={`flex-1 py-4 px-4 overflow-x-auto custom-scrollbar min-w-0 transition-colors ${darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
+                        }`}>
                         <pre className={`text-sm font-mono leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-800'}`}>
                           <code key={selectedFile?._loadedAt || selectedFile?.path || 'empty'}>
                             {selectedFile?.content || (fileTree.length > 0 ? "Select a file to view its code" : "No files generated yet")}

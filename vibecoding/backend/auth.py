@@ -90,7 +90,8 @@ def init_db():
             suggestions TEXT,
             tool_calls TEXT,
             image_paths TEXT,
-            metadata TEXT
+            metadata TEXT,
+            summary TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_project_id ON messages(project_id)")
@@ -105,6 +106,12 @@ def init_db():
     
     try:
         conn.execute("ALTER TABLE users ADD COLUMN reset_token_expiry TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN summary TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists

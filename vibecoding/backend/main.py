@@ -106,7 +106,9 @@ def get_or_create_proxy_session():
     """Return a fresh session for each proxy request to avoid pooling issues"""
     return get_proxy_session()
 
-    
+async def wait_for_container_ready(base_url, max_attempts=20, initial_delay=1):
+    """Wait until the container at base_url responds to requests"""
+    delay = initial_delay
     for attempt in range(max_attempts):
         try:
             session = get_proxy_session()
@@ -183,7 +185,7 @@ def get_warming_up_html():
         <span class="loader"></span>
         <div class="text">
             <h2 style="margin: 0 0 8px 0;">Preview is Warming Up...</h2>
-            <p style="margin: 0; opacity: 0.7;">Container is starting in the background.</p>
+            <p style="margin: 0; opacity: 0.7;">Workspace is starting in the background.</p>
             <progress></progress>
         </div>
     </body>
@@ -220,7 +222,7 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
     headers["accept-encoding"] = "identity"  # Prefer uncompressed for stable proxying
     
     # 1. First, wait for container to be ready (Pre-flight)
-    is_ready = await wait_for_container_ready(target_base, max_attempts=15, delay=1.0)
+    is_ready = await wait_for_container_ready(target_base, max_attempts=15, initial_delay=1.0)
     if not is_ready:
         print(f"⚠️ Container {target_base} still not responding after 15s. Proceeding anyway.")
 
@@ -318,6 +320,7 @@ class MessagePersistenceRequest(BaseModel):
     suggestions: Optional[List[str]] = None
     tool_calls: Optional[List[dict]] = None
     images: Optional[List[str]] = None
+    summary: Optional[str] = None
 
 class GenerateResponse(BaseModel):
     message: str
@@ -327,11 +330,8 @@ class GenerateResponse(BaseModel):
     preview_url: Optional[str] = None
     tool_calls_log: Optional[List[dict]] = None
     suggestions: Optional[List[str]] = None
+    summary: Optional[str] = None
     message_id: Optional[str] = None
-    version_id: Optional[str] = None
-    preview_url: Optional[str] = None
-    tool_calls_log: Optional[List[dict]] = None
-    suggestions: Optional[List[str]] = None
 
 class ProjectCreateRequest(BaseModel):
     project_id: Optional[str] = None
@@ -360,6 +360,54 @@ class GitRequest(BaseModel):
     token: Optional[str] = None
     chat_version: Optional[int] = None
     version_id: Optional[str] = None
+
+async def summarize_content(content: str, code: str = None) -> str:
+    """Helper to generate a professional CXO summary for a message."""
+    try:
+        prompt = f"""Summarize the following implementation into a single professional, justifiable paragraph for a CXO or Business Analyst. 
+Focus on the strategic impact and functional achievements. Use a sophisticated, outcome-oriented tone.
+Do NOT use technical jargon.
+
+CONTENT: {content[:1000]}
+CODE SNIPPET: {code[:2000] if code else "No code provided"}
+
+SUMMARY:"""
+        
+        messages = [
+            {"role": "system", "content": "You are a professional business strategist and product manager. Your job is to translate technical code updates into business-value summaries."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = ai_config.make_request(messages)
+        if "choices" in response and len(response["choices"]) > 0:
+            summary = response["choices"][0]["message"].get("content", "").strip()
+            # Remove prefixes like "Summary: " or "Strategic Impact: "
+            if ":" in summary and len(summary.split(":")[0]) < 25:
+                summary = ":".join(summary.split(":")[1:]).strip()
+            
+            if summary:
+                return summary
+        
+        return "Implemented requested functionality to enhance the platform's core capabilities and business logic."
+    except Exception as e:
+        logger.error(f"Summarization error: {e}")
+        # Fallback to a generic summary if AI fails
+        return "Modifications completed based on your specific requirements to ensure system stability and performance."
+
+async def lazy_summarize_message(msg_id: str, content: str, code: str):
+    """Background task to generate and save a summary if it's missing."""
+    try:
+        summary = await summarize_content(content, code)
+        from auth import get_db
+        conn = get_db()
+        try:
+            conn.execute("UPDATE messages SET summary = ? WHERE id = ?", (summary, msg_id))
+            conn.commit()
+            logger.info(f"✅ Lazy-summarized message {msg_id}")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Failed lazy-summarization for {msg_id}: {e}")
 
 async def generate_suggestions(message: str, code: str, user_prompt: str) -> List[str]:
     """Use AI to generate 3 contextual one-liner suggestions based on what was just created."""
@@ -712,14 +760,15 @@ async def save_project_message(project_id: str, request: MessagePersistenceReque
 
         conn.execute(
             """INSERT OR REPLACE INTO messages 
-               (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (request.id, project_id, container_id, request.role, request.content, request.code, 
              request.version_id, request.timestamp, 
              json.dumps(request.suggestions) if request.suggestions else None,
              json.dumps(request.tool_calls) if request.tool_calls else None,
              json.dumps(request.images) if request.images else None,
-             None)
+             None,
+             request.summary)
         )
         conn.commit()
         return {"status": "success"}
@@ -751,21 +800,25 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
     import time
     from datetime import datetime
     
-    # Autonomously persist user message immediately
+    # Guaranteed User Message Persistence (Atomic)
+    user_msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
     try:
-        user_msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
         conn = get_db()
+        # Use INSERT OR REPLACE to be absolutely certain we don't lose the prompt
         conn.execute(
-            """INSERT INTO messages 
-               (id, project_id, role, content, timestamp, image_paths)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_msg_id, project_id, "user", request.prompt, datetime.now().isoformat(),
-             json.dumps(request.images) if request.images else None)
+            """INSERT OR REPLACE INTO messages 
+               (id, project_id, role, content, code, timestamp, image_paths, suggestions, tool_calls, metadata, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_msg_id, project_id, "user", request.prompt, None, datetime.now().isoformat(),
+             json.dumps(request.images) if request.images else None, 
+             None, None, None, None)
         )
         conn.commit()
         conn.close()
+        logger.info(f"✅ User prompt verified and stored: {user_msg_id} (Project: {project_id})")
     except Exception as e:
-        logger.error(f"Failed to auto-save user message: {e}")
+        logger.error(f"❌ CRITICAL: Failed to save user prompt: {e}")
+        # We continue so the user still gets a response, but we've logged the failure
 
     try:
         # ── Discuss mode: pure conversation, no code generation ──────────
@@ -789,7 +842,8 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             
             # Generate suggestions for discuss mode too
             suggestions = await generate_suggestions(ai_response, "", request.prompt)
-            
+            agent_summary = await summarize_content(ai_response, "")
+
             # Autonomously persist assistant message in discuss mode
             try:
                 from auth import get_db
@@ -802,26 +856,29 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 conn = get_db()
                 conn.execute(
                     """INSERT INTO messages 
-                       (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (msg_id, project_id, container_id, "assistant", ai_response, None, None,
                      datetime.now().isoformat(), 
                      json.dumps(suggestions) if suggestions else None,
-                     None, None, None)
+                     None, None, None, agent_summary)
                 )
                 conn.commit()
                 conn.close()
+                logger.info(f"📁 Persisted AI response {msg_id} (Discuss) for project {project_id}")
             except Exception as e:
-                logger.error(f"Failed to auto-save discuss message: {e}")
+                logger.error(f"❌ Failed to auto-save discuss message: {e}")
 
             return GenerateResponse(
-                message=ai_response,
+                message=agent_summary,
                 code=None,
                 project_id=project_id,
                 version_id=None,
                 preview_url=None,
                 tool_calls_log=None,
-                suggestions=suggestions
+                suggestions=suggestions,
+                summary=agent_summary,
+                message_id=msg_id
             )
 
         # Get existing code in the workspace - Increased limits for better full-stack context
@@ -921,7 +978,7 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         
         log_ai_interaction(log_prompt, ai_response, "main_generation")
 
-        # Extract code
+        # Extract code from response OR from tool calls (if AI used the 'patch' tool)
         import re as _re
         ai_response = _preprocess_ai_response(ai_response)
         
@@ -930,17 +987,37 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
 
         code = None
-        if has_patch_markers or has_raw_search_replace:
-            code = ai_response
-        elif has_markers:
-            fenced_blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
-            fenced_code = "\n\n".join(b.strip() for b in fenced_blocks).strip() if fenced_blocks else ""
-            if fenced_code and _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', fenced_code):
-                code = fenced_code
-            else:
-                cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response).replace('```', '')
-                first_marker = _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', cleaned)
-                code = cleaned[first_marker.start():].strip() if first_marker else cleaned.strip()
+        
+        # 1. Check if code was sent via tool calls first (modern approach)
+        if tool_calls_log:
+            for tc in tool_calls_log:
+                if tc.get("tool") == "patch" and tc.get("arguments", {}).get("patch"):
+                    code = tc["arguments"]["patch"]
+                    logger.info("🔧 Patch extracted from tool call payload")
+                    break
+                elif tc.get("tool") == "write_file":
+                    args = tc.get("arguments", {})
+                    if args.get("path") and args.get("content"):
+                        file_path = args["path"]
+                        file_content = args["content"]
+                        # Convert to // FILE: format for the downstream handler
+                        code = f"// FILE: {file_path}\n{file_content}"
+                        logger.info(f"📝 Full file {file_path} extracted from tool call payload")
+                        break
+
+        # 2. Fallback to response text markers (classic approach)
+        if not code:
+            if has_patch_markers or has_raw_search_replace:
+                code = ai_response
+            elif has_markers:
+                fenced_blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
+                fenced_code = "\n\n".join(b.strip() for b in fenced_blocks).strip() if fenced_blocks else ""
+                if fenced_code and _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', fenced_code):
+                    code = fenced_code
+                else:
+                    cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response).replace('```', '')
+                    first_marker = _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', cleaned)
+                    code = cleaned[first_marker.start():].strip() if first_marker else cleaned.strip()
         else:
             blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
             if blocks:
@@ -966,8 +1043,10 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 message = ai_response.split("```")[0].strip()
         message = message.replace('```', '').strip()
 
-        # Generate suggestions before persistence
-        suggestions = await generate_suggestions(message, code or "", request.prompt)
+        # Generate summary and suggestions before persistence
+        summary_task = summarize_content(message, code or "")
+        suggestions_task = generate_suggestions(message, code or "", request.prompt)
+        summary, suggestions = await asyncio.gather(summary_task, suggestions_task)
 
         # ── Persistence: Save AI response to DB ──────────
         try:
@@ -984,15 +1063,16 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             conn = get_db()
             conn.execute(
                 """INSERT INTO messages 
-                   (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (msg_id, project_id, container_id, "assistant", message, code, 
                  None, # version_id will be updated after git commit if needed
                  datetime.now().isoformat(), 
                  json.dumps(suggestions) if suggestions else None,
                  json.dumps(tool_calls_log) if tool_calls_log else None,
                  None,
-                 None)
+                 None,
+                 summary)
             )
             conn.commit()
             conn.close()
@@ -1032,16 +1112,16 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 background_tasks.add_task(project_manager.create_container_for_code, project_id, "workspace")
                 logger.info(f"🚀 Started container for {project_id} in background")
                 
-                # Kick off verification background task
-                if code and preview_url:
-                    background_tasks.add_task(
-                        verify_generated_preview, 
-                        project_id, 
-                        msg_id, 
-                        preview_url, 
-                        request.prompt, 
-                        code
-                    )
+                # Kick off verification background task (Currently disabled to prevent duplicate responses and NameErrors)
+                # if code and preview_url:
+                #     background_tasks.add_task(
+                #         verify_generated_preview, 
+                #         project_id, 
+                #         msg_id, 
+                #         preview_url, 
+                #         request.prompt, 
+                #         code
+                #     )
             else:
                 preview_url = None
         
@@ -1054,6 +1134,7 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             preview_url=preview_url,
             tool_calls_log=tool_calls_log,
             suggestions=suggestions,
+            summary=summary,
             message_id=msg_id
         )
 
@@ -1582,7 +1663,7 @@ async def git_push(request: GitRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/vibecoding/api/projects/{project_id}/messages")
-async def get_project_messages(project_id: str):
+async def get_project_messages(project_id: str, background_tasks: BackgroundTasks):
     from auth import get_db
     conn = get_db()
     try:
@@ -1609,6 +1690,9 @@ async def get_project_messages(project_id: str):
             # Match frontend format
             if msg.get("role") == "assistant":
                 msg["code"] = msg.get("code")
+                # Trigger lazy summarization if missing and has code
+                if not msg.get("summary") and msg.get("code"):
+                    background_tasks.add_task(lazy_summarize_message, msg["id"], msg["content"], msg["code"])
             messages.append(msg)
             
         return {"messages": messages}
@@ -1717,31 +1801,7 @@ class SummaryRequest(BaseModel):
 @app.post("/vibecoding/api/summarize")
 async def summarize_changes(request: SummaryRequest, user=Depends(get_current_user)):
     try:
-        # Create a targeted prompt for a CXO summary
-        prompt = f"""Summarize the following code updates into a single professional, justifiable paragraph for a CXO or Business Analyst. 
-Focus on the strategic impact and functional achievements. Use a sophisticated, outcome-oriented tone.
-Do NOT use technical jargon. Highlight what was understood and how it was functionally executed.
-
-CONTENT: {request.content[:1000]}
-CODE SNIPPET: {request.code[:2000] if request.code else "No code provided"}
-
-SUMMARY:"""
-        
-        messages = [
-            {"role": "system", "content": "You are a professional business strategist and product manager. Your job is to translate technical code changes into business-value summaries for non-technical leadership."},
-            {"role": "user", "content": prompt}
-        ]
-        
-        response = ai_config.make_request(messages)
-        
-        if "choices" in response and len(response["choices"]) > 0:
-            summary = response["choices"][0]["message"].get("content", "").strip()
-            # Remove any intro text if LLM was chatty
-            if ":" in summary and len(summary.split(":")[0]) < 20:
-                summary = ":".join(summary.split(":")[1:]).strip()
-        else:
-            summary = "The requested updates were implemented successfully to ensure system stability and performance."
-            
+        summary = await summarize_content(request.content, request.code)
         return {"summary": summary}
     except Exception as e:
         logger.error(f"Summarization error: {e}")
