@@ -179,21 +179,52 @@ Cover: Frontend, UI Library, Charting, Backend, Language, ORM, Database, Caching
 
 **Mermaid Flowchart Requirements:**
 1. Use `flowchart TB` (top-to-bottom) or `flowchart LR` (left-to-right) format
-2. Include ALL major layers: Client Layer, Frontend Layer, API Gateway/Backend, Service Layer, Data Layer
-3. Show ALL key components within each layer
-4. Use subgraphs to group related components by layer
-5. Show clear data flow with arrows between all components
-6. Label each component descriptively 
-7. Include specific technology names where relevant 
+2. Design the architecture based on the ACTUAL requirements in the BRD - include ALL relevant layers and components for THIS specific application
+3. Use subgraphs to logically group related components by layer/domain
+4. Show clear data flow with arrows between components
+5. Label each component with its actual technology/purpose from your recommended stack
+6. Be comprehensive - include all major components needed for the application to function
 
-**CRITICAL Mermaid Syntax Rules (MUST FOLLOW — violations cause render failures):**
-1. **Matched subgraph/end pairs**: Every `subgraph` MUST have exactly ONE corresponding `end`. Count them — the number of `end` keywords must EQUAL the number of `subgraph` keywords. Do NOT add extra `end` at the bottom of the diagram.
-2. **Quote labels with special characters**: If a node label contains parentheses, brackets, ampersands, or other special characters, wrap it in quotes: `id["Label (with parens)"]` NOT `id[Label (with parens)]`
-3. **Arrows OUTSIDE subgraphs**: Place all connection lines (`-->`, `---`, `-.->`) AFTER the last `end` keyword, NOT inside subgraph blocks. Connections inside subgraphs often cause parsing errors.
-4. **No HTML tags in labels**: Use only plain text in node labels. No `<br>`, `<b>`, or any HTML.
-5. **Valid node IDs**: Node IDs must be alphanumeric (with underscores). No spaces, dashes, or dots in IDs. Use `AUTH_SERVICE` not `auth-service`.
-6. **Ampersand (&) in connections**: The `&` operator for multi-node connections (e.g., `A & B --> C`) is valid ONLY in Mermaid v10+. For maximum compatibility, prefer separate lines: `A --> C` and `B --> C`.
-7. **Self-check before output**: Before outputting the diagram, mentally verify: (a) subgraph count == end count, (b) no stray end at bottom, (c) all node IDs in edges exist as defined nodes.
+**CRITICAL Mermaid Syntax Rules (MUST FOLLOW — violations cause "Syntax error in text" failures):**
+
+**ERROR #1 - MISMATCHED SUBGRAPH/END PAIRS (MOST COMMON ERROR):**
+- Every `subgraph` keyword MUST have exactly ONE matching `end` keyword
+- Count them before outputting: number of `subgraph` MUST EQUAL number of `end`
+- DO NOT add an extra `end` at the bottom after connections
+- DO NOT add `end` after comment lines like `%% CONNECTIONS`
+- If you have 4 subgraphs, you must have exactly 4 `end` keywords, no more, no less
+
+**ERROR #2 - SPECIAL CHARACTERS IN LABELS WITHOUT QUOTES:**
+- If a label contains parentheses `()`, brackets `[]`, ampersands `&`, or other special characters, wrap the ENTIRE label in double quotes
+- Correct: `subgraph DATA_LAYER["Data Layer (JSON)"]`
+- Wrong: `subgraph DATA_LAYER[Data Layer (JSON)]` - causes parse error
+
+**ERROR #3 - CONNECTIONS INSIDE SUBGRAPHS:**
+- Place ALL connection arrows (`-->`, `---`, `-.->`) AFTER the last `end` keyword
+- DO NOT place connections inside subgraph blocks - this causes parsing errors
+- Structure: all subgraphs first, then all connections
+
+**ERROR #4 - INVALID NODE IDS:**
+- Node IDs must be alphanumeric with underscores only
+- Use `AUTH_SERVICE` not `auth-service` (no dashes)
+- Use `API_GATEWAY` not `api.gateway` (no dots)
+- Use `USER_DB` not `user db` (no spaces)
+
+**ERROR #5 - HTML IN LABELS:**
+- Use only plain text in node labels
+- NO HTML tags like `<br>`, `<b>`, `<i>`, etc.
+
+**ERROR #6 - UNDEFINED NODE REFERENCES:**
+- Every node ID used in connections must be defined first
+- If you write `A --> B`, both `A` and `B` must exist as defined nodes
+
+**SELF-CHECK BEFORE OUTPUT:**
+Before generating the Mermaid diagram, verify:
+1. Count subgraphs and ends - are they equal?
+2. Are all labels with special characters quoted?
+3. Are all connections placed after the last `end`?
+4. Are all node IDs alphanumeric with underscores only?
+5. Does every connection reference only defined nodes?
 
 - Describe Component Interaction Model in detail:
   * Write path: How data flows from user input to database

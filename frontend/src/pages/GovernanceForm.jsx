@@ -952,6 +952,8 @@ const ScoreRing = ({ score, max = 10, size = 120, stroke = 10 }) => {
 };
 
 const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
+    const [isNavigating, setIsNavigating] = useState(false);
+
     if (!result) {
         return <div className="text-app-status-error p-6">Error: No result data available.</div>;
     }
@@ -1177,29 +1179,58 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
                     {(classification !== 'ENTERPRISE' || !isSkipFollowUpCase) && (
                         <button
                             onClick={async () => {
+                                if (isNavigating) return; // Prevent double-clicks
+                                
+                                setIsNavigating(true);
+                                
                                 try {
+                                    // Store result in session storage
                                     sessionStorage.setItem('governanceResult', JSON.stringify(result));
                                     sessionStorage.setItem('shouldStartAnalysis', 'true');
                                     
-                                    // Refresh roadmap data before navigation so AppLayout knows the current step
+                                    // Try to refresh roadmap data with timeout
                                     if (fetchRoadmapData && result.project_token) {
-                                        await fetchRoadmapData(result.project_token);
+                                        try {
+                                            // Race between fetch and timeout (max 3 seconds)
+                                            await Promise.race([
+                                                fetchRoadmapData(result.project_token),
+                                                new Promise((_, reject) => 
+                                                    setTimeout(() => reject(new Error('Roadmap fetch timeout')), 3000)
+                                                )
+                                            ]);
+                                        } catch (fetchError) {
+                                            console.warn('Roadmap fetch failed or timed out, continuing anyway:', fetchError);
+                                            // Continue to navigation even if fetch fails
+                                        }
                                     }
                                     
-                                    // Small delay to ensure state updates are processed
-                                    await new Promise(resolve => setTimeout(resolve, 100));
-                                    
-                                    // Navigate to Agent Analysis page
+                                    // Navigate to Agent Analysis page (always happens)
                                     navigate('/agent-analysis');
                                 } catch (error) {
-                                    console.error('Failed to proceed to Agent Analysis:', error);
-                                    // Still navigate even if roadmap fetch fails
+                                    console.error('Error during navigation:', error);
+                                    // Ensure navigation happens even on error
                                     navigate('/agent-analysis');
+                                } finally {
+                                    // Reset loading state after a delay (in case navigation is slow)
+                                    setTimeout(() => setIsNavigating(false), 1000);
                                 }
                             }}
-                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
+                            disabled={isNavigating}
+                            className={`inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${
+                                isNavigating 
+                                    ? 'bg-app-primary/70 cursor-not-allowed' 
+                                    : 'bg-app-primary hover:bg-app-primary-hover active:scale-[0.97]'
+                            }`}
                         >
-                            <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
+                            {isNavigating ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 animate-spin" /> Loading...
+                                </>
+                            ) : (
+                                <>
+                                    <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
+                                </>
+                            )}
                         </button>
                     )}
                     {isSkipFollowUpCase && (

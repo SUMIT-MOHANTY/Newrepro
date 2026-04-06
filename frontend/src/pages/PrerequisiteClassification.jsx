@@ -793,15 +793,21 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
                 const storedRepo = loadStoredProjectRepoSuggestion();
 
-                const finalRepoSuggestion = detectedRepo || storedRepo;
-                setAnalysisRepoSuggestion(finalRepoSuggestion);
-                if (finalRepoSuggestion?.url) {
-                    setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
-                }
-                if (finalRepoSuggestion?.provider === 'azure-devops') {
-                    setRepoProvider('azure-devops');
-                } else if (finalRepoSuggestion?.provider === 'github') {
-                    setRepoProvider('github');
+                // CRITICAL FIX: For NEW projects, only use repo suggestion if it came from explicit user input
+                // Don't auto-populate from BRD text analysis (which might just be mentioning an example repo)
+                const finalRepoSuggestion = storedRepo || (detectedRepo?.source === 'link' ? detectedRepo : null);
+                
+                // Only set repo suggestion if we have a valid one from user input
+                if (finalRepoSuggestion) {
+                    setAnalysisRepoSuggestion(finalRepoSuggestion);
+                    if (finalRepoSuggestion?.url) {
+                        setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
+                    }
+                    if (finalRepoSuggestion?.provider === 'azure-devops') {
+                        setRepoProvider('azure-devops');
+                    } else if (finalRepoSuggestion?.provider === 'github') {
+                        setRepoProvider('github');
+                    }
                 }
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction

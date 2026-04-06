@@ -15068,42 +15068,87 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
     from task_service import task_service
     task_id = _normalize_task_id(task)
     if not task_id:
+        logger.warning("[agent_service] Cannot complete task: no task_id found")
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     
-    max_retries = 5
-    base_delay = 1.0
+    # CRITICAL FIX: Always clock out FIRST before attempting completion
+    # This prevents the "timer still running" error that blocks completion
+    try:
+        clock_out_success = await _post_timer_log(
+            task, "clock_out", project_token=resolved_project, task_token=task_token
+        )
+        if clock_out_success:
+            logger.info(f"[agent_service] Pre-emptively clocked out task {task_id} before completion")
+        else:
+            logger.warning(f"[agent_service] Pre-emptive clock_out failed for task {task_id}, continuing anyway")
+    except Exception as clock_err:
+        logger.warning(f"[agent_service] Pre-emptive clock_out error for task {task_id}: {clock_err}")
+    
+    max_retries = 8  # Increased from 5 to handle network issues
+    base_delay = 2.0  # Increased from 1.0 for better stability
     
     for attempt in range(max_retries):
         try:
             await task_service.complete_task({
                 "task_id": task_id
             }, task_token=task_token or get_project_task_token(resolved_project))
+            logger.info(f"[agent_service] Task {task_id} completed successfully")
+            
+            # CRITICAL FIX: Mark task as completed in local state immediately
+            # This prevents the agent from picking it up again
+            state = _ensure_project_state(resolved_project)
+            if task_id not in state.get("completed_tasks", set()):
+                state.setdefault("completed_tasks", set()).add(task_id)
+            
+            # Remove from claimed tasks
+            state.get("claimed_task_ids", set()).discard(task_id)
+            
+            # Update task ledger
+            ledger = state.setdefault("task_ledger", {})
+            if task_id in ledger:
+                ledger[task_id].status = "done"
+            
             return True
         except Exception as e:
             error_str = _normalize_error_text(e)
 
             if _is_already_completed_error(error_str):
-                print(f"[agent_service] Task {task_id} already completed upstream. Treating as success.")
+                logger.info(f"[agent_service] Task {task_id} already completed upstream. Treating as success.")
+                
+                # CRITICAL FIX: Still mark as completed locally
+                state = _ensure_project_state(resolved_project)
+                if task_id not in state.get("completed_tasks", set()):
+                    state.setdefault("completed_tasks", set()).add(task_id)
+                state.get("claimed_task_ids", set()).discard(task_id)
+                
                 return True
 
-            # If timer is still running, try to clock out before retrying completion.
+            # If timer is still running (shouldn't happen after pre-emptive clock_out), try again
             if _is_timer_running_error(error_str):
-                print(f"[agent_service] Task {task_id} timer still running, attempting clock_out before completion...")
-                clock_out_success = await _post_timer_log(
-                    task, "clock_out", project_token=resolved_project, task_token=task_token
-                )
-                if clock_out_success:
-                    print(f"[agent_service] Successfully clocked out task {task_id}, retrying completion...")
-                else:
-                    print(f"[agent_service] Failed to clock out task {task_id}, will retry completion anyway...")
+                logger.warning(f"[agent_service] Task {task_id} timer still running despite pre-emptive clock_out, retrying...")
+                try:
+                    await _post_timer_log(
+                        task, "clock_out", project_token=resolved_project, task_token=task_token
+                    )
+                    await asyncio.sleep(1.0)  # Give the API time to process
+                except Exception:
+                    pass
              
             if attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt)
-                print(f"[agent_service] Failed to complete task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                logger.warning(f"[agent_service] Failed to complete task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
                 await asyncio.sleep(delay)
             else:
-                print(f"[agent_service] Failed to complete task {task_id} after {max_retries} attempts: {e}")
+                logger.error(f"[agent_service] Failed to complete task {task_id} after {max_retries} attempts: {e}")
+                
+                # CRITICAL FIX: Even if API fails, mark as completed locally to prevent infinite loop
+                # The task was actually completed (code was pushed), just the API call failed
+                logger.warning(f"[agent_service] Marking task {task_id} as completed locally despite API failure to prevent re-execution")
+                state = _ensure_project_state(resolved_project)
+                state.setdefault("completed_tasks", set()).add(task_id)
+                state.get("claimed_task_ids", set()).discard(task_id)
+                
                 return False
     return False
 
@@ -15679,6 +15724,13 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             _apply_master_task_metadata(t, project_token=project_token)
             tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id"))
             status_lower = (t.get("status") or "").lower()
+
+            # CRITICAL FIX: Check if task is in local completed set first
+            # This prevents re-picking tasks that were completed but API failed
+            if tid in state.get("completed_tasks", set()):
+                skip_reasons["completed_or_claimed"] += 1
+                logger.debug(f"[{agent_id}] Skipping task {tid} - already in local completed set")
+                continue
 
             # Skip if completed or already claimed by another agent in this process
             if _task_status_is_done(status_lower) or tid in claimed_task_ids:
