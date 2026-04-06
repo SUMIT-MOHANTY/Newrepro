@@ -318,6 +318,40 @@ Each phase lists exactly which files/modules it delivers.
 
 ---
 
+## 0.9 Clarification Questions
+**CRITICAL: You MUST generate 3-8 clarification questions for ANY ambiguous, missing, or unclear aspects of the BRD.**
+
+Generate questions for:
+1. **Missing Technical Details**: If the BRD doesn't specify a technology, database schema, API contract, or integration method
+2. **Ambiguous Requirements**: If a requirement is vague or could be interpreted multiple ways
+3. **Unclear Business Logic**: If business rules, validation logic, or workflows are not fully defined
+4. **Missing Non-Functional Requirements**: If performance targets, security requirements, or scalability needs are unclear
+5. **Integration Uncertainties**: If external system integrations lack details (endpoints, auth methods, data formats)
+6. **User Experience Gaps**: If UI/UX requirements are incomplete or user flows are ambiguous
+7. **Data Management Questions**: If data retention, backup, migration, or compliance requirements are missing
+8. **Deployment & Infrastructure**: If hosting, scaling, monitoring, or DevOps requirements are unclear
+
+**Question Format:**
+- Be specific and actionable
+- Reference the exact BRD section or requirement that needs clarification
+- Frame questions to help refine the feasibility score and technical approach
+- Prioritize questions that would significantly impact architecture or implementation
+
+**Examples of GOOD clarification questions:**
+- "The BRD mentions 'user authentication' but doesn't specify the method. Should we implement OAuth 2.0, JWT tokens, or session-based auth?"
+- "Section 3.2 requires 'real-time notifications' but doesn't define the latency requirement. What is the acceptable delay (< 1s, < 5s, < 30s)?"
+- "The 'reporting dashboard' feature is mentioned but no specific metrics are listed. What KPIs should be displayed?"
+- "The BRD states 'integrate with payment gateway' but doesn't specify which one. Do you have a preferred provider (Stripe, PayPal, Square)?"
+
+**Examples of BAD clarification questions (avoid these):**
+- "Do you want this to work?" (too vague)
+- "Should we use React?" (you should recommend based on requirements)
+- "What color should the buttons be?" (too granular, not architectural)
+
+**IMPORTANT**: Even if the BRD seems complete, you MUST generate at least 3 questions about potential edge cases, scalability considerations, or technical trade-offs that would help refine the implementation.
+
+---
+
 {_build_prerequisite_section()}
 
 ---
@@ -383,7 +417,8 @@ Finally, output a SINGLE JSON block containing the structured data and architect
 
   "questions": [
     "Clarification question 1 regarding missing data in BRD.",
-    "Clarification question 2 regarding constraints in BRD."
+    "Clarification question 2 regarding constraints in BRD.",
+    "Clarification question 3 regarding ambiguous requirements."
   ],
   
   "prerequisites": [
@@ -430,7 +465,8 @@ Finally, output a SINGLE JSON block containing the structured data and architect
 7. The deliverable table in 0.7.1 must list every single file with Priority.
 8. Implementation phases in 0.7.2 must be sequentially ordered by dependency.
 9. Execution patterns in 0.10 must be prescriptive, not suggestive.
-10. Ensure the JSON is valid and enclosed in a json code block at the very end of your response."""
+10. **CLARIFICATION QUESTIONS (0.9) ARE MANDATORY**: You MUST generate 3-8 specific, actionable questions about ambiguities, missing details, or technical trade-offs. Even if the BRD seems complete, ask about edge cases, scalability, or implementation preferences.
+11. Ensure the JSON is valid and enclosed in a json code block at the very end of your response."""
 
 
 import json

@@ -320,9 +320,13 @@ export default function TaskCreation({
     const queryClient = useQueryClient();
     const token = localStorage.getItem('token');
 
-    const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(false);
+    // CRITICAL FIX: Initialize based on whether we have a project selected
+    // If we have a project, start with false to show loader immediately
+    // If no project, start with true to skip loader
+    const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(!selectedProjectKey);
     const [taskToken, setTaskToken] = useState(null);
-    const [isResolvingTaskToken, setIsResolvingTaskToken] = useState(false);
+    // CRITICAL FIX: Start with true to show loader immediately on mount
+    const [isResolvingTaskToken, setIsResolvingTaskToken] = useState(true);
 
     const [projectDeadline, setProjectDeadline] = useState('');
     const [sprints, setSprints] = useState([]);
