@@ -209,6 +209,9 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
         if not path or path.endswith((".html", "/")):
             logger.info(f"🏘️ Container for {project_token} not registered yet. Returning 'Warming up' HTML.")
             return HTMLResponse(content=get_warming_up_html())
+        logger.error(f"❌ Container port not found for project {project_token}")
+        logger.error(f"   Registry file: {project_manager.artifacts_dir / '.container_registry.json'}")
+        logger.error(f"   Looking for: vibecoding_{project_token}")
         raise HTTPException(status_code=404, detail=f"Container for {project_token} not found or not running.")
 
     target_base = f"http://127.0.0.1:{port}"
@@ -885,6 +888,29 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         workspace_files = project_manager.get_workspace_files(project_id, max_files=100, max_chars_per_file=4000)
         has_existing_code = len(workspace_files) > 0
 
+        # Detect stack from workspace OR from user prompt
+        detected_stack = None
+        if has_existing_code:
+            detected_stack = project_manager.detect_stack_from_workspace(project_id)
+        else:
+            # For new projects, detect from user prompt
+            prompt_lower = request.prompt.lower()
+            if ('react' in prompt_lower or 'vite' in prompt_lower) and ('flask' in prompt_lower or 'python' in prompt_lower or 'backend' in prompt_lower):
+                detected_stack = "react+flask"
+            elif 'react' in prompt_lower or 'vite' in prompt_lower:
+                detected_stack = "react"
+            elif 'flask' in prompt_lower:
+                detected_stack = "flask"
+            elif 'vue' in prompt_lower:
+                detected_stack = "vue"
+            elif 'next' in prompt_lower or 'nextjs' in prompt_lower:
+                detected_stack = "nextjs"
+        
+        # Get container structure if container exists
+        container_structure = None
+        if has_existing_code:
+            container_structure = project_manager.get_container_workspace_structure(project_id)
+
         # Identify "Chat" intent for short/simple prompts or greetings to keep context light
         simple_chat_words = {'hi', 'hello', 'hey', 'yo', 'sup', 'how are you', 'howdy', 'greeting', 'thanks', 'thank you'}
         p_clean = request.prompt.strip().lower().strip('?!.')
@@ -946,13 +972,22 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             file_list=project_tree_str,
             current_files="".join([f"\n\n// FILE: {path}\n{content}" for path, content in workspace_files.items()]) if (has_existing_code and not is_simple_intent) else "",
             brd_context=brd_data,
-            extra_directives=f"{arch_type}\n{extra_directives}" if not is_simple_intent else ""
+            extra_directives=f"{arch_type}\n{extra_directives}" if not is_simple_intent else "",
+            detected_stack=detected_stack,
+            container_structure=container_structure
         )
         
         from datetime import datetime
         now = datetime.now()
         date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
-        messages = [{"role": "system", "content": date_context + system_prompt}]
+        
+        # Add project context for container tools
+        project_context = f"Project ID: {project_id}\n"
+        if detected_stack:
+            project_context += f"Detected Stack: {detected_stack}\n"
+        project_context += "\n"
+        
+        messages = [{"role": "system", "content": date_context + project_context + system_prompt}]
         for msg in request.history:
             messages.append({"role": msg.role, "content": msg.content})
         
@@ -985,6 +1020,44 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
         has_raw_search_replace = (not has_patch_markers and bool(_re.search(r'<<<\s*SEARCH', ai_response)) and bool(_re.search(r'<<<\s*REPLACE', ai_response)))
         has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
+
+        # Detect if AI is regenerating too many files (potential issue)
+        if has_markers and has_existing_code:
+            file_marker_regex = r'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]+)'
+            generated_files = _re.findall(file_marker_regex, ai_response)
+            existing_file_count = len(workspace_files)
+            
+            # If AI is regenerating more than 50% of existing files, it might be a mistake
+            if len(generated_files) > max(3, existing_file_count * 0.5):
+                logger.warning(f"⚠️ AI is regenerating {len(generated_files)} files when only {existing_file_count} exist. This might be unintended.")
+                logger.warning(f"Generated files: {[f.strip() for f in generated_files[:5]]}")
+                
+                # Check if user only asked for one file
+                user_prompt_lower = request.prompt.lower()
+                single_file_keywords = ['create package.json', 'add package.json', 'create vite.config', 'add requirements.txt']
+                if any(keyword in user_prompt_lower for keyword in single_file_keywords):
+                    logger.warning(f"⚠️ User asked for a single file but AI regenerated {len(generated_files)} files!")
+                    # Filter to only the requested file
+                    requested_file = None
+                    if 'package.json' in user_prompt_lower:
+                        requested_file = 'package.json'
+                    elif 'vite.config' in user_prompt_lower:
+                        requested_file = 'vite.config.js'
+                    elif 'requirements.txt' in user_prompt_lower:
+                        requested_file = 'requirements.txt'
+                    
+                    if requested_file:
+                        # Extract only the requested file from the response
+                        logger.info(f"🔧 Filtering to only {requested_file}")
+                        pattern = rf'(?i)(?://|#|<!--)\s*FILE:\s*[^\n]*{re.escape(requested_file)}[^\n]*\n(.*?)(?=(?://|#|<!--)\s*FILE:|$)'
+                        match = _re.search(pattern, ai_response, _re.DOTALL)
+                        if match:
+                            file_path_match = _re.search(rf'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]*{re.escape(requested_file)}[^\n]*)', ai_response)
+                            if file_path_match:
+                                file_path = file_path_match.group(1).strip()
+                                file_content = match.group(1).strip()
+                                ai_response = f"// FILE: {file_path}\n{file_content}"
+                                logger.info(f"✅ Filtered to single file: {file_path}")
 
         code = None
         
@@ -1042,6 +1115,10 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             else:
                 message = ai_response.split("```")[0].strip()
         message = message.replace('```', '').strip()
+        
+        # If message is too short (common with patch responses), use the user prompt for context
+        if len(message) < 20:
+            message = f"Applied changes based on: {request.prompt}"
 
         # Generate summary and suggestions before persistence
         summary_task = summarize_content(message, code or "")
@@ -1171,6 +1248,60 @@ async def health_check():
         "docker_available": docker_available,
         "public_host": public_host
     }
+
+@app.get("/vibecoding/api/debug/containers")
+async def debug_containers():
+    """Debug endpoint to check container registry"""
+    try:
+        registry_file = project_manager.artifacts_dir / '.container_registry.json'
+        if registry_file.exists():
+            with open(registry_file, 'r') as f:
+                registry = json.load(f)
+            return {
+                "registry_file": str(registry_file.absolute()),
+                "exists": True,
+                "containers": registry
+            }
+        else:
+            return {
+                "registry_file": str(registry_file.absolute()),
+                "exists": False,
+                "containers": {}
+            }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "registry_file": str(project_manager.artifacts_dir / '.container_registry.json')
+        }
+
+@app.get("/vibecoding/api/debug/project/{project_id}")
+async def debug_project(project_id: str):
+    """Debug endpoint to check project status"""
+    try:
+        port = get_container_port(project_id)
+        container_name = f"vibecoding_{project_id}"
+        
+        # Check if container exists in Docker
+        docker_status = "unknown"
+        if project_manager.docker_client:
+            try:
+                container = project_manager.docker_client.containers.get(container_name)
+                docker_status = container.status
+            except:
+                docker_status = "not_found"
+        
+        return {
+            "project_id": project_id,
+            "container_name": container_name,
+            "port": port,
+            "docker_status": docker_status,
+            "preview_url": project_manager.get_preview_url(project_id, port) if port else None
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "project_id": project_id
+        }
 
 @app.get("/vibecoding/api/projects/{project_id}/container-health")
 async def container_health(project_id: str):
@@ -1832,23 +1963,32 @@ async def set_file_frozen(project_id: str, request: dict, user: dict = Depends(g
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
 
 def get_container_port(project_id: str) -> str:
     """Get the container port for a project by reading its container info"""
     try:
-        # Check running containers registry
-        registry_file = ARTIFACTS_DIR / '.container_registry.json'
-        print(f"Looking for registry at: {registry_file}")
+        # Use the same artifacts_dir as project_manager to ensure consistency
+        registry_file = project_manager.artifacts_dir / '.container_registry.json'
+        logger.debug(f"Looking for registry at: {registry_file.absolute()}")
         
         if registry_file.exists():
             with open(registry_file, 'r') as f:
                 registry = json.load(f)
                 container_name = f"vibecoding_{project_id}"
+                logger.debug(f"Registry contents: {list(registry.keys())}")
                 if container_name in registry:
-                    return registry[container_name]['port']
+                    port = registry[container_name]['port']
+                    logger.info(f"✅ Found container port for {project_id}: {port}")
+                    return port
+                else:
+                    logger.warning(f"⚠️ Container {container_name} not in registry")
+                    logger.warning(f"   Available containers: {list(registry.keys())}")
+        else:
+            logger.warning(f"⚠️ Registry file does not exist: {registry_file.absolute()}")
     except Exception as e:
-        print(f"Error reading container registry: {e}")
+        logger.error(f"❌ Error reading container registry: {e}")
+        import traceback
+        traceback.print_exc()
     return None
 
 

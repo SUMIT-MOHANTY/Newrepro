@@ -65,6 +65,44 @@ TOOL_DEFINITIONS = [
                 "required": ["url"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_container_structure",
+            "description": "Inspect the current file and directory structure inside the Docker container workspace. Use this to understand the existing project layout before making changes. This shows you what files and folders actually exist in the running container.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "The project ID to inspect"
+                    }
+                },
+                "required": ["project_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_container_command",
+            "description": "Run a shell command inside the Docker container workspace and get the output. Use this to check dependencies, test code, verify file contents, or debug issues. Common commands: 'ls -la', 'cat filename', 'python3 --version', 'npm list', 'pip3 list', 'find . -name \"*.py\"'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "The project ID"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to run (e.g., 'ls -la', 'cat app.py', 'python3 --version')"
+                    }
+                },
+                "required": ["project_id", "command"]
+            }
+        }
     }
 ]
 
@@ -232,12 +270,74 @@ async def fetch_page_content(url: str, max_length: int = 8000) -> str:
 
 
 # ──────────────────────────────────────────────
+# Container Tools
+# ──────────────────────────────────────────────
+
+async def inspect_container_structure(project_id: str) -> str:
+    """Inspect the file structure in the container workspace."""
+    print(f"📁 Inspecting container structure for project {project_id}")
+    try:
+        from project_manager import project_manager
+        structure = project_manager.get_container_workspace_structure(project_id)
+        
+        if structure:
+            print(f"✅ Retrieved container structure")
+            return json.dumps({
+                "status": "success",
+                "project_id": project_id,
+                "structure": structure
+            })
+        else:
+            return json.dumps({
+                "status": "error",
+                "project_id": project_id,
+                "message": "Container not found or not running. The container may not have been created yet."
+            })
+    except Exception as e:
+        print(f"❌ Error inspecting container: {e}")
+        return json.dumps({
+            "status": "error",
+            "project_id": project_id,
+            "message": f"Failed to inspect container: {str(e)}"
+        })
+
+
+async def run_container_command(project_id: str, command: str) -> str:
+    """Run a shell command in the container workspace."""
+    print(f"🔧 Running command in container: {command}")
+    try:
+        from project_manager import project_manager
+        result = project_manager.run_command_in_container(project_id, command)
+        
+        print(f"✅ Command completed with exit code {result.get('exit_code', 'unknown')}")
+        return json.dumps({
+            "status": "success" if result.get("success") else "error",
+            "project_id": project_id,
+            "command": command,
+            "exit_code": result.get("exit_code"),
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "error": result.get("error")
+        })
+    except Exception as e:
+        print(f"❌ Error running command: {e}")
+        return json.dumps({
+            "status": "error",
+            "project_id": project_id,
+            "command": command,
+            "message": f"Failed to run command: {str(e)}"
+        })
+
+
+# ──────────────────────────────────────────────
 # Tool Dispatcher
 # ──────────────────────────────────────────────
 
 TOOL_HANDLERS = {
     "web_search": web_search,
     "fetch_page_content": fetch_page_content,
+    "inspect_container_structure": inspect_container_structure,
+    "run_container_command": run_container_command,
 }
 
 
