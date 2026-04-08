@@ -73,7 +73,7 @@ app = FastAPI(title=f"{APP_NAME} API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5174"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1007,6 +1007,12 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         else:
             raise Exception("Invalid response format from AI API")
         
+        # Check if AI returned empty response
+        if not ai_response or not ai_response.strip():
+            logger.error(f"❌ AI returned empty response for prompt: {request.prompt[:100]}")
+            logger.error(f"   Response object: {response}")
+            raise Exception("AI returned an empty response. This may be due to content filtering or an API issue. Please try rephrasing your request or try again.")
+        
         # Fallback for empty responses, especially common during safety filtering or confusion with simple greetings
         if not ai_response.strip() and is_simple_intent:
             ai_response = "Hello! I'm here to help you build or refine your project. What would you like to work on first?"
@@ -1100,25 +1106,52 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             elif '<html' in ai_response.lower() or '<!doctype' in ai_response.lower():
                 code = ai_response.strip()
 
-        # Extract message 
+        # Extract message - Filter out raw code/patches from chat display
         message = ai_response
         if code:
             if has_patch_markers:
+                # Extract only the conversational part before patches
                 message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
             elif has_raw_search_replace:
+                # Extract only the conversational part before search/replace blocks
                 message = _re.split(r'<<<\s*SEARCH', ai_response)[0].strip()
             elif has_markers:
+                # Extract only the conversational part, not the file contents
                 parts = ai_response.split("```")
                 preamble = parts[0].strip()
                 epilogue = parts[-1].strip() if len(parts) >= 3 else ""
                 message = f"{preamble}\n\n{epilogue}".strip() if (epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue)) else preamble
             else:
                 message = ai_response.split("```")[0].strip()
-        message = message.replace('```', '').strip()
         
-        # If message is too short (common with patch responses), use the user prompt for context
-        if len(message) < 20:
-            message = f"Applied changes based on: {request.prompt}"
+        # Clean up any remaining code markers or JSON artifacts
+        message = message.replace('```', '').strip()
+        message = _re.sub(r'\{[\s\n]*"patches"[\s\n]*:.*?\}', '', message, flags=_re.DOTALL).strip()
+        message = _re.sub(r'\{[\s\n]*"file_writes"[\s\n]*:.*?\}', '', message, flags=_re.DOTALL).strip()
+        
+        # If message is too short or contains only technical artifacts, create a user-friendly message
+        if len(message) < 20 or message.startswith('{') or message.startswith('['):
+            # Create a friendly message based on what was done
+            if has_patch_markers:
+                patch_count = len(_re.findall(r'//\s*PATCH:\s*', ai_response))
+                files_patched = _re.findall(r'//\s*PATCH:\s*([^\n]+)', ai_response)
+                if files_patched:
+                    file_list = ", ".join([f.strip() for f in files_patched[:3]])
+                    message = f"✅ Applied changes to {file_list}"
+                else:
+                    message = f"✅ Applied {patch_count} patch(es) to your project"
+            elif has_markers:
+                file_count = len(_re.findall(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
+                files_created = _re.findall(r'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]+)', ai_response)
+                if files_created:
+                    file_list = ", ".join([f.strip() for f in files_created[:3]])
+                    if file_count > 3:
+                        file_list += f" and {file_count - 3} more"
+                    message = f"✅ Created/updated {file_list}"
+                else:
+                    message = f"✅ Created/updated {file_count} file(s)"
+            else:
+                message = f"✅ Applied your requested changes"
 
         # Generate summary and suggestions before persistence
         summary_task = summarize_content(message, code or "")

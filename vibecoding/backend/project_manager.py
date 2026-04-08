@@ -1421,6 +1421,11 @@ except Exception as e:
             # For workspace, metadata is in workspace directory
             version_dir = project_dir / "workspace"
             metadata_file = version_dir / "metadata.json"
+            
+            # Ensure metadata.json exists for workspace
+            if not metadata_file.exists():
+                logger.info(f"📝 Creating missing metadata.json for workspace")
+                self._ensure_workspace_metadata(project_id, version_dir, "workspace")
         else:
             # For versioned code, metadata is in versions/{version_id}
             version_dir = project_dir / "versions" / version_id
