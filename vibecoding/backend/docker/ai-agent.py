@@ -320,24 +320,19 @@ class AIAgent:
             else:
                 content = response.json()["choices"][0]["message"]["content"]
 
-            # Primary: parse <vibe-fix> tags (expected format)
-            if "<vibe-fix" in content:
-                parsed = self._parse_vibe_fix_tags(content)
-                if parsed:
-                    return parsed
-                else:
-                    self.log("⚠️", "<vibe-fix> tags found but parsing failed")
-                    self.log("📄", f"Response preview (first 1200 chars):\n{content[:1200]}")
-            else:
-                # Fallback: try JSON extraction (for backward compatibility)
-                self.log("⚠️", "No <vibe-fix> tags found, trying JSON extraction")
-                parsed_json = self._extract_json_from_response(content)
-                if parsed_json:
-                    return parsed_json
-
+            # Parse bash script from response
+            script_content = self._extract_bash_script(content)
+            if script_content:
+                return {
+                    "diagnosis": "AI-generated fix script",
+                    "fix_type": "bash_script",
+                    "fix_details": {"script": script_content},
+                    "confidence": "high",
+                }
+            
             # Log the response for debugging
-            self.log("❌", "AI response could not be parsed")
-            self.log("📄", f"Full response:\n{content}")
+            self.log("❌", "AI response could not be parsed as bash script")
+            self.log("📄", f"Response preview:\n{content[:1200]}")
 
         except json.JSONDecodeError as e:
             self.log("❌", f"JSON parse error in AI response: {e}")
@@ -350,211 +345,36 @@ class AIAgent:
 
         return None
 
-    def _extract_json_from_response(self, content: str) -> Optional[dict]:
-        """Extract and parse JSON from AI response with multiple fallback strategies"""
-        
-        # Strategy 1: JSON in code blocks (most reliable)
-        for pattern in (r"```json\s*(\{.*?\})\s*```", r"```json\s*(\[.*?\])\s*```"):
-            match = re.search(pattern, content, re.DOTALL)
+    def _extract_bash_script(self, content: str) -> Optional[str]:
+        """Extract bash script from AI response"""
+        # Try to extract from markdown code block
+        if "```bash" in content or "```sh" in content:
+            match = re.search(r'```(?:bash|sh)\s*\n(.*?)```', content, re.DOTALL)
             if match:
-                try:
-                    return json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
+                return match.group(1).strip()
         
-        # Strategy 2: Raw JSON object (only if it looks like valid JSON structure)
-        # Must start with { and end with }, and have at least one key-value pair
-        match = re.search(r'\{\s*"[^"]+"\s*:', content, re.DOTALL)
+        # If no code block, check if response starts with shebang
+        if content.strip().startswith('#!/bin/bash') or content.strip().startswith('#!/bin/sh'):
+            return content.strip()
+        
+        # Try to find it anywhere in the response
+        match = re.search(r'(#!/bin/(?:ba)?sh.*)', content, re.DOTALL)
         if match:
-            # Find the complete JSON object starting from this position
-            start_pos = match.start()
-            brace_count = 0
-            in_string = False
-            escape_next = False
-            
-            for i in range(start_pos, len(content)):
-                char = content[i]
-                
-                if escape_next:
-                    escape_next = False
-                    continue
-                    
-                if char == '\\':
-                    escape_next = True
-                    continue
-                    
-                if char == '"' and not escape_next:
-                    in_string = not in_string
-                    continue
-                    
-                if not in_string:
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            # Found complete JSON object
-                            json_str = content[start_pos:i+1]
-                            try:
-                                return json.loads(json_str)
-                            except json.JSONDecodeError:
-                                break
-        
-        # Strategy 3: Try to find and fix common JSON errors
-        # Only attempt this if we see clear JSON structure indicators
-        if '{"' in content or '{ "' in content:
-            # Remove trailing commas before } or ]
-            cleaned = re.sub(r',(\s*[}\]])', r'\1', content)
-            
-            # Try to extract JSON object from cleaned content
-            match = re.search(r'\{\s*"[^"]+"\s*:', cleaned, re.DOTALL)
-            if match:
-                start_pos = match.start()
-                brace_count = 0
-                in_string = False
-                escape_next = False
-                
-                for i in range(start_pos, len(cleaned)):
-                    char = cleaned[i]
-                    
-                    if escape_next:
-                        escape_next = False
-                        continue
-                        
-                    if char == '\\':
-                        escape_next = True
-                        continue
-                        
-                    if char == '"' and not escape_next:
-                        in_string = not in_string
-                        continue
-                        
-                    if not in_string:
-                        if char == '{':
-                            brace_count += 1
-                        elif char == '}':
-                            brace_count -= 1
-                            if brace_count == 0:
-                                json_str = cleaned[start_pos:i+1]
-                                try:
-                                    return json.loads(json_str)
-                                except json.JSONDecodeError:
-                                    break
+            script = match.group(1).strip()
+            # Remove any trailing markdown or explanations after the script
+            # Look for the last echo statement as the end marker
+            last_echo = script.rfind('echo "✅')
+            if last_echo != -1:
+                # Find the end of that line
+                end_of_line = script.find('\n', last_echo)
+                if end_of_line != -1:
+                    script = script[:end_of_line]
+                else:
+                    # It's the last line
+                    pass
+            return script
         
         return None
-
-    def _parse_vibe_fix_tags(self, text: str) -> Optional[dict]:
-        """
-        Parse a tagged fix response:
-        <vibe-fix>
-          <diagnosis>...</diagnosis>
-          <fix_type>code_patch|code_change|commands</fix_type>
-          <confidence>high|medium|low</confidence>
-          <fix_details>...</fix_details>
-        </vibe-fix>
-        """
-        try:
-            # Quick guard
-            if "<vibe-fix" not in text:
-                return None
-
-            # Extract outer block
-            m_fix = re.search(r"<vibe-fix\b[^>]*>([\s\S]*?)</vibe-fix>", text, re.DOTALL)
-            if not m_fix:
-                self.log("⚠️", "Found <vibe-fix but no closing </vibe-fix>")
-                return None
-            block = m_fix.group(1)
-
-            def _tag(tag: str) -> str:
-                m = re.search(rf"<{tag}>([\s\S]*?)</{tag}>", block, re.DOTALL)
-                return m.group(1).strip() if m else ""
-
-            diagnosis = _tag("diagnosis")
-            fix_type = _tag("fix_type")
-            confidence = _tag("confidence")
-
-            details_block_match = re.search(r"<fix_details>([\s\S]*?)</fix_details>", block, re.DOTALL)
-            details_block = details_block_match.group(1) if details_block_match else block
-
-            if not fix_type:
-                self.log("⚠️", "No <fix_type> found in <vibe-fix> block")
-                return None
-
-            if fix_type == "code_patch":
-                file = re.search(r"<file>([\s\S]*?)</file>", details_block, re.DOTALL)
-                if not file:
-                    self.log("⚠️", "code_patch missing <file> tag")
-                    return None
-                filepath = file.group(1).strip()
-                hunks = []
-                for hm in re.finditer(r"<vibe-hunk>([\s\S]*?)</vibe-hunk>", details_block, re.DOTALL):
-                    h = hm.group(1)
-                    sm = re.search(r"<search>([\s\S]*?)</search>", h, re.DOTALL)
-                    rm = re.search(r"<replace>([\s\S]*?)</replace>", h, re.DOTALL)
-                    if not sm or not rm:
-                        continue
-                    search = sm.group(1)
-                    replace = rm.group(1)
-                    if search.strip() == "":
-                        continue
-                    hunks.append({"search": search, "replace": replace})
-
-                if not hunks:
-                    self.log("⚠️", "code_patch has no valid hunks")
-                    return None
-
-                return {
-                    "diagnosis": diagnosis,
-                    "fix_type": "code_patch",
-                    "fix_details": {"file": filepath, "hunks": hunks},
-                    "confidence": confidence,
-                }
-
-            if fix_type == "code_change":
-                file = re.search(r"<file>([\s\S]*?)</file>", details_block, re.DOTALL)
-                content_tag = re.search(r"<content>([\s\S]*?)</content>", details_block, re.DOTALL)
-                append_tag = re.search(r"<append>([\s\S]*?)</append>", details_block, re.DOTALL)
-                if not file or not content_tag:
-                    self.log("⚠️", "code_change missing <file> or <content> tag")
-                    return None
-                append = False
-                if append_tag:
-                    append = append_tag.group(1).strip().lower() in ("true", "1", "yes")
-
-                return {
-                    "diagnosis": diagnosis,
-                    "fix_type": "code_change",
-                    "fix_details": {"file": file.group(1).strip(), "content": content_tag.group(1), "append": append},
-                    "confidence": confidence,
-                }
-
-            if fix_type == "commands":
-                cmds = []
-                for cm in re.finditer(r"<command>([\s\S]*?)</command>", details_block, re.DOTALL):
-                    c = cm.group(1).strip()
-                    if c:
-                        cmds.append(c)
-                run_cmd_m = re.search(r"<run_command>([\s\S]*?)</run_command>", details_block, re.DOTALL)
-                fix_details = {"commands": cmds}
-                if run_cmd_m:
-                    fix_details["run_command"] = run_cmd_m.group(1).strip()
-
-                return {
-                    "diagnosis": diagnosis,
-                    "fix_type": "commands",
-                    "fix_details": fix_details,
-                    "confidence": confidence,
-                }
-
-            # Unknown fix type
-            self.log("⚠️", f"Unknown fix_type: {fix_type}")
-            return None
-            
-        except Exception as e:
-            self.log("❌", f"Exception parsing <vibe-fix> tags: {e}")
-            import traceback
-            self.log("📄", f"Traceback: {traceback.format_exc()}")
-            return None
 
     def _aggregate_stream(self, response) -> str:
         """Aggregate SSE stream into a single string. Handles both OpenAI and BournAI formats."""
@@ -731,36 +551,63 @@ PROCESS TYPES:
 IMPORTANT: Many modern web frameworks require a BUILD step before serving.
 Do NOT serve source files directly — you MUST build first.
 
+⚠️ CRITICAL COMMAND FORMAT RULES:
+
+1. NPM COMMANDS WITH SUBDIRECTORIES:
+   - If package.json is in a subdirectory (e.g., frontend/package.json), you MUST use --prefix:
+     ✅ CORRECT: npm --prefix frontend install
+     ✅ CORRECT: npm --prefix frontend run build
+     ❌ WRONG: npm install (will fail with ENOENT if no root package.json)
+     ❌ WRONG: cd frontend && npm install (cd is not allowed)
+   
+   - If package.json is at the root, use normal npm commands:
+     ✅ CORRECT: npm install
+     ✅ CORRECT: npm run build
+
+2. SERVE COMMAND FLAGS:
+   - The 'serve' CLI does NOT support the -a flag for address binding
+   - It automatically binds to 0.0.0.0 when using -l flag
+   ✅ CORRECT: serve -s dist -l 80
+   ✅ CORRECT: serve -s frontend/dist -l 80
+   ❌ WRONG: serve -s dist -l 80 -a 0.0.0.0 (ArgError: unknown option -a)
+   ❌ WRONG: serve -s dist -p 80 (use -l, not -p)
+
+3. PATH SPECIFICATIONS:
+   - Always specify the EXACT path relative to /project/workspace
+   - If build output is in frontend/dist, use: serve -s frontend/dist -l 80
+   - If build output is in dist, use: serve -s dist -l 80
+   - If build output is in build, use: serve -s build -l 80
+
 React (create-react-app / react-scripts):
-  setup: npm install
-  setup: npm run build
-  primary: serve -s build -l [PORT]    (serve is pre-installed globally)
+  setup: npm install  (or npm --prefix frontend install if package.json is in frontend/)
+  setup: npm run build  (or npm --prefix frontend run build)
+  primary: serve -s build -l [PORT]  (or serve -s frontend/build -l [PORT])
   → Serves from build/ directory. NEVER use react-scripts start in production.
 
 React (Vite-based):
-  setup: npm install
-  setup: npm run build
-  primary: serve -s dist -l [PORT]
+  setup: npm install  (or npm --prefix frontend install if package.json is in frontend/)
+  setup: npm run build  (or npm --prefix frontend run build)
+  primary: serve -s dist -l [PORT]  (or serve -s frontend/dist -l [PORT])
   → Serves from dist/ directory.
 
 Vue.js:
-  setup: npm install
-  setup: npm run build
-  primary: serve -s dist -l [PORT]
+  setup: npm install  (or npm --prefix frontend install if package.json is in frontend/)
+  setup: npm run build  (or npm --prefix frontend run build)
+  primary: serve -s dist -l [PORT]  (or serve -s frontend/dist -l [PORT])
 
 Angular:
-  setup: npm install
+  setup: npm install  (or npm --prefix frontend install if package.json is in frontend/)
   setup: npx ng build --configuration production
   primary: serve -s dist/{project-name} -l [PORT]
 
 Svelte / SvelteKit:
-  setup: npm install
-  setup: npm run build
+  setup: npm install  (or npm --prefix frontend install if package.json is in frontend/)
+  setup: npm run build  (or npm --prefix frontend run build)
   primary: serve -s build -l [PORT]   (or node build/index.js for SvelteKit)
 
 Next.js:
-  setup: npm install
-  setup: npm run build
+  setup: npm install  (or npm --prefix frontend install if package.json is in frontend/)
+  setup: npm run build  (or npm --prefix frontend run build)
   primary: npx next start -p [PORT]
   → Next.js has its own server, no need for serve.
 
@@ -774,14 +621,14 @@ Static HTML/CSS/JS (no package.json):
   → serve is pre-installed globally, just point it at the directory.
 
 Node.js Backend (Express/Koa/Fastify):
-  setup: npm install
+  setup: npm install  (or npm --prefix backend install if package.json is in backend/)
   primary: node server.js  (or whatever the entry point is, with PORT=[PORT])
   → MUST set HOST=0.0.0.0 or bind to 0.0.0.0 explicitly.
 
 Full-Stack (Backend + Frontend in same project):
-  setup: npm install (in frontend dir)
-  setup: npm run build (in frontend dir)
-  setup: pip3 install -r requirements.txt (in backend dir, if Python)
+  setup: npm --prefix frontend install
+  setup: npm --prefix frontend run build
+  setup: pip3 install -r backend/requirements.txt (if Python backend)
   background: python3 backend/app.py (on port 8000)
   primary: nginx (on port [PORT], reverse proxy to backend + serve frontend build)
   → Use nginx_config to route /api/* to backend and serve static from frontend build dir.
@@ -982,7 +829,7 @@ RULES:
             display_content = content[:snippet_chars]
             files_context += f"// FILE: {name}\n{display_content}\n\n"
 
-        prompt = """You are an expert debugging engineer. Diagnose this runtime error and provide a surgical fix.
+        prompt = """You are an expert debugging engineer. Diagnose this runtime error and provide a bash script fix.
 
 USER INTENT (CRITICAL): [USER_PROMPT]
 SYSTEM: [OS_INFO]
@@ -996,58 +843,85 @@ ERROR LOG (last_tail):
 PROJECT FILES:
 [FILES_CONTEXT]
 
-CRITICAL: Return ONLY the following tagged XML-like structure (no JSON, no narrative, no markdown):
+CRITICAL: Return a bash script that fixes the error. Use this EXACT format:
 
-<vibe-fix>
-  <diagnosis>root cause in one sentence</diagnosis>
-  <fix_type>commands | code_patch | code_change</fix_type>
-  <confidence>high | medium | low</confidence>
-  <fix_details>
-    <!-- code_patch -->
-    <file>relative file path</file>
-    <vibe-hunk>
-      <search>exact verbatim block to find</search>
-      <replace>replacement block</replace>
-    </vibe-hunk>
+#!/bin/bash
+set -e  # Exit on any error
 
-    <!-- code_change -->
-    <content>complete new file content (only for code_change full rewrite)</content>
-    <append>false</append>
+# DIAGNOSIS: [one sentence explaining the root cause]
+# CONFIDENCE: [high|medium|low]
 
-    <!-- commands -->
-    <command>one-time setup/install command only (never server start)</command>
-    <run_command>updated server start command if it needs to change (optional)</run_command>
-  </fix_details>
-</vibe-fix>
+# Install missing dependencies (if needed)
+# npm --prefix frontend install
+# pip3 install flask
+
+# Fix files using cat with heredoc
+cat > path/to/file.ext << 'FILE_EOF'
+[complete file content]
+FILE_EOF
+
+# Or use sed for small patches
+sed -i 's/old text/new text/g' path/to/file.ext
+
+echo "✅ Fix applied successfully"
+
+BASH SCRIPT FORMAT RULES:
+1. Use cat with heredoc for file creation/replacement: cat > file.ext << 'EOF'
+2. Use single quotes around EOF delimiter: << 'EOF' (prevents variable expansion)
+3. For JSON files, use literal braces (no escaping needed with single-quoted heredoc)
+4. Use sed -i for small text replacements
+5. Include install commands BEFORE file fixes
+6. NEVER include server start commands (serve, npm start, python3 app.py, etc.)
+7. Use mkdir -p to create directories before writing files
+
+⚠️ CRITICAL COMMAND FORMAT RULES (MUST FOLLOW):
+
+1. NPM COMMANDS WITH SUBDIRECTORIES:
+   - If package.json is in frontend/ subdirectory, ALWAYS use --prefix:
+     ✅ CORRECT: npm --prefix frontend install
+     ✅ CORRECT: npm --prefix frontend run build
+     ❌ WRONG: npm install (will fail with ENOENT: no such file or directory)
+     ❌ WRONG: cd frontend && npm install (cd command not allowed)
+   
+   - If package.json is at workspace root, use normal npm commands:
+     ✅ CORRECT: npm install
+     ✅ CORRECT: npm run build
+
+2. SERVE COMMAND FLAGS:
+   - The 'serve' CLI does NOT support -a flag for address binding
+   - It automatically binds to 0.0.0.0 when using -l flag
+   ✅ CORRECT: serve -s dist -l 80
+   ✅ CORRECT: serve -s frontend/dist -l 80
+   ❌ WRONG: serve -s dist -l 80 -a 0.0.0.0 (ArgError: unknown option: -a)
+   ❌ WRONG: serve -s dist -p 80 (use -l for listen port, not -p)
+
+3. PATH SPECIFICATIONS:
+   - Always specify EXACT path relative to /project/workspace
+   - Check the actual directory structure in PROJECT FILES above
+   - If build output is in frontend/dist: serve -s frontend/dist -l 80
+   - If build output is in dist: serve -s dist -l 80
+   - If build output is in build: serve -s build -l 80
+
+4. PYTHON COMMANDS:
+   - ALWAYS use 'python3', NEVER 'python' (python command does not exist)
+   ✅ CORRECT: python3 app.py
+   ✅ CORRECT: pip3 install flask
+   ❌ WRONG: python app.py
+   ❌ WRONG: pip install flask
 
 RULES:
-- Prefer fix_type=code_patch for targeted fixes (1-10 lines changed).
-- Prefer fix_type=commands for missing packages/dependencies.
-- Prefer fix_type=code_change if the entire file needs restructuring, is corrupted, or has syntax errors.
-- For SyntaxError, IndentationError, EOF errors, bash quoting errors, or truncated files:
-  ALWAYS use fix_type=code_change to provide the FULL, CORRECTED file. DO NOT TRUNCATE.
-- JSX SYNTAX ERRORS: For React/JSX errors like "Expected closing tag" or mismatched tags:
-  * Use fix_type=code_change to provide the complete corrected JSX file
-  * Ensure ALL opening tags have matching closing tags: <div>...</div>, <button>...</button>
-  * Check for proper nesting - buttons cannot contain divs, spans are inline elements
-  * Verify all JSX expressions are properly closed with matching braces and parentheses
-  * Self-closing tags must end with /> (e.g., <img />, <br />, <input />)
-- 0.0.0.0 BINDING: Servers MUST bind to 0.0.0.0, never localhost.
-- RELATIVE URLs: Frontend-to-backend calls must use relative paths (e.g., fetch('/api/todos')).
-- NAMESPACING: API routes should stay under /api/* prefix.
-- SPA FALLBACK: If fixing a backend that serves a frontend, ensure the fallback to index.html is preserved.
-- NO DEV SERVERS: Fixes should never introduce dev servers (like Vite dev) as the primary process.
-- ENVIRONMENT: Global installs only. No venv/virtualenv. No 'python' (use 'python3'). Bash syntax only.
+- For SyntaxError, IndentationError, EOF errors: provide the FULL, CORRECTED file
+- For React/JSX errors: ensure ALL tags are properly closed and nested
+- Servers MUST bind to 0.0.0.0, never localhost
+- Frontend-to-backend calls must use relative paths (e.g., fetch('/api/todos'))
+- Global installs only, no venv/virtualenv
 - For pip conflicts: pip3 install --upgrade pip && pip3 install -r requirements.txt --use-deprecated=legacy-resolver
-- NEVER use shell redirection syntax (echo, cat, printf with > or >>) inside 'commands' to write file content.
-  If you need to create or fix a file, use fix_type=code_change instead. The agent writes files directly — no shell quoting needed.
-- 'code_change' content must ONLY contain the literal source code for that file — no shell syntax.
-- IGNORE access logs in the error log (e.g., "GET / HTTP/1.1 302" or "200"). These are NORMAL behaviors and not errors.
-- DO NOT assume templates are missing just because you see a redirect to /login. Only fix missing files if there is an explicit "TemplateNotFound" or "FileNotExists" error.
-- NEVER put the server start command inside commands[]. It will time out and kill the fix.
-  If the run command needs to change (wrong path, wrong module, wrong port), put the
-  corrected command in fix_details.run_command instead.
-- NGINX SITE CONFIGS: When fixing nginx configs in /etc/nginx/sites-enabled/ or /etc/nginx/sites-available/, NEVER include events, http, or worker_processes directives. These belong ONLY in /etc/nginx/nginx.conf. Site configs should ONLY contain server blocks.
+- IGNORE access logs (GET/POST 200/302) - these are normal, not errors
+- DO NOT assume files are missing without explicit "FileNotFound" or "TemplateNotFound" errors
+
+OUTPUT FORMAT:
+Return ONLY the bash script. No explanations before or after. No markdown fences.
+Start with #!/bin/bash and end with echo "✅ Fix applied successfully"
 """
         # Perform template replacements
         prompt = prompt.replace("[USER_PROMPT]", str(self.config.user_prompt or "Unknown"))
@@ -1336,7 +1210,44 @@ RULES:
             self.log("🔄", f"AI updated run command: {new_run_command}")
 
         try:
-            if fix_type == "commands":
+            if fix_type == "bash_script":
+                script = details.get("script")
+                if not script:
+                    self.log("⚠️", "bash_script missing script content")
+                    return False, None
+                
+                # Write script to temp file
+                script_path = Path(self.workspace) / ".ai_fix.sh"
+                script_path.write_text(script, encoding="utf-8")
+                script_path.chmod(0o755)
+                
+                self.log("🔨", "Executing AI-generated fix script...")
+                
+                # Execute the script
+                result = subprocess.run(
+                    ['bash', str(script_path)],
+                    cwd=str(self.workspace),
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                
+                # Clean up script file
+                script_path.unlink(missing_ok=True)
+                
+                if result.returncode != 0:
+                    self.log("❌", f"Fix script failed with exit code {result.returncode}")
+                    self.log("📄", f"STDOUT: {result.stdout}")
+                    self.log("📄", f"STDERR: {result.stderr}")
+                    return False, None
+                
+                self.log("✅", "Fix script executed successfully")
+                if result.stdout:
+                    self.log("📄", result.stdout)
+                
+                return True, new_run_command
+            
+            elif fix_type == "commands":
                 for cmd in details.get("commands", []):
                     # Use streaming runner to avoid blind hangs
                     success, _ = self._run_setup_command(cmd)

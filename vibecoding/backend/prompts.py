@@ -243,6 +243,41 @@ When working with an existing project, it's highly recommended to:
 - NEVER recreate component code inside App.jsx if the component already exists in its own file
 - When modifying components, use PATCH MODE on the actual component file (e.g., components/Header.jsx)
 
+⚠️ CRITICAL ARCHITECTURE RULES (MUST FOLLOW):
+
+1. COMPONENT-BASED ARCHITECTURE:
+   - NEVER add new component logic directly to App.jsx or App.css
+   - ALWAYS create new components in src/components/ directory
+   - App.jsx should ONLY contain:
+     * Component imports
+     * Basic routing/layout structure
+     * State management (if using Context/Redux)
+   - Each feature should be its own component file
+
+2. FILE ORGANIZATION:
+   ✅ CORRECT approach for adding ANY new feature:
+   - Create: src/components/FeatureName.jsx (component logic)
+   - Create: src/components/FeatureName.css (component styles)
+   - Update: src/App.jsx (only add import and render: <FeatureName />)
+   
+   ❌ WRONG approach:
+   - Putting feature JSX directly in App.jsx
+   - Adding feature styles to App.css
+   - Mixing multiple component logics in one file
+
+3. WHEN TO MODIFY App.jsx:
+   - Modify App.jsx ONLY to:
+     * Add imports for new components
+     * Add component to render tree
+     * Update routing if needed
+   - NEVER add component logic or JSX directly in App.jsx
+   
+4. WHEN TO CREATE NEW COMPONENTS:
+   - User asks to "add [anything]" → Create ComponentName.jsx in components/
+   - User asks to "create [any feature]" → Create FeatureName.jsx in components/
+   - User asks to "build [any UI element]" → Create ElementName.jsx in components/
+   - ANY new functionality → Create as a separate component
+
 🎯 YOUR TASK:
 The user wants to modify their existing application. Choose the right output mode:
 
@@ -318,21 +353,93 @@ replacement lines
 ---
 
 🧠 DECISION GUIDE:
+- User asks to "add [any feature]" → Create NEW component files (FeatureName.jsx, FeatureName.css), PATCH App.jsx to import it
+- User asks to "add [any UI element]" → Create NEW component in components/, PATCH App.jsx to import it
 - User asks to "add package.json" → FILE MARKER for ONLY package.json (preserve other files)
-- User asks to "create a new component" → FILE MARKER for ONLY that component
+- User asks to "create a new component" → FILE MARKER for ONLY that component in components/
 - User asks to "change a color" → PATCH MODE for that specific file
 - User asks to "fix the backend" → PATCH MODE for backend files only
-- User asks to "add a new feature" → FILE MARKER for new files, PATCH for modified files
+- User asks to "add a new feature" → Create NEW component files, PATCH App.jsx to use them
 - User asks to "rebuild everything" → FULL REGENERATION (all files)
 
-⚠️ EXAMPLES:
+⚠️ EXAMPLES (Generic Patterns - Apply to ANY Feature):
+
+User: "Add [any new feature/component]"
+
+✅ CORRECT PATTERN (creates new component, updates App.jsx):
+// FILE: src/components/FeatureName.jsx
+import React from 'react';
+import './FeatureName.css';
+
+function FeatureName() {{
+  return (
+    <div className="feature-container">
+      {{/* Feature-specific JSX here */}}
+    </div>
+  );
+}}
+
+export default FeatureName;
+
+// FILE: src/components/FeatureName.css
+.feature-container {{
+  /* Feature-specific styles here */
+}}
+
+// PATCH: src/App.jsx
+<<<SEARCH
+import React from 'react';
+import './App.css';
+>>>
+<<<REPLACE
+import React from 'react';
+import './App.css';
+import FeatureName from './components/FeatureName';
+>>>
+
+<<<SEARCH
+function App() {{
+  return (
+    <div className="App">
+>>>
+<<<REPLACE
+function App() {{
+  return (
+    <div className="App">
+      <FeatureName />
+>>>
+
+❌ WRONG PATTERN (puts everything in App.jsx):
+// PATCH: src/App.jsx
+<<<SEARCH
+function App() {{
+  return (
+    <div className="App">
+      <h1>Hello</h1>
+    </div>
+  );
+}}
+>>>
+<<<REPLACE
+function App() {{
+  return (
+    <div className="App">
+      <div className="feature-container">
+        {{/* All feature code inline - WRONG! */}}
+      </div>
+    </div>
+  );
+}}
+>>>
+
+---
 
 User: "Create package.json as it is not present"
 
 ✅ CORRECT (preserves existing files):
 // FILE: frontend/package.json
 {{
-  "name": "dashboard-frontend",
+  "name": "app-frontend",
   "version": "1.0.0",
   "dependencies": {{
     "react": "^18.2.0",
@@ -344,38 +451,24 @@ User: "Create package.json as it is not present"
   }}
 }}
 
-❌ WRONG (regenerates everything):
-// FILE: src/App.jsx
-[full content]
-
-// FILE: frontend/package.json
-[content]
-
-// FILE: backend/app.py
-[full content]
-
 ---
 
-User: "Change the button color to blue"
+User: "Change [any style property]"
 
 ✅ CORRECT:
-// PATCH: src/App.css
+// PATCH: src/ComponentName.css
 <<<SEARCH
-.btn {{
-  background-color: red;
+.element {{
+  property: old-value;
 >>>
 <<<REPLACE
-.btn {{
-  background-color: blue;
+.element {{
+  property: new-value;
 >>>
-
-❌ WRONG (regenerates entire file):
-// FILE: src/App.css
-[entire file content with one color changed]
 
 ---
 
-User: "Add a footer to the page"
+User: "Add [any HTML element] to the page"
 
 ✅ CORRECT:
 // PATCH: public/index.html
